@@ -65,7 +65,7 @@ function SubscriptionPoolContent() {
   const { t } = useTranslation();
   const { auth } = useAuthStore();
   const readOnly = !auth || !isGlobalAdmin(auth.user, auth.isAdmin);
-  const [provider, setProvider] = useState<PoolProvider>('codex');
+  const [provider, setProvider] = useState<PoolProvider>('claude');
   const { provider: pool, thresholdPct, loading, error, refresh } = usePoolStatus(provider);
 
   const [switchTarget, setSwitchTarget] = useState<boolean | null>(null);

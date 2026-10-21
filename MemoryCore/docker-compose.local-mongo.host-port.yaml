@@ -1,0 +1,13 @@
+# Override for local development: publish MongoDB on the host so that
+# MemoryCore can run as a host process (not in Docker) and connect with
+#   mongodb://127.0.0.1:27017/?directConnection=true
+#
+# Use with the base file (run in MemoryCore/):
+#   docker compose -f docker-compose.local-mongo.yaml \
+#     -f docker-compose.local-mongo.host-port.yaml up -d mongo-search
+#
+# Full guide: docs/local-development.md
+services:
+  mongo-search:
+    ports:
+      - "27017:27017"

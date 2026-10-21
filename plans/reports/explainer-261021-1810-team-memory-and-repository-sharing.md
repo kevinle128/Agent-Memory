@@ -1,0 +1,401 @@
+# Cơ chế chia sẻ memory trong team và repository (Agent Memory)
+
+Ngày: 2026-10-21. Branch `feat/server_team`. Toàn bộ nội dung dưới đây đến từ việc đọc source code và
+docs. Mỗi điểm có trích dẫn `file:dòng`. Các điểm quan trọng đã được kiểm tra lại trực tiếp trong
+source. Không có điểm nào được kiểm chứng bằng cách chạy thử, trừ khi có ghi rõ.
+
+Viết tắt đường dẫn: `C/` = `MemoryCore/src/`, `P/` = `MemoryProxy/src/`, `K/` = `MemoryKnowledge/src/`,
+`PN/` = `MemoryPanel/src/panel/`, `W/` = `MemoryPanel/web/src/`.
+
+## Kết luận ngắn
+
+1. **Không có "memory chung của cả team".** Mức chia sẻ phụ thuộc vào tầng memory:
+   - L0 (tin nhắn gốc) và L1 (fact) là **riêng** cho bộ ba (team, user, agent).
+   - L2 (scene) và L3 (persona) là **chung** cho mọi user dùng **cùng một agent** trong cùng team.
+2. **Chia sẻ giữa các agent** chỉ đi qua asset `chat_memory`. Một agent có thể "mượn" memory của tối
+   đa 2 agent khác trong cùng team.
+3. **Repository (code graph) và wiki** là asset của team (`visibility=team`).
+   - Mọi thành viên thấy chúng trong "Team Code Pool".
+   - Agent chỉ được cấp (Allocate) asset nào thì Proxy mới đưa asset đó vào prompt.
+   - Agent tự gọi Knowledge bằng tool.
+4. **Kiểm tra quyền nằm ở Panel và Proxy, không nằm ở Core data plane hay Knowledge.** Ai gọi được
+   trực tiếp Core hoặc Knowledge (có Bearer/service id hoặc `knowledge_id`) thì vượt qua giới hạn team
+   và agent. Xem phần 7.
+
+---
+
+## 1. Tổng quan thành phần
+
+```mermaid
+flowchart LR
+  subgraph Client["Coding agent (Claude Code, Codex, CodeBuddy, OpenCode...)"]
+    A[Agent CLI]
+  end
+  subgraph Proxy["MemoryProxy :8096"]
+    PA[Auth + sessionInit]
+    PI[Injectors: skill, knowledge, tdai-memory]
+    PB["memory-bridge /memory-bridge/v3/*"]
+    PS[(SQLite: sessions, hook_cache)]
+  end
+  subgraph Core["MemoryCore gateway :8420"]
+    CM["/v3/meta/* metadata: user, team, agent, task, asset, binding, ACL"]
+    CD["/v3/conversation, atomic, scenario, core: L0 L1 L2 L3"]
+    CK["/v3/skill/*, /v3/knowledge/*"]
+    CP[Pipeline L0 to L1 to L2 to L3]
+  end
+  subgraph Store["MongoDB (Docker) hoặc SQLite"]
+    MDB[(tdai_metadata_instance)]
+    MEM[(tdai_memory)]
+  end
+  subgraph KS["MemoryKnowledge :8421"]
+    KT["/v3/tools/list, /v3/tools/call"]
+    KW[Worker: git clone, codegraph index, wiki ingest]
+    KDB[(SQLite knowledge.db + data dir)]
+  end
+  subgraph Panel["MemoryPanel :8123 + web :5173"]
+    PN[Panel server: gate team member, ACL]
+    PW[Web UI]
+  end
+  UP[Upstream LLM]
+  GIT[Git host]
+
+  A -->|"POST /agent/spaceId/v1/..."| PA --> PI --> UP
+  PI --> CM & CD & CK
+  A -->|curl tool| PB --> CD
+  A -->|curl tool| KT
+  PW --> PN --> CM
+  PN --> KS
+  KW --> GIT
+  KS -->|status-callback| PN
+  CM --> MDB
+  CD --> MEM
+  CP --> MEM
+```
+
+---
+
+## 2. Mô hình metadata (ai thuộc về đâu)
+
+Nguồn: `C/metadata/types.ts`.
+
+```mermaid
+erDiagram
+  USER ||--o{ USER_KEY : "có"
+  USER ||--o{ TEAM_MEMBER : "tham gia"
+  TEAM ||--o{ TEAM_MEMBER : "role admin, member, reviewer"
+  TEAM ||--o{ AGENT : "mỗi agent thuộc 1 team"
+  TEAM ||--o{ TASK : ""
+  TASK ||--o{ TASK_AGENT : ""
+  AGENT ||--o{ FIXED_ASSET_BINDING : "agent-fixed-asset"
+  ASSET ||--o{ FIXED_ASSET_BINDING : ""
+  TEAM ||--o{ ASSET : "team_id"
+  ASSET ||--o{ ACL : "subject: user, team_role, agent"
+  ASSET {
+    string asset_type "skill, llm_wiki, code_graph, chat_memory"
+    string visibility "private, team, restricted, agent, task"
+    string owner_user_id
+  }
+  FIXED_ASSET_BINDING {
+    string injection_mode "summary hoặc tool"
+    int priority
+  }
+```
+
+- Entity: `UserEntity` :67, `TeamEntity` :83, `TeamMemberEntity` :94 (role :17), `AgentEntity` :107,
+  `TaskEntity` :121, `AssetEntity` :182, `FixedAssetBindingEntity` :205, `UserKeyEntity` :245, `AclEntity` :280.
+- Metadata lưu ở Mongo khi có `TDAI_METADATA_MONGO_URI`, nếu không thì lưu ở SQLite
+  (`C/metadata/store/factory.ts:63-67`). Tên DB là `tdai_metadata_<instance>` (`C/metadata/store/db-name.ts`).
+- "Instance" chính là header `x-tdai-service-id`. Ở Proxy, giá trị này là `spaceId` trên URL.
+
+---
+
+## 3. Các tầng memory và phạm vi chia sẻ
+
+### 3.1 Pipeline tạo các tầng
+
+```mermaid
+flowchart TB
+  L0["L0 - tin nhắn gốc<br/>POST /v3/conversation/add<br/>key: team, user, agent, session, task"]
+  L1["L1 - fact rút ra theo session<br/>key: team, user, agent, session"]
+  L2["L2 - scene blocks<br/>scope: team:T | agent:A"]
+  L3["L3 - persona<br/>scope: team:T | agent:A"]
+  L0 -->|"sau everyNConversations=5 vòng<br/>hoặc idle l1IdleTimeoutSeconds=600s"| L1
+  L1 -->|"task key profile:team:T|agent:A|session:S<br/>đọc L1 theo team+agent+session, bỏ user"| L2
+  L2 -->|sau L2| L3
+```
+
+- Trình tự kích hoạt: `C/utils/pipeline-manager.ts:9-26,41-70`. Giá trị mặc định trong code: `C/config.ts:681-686`.
+  Comment ở `C/config.ts:99,101` ghi giá trị khác với giá trị thật.
+- L1 nhóm theo khóa `userId|agentId|sessionId` (`C/utils/pipeline-factory.ts:548`).
+- L1 sang L2 (`C/utils/pipeline-factory.ts:649-659,738-760`). L3 tạo theo scope `team:T|agent:A` (`:1059-1083`).
+
+### 3.2 Ai thấy tầng nào
+
+```mermaid
+flowchart LR
+  subgraph TeamT["Team T"]
+    subgraph AgentA["Agent A"]
+      X0["L0/L1 của user X"]
+      Y0["L0/L1 của user Y"]
+      P["L2 + L3 chung<br/>team:T|agent:A"]
+    end
+    subgraph AgentB["Agent B"]
+      B0["L0/L1 của user X với agent B"]
+      PB["L2 + L3 chung<br/>team:T|agent:B"]
+    end
+  end
+  UX((User X)) --> X0
+  UY((User Y)) --> Y0
+  UX --> P
+  UY --> P
+  X0 -.->|"pipeline gộp vào"| P
+  Y0 -.->|"pipeline gộp vào"| P
+  UX --> B0 --> PB
+```
+
+| Tầng | Khóa lưu | User khác cùng agent có thấy không | Agent khác trong team có thấy không |
+|---|---|---|---|
+| L0, L1 | team, user, agent (và session, task) | Không | Không, trừ khi mượn qua `chat_memory` (xem 5) |
+| L2, L3 | `team:T\|agent:A` | **Có** | Không, trừ khi mượn qua `chat_memory` |
+| Skill | team, owner agent | Có | Có nếu tìm với `scope:"team"` |
+
+Bằng chứng:
+
+- Scope của profile: `buildProfileIsolationScope` trả về `team:${teamId}|agent:${agentId}`. Comment
+  trong code nói rõ là bỏ qua user, session và task để "memory của agent trong team tích lũy qua nhiều
+  session/user" (`C/core/profile/profile-scope.ts:34-42`).
+- Khi request thiếu user, agent hoặc session, Core dùng giá trị `"default"` (`C/gateway/v2-schemas.ts:385-391`).
+  Vì vậy hai user không gửi `user_id` sẽ dùng chung bucket L0/L1 `default`.
+- Bộ lọc khi search L0 và L1 gồm team, user, agent và task (`C/gateway/v2-router.ts:929-937,1206-1216`).
+- Skill:
+  - Khi có team, Core bỏ `user_id` khỏi bộ lọc, theo comment "Skills are team-shared assets"
+    (`C/core/skill/skill-core.ts:505-519`).
+  - `scope:"team"` bỏ bộ lọc theo agent (`C/gateway/skill-handlers.ts:555-566`).
+  - Muốn ghi skill thì owner agent và team phải khớp (`C/core/skill/skill-permission.ts:32-55`).
+
+---
+
+## 4. Vòng đời một request qua Proxy
+
+Ví dụ dùng runner Anthropic (`P/pipeline/runners/anthropic.ts`). Codex và OpenAI chat có cùng các
+bước, chỉ khác chỗ chèn text vào request.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant Ag as Agent CLI
+  participant Px as Proxy :8096
+  participant Co as Core :8420
+  participant Kn as Knowledge :8421
+  participant LLM as Upstream LLM
+
+  Ag->>Px: POST /{agent}/{spaceId}/v1/messages<br/>x-tdai-user-key + header session (x-claude-code-session-id...)
+  Px->>Co: /v3/meta/auth/verify {user_key}, x-tdai-service-id=spaceId
+  Co-->>Px: user_id (nếu sai thì 401)
+  alt Session chưa có binding
+    Px->>Co: user-session-default/get, team/list, agent/list, task/list
+    alt Có default của account, hoặc header x-team-id/x-agent-id hợp lệ
+      Px->>Px: chọn sẵn team, agent
+    else
+      Px-->>Ag: form: asset_confirm, Team, Agent, Task
+      Ag->>Px: lượt sau: user trả lời form
+    end
+    Px->>Co: agent/get, task/get, participation-log/append
+    Px->>Px: lưu SessionInfo vào SQLite sessions
+    Px->>Co: prewarm: /v3/skill/listing {team, agent}
+    Px->>Co: agent-fixed-asset/list-with-detail, /v3/knowledge/list
+    Px->>Co: /v3/core/read (L3), /v3/scenario/ls (chỉ chỉ mục L2) {team_id, agent_id}
+    Px->>Px: lưu các block vào hook_cache (snapshot đầu phiên)
+  end
+  Px->>Px: chèn session_context, available_skills, knowledge_tools,<br/>tdai_profile_memory, tdai_memory_tools vào system
+  Px->>LLM: forward (bỏ x-tdai-user-key, dùng key upstream)
+  LLM-->>Px: response
+  Px-->>Ag: response
+  Px->>Co: /v3/skill/conversation/add {session, team, agent, task, messages}
+  Px->>Co: /v3/conversation/add (L0) {team, user, agent, session, task, messages}
+  Note over Co: pipeline tạo L1, L2, L3 sau đó
+  opt LLM tự gọi tool trong các lượt sau
+    Ag->>Px: curl /memory-bridge/v3/* (search L0/L1, đọc L2)
+    Px->>Co: forward, Proxy ghi đè user/team/agent theo session
+    Ag->>Kn: curl {service_url}/tools/list hoặc tools/call {knowledge_id}
+  end
+```
+
+Bằng chứng chính:
+
+- Route: `P/server.ts:249-270,370-376`.
+- Auth: `P/auth.ts:76-104`.
+- Header của session: `P/session/session-key.ts:31-43`. Nếu không có header này thì không có sessionInit,
+  không inject và không ghi L0 (`anthropic.ts:702,710`).
+- `headerAutoSelect` mặc định dùng `x-team-id`, `x-agent-id`, `x-task-id` với `onMismatch: form`
+  (`P/config.ts:146-152`). Task không khớp sẽ bị bỏ qua, không bị tính là mismatch (`P/session/preset.ts:118-133`).
+- Khi đọc L2/L3, Proxy chỉ gửi `team_id` và `agent_id` (`P/tdai/client.ts:236-243`).
+- Ghi L0 tại `P/tdai/client.ts:141-172`.
+- Cache: mọi injector đều có `cacheStrategy: "session_init"` (`P/injection/injectors/*.ts`). Vì vậy memory,
+  skill và knowledge **chỉ được lấy một lần khi khởi tạo phiên**, không cập nhật mỗi lượt.
+- Không còn bộ inject recall L1, nên cờ `recallL1` không có tác dụng. L0/L1 chỉ đọc được qua tool
+  memory-bridge (`P/injection/index.ts:405-416`).
+- memory-bridge ghi đè `user_id`, `team_id`, `agent_id` theo session, nên LLM không giả được danh tính
+  (`P/memory/memory-bridge.ts:369-400`).
+
+---
+
+## 5. Chia sẻ memory giữa các agent (asset `chat_memory`)
+
+```mermaid
+sequenceDiagram
+  participant Px as Proxy
+  participant Co as Core
+  Note over Co: Lần đầu agent A ghi L0
+  Co->>Co: ensureChatMemoryAsset: tạo asset chat_memory-{team}-{agentA}<br/>visibility=private, owner = owner của agent A, tự bind vào A
+  Note over Co: Admin hoặc owner bind asset của A vào agent B<br/>(canBindAsset: private cần cùng owner và cùng team)
+  Px->>Co: agent B: agent-fixed-asset list (chat_memory)
+  Px->>Px: chỉ giữ agent nguồn cùng team, tối đa 2
+  Px->>Co: core/read, scenario/ls cho B (self)<br/>user = owner của B
+  Px->>Co: core/read, scenario/ls cho A (mượn)<br/>user = owner_user_id của A
+  Px->>Px: gộp vào tdai_profile_memory, kết quả search gắn source_agent_role
+```
+
+- Tạo asset tự động: `C/gateway/v2-router.ts:698-711`, `C/metadata/service/metadata-service.ts:1496-1536`.
+- Luật bind: `C/metadata/service/permission-checker.ts:155-171`.
+  - Asset `private` cần cùng owner và cùng team.
+  - Asset `team` hoặc `agent` chỉ cần cùng team.
+  - Asset `task` hoặc `restricted` không bao giờ bind được.
+- Phía Proxy (`P/injection/injectors/tdai-fixed-asset.ts:78-115`):
+  - Chỉ giữ agent nguồn cùng team và lấy tối đa 2 (`items.slice(0, 2)`).
+  - Khi có agent mượn, phần memory của chính agent B cũng dùng `owner_user_id` của B làm user.
+- Fan-out khi search: `P/memory/memory-bridge.ts:440-485`.
+
+---
+
+## 6. Chia sẻ repository (Code Graph) và wiki
+
+### 6.1 Register Repo vào Team Code Pool, rồi Allocate cho Agent
+
+```mermaid
+sequenceDiagram
+  autonumber
+  actor U as Thành viên team
+  participant W as Panel web
+  participant P as Panel server
+  participant K as Knowledge
+  participant G as Git host
+  participant C as Core metadata
+
+  opt Repo SSH
+    W->>P: code-graph/ssh-key/ensure {team_id}
+    P->>K: /v3/ssh-key/ensure (user lấy từ phiên, không lấy từ body)
+    K-->>U: public key RSA riêng của user, user thêm lên Git host
+  end
+  W->>P: code-graph/create {team_id, repo_url, branch, provider_id?, secret?}
+  P->>C: team-member/get (requireTeamMember)
+  P->>K: /v3/code-graph/create, owner = user, x-tdai-service-id = instance
+  K->>K: idempotent theo (service, team, repo_url, branch), lưu credential trước
+  K-->>P: code_graph_id, status pending
+  P->>P: lưu tạm user_key của owner trong bộ nhớ
+  K->>G: clone hoặc fetch (token trong URL, hoặc GIT_SSH_COMMAND)
+  K->>K: xóa credential khỏi .git/config, index bằng @colbymchenry/codegraph
+  K->>P: POST /api/v1/knowledge/status-callback (ready)
+  P->>C: /v3/knowledge/create (entity_knowledge, điều kiện để Proxy inject)
+  P->>C: asset/create {asset_type: code_graph, team_id, visibility: team}
+  opt Đường dự phòng
+    W->>P: code-graph/register-meta (chỉ owner, 409 nếu chưa ready)
+  end
+  W->>P: code-graph/team-assets, hiện trong Team Code Pool
+  U->>W: Allocate to Agent
+  W->>P: knowledge/allocate {team_id, knowledge_id, agent_id}
+  P->>C: asset/get, agent/get (cùng team, nếu khác thì TEAM_MISMATCH hoặc AGENT_NOT_IN_TEAM)
+  P->>C: agent-fixed-asset/set (thêm binding, injection_mode: tool)
+```
+
+Bằng chứng:
+
+- UI: tab `code.scope.team` = "Team Code Pool", tab `code.scope.fixed` = "Agent Assets"
+  (`W/i18n/en-US.ts:437-438`). Comment trong code nói tài sản luôn tính theo team, không có tài sản riêng
+  (`W/pages/CodePage/hooks/useCodeSources.ts:191-193`).
+- Create: `PN/http/routes/knowledge/code-graph-routes.ts:48-95`. Register-meta: `:124-170`.
+- Ghi asset với `visibility: 'team'`: `PN/http/routes/knowledge/common.ts:153-197`.
+- Callback: `PN/http/routes/knowledge/callback-routes.ts:65-112,215-237`.
+- Allocate: `PN/http/routes/knowledge/allocate-routes.ts:54-120`.
+- Worker của Knowledge: `K/module.ts:242-365`. Schema: `K/db/schema.ts:18-51`, unique index :46-48.
+- Tự đồng bộ lại repo mặc định **tắt** (`KNOWLEDGE_AUTO_SYNC_ENABLED`; quét 10 phút, 3 worker)
+  (`K/store/auto-sync-scheduler.ts:53-63`).
+
+### 6.2 Agent dùng repository như thế nào
+
+```mermaid
+flowchart LR
+  S[Proxy prewarm] -->|"agent-fixed-asset/list-with-detail<br/>asset_types llm_wiki, code_graph<br/>apply_visibility_filter"| C[Core]
+  S -->|"/v3/knowledge/list knowledge_ids"| C
+  S --> T["knowledge_tools block trong system prompt:<br/>id, url, name, match = repo slug, branch, about"]
+  T --> L[LLM so match với git remote local]
+  L -->|"curl service_url/tools/list {knowledge_id}"| K[Knowledge]
+  L -->|"curl service_url/tools/call {knowledge_id, tool_name, params}"| K
+```
+
+- Proxy injector: `P/injection/injectors/knowledge-tools-injector.ts:146-181,341-352`.
+  - Nếu không có agent hoặc user key, Proxy lấy toàn bộ danh sách knowledge của team.
+  - Injector này chỉ được đăng ký khi có `knowledge.enabled` và `serviceToken` (`P/injection/index.ts:589-592`).
+    File `MemoryProxy/config.yaml` local không có block `knowledge:`.
+- Tool của code graph: `get_info, search, explore, callers, callees, impact, node, status, files`.
+  Tool của wiki: `get_info, search, list_pages, read_page, get_graph, list_raw, read_raw` (`K/routes/tools.ts:49-178`).
+- BM25 (FTS5) chỉ dùng cho wiki, không dùng cho code graph (`K/engines/wiki/index-db.ts`).
+
+---
+
+## 7. Kiểm tra quyền nằm ở đâu
+
+```mermaid
+flowchart TB
+  subgraph Gate["Có kiểm tra"]
+    G1["Panel: requireTeamMember, requireKnowledgeRead<br/>asset/get + acl/check"]
+    G2["Proxy: verify user_key, chọn team/agent đúng danh sách user thấy,<br/>memory-bridge ghi đè danh tính"]
+    G3["Core /v3/meta/*: x-tdai-user-key, checkPermission, canBindAsset"]
+  end
+  subgraph Open["Không kiểm tra theo user, team hoặc agent"]
+    O1["Core data plane: /v3/conversation, atomic, scenario, core, skill<br/>chỉ cần Bearer + x-tdai-service-id"]
+    O2["Knowledge /v3/tools/list, /tools/call và các route đọc:<br/>mở cả khi có service key, chỉ lọc theo service_id"]
+    O3["Panel /api/v1/knowledge/status-callback: không có middleware auth"]
+  end
+```
+
+| Điểm | Bằng chứng | Hệ quả |
+|---|---|---|
+| Core data plane chỉ kiểm tra Bearer và service id. Nếu không đặt `server.apiKey`, mọi request đều qua | `C/gateway/server.ts:1311-1324`, `C/gateway/v2-router.ts:344-366` | Gọi trực tiếp :8420 thì đọc được L0–L3 của bất kỳ team, user hay agent nào |
+| `V3_STRICT_ISOLATION` mặc định tắt | `C/utils/env-config.ts:204-207` | Request thiếu team, agent hoặc user vẫn chạy và rơi vào bucket `default` |
+| Knowledge mở `/tools/list`, `/tools/call` | `K/middleware/auth.ts:50-69`, `K/routes/tools.ts:194-293` | Ai biết `knowledge_id` là truy vấn được repo. Allocate chỉ quyết định repo nào hiện trong prompt |
+| Callback của Panel không có auth | `PN/http/routes/knowledge/callback-routes.ts:117` | Bất kỳ ai gọi tới Panel đều có thể giả trạng thái "ready" |
+| Tìm skill với `scope:"team"` không kiểm tra `visibility` | `C/gateway/skill-handlers.ts:555-566` (chỉ đọc code, chưa test) | Có thể trả về skill `private` của agent khác trong team |
+| MCP stdio của Knowledge không gửi `x-tdai-service-id` | `K/mcp/http-client.ts:37-38` | Theo code thì mọi tool MCP sẽ lỗi 400 (suy ra từ code, chưa chạy) |
+
+Mặc định Core chỉ lắng nghe trên `127.0.0.1` (`MemoryCore/tdai-gateway.yaml`, và `CORE_BIND_ADDRESS` trong
+`compose.yaml`). Vì vậy các điểm trên chủ yếu là rủi ro khi cấu hình mở cổng ra ngoài.
+
+---
+
+## 8. Chỗ docs khác code
+
+| Docs nói | Code làm | Nguồn |
+|---|---|---|
+| "v3 bắt buộc team+agent+user" | Chỉ bắt buộc khi bật `V3_STRICT_ISOLATION` | `MemoryCore/v3-api-memorycore-doc.md:119`, `C/utils/env-config.ts:204-207` |
+| L2, L3, skill và knowledge được inject mỗi lượt | Chỉ lấy một lần khi khởi tạo phiên (`session_init`) | INSTALL, README, `P/injection/injectors/*` |
+| README: inject thẳng L2, và L3 là "Team/Global" | Chỉ inject chỉ mục L2. L2 và L3 đều theo team + agent | `P/tdai/client.ts:236-256` |
+| README: `<cloud_skills>` qua `/v3/skill/search` | `/v3/skill/listing` và block `<available_skills>` | `P/injection/injectors/skill-injector.ts` |
+| INSTALL: Hermes/OpenClaw bắt buộc `x-task-id` | Task là tùy chọn | `P/session/preset.ts:118-133` |
+| INSTALL: không có `defaultTaskId` thì chỉ hiện task thật | Mặc định là `"default"` (đang bật) | `P/config.ts:144` |
+| Comment: L2 delay 90s, idle 30s | Thực tế 10s và 600s | `C/config.ts:99,101` so với `:683-684` |
+| Comment: skill private hiển thị cho team admin | Permission checker từ chối admin | `C/metadata/service/metadata-service.ts:1606` so với `permission-checker.ts:67-82` |
+| README: private repo "đang hoàn thiện" | Đã có SSH key theo user và credential provider | `README.md:282`, `K/module.ts:242-266` |
+| Cổng 8424/8125 (stack Docker) | Chạy local mặc định 8421/8123 | `compose.yaml:53-56`, `K/config.ts:171` |
+
+---
+
+## Câu hỏi chưa giải đáp
+
+1. Core xếp thứ tự ưu tiên giữa id trong body và header `x-tdai-*` thế nào khi hai giá trị khác nhau
+   (`C/gateway/v2-router.ts:594`)? Chưa đọc.
+2. Bước L1 sang L2 gộp L1 của nhiều user thành một profile chung chi tiết ra sao? Ví dụ: có dùng prompt
+   riêng, có xử lý xung đột không. Chưa lần hết.
+3. Mongo store có áp dụng bộ lọc isolation giống SQLite không? Mới chỉ đọc helper SQL (`C/core/store/isolation.ts:120-152`).
+4. `spaceId` của Proxy có luôn bằng `instanceId` của Panel không? Không tìm thấy code nào nối hai giá trị này.
+5. Core thực thi `apply_visibility_filter` và `acl/check` bên trong như thế nào? Chưa đọc.

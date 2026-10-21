@@ -31,6 +31,7 @@ export function PoolHeader({ readOnly, provider, onProviderChange, poolEnabled, 
               { id: 'codex', label: t('subscriptionPool.tab.codex') },
             ]}
             activeId={provider}
+            disableTabScrolling
             onActive={(tab) => onProviderChange(tab.id as PoolProvider)}
           />
           <div className="_memory-pool-switch">
