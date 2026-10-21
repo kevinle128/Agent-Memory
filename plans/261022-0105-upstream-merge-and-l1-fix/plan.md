@@ -121,13 +121,59 @@ Commits use conventional messages with no plan or finding codes. Do not push.
 - Run `detect_changes({scope:"compare", base_ref:"3a83a59d"})` before the final commit.
 
 ## Progress checklist
-- [ ] Baseline tests recorded (all 4 packages)
-- [ ] A1 Proxy adapters: #1722 #1725 #1723 (+ tests from #1726 #1724)
-- [ ] A2 Proxy other: #1517 #1080 #1349
-- [ ] A3 Core: #814 #1040 #1173(+#1488 tests) #1344 #1348 #1220 #959 #1717 #1311 #1366 #1527 #1594
-- [ ] A4 Knowledge: #1754 #1470 #1390 #1262 #1141
-- [ ] A5 Panel: #1588 #1637 #1713
-- [ ] B L1 cursor fix (extractor, l1-failure, l0-recorder, checkpoint, pipeline-factory, worker re-arm, tail drain, pipeline-manager) + tests
-- [ ] C Proxy admin rate-limits auth + compose/env/docs
-- [ ] D Ledger + review section
-- [ ] Verification (tests, builds, compose smoke, outage simulation, detect_changes)
+- [x] Baseline tests recorded (all 4 packages)
+- [x] A1 Proxy adapters: #1722 #1725 #1723 (+ tests from #1726 #1724)
+- [x] A2 Proxy other: #1517 #1080 #1349
+- [x] A3 Core: #814 #1040 #1173(+#1488 tests) #1344 #1348 #1220 #959 #1717 #1311 #1366 #1527 #1594
+- [x] A4 Knowledge: #1754 #1470 #1390 #1262 #1141
+- [x] A5 Panel: #1588 #1637 #1713
+- [x] B L1 cursor fix (extractor, l1-failure, l0-recorder, checkpoint, pipeline-factory, worker re-arm, tail drain, pipeline-manager) + tests
+- [x] C Proxy admin rate-limits auth + compose/env/docs
+- [x] D Ledger + review section
+- [x] Verification (tests, builds, compose smoke, outage simulation, detect_changes)
+
+## Review (2026-10-22)
+
+**Result.** 26 approved upstream PRs plus #1488 (tests) are merged. The L1 cursor fix and the proxy admin auth are committed. Nothing is pushed.
+
+| Package | Tests before | Tests after | Typecheck / build |
+|---|---|---|---|
+| MemoryProxy | 185 | 221 | `tsc` clean |
+| MemoryCore | 193 | 383 | `build:plugin` OK, 0 new `tsc` errors (one existing error fixed by #1348) |
+| MemoryKnowledge | 0 | 31 | `tsc` clean, build OK |
+| MemoryPanel | 71 | 79 | `tsc` clean (server and web) |
+
+**Live check** (isolated compose project `amverify` with its own ports and volumes, plus a stub LLM; torn down afterwards):
+- Core and Proxy were healthy.
+- `/v3/admin/rate-limits` returned 401 with no key and 401 with a wrong key. With the right key it reached the handler, which returned 503 because Redis is not enabled.
+- The proxy logged `auth.init bearer:true`.
+- **LLM outage:** the stub returned 503 on every call.
+  - L1 failed as `transient`, and the cursor stayed unchanged.
+  - The worker retried 3 times, then logged `core.task.rearmed` instead of dead-lettering.
+  - After the stub was restored, one run extracted all 8 L0 messages: 6 written during the outage and 2 new ones. No data was lost.
+
+**Deviations from the plan:**
+- **#1488** was merged in full for its contract tests, but its sqlite post-filter was dropped. An empty `recordIds` means "no id filter" in every backend.
+- **ReDoS test timeout** raised from 3 s to 10 s. It was flaky under parallel load.
+- **Compose** now also sends the gateway key on proxy auth verify, so #1349 takes effect.
+- **Tail drain** uses a task flag that `cascadeSchedule` honours. A count bump in `server.ts` alone was overwritten.
+- **Review findings fixed:**
+  - Replay-guard cap removed: with more than 500 rows in one millisecond, the cap made the drain loop for ever.
+  - An empty read no longer wipes the guard.
+  - A memory that no store accepted is now a failure.
+  - Every `L1ExtractionFailedError` is re-armed.
+  - Errors before the group loop are now classified.
+- **Deterministic pattern** narrowed: an oversized `max_tokens` setting stays transient, and Anthropic's `prompt is too long` is matched.
+
+**Found during verification. Not fixed, owner decision:**
+1. **The Hub image can no longer start Knowledge on a fresh build.** It fails with `@opentelemetry` "Named export 'SeverityNumber' not found".
+   - Cause: `MemoryKnowledge` has no lockfile, and `Hub.Dockerfile` runs `npm install`, so the newest dependencies are pulled at every build.
+   - Our merges changed no `package.json`, so this existed before.
+   - #1141 now makes the process exit, so the failure shows. Before, it hung without listening.
+2. **Re-arm backoff reaches the 30 min cap quickly.** The transient streak counts every run, including the worker's own 3 retries and each capture trigger. In the live check, about 12 runs during a few minutes of outage gave `retry_after_ms=1800000`.
+   - No data is lost: a new conversation triggers L1 earlier.
+   - An idle session can wait up to 30 min after the LLM recovers.
+3. **Known limits, documented:**
+   - With `TDAI_LLM_STREAM=true`, every LLM error looks transient. Our deployment uses streaming off.
+   - The degraded JSONL read path can skip an unreadable day file. Our deployment uses sqlite.
+   - A permanent "exception" fault, such as a store bug or a wrong API key, retries every 30 min for ever. Alert on `core.task.rearmed`.
