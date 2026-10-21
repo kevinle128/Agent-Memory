@@ -9,6 +9,7 @@
  */
 
 import type { ProtocolAdapter } from "./interface.js";
+import { parseToolResultContent, serializeToolResultContent } from "./tool-result-content.js";
 import type {
   AgentContext,
   AgentContextMetadata,
@@ -137,25 +138,14 @@ export class AnthropicAdapter implements ProtocolAdapter {
         };
 
       case "tool_result": {
-        const resultContent = block.content;
-        let contentStr: string;
-        if (typeof resultContent === "string") {
-          contentStr = resultContent;
-        } else if (Array.isArray(resultContent)) {
-          // tool_result can have nested content blocks
-          contentStr = (resultContent as Record<string, unknown>[])
-            .filter((c) => c.type === "text")
-            .map((c) => c.text as string)
-            .join("\n");
-        } else {
-          contentStr = JSON.stringify(resultContent ?? "");
-        }
+        const parsed = parseToolResultContent(block.content);
         return {
           type: "tool_result",
-          content: contentStr,
+          content: parsed.text,
           metadata: {
             tool_use_id: block.tool_use_id as string,
             is_error: block.is_error as boolean | undefined,
+            ...parsed.metadata,
           },
         };
       }
@@ -175,6 +165,8 @@ export class AnthropicAdapter implements ProtocolAdapter {
           metadata: {
             media_type: source?.media_type,
             source_type: source?.type,
+            // Keep the original source so non-base64 forms (url, file) survive.
+            raw_source: source,
           },
         };
       }
@@ -248,7 +240,7 @@ export class AnthropicAdapter implements ProtocolAdapter {
         const result: Record<string, unknown> = {
           type: "tool_result",
           tool_use_id: block.metadata?.tool_use_id ?? "",
-          content: block.content,
+          content: serializeToolResultContent(block),
         };
         if (block.metadata?.is_error) {
           result.is_error = true;
@@ -264,6 +256,9 @@ export class AnthropicAdapter implements ProtocolAdapter {
         };
 
       case "image":
+        if (block.metadata?.raw_source && block.metadata.source_type !== "base64") {
+          return { type: "image", source: block.metadata.raw_source };
+        }
         return {
           type: "image",
           source: {

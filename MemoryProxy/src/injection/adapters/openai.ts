@@ -9,6 +9,7 @@
  */
 
 import type { ProtocolAdapter } from "./interface.js";
+import { parseToolResultContent, serializeToolResultContent } from "./tool-result-content.js";
 import type {
   AgentContext,
   AgentContextMetadata,
@@ -66,11 +67,12 @@ export class OpenAIAdapter implements ProtocolAdapter {
     const blocks: ContextBlock[] = [];
 
     if (role === "tool") {
-      // Tool role: { role: "tool", content: string, tool_call_id: string }
+      // Tool role: { role: "tool", content: string | ContentPart[], tool_call_id: string }
+      const parsed = parseToolResultContent(m.content);
       blocks.push({
         type: "tool_result",
-        content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
-        metadata: { tool_use_id: m.tool_call_id as string },
+        content: parsed.text,
+        metadata: { tool_use_id: m.tool_call_id as string, ...parsed.metadata },
       });
       return { role, blocks };
     }
@@ -164,7 +166,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       const toolResult = msg.blocks.find((b) => b.type === "tool_result");
       return {
         role: "tool",
-        content: toolResult?.content ?? "",
+        content: serializeToolResultContent(toolResult),
         tool_call_id: toolResult?.metadata?.tool_use_id ?? "",
       };
     }
@@ -235,7 +237,12 @@ export class OpenAIAdapter implements ProtocolAdapter {
           });
           break;
         default:
-          parts.push({ type: block.type, content: block.content, ...block.metadata });
+          // Unknown parts (input_audio, file, ...) were stored as JSON on parse.
+          try {
+            parts.push(JSON.parse(block.content) as Record<string, unknown>);
+          } catch {
+            parts.push({ type: block.type, content: block.content, ...block.metadata });
+          }
           break;
       }
     }
