@@ -161,6 +161,23 @@ export function generateMemoryId(): string {
  * v3: supports multi-target removal for update/merge.
  * v3.1: optional VectorStore + EmbeddingService for dual-write (JSONL + vector).
  */
+/**
+ * Thrown by writeMemory when no persistence target stored the record: the
+ * JSONL append failed and the vector upsert failed too (or no vector store
+ * is configured). A record that exists nowhere must not count as stored,
+ * else L1 moves its cursor past the source messages and the memory is lost.
+ */
+export class L1PersistenceError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "L1PersistenceError";
+  }
+}
+
+export function isL1PersistenceError(err: unknown): err is L1PersistenceError {
+  return err instanceof Error && err.name === "L1PersistenceError";
+}
+
 export async function writeMemory(params: {
   memory: ExtractedMemory;
   decision: DedupDecision;
@@ -273,6 +290,13 @@ export async function writeMemory(params: {
     }
   };
 
+  // Persistence outcome per target. writeMemory succeeds when at least one
+  // durable target has the record (JSONL or vector store).
+  let jsonlFailed = false;
+  let jsonlError: unknown;
+  let vectorStored = false;
+  let vectorError: unknown;
+
   if ((decision.action === "update" || decision.action === "merge") && decision.target_ids.length > 0) {
     // Remove target records from VectorStore (real-time deletion for retrieval accuracy).
     // JSONL is append-only — old records remain in files and are cleaned up periodically
@@ -300,6 +324,8 @@ export async function writeMemory(params: {
     try {
       await appendRecord(JSON.stringify(record) + "\n");
     } catch (err) {
+      jsonlFailed = true;
+      jsonlError = err;
       logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
     }
     logger?.debug?.(`${TAG} ${decision.action} memory: removed [${decision.target_ids.join(",")}] from VectorStore → ${record.id}: ${finalContent.slice(0, 80)}...`);
@@ -308,6 +334,8 @@ export async function writeMemory(params: {
     try {
       await appendRecord(JSON.stringify(record) + "\n");
     } catch (err) {
+      jsonlFailed = true;
+      jsonlError = err;
       logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
     }
     logger?.debug?.(`${TAG} Stored memory ${record.id}: ${finalContent.slice(0, 80)}...`);
@@ -341,8 +369,11 @@ export async function writeMemory(params: {
       }
 
       const upsertOk = await vectorStore.upsertL1(record, embedding);
+      vectorStored = upsertOk === true;
+      if (!vectorStored) vectorError = new Error("vector store upsert returned false");
       logger?.debug?.(`${TAG} [vec-dual-write] upsert result=${upsertOk} id=${record.id}`);
     } catch (err) {
+      vectorError = err;
       // Vector write failure should NOT block the main JSONL write
       logger?.warn?.(
         `${TAG} [vec-dual-write] FAILED (JSONL already written) id=${record.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -354,7 +385,20 @@ export async function writeMemory(params: {
     );
   }
 
+  if (jsonlFailed && !vectorStored) {
+    const reasons = [`jsonl: ${describeError(jsonlError)}`];
+    if (vectorStore) reasons.push(`vector: ${describeError(vectorError)}`);
+    throw new L1PersistenceError(
+      `writeMemory: no persistence target stored record ${record.id} (${reasons.join("; ")})`,
+      { cause: jsonlError },
+    );
+  }
+
   return record;
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // ============================

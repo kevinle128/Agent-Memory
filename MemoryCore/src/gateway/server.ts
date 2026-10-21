@@ -3090,6 +3090,11 @@ export class TdaiGateway {
               gateway.logger.warn(`[executor] L1 drain enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
             });
           } else if (result.hasMore) {
+            // The worker sets conversation_count after this method returns
+            // (cascadeSchedule). A timer-fired L1 task is skipped when the
+            // count is 0, so ask the worker to keep the count at 1; else the
+            // drain run does nothing and the tail waits for a new conversation.
+            (task as any)._l1TailPending = true;
             gateway.statefulPipelineManager.armL1IdleAfterDrain(task.sessionId, instanceId, teamId, agentId).catch((err) => {
               gateway.logger.warn(`[executor] L1 idle arm failed: ${err instanceof Error ? err.message : String(err)}`);
             });

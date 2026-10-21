@@ -82,6 +82,7 @@ import { ManagedTimer } from "./managed-timer.js";
 import { SerialQueue } from "./serial-queue.js";
 import { report } from "../core/report/reporter.js";
 import type { Logger } from "../core/types.js";
+import { l1RearmDelayMs } from "../core/record/l1-failure.js";
 
 // ============================
 // Types
@@ -735,11 +736,23 @@ export class MemoryPipelineManager {
       // Re-arm L1 idle timer for automatic retry (with max retry limit)
       const timers = this.getOrCreateTimers(sessionKey);
       timers.l1RetryCount += 1;
+      const rearmDelayMs = l1RearmDelayMs(err);
       if (timers.l1RetryCount <= this.L1_MAX_RETRIES) {
         timers.l1Idle.schedule(this.L1_RETRY_DELAY_MS, () => this.onL1IdleTimeout(sessionKey));
         this.logger?.debug?.(
           `${TAG} [${sessionKey}] L1 retry scheduled in ${this.L1_RETRY_DELAY_MS / 1000}s ` +
           `(attempt ${timers.l1RetryCount}/${this.L1_MAX_RETRIES})`,
+        );
+      } else if (rearmDelayMs !== undefined) {
+        // An L1 extraction failure keeps its L0 batch after the cursor. Keep
+        // retrying at the delay that the runner computed (it grows with the
+        // transient failure streak), so the batch is extracted without a new
+        // conversation. A deterministic group cannot loop for ever: the
+        // runner quarantines it after a small number of attempts.
+        timers.l1Idle.schedule(rearmDelayMs, () => this.onL1IdleTimeout(sessionKey));
+        this.logger?.warn(
+          `${TAG} [${sessionKey}] L1 extraction failure after ${this.L1_MAX_RETRIES} retries; ` +
+          `next retry in ${Math.round(rearmDelayMs / 1000)}s (attempt ${timers.l1RetryCount})`,
         );
       } else {
         this.logger?.warn(
