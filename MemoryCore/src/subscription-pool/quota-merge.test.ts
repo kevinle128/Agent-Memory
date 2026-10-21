@@ -28,11 +28,16 @@ describe("mergeUsageWindows", () => {
     expect(merged).toHaveLength(2);
   });
 
-  it("keeps a 429 window at 100 % until its reset, then accepts newer readings", () => {
+  it("accepts a newer usage reading before an old 429 window resets", () => {
     const limited = win({ used_pct: 100, source: "429", observed_at: T0, resets_at: T0 + 10 * MIN });
-    expect(mergeUsageWindows([limited], [win({ used_pct: 30, observed_at: T0 + 5 * MIN })])).toEqual([limited]);
-    const after = win({ used_pct: 3, observed_at: T0 + 11 * MIN });
-    expect(mergeUsageWindows([limited], [after])).toEqual([after]);
+    const reading = win({ used_pct: 61, observed_at: T0 + 5 * MIN });
+    expect(mergeUsageWindows([limited], [reading])).toEqual([reading]);
+  });
+
+  it("does not let an older 429 overwrite a newer provider reading", () => {
+    const reading = win({ used_pct: 61, observed_at: T0 + MIN });
+    const limited = win({ used_pct: 100, source: "429", observed_at: T0 });
+    expect(mergeUsageWindows([reading], [limited])).toEqual([reading]);
   });
 
   it("does not freeze a 429 window that has no reset time", () => {
@@ -51,26 +56,63 @@ describe("mergeUsageWindows", () => {
 describe("applyQuotaReport", () => {
   const base = { status: "active" as const, exhausted_until: null };
 
-  it("marks the account exhausted for 15 minutes on a 429 without any reset time", () => {
-    const result = applyQuotaReport({ ...base, usage: { windows: [] } }, { status_code: 429 }, T0);
-    expect(result.status).toBe("exhausted");
-    expect(result.exhausted_until).toBe(T0 + 15 * MIN);
+  it.each(["primary_window", "secondary_window", "five_hour", "seven_day"])("marks %s exhausted from a full header without a 429", (name) => {
+    const reading = win({ name, used_pct: 100, source: "header" });
+    expect(applyQuotaReport({ ...base, usage: { windows: [] } }, { windows: [reading] }, T0))
+      .toMatchObject({ status: "exhausted", exhausted_until: reading.resets_at });
   });
 
-  it("uses the earliest window reset on a 429 without retry-after", () => {
+  it("waits for all full shared windows despite a shorter retry-after", () => {
+    const windows = [win({ used_pct: 100 }), win({ name: "seven_day", used_pct: 100, resets_at: T0 + DAY })];
+    expect(applyQuotaReport({ ...base, usage: { windows } }, { status_code: 429, retry_after: 60 }, T0))
+      .toMatchObject({ status: "exhausted", exhausted_until: T0 + DAY });
+  });
+
+  it("uses a bounded recheck for a full window with no reset time", () => {
+    expect(applyQuotaReport({ ...base, usage: { windows: [] } }, { windows: [win({ used_pct: 100, resets_at: null })] }, T0))
+      .toMatchObject({ status: "exhausted", exhausted_until: T0 + 15 * MIN });
+  });
+
+  it.each([
+    win({ used_pct: 99 }),
+    win({ used_pct: 100, resets_at: T0 }),
+    win({ used_pct: 100, model_scope: "opus" }),
+  ])("does not exhaust for a near-limit, reset, or per-model window: %j", (reading) => {
+    expect(applyQuotaReport({ ...base, usage: { windows: [] } }, { windows: [reading] }, T0).status).toBeUndefined();
+  });
+
+  it.each(["auth_error", "disabled"] as const)("preserves %s for a full header reading", (status) => {
+    const result = applyQuotaReport({ status, exhausted_until: null, usage: { windows: [] } }, { windows: [win({ used_pct: 100 })] }, T0);
+    expect(result.status).toBeUndefined();
+    expect(result.exhausted_until).toBeUndefined();
+  });
+
+  it("does not infer exhaustion from a bare 429", () => {
+    const result = applyQuotaReport({ ...base, usage: { windows: [] } }, { status_code: 429 }, T0);
+    expect(result.status).toBeUndefined();
+    expect(result.exhausted_until).toBeUndefined();
+  });
+
+  it("does not infer exhaustion from unrelated reset times", () => {
     const usage = { windows: [win({ resets_at: T0 + 30 * MIN }), win({ name: "secondary_window", resets_at: T0 + 2 * DAY })] };
     const result = applyQuotaReport({ ...base, usage }, { status_code: 429 }, T0);
-    expect(result.exhausted_until).toBe(T0 + 30 * MIN);
+    expect(result.exhausted_until).toBeUndefined();
   });
 
-  it("caps the reset of each 429 window at retry-after so the reset check can release it", () => {
+  it("keeps measured usage separate from the retry-after cooldown", () => {
     const usage = { windows: [win({ name: "secondary_window", used_pct: 40, resets_at: T0 + 6 * DAY })] };
     const reported = applyQuotaReport({ ...base, usage }, { status_code: 429, retry_after: 300 }, T0);
-    expect(reported.exhausted_until).toBe(T0 + 5 * MIN);
-    expect(reported.usage?.windows[0]).toMatchObject({ used_pct: 100, source: "429", resets_at: T0 + 5 * MIN });
+    expect(reported.exhausted_until).toBeUndefined();
+    expect(reported.status).toBeUndefined();
+    expect(reported.usage).toBeUndefined();
+    expect(reported.usage_updated_at).toBeUndefined();
+  });
 
-    const reading = win({ name: "secondary_window", used_pct: 40, observed_at: T0 + 5 * MIN + 30_000, resets_at: T0 + 6 * DAY });
-    expect(mergeUsageWindows(reported.usage!.windows, [reading])).toEqual([reading]);
+  it("stores the actual header percentage on a 429 without forcing every window to 100", () => {
+    const reading = win({ used_pct: 61, source: "header", observed_at: T0 + MIN });
+    const reported = applyQuotaReport({ ...base, usage: { windows: [] } }, { status_code: 429, windows: [reading] }, T0 + MIN);
+    expect(reported.status).toBeUndefined();
+    expect(reported.usage?.windows).toEqual([reading]);
   });
 
   it("does not let an older header reading undo a newer one", () => {

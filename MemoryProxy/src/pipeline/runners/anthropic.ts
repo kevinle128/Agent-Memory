@@ -1042,6 +1042,7 @@ export async function runAnthropicPipeline(
         spaceId,
         row: _earlyConvResolution.row,
         clientHeaders: c.req.raw.headers,
+        signal: c.req.raw.signal,
         body,
         userKey: earlyApiKey,
         bindSession: requestKind === "main",
@@ -1251,11 +1252,11 @@ export async function runAnthropicPipeline(
     // rateLimit gate 关闭时(codex/wb bootstrap)同样跳过。
     const rateLimitContext = (_isCustomUpstream || poolRequest || !_gates.rateLimit) ? undefined : { config, instanceId: spaceId || undefined };
     if (poolRequest) {
-      upstreamResp = await poolRequest.send((auth) => fetch(target.url, {
+      upstreamResp = await poolRequest.send((auth, signal) => fetch(target.url, {
         method: "POST",
         headers: applyPoolAuth(upstreamHeaders, c.req.raw.headers, auth, "claude"),
         body: JSON.stringify(upstreamBody),
-        signal: AbortSignal.timeout(forwardTimeoutMs),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(forwardTimeoutMs)]) : AbortSignal.timeout(forwardTimeoutMs),
       }));
       retried = false;
     } else {

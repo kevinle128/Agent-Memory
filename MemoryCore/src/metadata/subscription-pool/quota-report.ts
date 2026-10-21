@@ -1,7 +1,6 @@
 import { mergeUsageWindows } from "../../subscription-pool/quota-merge.js";
+import { sharedQuotaExhaustedUntil } from "../../subscription-pool/quota-exhaustion.js";
 import type { SubscriptionAccountStatus, SubscriptionAccountUsage, SubscriptionQuotaWindow } from "../types.js";
-
-export const QUOTA_429_FALLBACK_MS = 15 * 60 * 1000;
 
 export interface SubscriptionQuotaReport {
   windows?: SubscriptionQuotaWindow[];
@@ -21,35 +20,22 @@ export function applyQuotaReport(
   exhausted_until?: number | null;
   active_sessions?: number;
 } {
-  const is429 = report.status_code === 429;
-  let windows = report.windows ? mergeUsageWindows(current.usage.windows, report.windows) : current.usage.windows;
-  const usageChanged = is429 || Boolean(report.windows);
+  const windows = report.windows ? mergeUsageWindows(current.usage.windows, report.windows) : current.usage.windows;
+  const usageChanged = report.windows !== undefined;
   let exhausted_until = current.exhausted_until;
-  if (is429) {
-    if (report.retry_after !== undefined) {
-      exhausted_until = now + report.retry_after * 1000;
-    } else {
-      const resets = windows.map((window) => window.resets_at).filter((value): value is number => value !== null && value > now);
-      exhausted_until = resets.length > 0 ? Math.min(...resets) : now + QUOTA_429_FALLBACK_MS;
-    }
-    // A window held at 100 % must not outlive the exhaustion, or the reset check could not release it.
-    const until = exhausted_until;
-    windows = windows.map((window) => ({
-      ...window,
-      used_pct: 100,
-      observed_at: now,
-      source: "429",
-      resets_at: window.resets_at === null || window.resets_at > until ? until : window.resets_at,
-    }));
-  }
-  // Only a 429 changes status and exhaustion, so a report never undoes a Panel change, and an
-  // account that needs a new login or was switched off keeps that status.
+  // HTTP 429 and Retry-After alone are not evidence of exhausted subscription quota.
+  // Transient throttling is handled by Proxy's retry coordinator, not account status.
+  // A measured full shared window also stops the account, without waiting for a 429.
+  // Preserve accounts that need a new login or were switched off.
   const servable = current.status === "active" || current.status === "exhausted";
+  const quotaExhaustedUntil = sharedQuotaExhaustedUntil(windows, now);
+  const fullQuota = servable && quotaExhaustedUntil !== null;
+  if (fullQuota) exhausted_until = Math.max(exhausted_until ?? 0, quotaExhaustedUntil);
   return {
-    status: is429 && servable ? "exhausted" : undefined,
+    status: fullQuota ? "exhausted" : undefined,
     usage: usageChanged ? { windows } : undefined,
     usage_updated_at: usageChanged ? now : undefined,
-    exhausted_until: is429 ? exhausted_until : undefined,
+    exhausted_until: fullQuota ? exhausted_until : undefined,
     active_sessions: report.active_sessions,
   };
 }

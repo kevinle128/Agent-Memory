@@ -101,7 +101,7 @@ describe("subscription pool service", () => {
     expect((await svc.listSubscriptionAccountsInternal()).accounts).toEqual([]);
   });
 
-  it("marks an account exhausted when the proxy reports 429", async () => {
+  it("keeps an account active when the proxy reports an unclassified 429", async () => {
     await svc.enableSubscriptionPool("codex", AGENTS);
     const pool = (await store.listInstanceUpstreamGroups()).find((group) => group.mode === "subscription_pool")!;
     const { account } = await store.upsertSubscriptionAccountByProviderId({
@@ -113,12 +113,11 @@ describe("subscription pool service", () => {
       refresh_token: "refresh-secret",
       token_expires_at: null,
     });
-    const before = Date.now();
     const reported = await svc.reportSubscriptionAccount(account.account_id, { status_code: 429 });
-    expect(reported.status).toBe("exhausted");
-    expect(reported.exhausted_until).toBeGreaterThanOrEqual(before + 15 * 60 * 1000 - 1000);
+    expect(reported.status).toBe("active");
+    expect(reported.exhausted_until).toBeNull();
     const stored = await store.getSubscriptionAccount(account.account_id);
-    expect(stored?.status).toBe("exhausted");
+    expect(stored?.status).toBe("active");
     expect(JSON.stringify(reported)).not.toContain("access-secret");
   });
 
@@ -345,7 +344,7 @@ describe("subscription pool provider calls", () => {
     await svc.updateSubscriptionAccount(id, { enabled: false });
     await svc.deleteSubscriptionAccount(id);
 
-    expect(changes.map((change) => change.account?.status ?? null)).toEqual(["exhausted", "exhausted", null]);
+    expect(changes.map((change) => change.account?.status ?? null)).toEqual(["active", "active", null]);
     expect(changes[1].account?.enabled).toBe(false);
     expect(changes[2].accountId).toBe(id);
   });
@@ -365,13 +364,13 @@ describe("subscription pool routes", () => {
     await store.close();
   });
 
-  async function post(userKey: string, body: unknown): Promise<{ status: number; body: { code: number; message: string } }> {
+  async function post(userKey: string, body: unknown, action = "status"): Promise<{ status: number; body: { code: number; message: string } }> {
     let status = 0;
     let parsed: { code: number; message: string } = { code: 0, message: "" };
     const handled = await handleV3MetaRoute(
       { headers: { "x-tdai-service-id": "default", "x-tdai-user-key": userKey } } as http.IncomingMessage,
       {} as http.ServerResponse,
-      "/v3/meta/subscription-pool/status",
+      `/v3/meta/subscription-pool/${action}`,
       "POST",
       async () => body,
       (_res, code, payload) => {
@@ -388,18 +387,49 @@ describe("subscription pool routes", () => {
     return { status, body: parsed };
   }
 
-  it("rejects a member and accepts a system admin", async () => {
+  it("allows members and system admins to view status without tokens", async () => {
     store.createUser({ username: "member", auth_provider: "local", external_id: "member", default_key_value: "member-key", user_type: "normal" });
     store.createUser({ username: "admin", auth_provider: "local", external_id: "admin", default_key_value: "admin-key", user_type: "system_admin" });
 
-    const denied = await post("member-key", {});
-    expect(denied.status).toBe(403);
-    expect(denied.body.message).toContain("permission_denied");
+    await svc.enableSubscriptionPool("codex", AGENTS);
+    const pool = (await store.listInstanceUpstreamGroups()).find((group) => group.mode === "subscription_pool")!;
+    await store.upsertSubscriptionAccountByProviderId({
+      group_id: pool.group_id, provider: "codex", provider_account_id: "acct-private",
+      display_name: "Shared account", access_token: "access-secret", refresh_token: "refresh-secret",
+      token_expires_at: null,
+    });
+
+    const member = await post("member-key", {});
+    expect(member.status).toBe(200);
+    expect(member.body.code).toBe(0);
+    expect(JSON.stringify(member.body)).toContain("Shared account");
+    expect(JSON.stringify(member.body)).not.toMatch(/access_token|refresh_token|access-secret|refresh-secret/);
 
     const allowed = await post("admin-key", {});
     expect(allowed.status).toBe(200);
     expect(allowed.body.code).toBe(0);
     expect(JSON.stringify(allowed.body)).not.toContain("access_token");
+  });
+
+  it.each(["", "invalid-key"])("rejects unauthenticated status requests (%s)", async (key) => {
+    expect((await post(key, {})).status).toBe(401);
+  });
+
+  it.each([
+    ["enable", { provider: "codex" }],
+    ["disable", { provider: "codex" }],
+    ["settings/update", { threshold_pct: 90 }],
+    ["account/oauth-start", { provider: "codex" }],
+    ["account/oauth-complete", { provider: "codex", state: "test-state", code: "test-code" }],
+    ["account/update", { account_id: "test-account", enabled: false }],
+    ["account/delete", { account_id: "test-account" }],
+    ["account/check-usage", { account_id: "test-account" }],
+    ["check-all", {}],
+  ])("rejects member mutation %s", async (action, body) => {
+    store.createUser({ username: "member", auth_provider: "local", external_id: "member", default_key_value: "member-key", user_type: "normal" });
+    const denied = await post("member-key", body, action as string);
+    expect(denied.status).toBe(403);
+    expect(denied.body.message).toContain("permission_denied");
   });
 
 });
@@ -472,6 +502,6 @@ describe("subscription pool writes that race", () => {
     svc.setSubscriptionPoolHooks({ onAccountChanged: () => { throw new Error("hook"); } });
     await login();
     const id = (await store.listSubscriptionAccounts())[0].account_id;
-    await expect(svc.reportSubscriptionAccount(id, { status_code: 429 })).resolves.toMatchObject({ status: "exhausted" });
+    await expect(svc.reportSubscriptionAccount(id, { status_code: 429 })).resolves.toMatchObject({ status: "active" });
   });
 });

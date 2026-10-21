@@ -43,6 +43,35 @@ describe("checkAccountUsage", () => {
     expect(result.account).toMatchObject({ status: "active", exhausted_until: null });
   });
 
+  it("Check now replaces an old 429 hold with the latest 61 percent reading before reset", async () => {
+    const account = await fx.addAccount();
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "exhausted",
+      exhausted_until: NOW + 7 * 24 * 60 * MIN,
+      usage: { windows: [win(100, NOW + 7 * 24 * 60 * MIN, { name: "seven_day", source: "429", observed_at: NOW - MIN })] },
+    });
+    const reading = win(61, NOW + 7 * 24 * 60 * MIN, { name: "seven_day" });
+    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => [reading] }), 95, NOW);
+
+    expect(result.failed).toBe(false);
+    expect(result.account).toMatchObject({ status: "active", exhausted_until: null, usage_updated_at: NOW });
+    expect(result.account.usage.windows).toEqual([reading]);
+  });
+
+  it("drops an old synthetic 429 window absent from a successful usage response", async () => {
+    const account = await fx.addAccount();
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "exhausted",
+      exhausted_until: NOW + 60 * MIN,
+      usage: { windows: [win(100, NOW + 60 * MIN, { name: "five_hour", source: "429", observed_at: NOW - MIN })] },
+    });
+    const reading = win(61, NOW + 7 * 24 * 60 * MIN, { name: "seven_day" });
+    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => [reading] }), 95, NOW);
+
+    expect(result.account).toMatchObject({ status: "active", exhausted_until: null });
+    expect(result.account.usage.windows).toEqual([reading]);
+  });
+
   it("keeps an account exhausted until the reset the provider returns", async () => {
     const account = await fx.addAccount();
     await fx.store.updateSubscriptionAccount(account.account_id, { status: "exhausted", exhausted_until: NOW - 30_000 });
@@ -60,14 +89,46 @@ describe("checkAccountUsage", () => {
 
     const result = await checkAccountUsage(fx.store, account.account_id, adapter, 95, NOW);
 
-    expect(result.account.exhausted_until).toBe(NOW + 15 * MIN);
+    expect(result.account).toMatchObject({ status: "active", exhausted_until: null });
     expect(result.account.usage.windows[0].resets_at).toBe(NOW + 15 * MIN);
   });
 
-  it("does not mark an active account exhausted from a usage reading", async () => {
+  it.each(["primary_window", "secondary_window", "five_hour", "seven_day"])("marks an active account exhausted when %s reaches 100 percent", async (name) => {
     const account = await fx.addAccount();
-    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => [win(100, NOW + MIN)] }), 95, NOW);
+    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => [win(100, NOW + MIN, { name })] }), 95, NOW);
+    expect(result.account).toMatchObject({ status: "exhausted", exhausted_until: NOW + MIN });
+  });
+
+  it("keeps an active account available below 100 percent, even above the threshold", async () => {
+    const account = await fx.addAccount();
+    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => [win(99, NOW + MIN)] }), 95, NOW);
     expect(result.account).toMatchObject({ status: "active", exhausted_until: null });
+  });
+
+  it("waits for both full shared windows to reset", async () => {
+    const account = await fx.addAccount();
+    const adapter = fakeAdapter({ fetchUsage: async () => [win(100, NOW + MIN), win(100, NOW + 60 * MIN, { name: "secondary_window" })] });
+    const result = await checkAccountUsage(fx.store, account.account_id, adapter, 95, NOW);
+    expect(result.account).toMatchObject({ status: "exhausted", exhausted_until: NOW + 60 * MIN });
+  });
+
+  it("rechecks a newly exhausted account when the reset is unknown", async () => {
+    const account = await fx.addAccount();
+    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => [win(100, null)] }), 95, NOW);
+    expect(result.account).toMatchObject({ status: "exhausted", exhausted_until: NOW + 15 * MIN });
+  });
+
+  it("does not exhaust the whole account for a full per-model window", async () => {
+    const account = await fx.addAccount();
+    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => [win(100, NOW + MIN, { model_scope: "opus" })] }), 95, NOW);
+    expect(result.account).toMatchObject({ status: "active", exhausted_until: null });
+  });
+
+  it.each(["auth_error", "disabled"] as const)("preserves %s when a usage reading is full", async (status) => {
+    const account = await fx.addAccount();
+    await fx.store.updateSubscriptionAccount(account.account_id, { status });
+    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => [win(100, NOW + MIN)] }), 95, NOW);
+    expect(result.account).toMatchObject({ status, exhausted_until: null });
   });
 
   it("counts a failure and keeps the stored usage", async () => {

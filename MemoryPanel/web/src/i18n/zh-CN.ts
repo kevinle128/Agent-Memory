@@ -1124,7 +1124,7 @@ export const zhCN = {
   'addMember.username.hint': '英文字母、数字、下划线，创建后不可修改',
   'addMember.role': '角色',
   'addMember.role.default': 'member（默认）',
-  'addMember.role.hint': '新成员默认角色为 member。',
+  'addMember.role.hint': '默认为 member；admin 拥有当前团队的管理权限。',
   'addMember.existing.submit': '添加',
   'addMember.new.submit': '新建并添加',
   'addMember.cancel': '取消',

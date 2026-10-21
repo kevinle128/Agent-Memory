@@ -22,6 +22,7 @@ import {
 } from '@/lib/subscription-pool-display';
 
 interface Props {
+  readOnly: boolean;
   accounts: SubscriptionAccount[];
   poolEnabled: boolean;
   thresholdPct: number;
@@ -111,6 +112,7 @@ function sourceLabel(source: string, t: (key: string) => string): string {
 }
 
 export function AccountTable({
+  readOnly,
   accounts,
   poolEnabled,
   thresholdPct,
@@ -161,7 +163,7 @@ export function AccountTable({
         {
           key: 'account',
           header: t('subscriptionPool.col.account'),
-          render: (row) =>
+          render: (row: Row) =>
             row.kind === 'extra' ? (
               <Text theme="weak" className="_memory-pool-extra-name">↳ {windowLabel(row.window, t)}</Text>
             ) : (
@@ -174,7 +176,7 @@ export function AccountTable({
         {
           key: 'status',
           header: t('subscriptionPool.col.status'),
-          render: (row) => {
+          render: (row: Row) => {
             if (row.kind === 'extra') return null;
             const { account } = row;
             const state = stateOf(account);
@@ -205,7 +207,7 @@ export function AccountTable({
           key: 'primary',
           header: t('subscriptionPool.col.primary'),
           width: 220,
-          render: (row) => {
+          render: (row: Row) => {
             if (row.kind === 'extra') {
               return <Meter window={row.window} now={now} thresholdPct={thresholdPct} showMark={false} />;
             }
@@ -224,7 +226,7 @@ export function AccountTable({
           key: 'secondary',
           header: t('subscriptionPool.col.secondary'),
           width: 220,
-          render: (row) => {
+          render: (row: Row) => {
             if (row.kind === 'extra') return null;
             const state = stateOf(row.account);
             return (
@@ -241,13 +243,13 @@ export function AccountTable({
           key: 'sessions',
           header: t('subscriptionPool.col.sessions'),
           width: 120,
-          render: (row) => (row.kind === 'extra' ? null : <Text>{row.account.active_sessions || '—'}</Text>),
+          render: (row: Row) => (row.kind === 'extra' ? null : <Text>{row.account.active_sessions || '—'}</Text>),
         },
         {
           key: 'updated',
           header: t('subscriptionPool.col.updated'),
           width: 150,
-          render: (row) => {
+          render: (row: Row) => {
             if (row.kind === 'extra') return null;
             const seen = latestObservation(row.account.usage.windows);
             if (!seen) return <Text theme="weak">{t('subscriptionPool.updated.none')}</Text>;
@@ -262,7 +264,7 @@ export function AccountTable({
           key: 'actions',
           header: t('subscriptionPool.col.actions'),
           width: 260,
-          render: (row) => {
+          render: (row: Row) => {
             if (row.kind === 'extra') return null;
             const { account } = row;
             const busy = busyIds.has(account.account_id);
@@ -290,7 +292,7 @@ export function AccountTable({
             );
           },
         },
-      ]}
+      ].filter((column) => !readOnly || column.key !== 'actions')}
     />
   );
 }

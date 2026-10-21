@@ -20,8 +20,9 @@ export class PoolCoreError extends Error {
 export async function callPoolCore<T>(
   config: PoolCoreConfig,
   spaceId: string,
-  path: "accounts/list" | "report" | "refresh",
+  path: "accounts/list" | "report" | "refresh" | "check-usage",
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<T> {
   const url = `${config.endpoint.replace(/\/$/, "")}${BASE_PATH}/${path}`;
   const resp = await fetch(url, {
@@ -32,7 +33,7 @@ export async function callPoolCore<T>(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(config.timeoutMs || 3000),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs || 3000)]) : AbortSignal.timeout(config.timeoutMs || 3000),
   });
   const env = await resp.json().catch(() => null) as
     | { code?: number; message?: string; data?: T }

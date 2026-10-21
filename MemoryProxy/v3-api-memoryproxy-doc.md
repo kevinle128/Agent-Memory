@@ -344,8 +344,42 @@ traffic is not reported as TokenHub credit.
 
 **Limits and retries.** All decisions happen before the first byte goes to the client.
 
-- `429` from the provider: the account is held as exhausted until the reset time of the response (15
-  minutes when none is given), reported to Core, and the same request is retried once on another account.
+**429 diagnostics (Claude and Codex).** For every upstream 429, the proxy records
+`subscription_pool.upstream_error` in its console log and ProxyStorage under
+`ttl/<spaceId>/subscription-pool/errors/<accountId>/<timestamp>-<uuid>.json`.
+Records include timestamp, provider, account, model, HTTP status, client request ID when supplied,
+upstream `request-id`/`x-request-id`, `retry-after`, and the upstream response body.
+Credentials are redacted before saving; bodies are limited to 8,192 characters with
+`body_truncated` and `original_body_bytes` fields. Storage uses the existing `storage.ttlDays`
+retention (default 7 days). A failed diagnostic write does not interrupt account switching.
+Past errors without a saved body cannot be recovered.
+
+- `429` is not proof that subscription quota is exhausted. The request stays on its session account
+  to preserve prompt-cache affinity. Each request has an independent **30-second budget**, starting
+  at its first 429 and including upstream calls, waits, Check now and any authorized account switch.
+- Retry waits are **1, 2, 4, 8 seconds**, then remain at **8 seconds**. With immediate upstream
+  responses, attempts occur at approximately 0, 1, 3, 7, 15 and 23 seconds. Success returns immediately.
+  Upstream `Retry-After` (seconds or HTTP date) takes precedence: never retry before it permits.
+  If the required wait exceeds the remaining budget, return the original 429 at the deadline.
+- Only if the retry after the first 8-second wait also returns 429 does Proxy call the internal
+  **Check now** endpoint. There is no usage call on the first 429 or on earlier retries.
+  Concurrent requests share one in-flight check per account and reuse its completed result for
+  10 seconds; each request checks at most once. Retry slots are staggered by 100 ms and share the
+  account's upstream Retry-After, while counters and deadlines remain per request.
+- Check now must succeed and report an applicable, unreset window at **100%** before account
+  switching is permitted. Evidence must be a `usage_api` reading observed at or after that check's
+  `usage_updated_at`; retained older/header windows are not fresh proof. A shared full window exhausts the account; a full model-specific window
+  blocks only that model. A near-limit threshold such as 95% is not proof of exhaustion.
+- If usage remains below 100%, or Check now fails/times out/is rate limited/does not return usable
+  quota evidence, continue retrying the **same account** until the budget expires. Do not rotate
+  accounts or fall back to client credentials merely because of an unclassified 429.
+- At the deadline, return the last original upstream 429 body and request ID with an updated
+  `Retry-After` and `x-tdai-pool-status: rate_limited`; retain the session binding. A hung retry is
+  aborted at the deadline, and a disconnected client cancels its waiting/retries. Shared usage
+  checks may finish for other callers. No retries happen after a successful response starts streaming.
+- Coordination of retry slots is local to the single Proxy process; Check now deduplication is
+  also enforced by the instance's Core service. Use the existing one-Proxy/one-Core-per-instance
+  deployment model. Retrying cannot recreate or transfer provider prompt cache across accounts.
 - `401`: the proxy asks Core to refresh the token (`held_expires_at` makes concurrent 401s one provider
   refresh) and retries once with the new token. If Core cannot refresh, the request moves to another
   account.

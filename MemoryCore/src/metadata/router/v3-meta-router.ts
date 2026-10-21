@@ -436,8 +436,8 @@ const routeTable: Record<string, Handler> = {
     return s.deleteInstanceUpstreamExtraction(deps.getSupportedAgents());
   }),
 
-  [`${V3_PREFIX}/subscription-pool/status`]: bind(S.subscriptionPoolStatusSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
+  // Authenticated users may view the public, token-free status. All mutations remain admin-only.
+  [`${V3_PREFIX}/subscription-pool/status`]: bind(S.subscriptionPoolStatusSchema, async (d, _c, s) => {
     return s.getSubscriptionPoolStatus(d.provider);
   }),
   [`${V3_PREFIX}/subscription-pool/enable`]: bind(S.subscriptionPoolEnableSchema, async (d, c, s, _reqId, deps) => {

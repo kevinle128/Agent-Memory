@@ -70,6 +70,23 @@ describe("SubscriptionPoolScheduler", () => {
     expect(await fx.store.getSubscriptionAccount(account.account_id)).toMatchObject({ status: "active", exhausted_until: null });
   });
 
+  it("automatically exhausts an active account at startup and releases it after both full windows reset", async () => {
+    await setup();
+    const account = await fx.addAccount({ token_expires_at: T0 + 8 * 24 * HOUR });
+    adapter.fetchUsage.mockResolvedValueOnce([
+      win(100, T0 + 20 * MIN),
+      { ...win(100, T0 + HOUR), name: "secondary_window" },
+    ]).mockImplementation(async () => [win(10, Date.now() + HOUR)]);
+
+    await register();
+    expect(await fx.store.getSubscriptionAccount(account.account_id)).toMatchObject({ status: "exhausted", exhausted_until: T0 + HOUR });
+    await at(20 * MIN + 30_000);
+    expect((await fx.store.getSubscriptionAccount(account.account_id))?.status).toBe("exhausted");
+    await at(HOUR + 30_000);
+    expect(adapter.fetchUsage).toHaveBeenCalledTimes(2);
+    expect(await fx.store.getSubscriptionAccount(account.account_id)).toMatchObject({ status: "active", exhausted_until: null });
+  });
+
   it("keeps the stored timers when the usage API is down and retries after 1, 5 and 15 minutes", async () => {
     await setup();
     const account = await fx.addAccount({ token_expires_at: T0 + 8 * 24 * HOUR });
@@ -167,13 +184,13 @@ describe("SubscriptionPoolScheduler", () => {
     expect(adapter.refresh).toHaveBeenCalledWith("refresh-2");
   });
 
-  it("drops the timers of a deleted account and arms a reset check after a reported 429", async () => {
+  it("drops deleted account timers and arms a reset check for measured full quota", async () => {
     await setup();
     const account = await fx.addAccount({ token_expires_at: T0 + 8 * 24 * HOUR });
     await register();
 
     const reportedAt = Date.now();
-    await fx.svc.reportSubscriptionAccount(account.account_id, { status_code: 429, retry_after: 600 });
+    await fx.svc.reportSubscriptionAccount(account.account_id, { status_code: 429, windows: [win(100, reportedAt + 10 * MIN)] });
     expect(scheduler.pendingTimers()).toContainEqual(expect.objectContaining({ kind: "reset-check", at: reportedAt + 10 * MIN + 30_000 }));
 
     await fx.svc.deleteSubscriptionAccount(account.account_id);
@@ -211,7 +228,7 @@ describe("SubscriptionPoolScheduler", () => {
     await fx.svc.reportSubscriptionAccount(account.account_id, {
       windows: [{ ...win(50, T0 + 5 * HOUR), name: "primary", source: "header" }],
     });
-    await fx.svc.reportSubscriptionAccount(account.account_id, { status_code: 429, retry_after: 1 });
+    await fx.svc.reportSubscriptionAccount(account.account_id, { status_code: 429, windows: [win(100, Date.now() + 1000)] });
     const before = adapter.fetchUsage.mock.calls.length;
 
     await at(10 * MIN);

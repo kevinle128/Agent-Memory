@@ -120,6 +120,18 @@ describe("selectAccount", () => {
     expect(selectAccount(accounts, null, NOW, 95, "m", 0)).toBeNull();
   });
 
+  it.each(["primary_window", "secondary_window", "five_hour", "seven_day"])("never falls back to a full %s even while its stored status is active", (name) => {
+    const accounts = [acct("a", {}, [win(name, 100, HOUR)])];
+    expect(selectAccount(accounts, null, NOW, 95, "m", 0)).toBeNull();
+    expect(selectAccount(accounts, "a", NOW, 95, "m", 0)).toBeNull();
+    expect(selectAccount(accounts, null, NOW + HOUR, 95, "m", 0)?.account.account_id).toBe("a");
+  });
+
+  it("does not use a full account as fallback when another account is near its limit", () => {
+    const accounts = [acct("a", {}, [win("seven_day", 100, HOUR)]), acct("b", {}, [win("seven_day", 99, HOUR)])];
+    expect(selectAccount(accounts, null, NOW, 95, "m", 0)?.account.account_id).toBe("b");
+  });
+
   it("returns null for an empty pool", () => {
     expect(selectAccount([], null, NOW, 95, "m", 0)).toBeNull();
   });

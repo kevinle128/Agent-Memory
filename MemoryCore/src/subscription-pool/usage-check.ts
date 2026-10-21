@@ -7,6 +7,7 @@ import {
 } from "../metadata/types.js";
 import type { SubscriptionProviderAdapter } from "./providers/types.js";
 import { mergeUsageWindows } from "./quota-merge.js";
+import { sharedQuotaExhaustedUntil } from "./quota-exhaustion.js";
 import { withAccountLock } from "./token-refresher.js";
 
 export const USAGE_CHECK_FAILED = "usage check failed";
@@ -28,9 +29,10 @@ function withNextCheck(windows: SubscriptionQuotaWindow[], thresholdPct: number,
 }
 
 /**
- * Reads usage from the provider and stores it. An exhausted account is released when every
- * shared window is below the threshold; otherwise it stays exhausted until the earliest reset of
- * a window at the threshold. When the provider call fails after the reset time, the account is
+ * Reads usage from the provider and stores it. A full shared window exhausts an active account
+ * until all full shared windows reset. An exhausted account is released when no shared
+ * window is full, even if usage is still above the new-session threshold.
+ * When the provider call fails after the reset time, the account is
  * released by time.
  */
 export async function checkAccountUsage(
@@ -64,11 +66,13 @@ export async function checkAccountUsage(
       return { account: await store.updateSubscriptionAccount(accountId, patch), failed: true };
     }
 
-    // A stored window that this reading did not return and whose reset has passed is stale: it
-    // would hold the account at its old limit with a reset time that never comes again.
+    // Drop expired windows and old synthetic 429 windows absent from this provider reading.
+    // A newer 429 arriving while the check was in flight must still be retained.
     const fresh = new Set(reading.map((window) => `${window.name}\0${window.model_scope ?? ""}`));
     const windows = mergeUsageWindows(current.usage.windows, reading).filter((window) => (
-      fresh.has(`${window.name}\0${window.model_scope ?? ""}`) || window.resets_at === null || window.resets_at > now
+      fresh.has(`${window.name}\0${window.model_scope ?? ""}`)
+      || ((window.source !== "429" || window.observed_at > now)
+        && (window.resets_at === null || window.resets_at > now))
     ));
     const patch: UpdateSubscriptionAccountPatch = {
       usage: { windows },
@@ -76,16 +80,13 @@ export async function checkAccountUsage(
       usage_fail_count: 0,
       last_error: current.last_error === USAGE_CHECK_FAILED ? null : undefined,
     };
-    if (exhausted) {
-      const limitedResets = windows
-        .filter((window) => (window.model_scope ?? null) === null && window.used_pct >= thresholdPct)
-        .map((window) => (window.resets_at !== null && window.resets_at > now ? window.resets_at : now + RECHECK_MS));
-      if (limitedResets.length === 0) {
-        patch.exhausted_until = null;
-        if (current.status === "exhausted") patch.status = "active";
-      } else {
-        patch.exhausted_until = Math.min(...limitedResets);
-      }
+    const quotaExhaustedUntil = sharedQuotaExhaustedUntil(windows, now);
+    if (quotaExhaustedUntil !== null && (current.status === "active" || current.status === "exhausted")) {
+      patch.status = "exhausted";
+      patch.exhausted_until = quotaExhaustedUntil;
+    } else if (exhausted) {
+      patch.exhausted_until = null;
+      if (current.status === "exhausted") patch.status = "active";
     }
     return { account: await store.updateSubscriptionAccount(accountId, patch), failed: false };
   });

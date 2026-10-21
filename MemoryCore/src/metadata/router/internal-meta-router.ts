@@ -15,7 +15,7 @@ import type { Logger } from "../../core/types.js";
 import { MetadataService, MetadataError } from "../service/metadata-service.js";
 import { extractInstanceId, normalizeInstanceIdForRoute } from "./instance.js";
 import { resolvePagination } from "./pagination.js";
-import { internalListUsersByInstanceSchema, initAdminSchema, instanceUpstreamInternalListSchema, subscriptionPoolAccountsListSchema, subscriptionPoolRefreshSchema, subscriptionPoolReportSchema, supportedAgentsSchema } from "./v3-meta-schemas.js";
+import { internalListUsersByInstanceSchema, initAdminSchema, instanceUpstreamInternalListSchema, subscriptionPoolAccountsListSchema, subscriptionPoolAccountCheckSchema, subscriptionPoolRefreshSchema, subscriptionPoolReportSchema, supportedAgentsSchema } from "./v3-meta-schemas.js";
 import {
   createMetaApiTraceContext,
   logMetaApiEntry,
@@ -116,6 +116,10 @@ const routeTable: Record<string, InternalHandler> = {
   [`${V3_INTERNAL_PREFIX}/subscription-pool/refresh`]: bind(
     subscriptionPoolRefreshSchema,
     async (d, svc) => svc.refreshSubscriptionAccount(d.account_id, d.held_expires_at),
+  ),
+  [`${V3_INTERNAL_PREFIX}/subscription-pool/check-usage`]: bind(
+    subscriptionPoolAccountCheckSchema,
+    async (d, svc) => svc.checkSubscriptionAccountUsageInternal(d.account_id),
   ),
   // §6.A 的内部镜像:与 /v3/meta/upstream/supported-agents 同一份数据源
   // (Core 启动时从 gateway yaml 的 upstream.supportedAgents 读),供无 user-key 的

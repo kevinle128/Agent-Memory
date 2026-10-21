@@ -1,7 +1,8 @@
 /**
  * api/subscription-pool.ts — Subscription Pool (meta/subscription-pool/*).
  *
- * System Admin only; the kernel enforces the role. Account rows are the masked public view:
+ * Authenticated users may view status; mutations require System Admin in the kernel.
+ * Account rows are the masked public view:
  * Core never returns login tokens, and this module has no field for them.
  */
 import { metaPost } from './base';

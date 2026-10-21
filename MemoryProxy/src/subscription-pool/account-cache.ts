@@ -19,6 +19,7 @@ const MAX_ENTRIES = 256;
 
 interface Overlay {
   exhaustedUntil: number | null;
+  exhaustedObservedAt: number | null;
   windows: Map<string, PoolQuotaWindow>;
   token: { accessToken: string; expiresAt: number | null } | null;
 }
@@ -45,7 +46,7 @@ function overlayFor(spaceId: string, accountId: string): Overlay {
   }
   let overlay = perSpace.get(accountId);
   if (!overlay) {
-    overlay = { exhaustedUntil: null, windows: new Map(), token: null };
+    overlay = { exhaustedUntil: null, exhaustedObservedAt: null, windows: new Map(), token: null };
     perSpace.set(accountId, overlay);
   }
   return overlay;
@@ -56,9 +57,10 @@ function windowKey(window: Pick<PoolQuotaWindow, "name" | "model_scope">): strin
 }
 
 /** Record that an account is exhausted until `until` (epoch ms). A later `until` is kept. */
-export function markAccountExhausted(spaceId: string, accountId: string, until: number): void {
+export function markAccountExhausted(spaceId: string, accountId: string, until: number, observedAt = Date.now()): void {
   const overlay = overlayFor(spaceId, accountId);
   overlay.exhaustedUntil = Math.max(overlay.exhaustedUntil ?? 0, until);
+  overlay.exhaustedObservedAt = Math.max(overlay.exhaustedObservedAt ?? 0, observedAt);
 }
 
 /** Record window readings seen in a response or a 429. Per window the newest observation wins. */
@@ -79,6 +81,20 @@ export function replaceAccountToken(spaceId: string, accountId: string, accessTo
 function applyOverlay(account: PoolAccount, overlay: Overlay | undefined, now: number): PoolAccount {
   if (!overlay) return account;
   let merged = account;
+
+  // Check now (or a scheduled check) can release a cooldown before it expires. Only a
+  // newer provider reading is authoritative: a stale snapshot or a failed check is not.
+  const checkedAt = account.usage.windows.reduce((latest, window) => (
+    window.source === "usage_api" ? Math.max(latest, window.observed_at) : latest
+  ), 0);
+  if (account.status === "active" && account.exhausted_until === null
+    && overlay.exhaustedObservedAt !== null && checkedAt > overlay.exhaustedObservedAt) {
+    overlay.exhaustedUntil = null;
+    overlay.exhaustedObservedAt = null;
+    for (const [key, window] of overlay.windows) {
+      if (window.observed_at <= checkedAt) overlay.windows.delete(key);
+    }
+  }
 
   if (overlay.exhaustedUntil !== null && overlay.exhaustedUntil > now
     && overlay.exhaustedUntil > (account.exhausted_until ?? 0)) {
@@ -122,9 +138,10 @@ function dropOverlaysOfDeletedAccounts(spaceId: string, snapshot: PoolSnapshot):
 
 async function fetchSnapshot(config: PoolCoreConfig, spaceId: string): Promise<PoolSnapshot> {
   const data = await callPoolCore<{ threshold_pct?: number; accounts?: PoolAccount[] }>(config, spaceId, "accounts/list", {});
+  if (!Array.isArray(data?.accounts)) throw new Error("invalid subscription pool account list");
   return {
     thresholdPct: typeof data?.threshold_pct === "number" ? data.threshold_pct : DEFAULT_THRESHOLD_PCT,
-    accounts: Array.isArray(data?.accounts) ? data.accounts : [],
+    accounts: data.accounts,
   };
 }
 
@@ -137,9 +154,10 @@ export async function getPoolSnapshot(
   spaceId: string,
   cacheConfig?: Partial<InstanceUpstreamConfig>,
   now: number = Date.now(),
+  forceRefresh = false,
 ): Promise<PoolSnapshot> {
   const cached = cache.get(spaceId);
-  if (cached && cached.expiresAt > now) return withOverlays(spaceId, cached.snapshot, now);
+  if (!forceRefresh && cached && cached.expiresAt > now) return withOverlays(spaceId, cached.snapshot, now);
 
   try {
     const fresh = await fetchSnapshot(config, spaceId);

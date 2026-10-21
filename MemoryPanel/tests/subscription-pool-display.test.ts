@@ -85,6 +85,23 @@ describe('accountState', () => {
     expect(accountState(a, { ...base, poolEnabled: false })).toBe('near_limit');
   });
 
+  it.each(['primary_window', 'secondary_window', 'five_hour', 'seven_day'])('shows exhausted for a full %s even before the backend status changes', (name) => {
+    const a = account({ usage: { windows: [win({ name, used_pct: 100 })] } });
+    expect(accountState(a, base)).toBe('exhausted');
+    expect(accountState(a, { ...base, poolEnabled: false })).toBe('exhausted');
+  });
+
+  it('shows near_limit at 99 percent and active after a full window resets', () => {
+    expect(accountState(account({ usage: { windows: [win({ used_pct: 99 })] } }), base)).toBe('near_limit');
+    expect(accountState(account({ usage: { windows: [win({ used_pct: 100, resets_at: NOW })] } }), base)).toBe('active');
+  });
+
+  it('keeps disabled and auth_error above a full window', () => {
+    const usage = { windows: [win({ used_pct: 100 })] };
+    expect(accountState(account({ usage, enabled: false }), base)).toBe('disabled');
+    expect(accountState(account({ usage, status: 'auth_error' }), base)).toBe('auth_error');
+  });
+
   it('ignores a window that has already reset when checking the threshold', () => {
     const a = account({ usage: { windows: [win({ used_pct: 99, resets_at: NOW - HOUR })] } });
     expect(accountState(a, base)).toBe('active');

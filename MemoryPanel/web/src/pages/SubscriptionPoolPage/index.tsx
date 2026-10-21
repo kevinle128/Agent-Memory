@@ -1,11 +1,10 @@
 /**
- * SubscriptionPoolPage — System Admin page for the subscription account pool (route /team/subscription-pool).
+ * SubscriptionPoolPage — subscription account pool status, with System Admin management actions.
  *
  * Claude Code and Codex each have a pool tab. The page only calls Core's public pool actions.
  * Core keeps the login tokens and never returns them.
  */
 import { Component, useCallback, useState, type ReactNode } from 'react';
-import { Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, Card, StatusTip } from 'tea-component';
 import { useAuthStore } from '@/stores/auth';
@@ -29,10 +28,7 @@ const STALE_CODES = new Set(['account_not_found', 'version_mismatch']);
 
 export function SubscriptionPoolPage() {
   const { auth } = useAuthStore();
-  // Only a System Admin may open the page. The team role is not used: a member without an
-  // active team has no team role, and the page must still send that member away.
   if (!auth) return null;
-  if (!isGlobalAdmin(auth.user, auth.isAdmin)) return <Navigate to="/" replace />;
   return (
     <SubscriptionPoolBoundary>
       <SubscriptionPoolContent />
@@ -68,6 +64,7 @@ class SubscriptionPoolBoundary extends Component<{ children: ReactNode }, { fail
 function SubscriptionPoolContent() {
   const { t } = useTranslation();
   const { auth } = useAuthStore();
+  const readOnly = !auth || !isGlobalAdmin(auth.user, auth.isAdmin);
   const [provider, setProvider] = useState<PoolProvider>('codex');
   const { provider: pool, thresholdPct, loading, error, refresh } = usePoolStatus(provider);
 
@@ -208,6 +205,7 @@ function SubscriptionPoolContent() {
         </Alert>
       )}
       <PoolHeader
+        readOnly={readOnly}
         provider={provider}
         onProviderChange={setProvider}
         poolEnabled={poolEnabled}
@@ -239,6 +237,7 @@ function SubscriptionPoolContent() {
           {pool && <PoolSummary status={pool} thresholdPct={thresholdPct} now={now} />}
 
           <PoolSettings
+            readOnly={readOnly}
             thresholdPct={thresholdPct}
             lastUpdate={lastUpdate}
             saving={savingThreshold}
@@ -252,7 +251,7 @@ function SubscriptionPoolContent() {
               title={t('subscriptionPool.accounts.title')}
               subtitle={t('subscriptionPool.accounts.tokensHidden')}
               operation={
-                <Button
+                !readOnly && <Button
                   type="primary"
                   onClick={() => setAdding({})}
                 >
@@ -261,6 +260,7 @@ function SubscriptionPoolContent() {
               }
             >
               <AccountTable
+                readOnly={readOnly}
                 accounts={accounts}
                 poolEnabled={poolEnabled === true}
                 thresholdPct={thresholdPct}
@@ -284,7 +284,7 @@ function SubscriptionPoolContent() {
         </>
       )}
 
-      {switchTarget !== null && (
+      {!readOnly && switchTarget !== null && (
         <PoolSwitchConfirmDialog
           provider={provider}
           turnOn={switchTarget}
@@ -296,7 +296,7 @@ function SubscriptionPoolContent() {
           onClose={() => setSwitchTarget(null)}
         />
       )}
-      {adding && (
+      {!readOnly && adding && (
         <AddAccountDialog
           provider={provider}
           reloginName={adding.reloginName}
@@ -308,7 +308,7 @@ function SubscriptionPoolContent() {
           }}
         />
       )}
-      {deleting && (
+      {!readOnly && deleting && (
         <DeleteAccountDialog
           accountName={deleting.display_name}
           busy={deletingBusy}

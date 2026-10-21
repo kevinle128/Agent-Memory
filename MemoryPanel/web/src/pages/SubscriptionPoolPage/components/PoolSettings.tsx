@@ -8,6 +8,7 @@ import i18n from '@/i18n';
 import { formatClock } from '@/lib/subscription-pool-display';
 
 interface Props {
+  readOnly: boolean;
   thresholdPct: number;
   /** Newest usage update across the accounts, epoch ms. Null when there is none. */
   lastUpdate: number | null;
@@ -20,7 +21,7 @@ interface Props {
 const MIN_THRESHOLD = 50;
 const MAX_THRESHOLD = 100;
 
-export function PoolSettings({ thresholdPct, lastUpdate, saving, checking, onSave, onCheckAll }: Props) {
+export function PoolSettings({ readOnly, thresholdPct, lastUpdate, saving, checking, onSave, onCheckAll }: Props) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<number>(thresholdPct);
   useEffect(() => setDraft(thresholdPct), [thresholdPct]);
@@ -32,24 +33,24 @@ export function PoolSettings({ thresholdPct, lastUpdate, saving, checking, onSav
         <div className="_memory-pool-settings">
           <Text theme="label">{t('subscriptionPool.settings.stopAt')}</Text>
           <div className="_memory-pool-row">
-            <InputNumber
+            {readOnly ? <Text>{thresholdPct}%</Text> : <InputNumber
               min={MIN_THRESHOLD}
               max={MAX_THRESHOLD}
               step={1}
               hideButton
               value={draft}
               onChange={(v) => setDraft(v)}
-            />
+            />}
             <Text theme="weak">{t('subscriptionPool.settings.ofEither')}</Text>
-            <Button
+            {!readOnly && <Button
               type="primary"
               disabled={!valid || draft === thresholdPct}
               loading={saving}
               onClick={() => onSave(draft)}
             >
               {t('subscriptionPool.settings.save')}
-            </Button>
-            {!valid && <Text theme="danger">{t('subscriptionPool.settings.invalid')}</Text>}
+            </Button>}
+            {!readOnly && !valid && <Text theme="danger">{t('subscriptionPool.settings.invalid')}</Text>}
           </div>
 
           <Text theme="label">{t('subscriptionPool.settings.usageCheck')}</Text>
@@ -60,9 +61,9 @@ export function PoolSettings({ thresholdPct, lastUpdate, saving, checking, onSav
                 {t('subscriptionPool.settings.lastUpdate', { time: formatClock(lastUpdate, { locale: i18n.language }) })}
               </Text>
             )}
-            <Button loading={checking} onClick={onCheckAll}>
+            {!readOnly && <Button loading={checking} onClick={onCheckAll}>
               {t('subscriptionPool.settings.checkAll')}
-            </Button>
+            </Button>}
           </div>
 
           <Text theme="label">{t('subscriptionPool.settings.allExhausted')}</Text>

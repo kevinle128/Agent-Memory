@@ -23,5 +23,6 @@ describe('subscription pool panel actions', () => {
     expect(ALLOWED_PANEL_ACTIONS.has('subscription-pool/accounts/list' as never)).toBe(false);
     expect(ALLOWED_PANEL_ACTIONS.has('subscription-pool/report' as never)).toBe(false);
     expect(ALLOWED_PANEL_ACTIONS.has('subscription-pool/refresh' as never)).toBe(false);
+    expect(ALLOWED_PANEL_ACTIONS.has('subscription-pool/check-usage' as never)).toBe(false);
   });
 });

@@ -160,8 +160,6 @@ export function ConsoleLayout() {
       if (meta.id === 'analytics') {
         if (userRole !== 'admin' || !analyticsVisible) continue;
       }
-      // 订阅账号池仅 system_admin 可见
-      if (meta.id === 'subscription_pool' && userRole !== 'admin') continue;
       const list = byGroup.get(meta.group) ?? [];
       list.push(meta);
       byGroup.set(meta.group, list);
@@ -242,4 +240,3 @@ export function ConsoleLayout() {
     </div>
   );
 }
- 

@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __primeCacheForTests, type InstanceUpstreamRow } from "../../instance-upstream-cache.js";
-import { __primeAccountCacheForTests } from "../account-cache.js";
+import { __primeAccountCacheForTests, markAccountExhausted } from "../account-cache.js";
 import { installFetch, jsonResponse, makeApp, makeConfig, resetPoolState } from "./test-harness.js";
 import type { PoolAccount } from "../types.js";
 
@@ -52,7 +52,7 @@ describe("claude pool forwarding", () => {
       vi.spyOn(console, method).mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(" ")); });
     }
   });
-  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it("sends the account bearer to api.anthropic.com and keeps the client body", async () => {
     prime([acct("a"), acct("b")]);
@@ -101,27 +101,62 @@ describe("claude pool forwarding", () => {
     ]);
   });
 
-  it("switches to the other account when the first answers 429", async () => {
+  it("uses the new Check now result immediately instead of rejecting from an old cached cooldown", async () => {
+    const account = acct("a");
+    prime([account]);
+    markAccountExhausted(SPACE, account.account_id, Date.now() + 15 * 60_000, Date.now() - 1000);
+    const checked = {
+      ...account,
+      usage: { windows: [{ name: "five_hour", model_scope: null, used_pct: 2, resets_at: Date.now() + 3_600_000, observed_at: Date.now(), source: "usage_api" }] },
+    };
+    const { upstreamCalls, coreCalls } = installFetch(() => jsonResponse(message), (call) => {
+      if (call.url.endsWith("/accounts/list")) return jsonResponse({ code: 0, data: { threshold_pct: 95, accounts: [checked] } });
+      return jsonResponse({ code: 0, data: {} });
+    });
+
+    const response = await post({ "x-claude-code-session-id": "check-now-session" });
+
+    expect(response.status).toBe(200);
+    expect(coreCalls.filter((call) => call.url.endsWith("/accounts/list"))).toHaveLength(1);
+    expect(upstreamCalls).toHaveLength(1);
+    expect(upstreamCalls[0]!.headers.authorization).toBe("Bearer secret-token-a");
+  });
+
+  it("keeps Claude session on its account when a 429 resolves on retry", async () => {
+    vi.useFakeTimers();
     prime([acct("a"), acct("b")]);
-    const { upstreamCalls, coreCalls } = installFetch((call) => {
-      if (call.headers["authorization"] === "Bearer secret-token-a") {
-        return jsonResponse({ type: "error", error: { type: "rate_limit_error" } }, 429, {
-          "anthropic-ratelimit-unified-reset": String(Math.floor(Date.now() / 1000) + 600),
-          "retry-after": "600",
-        });
-      }
-      return jsonResponse(message);
-    });
-    const res = await post({ "x-claude-code-session-id": "s1" });
-    expect(res.status).toBe(200);
-    expect(upstreamCalls.map((call) => call.headers["authorization"])).toEqual([
-      "Bearer secret-token-a",
-      "Bearer secret-token-b",
-    ]);
-    await vi.waitFor(() => {
-      const reports = coreCalls.filter((c) => c.url.endsWith("/subscription-pool/report")).map((c) => JSON.parse(c.body) as { account_id?: string; status_code?: number; retry_after?: number });
-      expect(reports.some((r) => r.account_id === "a" && r.status_code === 429 && (r.retry_after ?? 0) > 0)).toBe(true);
-    });
+    let n = 0;
+    const { upstreamCalls, coreCalls } = installFetch(() => ++n === 1
+      ? jsonResponse({ type: "error", error: { type: "rate_limit_error", message: "Error" } }, 429)
+      : jsonResponse(message));
+    const pending = post({ "x-claude-code-session-id": "s1" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await pending).status).toBe(200);
+    expect(upstreamCalls.map((call) => call.headers.authorization)).toEqual(["Bearer secret-token-a", "Bearer secret-token-a"]);
+    expect(coreCalls.some((call) => call.url.endsWith("/check-usage"))).toBe(false);
+  });
+
+  it("logs the original 429 and honors Retry-After without exposing credentials", async () => {
+    vi.useFakeTimers();
+    prime([acct("a"), acct("b")]);
+    installFetch((call) => jsonResponse({
+      error: { type: "rate_limit_error", message: `Too many requests: ${call.headers["authorization"]}` },
+    }, 429, { "request-id": `upstream-${call.headers["authorization"]?.endsWith("a") ? "a" : "b"}`, "retry-after": "60" }));
+    const pending = post({ "x-request-id": "client-request" });
+    await vi.advanceTimersByTimeAsync(30_000);
+    const res = await pending;
+    expect(res.status).toBe(429);
+    const errors = logs.filter((line) => line.startsWith('[subscription-pool] {'))
+      .map((line) => JSON.parse(line.slice('[subscription-pool] '.length)));
+    expect(errors).toHaveLength(1);
+    expect(errors.map((row) => row.account_id)).toEqual(["a"]);
+    expect(errors.map((row) => row.upstream_request_id)).toEqual(["upstream-a"]);
+    for (const row of errors) {
+      expect(row.request_id).toBe("client-request");
+      expect(row.body).toContain("Too many requests");
+      expect(row.body).not.toContain("secret-token");
+    }
+    expect(logs.join("\n")).not.toContain("secret-token-");
   });
 
   it("does not send a codex account token to Anthropic", async () => {

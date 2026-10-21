@@ -1055,6 +1055,7 @@ async function forwardToUpstream(
         spaceId,
         row: _upstreamResolve.pool.row,
         clientHeaders: c.req.raw.headers,
+        signal: c.req.raw.signal,
         body,
         userKey: extractApiKeyFromContext(c, "bearer-first"),
         bindSession: lf !== null,
@@ -1188,8 +1189,11 @@ async function forwardToUpstream(
       return fetchOpts;
     };
     upstreamResp = poolRequest
-      ? await poolRequest.send((auth) =>
-          fetch(upstreamUrl, buildFetchOpts(applyPoolAuth(upstreamHeaders, c.req.raw.headers, auth))))
+      ? await poolRequest.send((auth, signal) => {
+          const options = buildFetchOpts(applyPoolAuth(upstreamHeaders, c.req.raw.headers, auth));
+          if (signal) options.signal = options.signal ? AbortSignal.any([signal, options.signal]) : signal;
+          return fetch(upstreamUrl, options);
+        })
       : await fetch(upstreamUrl, buildFetchOpts(upstreamHeaders));
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === "TimeoutError") {

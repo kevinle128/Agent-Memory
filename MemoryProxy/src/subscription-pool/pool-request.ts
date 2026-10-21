@@ -4,8 +4,8 @@
  *
  *   - The caller supplies `doFetch(auth)` that performs the real upstream call with the headers
  *     of `auth`. All status handling happens before any byte goes to the client, so a retry is safe.
- *   - 429: the account is marked exhausted locally, reported to Core, and the request is retried
- *     once on another account.
+ *   - 429: retry the same account after 1/2/4/8 seconds, then Check now. Only confirmed full
+ *     applicable quota permits switching; otherwise keep retrying within 30 seconds total.
  *   - 401: the token is refreshed through Core (`held_expires_at` makes concurrent 401s one
  *     provider refresh) and the request is retried once. If the refresh fails, the account is
  *     skipped and the request moves to another account.
@@ -28,8 +28,10 @@ import {
 } from "./binding-store.js";
 import { callPoolCore, PoolCoreError, type PoolCoreConfig } from "./core-client.js";
 import { buildPoolExhaustedResponse, buildPoolUnavailableResponse } from "./exhausted-response.js";
-import { parseClaudeLimitBody, parseClaudeQuotaHeaders, parseCodexLimitBody, parseCodexQuotaHeaders } from "./quota-signals.js";
+import { parseClaudeQuotaHeaders, parseCodexQuotaHeaders } from "./quota-signals.js";
 import { reportAccount } from "./reporter.js";
+import { recordPoolUpstreamError, sanitizeErrorText } from "./upstream-error.js";
+import { POOL_RETRY_BUDGET_MS, POOL_RETRY_MAX_WAIT_MS, PoolRetryDeadline, withinRetryDeadline, waitForPoolRetry, notePoolRetryAfter, originalRateLimitResponse, sharedPoolUsageCheck, readPoolErrorBody } from "./retry.js";
 import { earliestReset, selectAccount, type Selection } from "./selector.js";
 import type { PoolAccount, PoolSnapshot } from "./types.js";
 
@@ -40,8 +42,6 @@ export const CLAUDE_API_BASE_URL = "https://api.anthropic.com";
 const OAUTH_BETA = "oauth-2025-04-20";
 
 export type PoolProviderId = "claude" | "codex";
-/** A 429 without a reset time holds the account for this long. Same default as Core. */
-const FALLBACK_EXHAUSTED_MS = 15 * 60 * 1000;
 /** After a failed token refresh the account is skipped for this long. */
 const REFRESH_FAILURE_COOLDOWN_MS = 60 * 1000;
 /** A binding is rewritten at most this often while its session keeps sending requests. */
@@ -67,6 +67,7 @@ export interface PoolRequestInput {
   /** True for a dialogue turn: it may create or move the Session Binding. False reads only. */
   bindSession: boolean;
   now?: () => number;
+  signal?: AbortSignal;
 }
 
 export interface PoolRequest {
@@ -75,7 +76,7 @@ export interface PoolRequest {
   readonly provider: PoolProviderId;
   /** Account that served the request. Null before the call, or when the client's login was used. */
   readonly accountId: string | null;
-  send(doFetch: (auth: PoolAuth) => Promise<Response>): Promise<Response>;
+  send(doFetch: (auth: PoolAuth, signal?: AbortSignal) => Promise<Response>): Promise<Response>;
 }
 
 /**
@@ -159,64 +160,161 @@ class PoolRequestImpl implements PoolRequest {
     }
   }
 
-  async send(doFetch: (auth: PoolAuth) => Promise<Response>): Promise<Response> {
+  async send(doFetch: (auth: PoolAuth, signal?: AbortSignal) => Promise<Response>): Promise<Response> {
     const excluded = new Set<string>();
     let switches = 0;
     let refreshes = 0;
+    let poolRechecked = false;
     let pinned: PoolAccount | null = null;
+    let deadline: number | undefined;
+    let last429: Response | null = null;
+    const bounded = <T>(run: (signal?: AbortSignal) => Promise<T>): Promise<T> => deadline === undefined
+      ? run(this.input.signal) : withinRetryDeadline(run, deadline, this.input.signal);
 
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-      let account = pinned;
-      pinned = null;
-      let snapshot: PoolSnapshot | null = null;
-      if (!account) {
-        snapshot = await this.snapshot();
-        account = await this.pick(snapshot, excluded);
-      }
-      if (!account) return this.noAccountLeft(snapshot ?? await this.snapshot(), doFetch);
+    try {
+      for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+        this.input.signal?.throwIfAborted();
+        if (deadline !== undefined && Date.now() >= deadline && last429) return last429;
+        let account: PoolAccount | null = pinned;
+        pinned = null;
+        let snapshot: PoolSnapshot | null = null;
+        if (!account) {
+          snapshot = await bounded(() => this.snapshot());
+          account = await bounded(() => this.pick(snapshot!, excluded));
+          // A Panel Check now may have released the pool while this snapshot was cached.
+          // Re-read Core once before rejecting the request, without waiting for the cache TTL.
+          if (!account && !poolRechecked && !snapshot.unavailable) {
+            poolRechecked = true;
+            snapshot = await bounded(() => this.snapshot(true));
+            account = await bounded(() => this.pick(snapshot!, excluded));
+          }
+        }
+        if (!account) return await bounded(async (signal) => this.noAccountLeft(snapshot ?? await this.snapshot(), (auth) => doFetch(auth, signal)));
 
-      const auth: PoolAuth = {
-        kind: "account", accountId: account.account_id,
-        accessToken: account.access_token, providerAccountId: account.provider_account_id,
-      };
-      this.accountId = account.account_id;
-      const resp = await doFetch(auth);
+        const auth: PoolAuth = {
+          kind: "account", accountId: account.account_id,
+          accessToken: account.access_token, providerAccountId: account.provider_account_id,
+        };
+        this.accountId = account.account_id;
+        let resp: Response;
+        try {
+          resp = deadline === undefined ? await doFetch(auth, this.input.signal)
+            : await withinRetryDeadline((signal) => doFetch(auth, signal), deadline, this.input.signal);
+        } catch (error) {
+          if (error instanceof PoolRetryDeadline && last429) return last429;
+          throw error;
+        }
 
-      if (resp.status === 429) {
-        const text = await resp.text();
-        this.onLimitReached(account, text, resp.headers);
-        excluded.add(account.account_id);
-        if (switches++ >= 1) break;
-        continue;
-      }
-
-      if (resp.status === 401) {
-        const text = await resp.text();
-        if (refreshes++ === 0) {
-          const refreshed = await this.refreshToken(account);
-          if (refreshed) {
-            pinned = refreshed;
+        if (resp.status === 429) {
+          deadline ??= Date.now() + POOL_RETRY_BUDGET_MS;
+          const result = await this.retryRateLimitedAccount(account, resp, doFetch, deadline);
+          if (result.response.status === 429) last429 = result.response.clone();
+          if (result.quotaConfirmed) {
+            excluded.add(account.account_id);
+            if (switches++ >= 1) break;
             continue;
           }
-          excluded.add(account.account_id);
-          if (switches++ >= 1) break;
-          continue;
+          resp = result.response;
+          if (resp.status === 429) return resp;
         }
-        return new Response(text, { status: resp.status, headers: resp.headers });
+
+        if (resp.status === 401) {
+          const text = await bounded(() => resp.text());
+          if (refreshes++ === 0) {
+            const refreshed: PoolAccount | null = await bounded(() => this.refreshToken(account!));
+            if (refreshed) {
+              pinned = refreshed;
+              continue;
+            }
+            excluded.add(account.account_id);
+            if (switches++ >= 1) break;
+            continue;
+          }
+          return new Response(text, { status: resp.status, headers: resp.headers });
+        }
+
+        if (resp.status < 400) this.onSuccess(account, resp.headers);
+        return resp;
       }
 
-      if (resp.status < 400) this.onSuccess(account, resp.headers);
-      return resp;
+      // Out of attempts after a limit: the client's login, or the 429 with the earliest reset.
+      return await bounded(async (signal) => this.noAccountLeft(await this.snapshot(), (auth) => doFetch(auth, signal)));
+    } catch (error) {
+      if (error instanceof PoolRetryDeadline && last429) return last429;
+      throw error;
     }
-
-    // Out of attempts after a limit: the client's login, or the 429 with the earliest reset.
-    return this.noAccountLeft(await this.snapshot(), doFetch);
   }
 
   // ── selection ────────────────────────────────────────────────────────────
 
-  private async snapshot(): Promise<PoolSnapshot> {
-    const snapshot = await getPoolSnapshot(coreConfig(this.input.config), this.input.spaceId, this.input.config.instanceUpstream, this.now());
+  /** Preserve session/cache on unclassified 429s; only Check now can authorize switching. */
+  private async retryRateLimitedAccount(
+    account: PoolAccount, initial: Response,
+    doFetch: (auth: PoolAuth, signal?: AbortSignal) => Promise<Response>, deadline: number,
+  ): Promise<{ response: Response; quotaConfirmed: boolean }> {
+    const key = `${this.input.spaceId}\0${account.account_id}`;
+    let response = initial;
+    let body = "";
+    let lastHeaders = initial.headers;
+    let retries = 0;
+    let checked = false;
+    const originalError = () => originalRateLimitResponse(sanitizeErrorText(body, [
+      account.access_token, this.input.userKey, coreConfig(this.input.config).serviceToken,
+      this.input.clientHeaders.get("authorization") ?? "", this.input.clientHeaders.get("x-api-key") ?? "",
+    ]), lastHeaders, key);
+    const auth: PoolAuth = { kind: "account", accountId: account.account_id, accessToken: account.access_token, providerAccountId: account.provider_account_id };
+    try {
+      body = await readPoolErrorBody(initial, deadline, this.input.signal);
+      this.onLimitReached(account, body, response.headers);
+      notePoolRetryAfter(key, response.headers);
+      while (Date.now() < deadline) {
+        const delay = Math.min(1000 * 2 ** retries, POOL_RETRY_MAX_WAIT_MS);
+        await waitForPoolRetry(key, delay, deadline, this.input.signal);
+        console.info(`${TAG} retry account_id=${account.account_id} attempt=${retries + 1} remaining_ms=${Math.max(0, deadline - Date.now())}`);
+        response = await withinRetryDeadline((signal) => doFetch(auth, signal), deadline, this.input.signal);
+        if (response.status !== 429) return { response, quotaConfirmed: false };
+        body = await readPoolErrorBody(response, deadline, this.input.signal);
+        lastHeaders = response.headers;
+        this.onLimitReached(account, body, response.headers);
+        notePoolRetryAfter(key, response.headers);
+        retries++;
+        if (retries >= 4 && !checked) {
+          checked = true;
+          console.info(`${TAG} Check now after retries account_id=${account.account_id}`);
+          try {
+            const result = await withinRetryDeadline(() => sharedPoolUsageCheck(key, () => callPoolCore<{
+              failed: boolean; account: Pick<PoolAccount, "usage" | "status" | "exhausted_until"> & { usage_updated_at?: number | null };
+            }>(coreConfig(this.input.config), this.input.spaceId, "check-usage", { account_id: account.account_id })), deadline, this.input.signal);
+            if (result.failed === false && Array.isArray(result.account?.usage?.windows)) {
+              observeAccountWindows(this.input.spaceId, account.account_id, result.account.usage.windows);
+              const full = result.account.usage.windows.some((window) => (
+                (!window.model_scope || window.model_scope === this.model)
+                && window.source === "usage_api"
+                && typeof result.account.usage_updated_at === "number"
+                && window.observed_at >= result.account.usage_updated_at
+                && window.used_pct >= 100 && (window.resets_at === null || window.resets_at > this.now())
+              ));
+              if (full) {
+                console.info(`${TAG} Check now confirmed full quota account_id=${account.account_id}; switching allowed`);
+                // Fetch the checked state before selecting another account; never fabricate 100%.
+                await withinRetryDeadline(() => this.snapshot(true), deadline, this.input.signal);
+                return { response: originalError(), quotaConfirmed: true };
+              }
+            }
+          } catch (error) {
+            if (error instanceof PoolRetryDeadline || this.input.signal?.aborted) throw error;
+            console.warn(`${TAG} Check now unavailable account_id=${account.account_id}; retaining session account`);
+          }
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof PoolRetryDeadline)) throw error;
+    }
+    return { response: originalError(), quotaConfirmed: false };
+  }
+
+  private async snapshot(forceRefresh = false): Promise<PoolSnapshot> {
+    const snapshot = await getPoolSnapshot(coreConfig(this.input.config), this.input.spaceId, this.input.config.instanceUpstream, this.now(), forceRefresh);
     return {
       ...snapshot,
       // Core may return accounts for more than one pool group. This request is tied to one
@@ -323,20 +421,14 @@ class PoolRequestImpl implements PoolRequest {
 
   private onLimitReached(account: PoolAccount, bodyText: string, headers: Headers): void {
     const now = this.now();
-    const info = this.provider === "claude"
-      ? parseClaudeLimitBody(headers, now)
-      : parseCodexLimitBody(bodyText, headers, now);
-    markAccountExhausted(this.input.spaceId, account.account_id, info.resetsAt ?? now + FALLBACK_EXHAUSTED_MS);
-    const windows = this.provider === "claude"
-      ? parseClaudeQuotaHeaders(headers, now)
-      : parseCodexQuotaHeaders(headers, now);
-    if (windows.length > 0) observeAccountWindows(this.input.spaceId, account.account_id, windows);
-    reportAccount(coreConfig(this.input.config), this.input.spaceId, account.account_id, {
-      status_code: 429,
-      ...(info.retryAfterSec !== null ? { retry_after: info.retryAfterSec } : {}),
-      ...(windows.length > 0 ? { windows } : {}),
-    });
-    console.warn(`${TAG} account_id=${account.account_id} hit its usage limit`);
+    void recordPoolUpstreamError({
+      storage: this.storage, spaceId: this.input.spaceId, accountId: account.account_id,
+      provider: this.provider, model: this.model, status: 429, body: bodyText, headers, now,
+      requestId: this.input.clientHeaders.get("x-request-id") ?? this.input.clientHeaders.get("x-tdai-request-id"),
+      secrets: [account.access_token, this.input.userKey, coreConfig(this.input.config).serviceToken,
+        this.input.clientHeaders.get("authorization") ?? "", this.input.clientHeaders.get("x-api-key") ?? ""],
+    }).catch(() => { /* Diagnostics must never interrupt forwarding. */ });
+    console.warn(`${TAG} account_id=${account.account_id} received 429; quota not yet confirmed`);
   }
 
   /** Returns the account with a fresh token, or null when Core could not refresh it. */

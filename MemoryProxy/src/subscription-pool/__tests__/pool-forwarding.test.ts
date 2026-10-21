@@ -129,63 +129,25 @@ describe("codex pool forwarding", () => {
     expect(upstreamCalls.map(accountOf)).toEqual(["chatgpt-a", "chatgpt-a", "chatgpt-b", "chatgpt-a", "chatgpt-b"]);
   });
 
-  it("switches to the other account when the first answers 429, within the same request", async () => {
+  it("retries a transient 429 on the same Codex account before returning success", async () => {
+    vi.useFakeTimers();
     prime([acct("a"), acct("b")]);
-    const { upstreamCalls, coreCalls } = installFetch((call) => (accountOf(call) === "chatgpt-a" ? limit429(600) : sse()));
-    const app = makeApp(makeConfig());
+    let n = 0;
+    const { upstreamCalls, coreCalls } = installFetch(() => ++n === 1 ? limit429() : sse());
     const t = turn("s1");
-    const res = await post(app, t.path, t.headers, t.body);
-    await res.text();
-    expect(res.status).toBe(200);
-    expect(upstreamCalls.map(accountOf)).toEqual(["chatgpt-a", "chatgpt-b"]);
-    expect(upstreamCalls[1]!.headers["authorization"]).toBe("Bearer secret-token-b");
-
-    // The session now sits on account b, and account a is skipped for other sessions.
-    const next = turn("s1");
-    await (await post(app, next.path, next.headers, next.body)).text();
-    const other = turn("s-other");
-    await (await post(app, other.path, other.headers, other.body)).text();
-    expect(upstreamCalls.slice(2).map(accountOf)).toEqual(["chatgpt-b", "chatgpt-b"]);
-
-    // The 429 reaches Core with its retry_after.
-    await vi.waitFor(() => {
-      const reports = coreCalls.filter((c) => c.url.endsWith("/subscription-pool/report")).map((c) => JSON.parse(c.body));
-      expect(reports.some((r) => r.account_id === "a" && r.status_code === 429 && r.retry_after > 0 && r.retry_after <= 600)).toBe(true);
-    });
+    const pending = post(makeApp(makeConfig()), t.path, t.headers, t.body);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await pending).status).toBe(200);
+    expect(upstreamCalls.map(accountOf)).toEqual(["chatgpt-a", "chatgpt-a"]);
+    expect(coreCalls.some((call) => call.url.endsWith("/check-usage"))).toBe(false);
   });
 
-  it("selects account a again for a new session once its reset time has passed", async () => {
-    prime([acct("a"), acct("b")]);
-    let accountAIsLimited = true;
-    const { upstreamCalls } = installFetch((call) => (accountOf(call) === "chatgpt-a" && accountAIsLimited ? limit429(600) : sse()));
-    const app = makeApp(makeConfig());
-    const first = turn("s1");
-    await (await post(app, first.path, first.headers, first.body)).text();
-    expect(upstreamCalls.map(accountOf)).toEqual(["chatgpt-a", "chatgpt-b"]);
-
-    // While account a is exhausted, new sessions all go to b.
-    for (const session of ["s2", "s3"]) {
-      const t = turn(session);
-      await (await post(app, t.path, t.headers, t.body)).text();
-    }
-    expect(upstreamCalls.slice(2).map(accountOf)).toEqual(["chatgpt-b", "chatgpt-b"]);
-
-    // Past the reset time account a is selectable again, with no call to Core in between.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      vi.setSystemTime(Date.now() + 11 * 60_000);
-      __primeCacheForTests(SPACE, [defaultRow, poolRow]);
-      __primeAccountCacheForTests(SPACE, { thresholdPct: 95, accounts: [acct("a", { status: "exhausted", exhausted_until: Date.now() - 1000 }), acct("b")] });
-      accountAIsLimited = false;
-      upstreamCalls.length = 0;
-      for (const session of ["s4", "s5"]) {
-        const t = turn(session);
-        await (await post(app, t.path, t.headers, t.body)).text();
-      }
-      expect(upstreamCalls.map(accountOf).sort()).toEqual(["chatgpt-a", "chatgpt-b"]);
-    } finally {
-      vi.useRealTimers();
-    }
+  it("keeps confirmed exhausted accounts out of selection", async () => {
+    prime([acct("a", { status: "exhausted", exhausted_until: NOW + HOUR }), acct("b")]);
+    const { upstreamCalls } = installFetch(() => sse());
+    const t = turn("s1");
+    expect((await post(makeApp(makeConfig()), t.path, t.headers, t.body)).status).toBe(200);
+    expect(upstreamCalls.map(accountOf)).toEqual(["chatgpt-b"]);
   });
 
   it("refreshes the token once on 401 and retries the same account", async () => {
@@ -224,8 +186,8 @@ describe("codex pool forwarding", () => {
   });
 
   it("falls back to the client's own login when every account is out of quota and the user key header was used", async () => {
-    prime([acct("a"), acct("b")]);
-    const { upstreamCalls } = installFetch((call) => (call.headers["authorization"] === "Bearer chatgpt-own-token" ? sse() : limit429(600)));
+    prime([acct("a", { status: "exhausted", exhausted_until: NOW + HOUR }), acct("b", { status: "exhausted", exhausted_until: NOW + HOUR })]);
+    const { upstreamCalls } = installFetch(() => sse());
     const t = turn("s1");
     const res = await post(makeApp(makeConfig()), t.path, t.headers, t.body);
     await res.text();
@@ -412,9 +374,13 @@ describe("codex pool forwarding", () => {
 
   it("never writes an access token to logs or the client response", async () => {
     prime([acct("a"), acct("b")]);
-    installFetch((call) => (accountOf(call) === "chatgpt-a" ? limit429(600) : sse()));
+    let n = 0;
+    installFetch(() => ++n === 1 ? limit429() : sse());
+    vi.useFakeTimers();
     const t = turn("s1");
-    const res = await post(makeApp(makeConfig()), t.path, t.headers, t.body);
+    const pending = post(makeApp(makeConfig()), t.path, t.headers, t.body);
+    await vi.advanceTimersByTimeAsync(1000);
+    const res = await pending;
     const text = await res.text();
     expect(text).not.toContain("secret-token");
     for (const [k, v] of res.headers.entries()) expect(`${k}: ${v}`).not.toContain("secret-token");

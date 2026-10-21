@@ -61,6 +61,61 @@ describe("pool account cache", () => {
     expect(snap.accounts[0]!.exhausted_until).toBe(500_000);
   });
 
+  it("clears an older cooldown and quota overlay after Check now confirms quota, even within the TTL", async () => {
+    vi.stubGlobal("fetch", coreReturns([acct("a")]));
+    await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 1000);
+    markAccountExhausted("sp1", "a", 500_000, 2000);
+    observeAccountWindows("sp1", "a", [{ name: "primary_window", model_scope: null, used_pct: 100, resets_at: 500_000, observed_at: 2000, source: "header" }]);
+
+    const reading = { name: "primary_window", model_scope: null, used_pct: 2, resets_at: 500_000, observed_at: 3000, source: "usage_api" };
+    const freshFetch = coreReturns([acct("a", { usage: { windows: [reading] } })]);
+    vi.stubGlobal("fetch", freshFetch);
+    const fresh = await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 4000, true);
+
+    expect(freshFetch).toHaveBeenCalledTimes(1);
+    expect(fresh.accounts[0]!.exhausted_until).toBeNull();
+    expect(fresh.accounts[0]!.usage.windows).toEqual([reading]);
+    // Clearing persists into later cached reads; it is not just a one-request override.
+    expect((await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 5000)).accounts[0]!.exhausted_until).toBeNull();
+  });
+
+  it.each(["usage_api", "header"])("does not clear a newer 429 from an older %s reading", async (source) => {
+    markAccountExhausted("sp1", "a", 500_000, 3000);
+    const reading = { name: "primary_window", model_scope: null, used_pct: 2, resets_at: 500_000, observed_at: 2000, source };
+    vi.stubGlobal("fetch", coreReturns([acct("a", { usage: { windows: [reading] } })]));
+    expect((await getPoolSnapshot(CORE, "sp1", undefined, 4000, true)).accounts[0]!.exhausted_until).toBe(500_000);
+  });
+
+  it("does not treat a newer proxy header report as a successful Check now", async () => {
+    markAccountExhausted("sp1", "a", 500_000, 2000);
+    const reading = { name: "primary_window", model_scope: null, used_pct: 2, resets_at: 500_000, observed_at: 3000, source: "header" };
+    vi.stubGlobal("fetch", coreReturns([acct("a", { usage: { windows: [reading] } })]));
+    expect((await getPoolSnapshot(CORE, "sp1", undefined, 4000, true)).accounts[0]!.exhausted_until).toBe(500_000);
+  });
+
+  it("keeps a full account exhausted after a successful check", async () => {
+    markAccountExhausted("sp1", "a", 500_000, 2000);
+    const reading = { name: "primary_window", model_scope: null, used_pct: 100, resets_at: 600_000, observed_at: 3000, source: "usage_api" };
+    vi.stubGlobal("fetch", coreReturns([acct("a", { status: "exhausted", exhausted_until: 600_000, usage: { windows: [reading] } })]));
+    expect((await getPoolSnapshot(CORE, "sp1", undefined, 4000, true)).accounts[0]!.exhausted_until).toBe(600_000);
+  });
+
+  it("keeps the cooldown when a forced refetch fails", async () => {
+    vi.stubGlobal("fetch", coreReturns([acct("a")]));
+    await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 1000);
+    markAccountExhausted("sp1", "a", 500_000, 2000);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("down"); }));
+    expect((await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 4000, true)).accounts[0]!.exhausted_until).toBe(500_000);
+  });
+
+  it("preserves the known reset when Core returns a malformed list during revalidation", async () => {
+    vi.stubGlobal("fetch", coreReturns([acct("a", { status: "exhausted", exhausted_until: 500_000 })]));
+    await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 1000);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ code: 0, data: {} }))));
+    const snapshot = await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 4000, true);
+    expect(snapshot.accounts[0]!.exhausted_until).toBe(500_000);
+  });
+
   it("does not let a stale local exhaustion shorten a longer one from Core", async () => {
     vi.stubGlobal("fetch", coreReturns([acct("a", { status: "exhausted", exhausted_until: 900_000 })]));
     markAccountExhausted("sp1", "a", 500_000);

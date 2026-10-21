@@ -1129,7 +1129,7 @@ InstanceUpstreamConfig v2 的 §6.D 接口：Proxy 拉该实例全量组配置�
 
 ### POST /v3/meta/subscription-pool/*
 
-System Admin only. Only `codex` is supported; it moves agent `codex`. `claude` is accepted by `status` but `enable`, `account/oauth-start` and `account/oauth-complete` return `400 PROVIDER_NOT_SUPPORTED` (Anthropic's terms do not allow pooled subscription tokens). Public responses never include `access_token` or `refresh_token`.
+Authenticated users may read `status`; all other actions require System Admin. Only `codex` is supported; it moves agent `codex`. `claude` is accepted by `status` but `enable`, `account/oauth-start` and `account/oauth-complete` return `400 PROVIDER_NOT_SUPPORTED` (Anthropic's terms do not allow pooled subscription tokens). Public responses never include `access_token` or `refresh_token`.
 
 | Path | Body | Result |
 |---|---|---|
@@ -1150,7 +1150,21 @@ Proxy service token. Accounts of enabled `subscription_pool` groups. Each row ha
 
 ### POST /v3/internal/meta/subscription-pool/report
 
-Body `{ account_id, status_code?, retry_after?, active_sessions?, windows? }`. Per window the newest observation wins. A 429 marks the account exhausted until `retry_after`, the soonest window reset, or 15 minutes, and holds its windows at 100 % until then. Core arms a usage check 30 s after that time.
+Body `{ account_id, status_code?, retry_after?, active_sessions?, windows? }`. Per window the newest observation wins. **A bare 429 or Retry-After never marks an account exhausted and never fabricates 100% usage.** A measured, unreset shared window at 100% exhausts the account until all full shared windows reset; a full window with no reset schedules a bounded recheck. Model-specific windows do not exhaust the whole account. Transient 429 retry coordination belongs to Proxy.
+
+### POST /v3/internal/meta/subscription-pool/check-usage
+
+Trusted Proxy service-token endpoint; not exposed by the Panel meta proxy and does not grant
+members permission to run manual usage checks. Body `{ account_id }`.
+Runs the same provider usage check as public admin **Check now** and returns
+`{ failed: boolean, account: <public account without access_token/refresh_token> }`.
+Concurrent internal checks for the same account share one provider call, and reuse the completed
+result for 10 seconds. A failed check is returned as `failed: true`; it is not quota evidence.
+
+Proxy calls this only after its 1/2/4/8-second retry sequence still receives 429. A successful check
+with applicable, unreset 100% usage permits switching accounts; otherwise Proxy keeps its session
+account and retries within its original 30-second budget. See MemoryProxy's **Limits and retries**
+for the request timeline, concurrency and deadline behavior. Public member access remains status-only.
 
 ### POST /v3/internal/meta/subscription-pool/refresh
 

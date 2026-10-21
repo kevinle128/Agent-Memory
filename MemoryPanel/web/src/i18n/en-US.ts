@@ -1147,7 +1147,7 @@ export const enUS = {
   'addMember.username.hint': 'Letters, numbers, underscores. Cannot be changed after creation.',
   'addMember.role': 'Role',
   'addMember.role.default': 'member (default)',
-  'addMember.role.hint': 'New members default to the member role.',
+  'addMember.role.hint': 'Defaults to member. Admin grants management permissions within this team.',
   'addMember.existing.submit': 'Add',
   'addMember.new.submit': 'Create & Add',
   'addMember.cancel': 'Cancel',

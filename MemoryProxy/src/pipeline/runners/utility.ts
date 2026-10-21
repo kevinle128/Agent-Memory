@@ -161,6 +161,7 @@ export async function runUtilityPipeline(c: Context, config: ProxyConfig): Promi
         spaceId,
         row: resolution.row,
         clientHeaders: c.req.raw.headers,
+        signal: c.req.raw.signal,
         body: parseJsonObject(bodyText),
         userKey: apiKey,
         bindSession: false,
@@ -181,7 +182,9 @@ export async function runUtilityPipeline(c: Context, config: ProxyConfig): Promi
     const sendTo = (headers: Record<string, string>): Promise<Response> =>
       fetch(upstreamUrl, { method: "POST", headers, body: rawBody });
     upstreamResp = poolRequest
-      ? await poolRequest.send((auth) => sendTo(applyPoolAuth(upstreamHeaders, c.req.raw.headers, auth, poolRequest.provider)))
+      ? await poolRequest.send((auth, signal) => fetch(upstreamUrl, {
+          method: "POST", headers: applyPoolAuth(upstreamHeaders, c.req.raw.headers, auth, poolRequest.provider), body: rawBody, signal,
+        }))
       : await sendTo(upstreamHeaders);
   } catch (err: unknown) {
     pipe.error("AUX_FORWARD", err instanceof Error ? err : new Error(String(err)));

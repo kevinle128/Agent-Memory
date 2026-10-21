@@ -292,7 +292,6 @@ export function AddMemberDialog({
             onChange={(v) => {
               setMode(v as 'existing' | 'new');
               setError(null);
-              if (v === 'new') setRole('member');
             }}
             options={[
               { value: 'existing', text: t('addMember.mode.existing') },
@@ -390,10 +389,12 @@ export function AddMemberDialog({
       <Form.Item label={t('addMember.role')}>
         <Select
           size="full"
-          value="member"
-          disabled
+          value={role}
+          onChange={(value) => setRole(value as 'admin' | 'member')}
+          disabled={!canGrantAdmin}
           options={[
             { value: 'member', text: t('addMember.role.default') },
+            ...(canGrantAdmin ? [{ value: 'admin', text: 'admin' }] : []),
           ]}
         />
         <div className="_memory-field-hint">{t('addMember.role.hint')}</div>

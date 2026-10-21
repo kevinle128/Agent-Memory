@@ -2607,6 +2607,27 @@ export class MetadataService {
     return result;
   }
 
+  private readonly subscriptionRetryChecks = new Map<string, { expiresAt: number; promise: Promise<UsageCheckResult> }>();
+
+  /** Trusted Proxy Check now. Share concurrent checks and a short completed result per account. */
+  async checkSubscriptionAccountUsageInternal(accountId: string): Promise<Record<string, unknown>> {
+    const now = Date.now();
+    for (const [id, check] of this.subscriptionRetryChecks) {
+      if (check.expiresAt <= now) this.subscriptionRetryChecks.delete(id);
+    }
+    let check = this.subscriptionRetryChecks.get(accountId);
+    if (!check) {
+      check = { expiresAt: Infinity, promise: this.runSubscriptionUsageCheck(accountId) };
+      this.subscriptionRetryChecks.set(accountId, check);
+      const entry = check;
+      void entry.promise.then(() => { entry.expiresAt = Date.now() + 10_000; }, () => {
+        if (this.subscriptionRetryChecks.get(accountId) === entry) this.subscriptionRetryChecks.delete(accountId);
+      });
+    }
+    const result = await check.promise;
+    return { failed: result.failed, account: this.toPublicSubscriptionAccount(result.account) };
+  }
+
   async checkSubscriptionAccountUsage(accountId: string): Promise<Record<string, unknown>> {
     try {
       return this.toPublicSubscriptionAccount((await this.runSubscriptionUsageCheck(accountId)).account);

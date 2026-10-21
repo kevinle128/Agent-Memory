@@ -5,7 +5,7 @@
  *   1. the account the session is bound to, until that account reaches its quota (the threshold
  *      only stops new sessions, so a bound session stays above it);
  *   2. the next eligible account by round-robin from the cursor;
- *   3. the not-exhausted account with the lowest usage, even above the threshold;
+ *   3. the not-exhausted account with the lowest usage, above the threshold but below 100 %;
  *   4. nothing (`null`), and the caller falls back to the client's own login or a 429.
  */
 
@@ -102,6 +102,7 @@ export function selectAccount(
     const account = candidates[(start + step) % candidates.length]!;
     if (!isServable(account, now)) continue;
     const pct = accountUsagePct(account, now, requestedModel);
+    if (pct >= QUOTA_REACHED_PCT) continue;
     if (pct < lowestPct) {
       lowest = account;
       lowestPct = pct;

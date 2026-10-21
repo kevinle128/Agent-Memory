@@ -66,8 +66,8 @@ export function usageCheckFailing(account: { usage_fail_count: number }): boolea
 /**
  * Status of one account row. Order of precedence: disabled, re-login needed, exhausted,
  * near limit, then active (or ready while the pool is off).
- * An account counts as exhausted only until `exhausted_until`; after that the proxy uses
- * it again even when the stored status still says exhausted.
+ * A cooldown expires at `exhausted_until`, but an unreset full shared quota window still
+ * makes the account exhausted even when its stored status has not caught up.
  */
 export function accountState(
   account: PoolAccountLike,
@@ -77,6 +77,9 @@ export function accountState(
   if (account.status === 'auth_error') return 'auth_error';
   const until = account.exhausted_until;
   if (until !== null ? until > opts.now : account.status === 'exhausted') return 'exhausted';
+  if (account.usage.windows.some((w) => isSharedWindow(w) && effectiveWindow(w, opts.now).pct >= 100)) {
+    return 'exhausted';
+  }
   const nearLimit = account.usage.windows.some(
     (w) => isSharedWindow(w) && effectiveWindow(w, opts.now).pct >= opts.threshold,
   );
