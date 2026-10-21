@@ -75,6 +75,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
   private parseMessage(raw: unknown): ContextMessage {
     const m = raw as Record<string, unknown>;
     const role = m.role as MessageRole;
+    const metadata = typeof m.name === "string" ? { name: m.name } : undefined;
     const blocks: ContextBlock[] = [];
 
     if (role === "tool") {
@@ -85,7 +86,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
         content: parsed.text,
         metadata: { tool_use_id: m.tool_call_id as string, ...parsed.metadata },
       });
-      return { role, blocks };
+      return { role, blocks, metadata };
     }
 
     if (role === "assistant") {
@@ -118,7 +119,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       // Preserve `reasoning_content` (deepseek thinking-mode; dsh 客户端必带此字段
       // 回传上游,否则 deepseek 官方 400 `reasoning_content ... must be passed back`).
       // 其它 OpenAI 兼容上游不认识这个字段,pass-through 无害。
-      const msg: ContextMessage = { role, blocks };
+      const msg: ContextMessage = { role, blocks, metadata };
       if (typeof m.reasoning_content === "string") {
         msg.metadata = { ...(msg.metadata ?? {}), reasoning_content: m.reasoning_content };
       }
@@ -135,7 +136,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       }
     }
 
-    return { role, blocks };
+    return { role, blocks, metadata };
   }
 
   private parseContentPart(part: Record<string, unknown>): ContextBlock {
@@ -172,11 +173,13 @@ export class OpenAIAdapter implements ProtocolAdapter {
   // ── Private: serialize helpers ──────────────────────────────────────────────
 
   private serializeMessage(msg: ContextMessage): Record<string, unknown> {
+    const identity: Record<string, unknown> = { role: msg.role };
+    if (typeof msg.metadata?.name === "string") identity.name = msg.metadata.name;
     if (msg.role === "tool") {
       // Serialize tool role message
       const toolResult = msg.blocks.find((b) => b.type === "tool_result");
       return {
-        role: "tool",
+        ...identity,
         content: serializeToolResultContent(toolResult),
         tool_call_id: toolResult?.metadata?.tool_use_id ?? "",
       };
@@ -187,7 +190,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       const textBlocks = msg.blocks.filter((b) => b.type === "text");
       const toolUseBlocks = msg.blocks.filter((b) => b.type === "tool_use");
 
-      const result: Record<string, unknown> = { role: "assistant" };
+      const result: Record<string, unknown> = { ...identity };
 
       // Content
       if (textBlocks.length > 0) {
@@ -229,7 +232,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
     if (otherBlocks.length === 0) {
       // Simple text-only message
       return {
-        role: msg.role,
+        ...identity,
         content: textBlocks.map((b) => b.content).join("\n"),
       };
     }
@@ -261,7 +264,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
       }
     }
 
-    return { role: msg.role, content: parts };
+    return { ...identity, content: parts };
   }
 
   private serializeTool(tool: AgentTool): Record<string, unknown> {
