@@ -1,0 +1,16 @@
+**/.git
+**/node_modules
+**/dist
+**/build
+**/coverage
+**/data
+**/.env
+**/.env.*
+**/.claude
+**/tests
+**/__tests__
+**/docs
+**/scripts
+**/config/metadata-instances.json
+**/config/*.yaml
+**/config/*.yml

@@ -1,0 +1,17 @@
+deployMode: standalone
+stateBackend: local
+server:
+  host: 0.0.0.0
+  port: 8420
+data:
+  baseDir: /data/tdai-memory
+memory:
+  storeBackend: sqlite
+  embedding:
+    provider: none
+  capture:
+    enabled: true
+skill:
+  enabled: true
+  routing:
+    mode: bm25

@@ -1,0 +1,160 @@
+name: agent-memory
+x-common: &common
+  restart: unless-stopped
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+services:
+  memory-core:
+    <<: *common
+    image: ${MEMORY_CORE_IMAGE:-agent-memory/core:${MEMORY_BUILD_REVISION:-local}}
+    build:
+      context: ./MemoryCore
+      labels:
+        org.opencontainers.image.revision: ${MEMORY_BUILD_REVISION:-local}
+    ports:
+      - "${CORE_BIND_ADDRESS:-127.0.0.1}:${MEMORY_CORE_PORT:-8420}:8420"
+    environment:
+      TDAI_DEPLOY_MODE: standalone
+      STORE_MODE: sqlite
+      TDAI_DATA_DIR: /data/tdai-memory
+      TDAI_GATEWAY_HOST: 0.0.0.0
+      TDAI_GATEWAY_PORT: 8420
+      TDAI_GATEWAY_API_KEY: ${MEMORY_CORE_GATEWAY_API_KEY}
+      TDAI_LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-https://api.openai.com/v1}
+      TDAI_LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
+      TDAI_LLM_MODEL: ${MEMORY_LLM_MODEL:-}
+    volumes:
+      - core-data:/data/tdai-memory
+      - ./deploy/compose/core.yaml:/data/config/tdai-gateway.yaml:ro
+    healthcheck:
+      test: [CMD, curl, -fsS, 'http://127.0.0.1:8420/health']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+  memory-hub:
+    <<: *common
+    image: agent-memory/hub:${MEMORY_BUILD_REVISION:-local}
+    build:
+      context: .
+      dockerfile: deploy/compose/Hub.Dockerfile
+      labels:
+        org.opencontainers.image.revision: ${MEMORY_BUILD_REVISION:-local}
+    depends_on:
+      memory-core:
+        condition: service_healthy
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PANEL_PORT:-8125}:8125"
+      - "${BIND_ADDRESS:-127.0.0.1}:${KNOWLEDGE_PORT:-8424}:8424"
+    environment:
+      PANEL_PORT: 8125
+      KNOWLEDGE_PORT: 8424
+      KNOWLEDGE_DATA_DIR: /data/knowledge
+      KNOWLEDGE_PUBLIC_BASE_URL: ${KNOWLEDGE_PUBLIC_BASE_URL:-http://host.docker.internal:8424/v3}
+      KNOWLEDGE_SERVICE_KEY: ${KNOWLEDGE_SERVICE_KEY}
+      KNOWLEDGE_AUTH_TOKEN: ${KNOWLEDGE_SERVICE_KEY}
+      REMOTE_INSTANCE_ID: default
+      REMOTE_INSTANCE_NAME: Agent Memory
+      REMOTE_INSTANCE_URL: http://memory-core:8420
+      REMOTE_INSTANCE_KEY: ${MEMORY_CORE_GATEWAY_API_KEY:-local}
+      REMOTE_INSTANCE_PROXY_URL: ${PROXY_PUBLIC_URL:-http://localhost:8096}
+      LLM_MODE: custom
+      LLM_PROTOCOL: openai
+      LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
+      LLM_MODEL: ${MEMORY_LLM_MODEL:-}
+      KNOWLEDGE_LLM_BINDING_SYNC: "0"
+    volumes:
+      - knowledge-data:/data/knowledge
+    healthcheck:
+      test: [CMD-SHELL, 'curl -fsS http://127.0.0.1:8125/health && curl -fsS http://127.0.0.1:8424/health']
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+  proxy:
+    <<: *common
+    image: ${MEMORY_PROXY_IMAGE:-agent-memory/proxy:${MEMORY_BUILD_REVISION:-local}}
+    build:
+      context: ./MemoryProxy
+      dockerfile: ../deploy/compose/Proxy.Dockerfile
+      labels:
+        org.opencontainers.image.revision: ${MEMORY_BUILD_REVISION:-local}
+    depends_on:
+      memory-core:
+        condition: service_healthy
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PROXY_PORT:-8096}:8096"
+    volumes:
+      - proxy-data:/data/tdai-memory-proxy
+    configs:
+      - source: proxy-config
+        target: /data/config.yaml
+volumes:
+  core-data:
+    name: agent-memory-core-data
+  knowledge-data:
+    name: agent-memory-knowledge-data
+  proxy-data:
+    name: agent-memory-proxy-data
+configs:
+  proxy-config:
+    content: |
+      server:
+        host: 0.0.0.0
+        port: 8096
+        forwardTimeoutMs: 600000
+      log:
+        file: ""
+        level: info
+        backend: console
+      tdai:
+        enabled: true
+        endpoint: http://memory-core:8420
+        apiKey: "${MEMORY_CORE_GATEWAY_API_KEY:-local}"
+        serviceId: default
+        memory:
+          enabled: true
+          inject: true
+          writeL0: true
+          recallL1: true
+          injectL2L3: true
+      skill:
+        endpoint: http://memory-core:8420
+        serviceToken: "${MEMORY_CORE_GATEWAY_API_KEY:-local}"
+      auth:
+        enabled: true
+        url: http://memory-core:8420
+        timeoutMs: 5000
+      sessionInit:
+        enabled: true
+        skipAssetConfirm: true
+        maxRetries: 3
+        injectAgentContext: true
+        injectTaskContext: true
+        headerAutoSelect:
+          enabled: true
+          teamHeader: x-team-id
+          agentHeader: x-agent-id
+          taskHeader: x-task-id
+          onMismatch: form
+      storage:
+        enabled: true
+        backend: sqlite
+        sqlite:
+          dbPath: /data/tdai-memory-proxy/proxy.db
+      costGuard:
+        enabled: false
+      injection:
+        enabled: true
+        externalGatewayUrl: ${PROXY_PUBLIC_URL:-http://localhost:8096}
+        injectors:
+          - skill
+          - tdai-memory
+      redis:
+        enabled: false
