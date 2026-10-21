@@ -90,6 +90,8 @@ services:
         condition: service_healthy
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${PROXY_PORT:-8096}:8096"
+    environment:
+      TDAI_PROXY_ADMIN_API_KEY: ${TDAI_PROXY_ADMIN_API_KEY:-}
     volumes:
       - proxy-data:/data/tdai-memory-proxy
     configs:

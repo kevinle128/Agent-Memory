@@ -4,6 +4,10 @@ Database (MongoDB) chạy trong Docker Compose. Các service (Core, Knowledge, P
 bằng lệnh trực tiếp trên máy, không dùng Docker. Cách này cho phép sửa code và thấy kết quả ngay.
 
 Nếu bạn muốn chạy toàn bộ stack trong Docker, xem `README.docker.md` và `compose.yaml`.
+Khi chạy bằng `compose.yaml`, đặt `TDAI_PROXY_ADMIN_API_KEY` trong `.env`. Proxy dùng key này để
+bảo vệ các endpoint admin (`/v3/admin/rate-limits`, `/v3/admin/model-aliases`,
+`/v3/instance/proxy-destroy`). Gọi các endpoint này với header `Authorization: Bearer <key>`.
+Nếu để trống, các endpoint này mở cho mọi người truy cập được cổng của Proxy.
 
 ## Tổng quan cổng
 
