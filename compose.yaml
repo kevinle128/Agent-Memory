@@ -156,5 +156,13 @@ configs:
         injectors:
           - skill
           - tdai-memory
+      langfuse:
+        enabled: ${PROXY_LANGFUSE_ENABLED:-false}
+        host: "${LANGFUSE_HOST:-}"
+        publicKey: "${LANGFUSE_PUBLIC_KEY:-}"
+        secretKey: "${LANGFUSE_SECRET_KEY:-}"
+      traceArchive:
+        enabled: ${PROXY_TRACE_ARCHIVE_ENABLED:-false}
+        dir: /data/tdai-memory-proxy/traces
       redis:
         enabled: false

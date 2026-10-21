@@ -24,6 +24,7 @@ import { matchWhitelistEndpoint, type CostGuardMode } from "./routes/whitelist.j
 import { opikCreateTrace, opikCreateLlmSpan, uuidv7 } from "./opik.js";
 import { langfuseReportGeneration } from "./langfuse.js";
 import { judgeAgentTurn, judgeUserTurn, readJudgeTransport } from "./judge-client.js";
+import { extractTraceUserQuery } from "./common/trace-user-query.js";
 
 // Optional Opik/Langfuse hooks — invoked only when the private extension is loaded
 // and produces telemetry. Kept out of the primary bridge flow to avoid coupling
@@ -533,8 +534,8 @@ export function resolveSessionKey(
  *
  * Returns the user's real question (IDE noise / system-reminders stripped) on a
  * fresh human turn, and "" on a tool-loop continuation (last user message is a
- * pure tool_result) or when cost-guard is unavailable. Used as the turn trace's
- * input so it reflects the user's actual ask rather than the raw request body.
+ * pure tool_result). Without the optional extension, use the host's text
+ * extraction instead. Observability must also work in passthrough mode.
  */
 export function resolveLatestUserQuery(
   config: ProxyConfig,
@@ -543,13 +544,16 @@ export function resolveLatestUserQuery(
   body: Record<string, unknown>,
   messages: unknown[],
 ): string {
-  if (!resolveAgentProfileFn) return "";
-  try {
-    const profile = resolveAgentProfileFn({ headers, path, body }, config.costGuard.agentProfile);
-    return profile.latestUserQuery(messages) || "";
-  } catch {
-    return "";
+  if (resolveAgentProfileFn) {
+    try {
+      const profile = resolveAgentProfileFn({ headers, path, body }, config.costGuard.agentProfile);
+      // An empty extension result is intentional for tool-loop continuations.
+      return profile.latestUserQuery(messages) || "";
+    } catch {
+      // A failed optional profile must not suppress the user's trace input.
+    }
   }
+  return extractTraceUserQuery(messages);
 }
 
 /**

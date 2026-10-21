@@ -401,3 +401,22 @@ http_headers = { "x-tdai-user-key" = "<user key>" }
 
 **Usage record.** When ClickHouse is configured, the usage row has `subscription_account_id` (empty for
 traffic outside a pool). The proxy adds the column to an existing table at start.
+
+## Langfuse tracing
+
+For the Compose deployment, set `PROXY_LANGFUSE_ENABLED=true`, `LANGFUSE_HOST`,
+`LANGFUSE_PUBLIC_KEY`, and `LANGFUSE_SECRET_KEY` in the local `.env` file, then recreate
+the Proxy service. Keep credentials out of Git. Local JSONL tracing is independent:
+`PROXY_TRACE_ARCHIVE_ENABLED=false` disables it while Langfuse remains enabled.
+
+Each generation records the messages sent for that model call. The turn trace input
+contains the latest human question, with client context wrappers removed. When the
+optional cost-guard extension is absent or profile extraction fails, the Proxy extracts
+the question itself. Tool-only continuations leave the trace input unchanged; they
+never reuse an earlier question or overwrite it with tool output. This correction
+applies to new requests; it does not backfill existing traces with missing input.
+
+Default generation input uses the existing flattened message representation. For
+native message structures, configure `langfuse.debug: true` in Proxy YAML; this also
+adds request metadata. See the official [input/output troubleshooting guide](https://langfuse.com/faq/all/empty-trace-input-and-output)
+when distinguishing trace-level input from generation input.
