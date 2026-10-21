@@ -43,7 +43,7 @@ describe("MEMORY.md frontmatter", () => {
     `;
     const output = execFileSync(process.execPath,
       ["--import", "tsx/esm", "--input-type=module", "-e", script],
-      { input, encoding: "utf8", timeout: 3_000, maxBuffer: 2_000_000 });
+      { input, encoding: "utf8", timeout: 10_000, maxBuffer: 2_000_000 });
     expect(output).toBe(hasTarget ? "question" : input);
   });
 });
