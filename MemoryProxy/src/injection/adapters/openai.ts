@@ -256,12 +256,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
           break;
         }
         default:
-          // Unknown parts (input_audio, file, ...) were stored as JSON on parse.
-          try {
-            parts.push(JSON.parse(block.content) as Record<string, unknown>);
-          } catch {
-            parts.push({ type: block.type, content: block.content, ...block.metadata });
-          }
+          parts.push({ type: block.type, content: block.content, ...block.metadata });
           break;
       }
     }
