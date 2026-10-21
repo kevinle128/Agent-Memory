@@ -131,6 +131,7 @@ configs:
         enabled: true
         url: http://memory-core:8420
         timeoutMs: 5000
+        apiKey: "${MEMORY_CORE_GATEWAY_API_KEY:-local}"
       sessionInit:
         enabled: true
         skipAssetConfirm: true
