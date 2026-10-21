@@ -36,7 +36,7 @@ describe("parseClaudeUsage", () => {
     expect(windows).toEqual([
       { name: "five_hour", model_scope: null, used_pct: 42, resets_at: Date.parse("2027-01-15T00:10:00.000Z"), observed_at: now, source: "usage_api" },
       { name: "seven_day", model_scope: null, used_pct: 7, resets_at: null, observed_at: now, source: "usage_api" },
-      { name: "seven_day_opus", model_scope: null, used_pct: 90, resets_at: 1_800_001_000_000, observed_at: now, source: "usage_api" },
+      { name: "seven_day_opus", model_scope: "opus", used_pct: 90, resets_at: 1_800_001_000_000, observed_at: now, source: "usage_api" },
     ]);
   });
 
@@ -55,6 +55,26 @@ describe("parseClaudeUsage", () => {
       { name: "five_hour", model_scope: null, used_pct: 12, resets_at: Date.parse("2027-01-15T01:00:00.000Z"), observed_at: now, source: "usage_api" },
       { name: "seven_day", model_scope: null, used_pct: 3, resets_at: null, observed_at: now, source: "usage_api" },
       { name: "weekly_scoped", model_scope: "claude-opus-4-6", used_pct: 80, resets_at: 1_800_002_000_000, observed_at: now, source: "usage_api" },
+      { name: "weekly_scoped", model_scope: "claude-sonnet", used_pct: 99, resets_at: null, observed_at: now, source: "usage_api" },
+    ]);
+  });
+
+  it("keeps inactive limits and scopes a model limit that has only a display name", () => {
+    const windows = parseClaudeUsage({
+      five_hour: { utilization: 16, resets_at: "2026-10-21T16:29:59.953971+00:00" },
+      seven_day_opus: null,
+      limits: [
+        { kind: "session", group: "session", percent: 16, resets_at: "2026-10-21T16:29:59.953971+00:00", scope: null, is_active: true },
+        { kind: "weekly_all", group: "weekly", percent: 5, resets_at: "2026-10-26T15:59:59.953992+00:00", scope: null, is_active: false },
+        { kind: "weekly_scoped", group: "weekly", percent: 100, resets_at: "2026-10-26T16:00:00+00:00", scope: { model: { id: null, display_name: "Fable" }, surface: null }, is_active: false },
+        { kind: "weekly_scoped", group: "weekly", percent: 1, resets_at: null, scope: null, is_active: false },
+      ],
+    }, now);
+    expect(windows).toEqual([
+      { name: "five_hour", model_scope: null, used_pct: 16, resets_at: Date.parse("2026-10-21T16:29:59.953971+00:00"), observed_at: now, source: "usage_api" },
+      { name: "seven_day", model_scope: null, used_pct: 5, resets_at: Date.parse("2026-10-26T15:59:59.953992+00:00"), observed_at: now, source: "usage_api" },
+      { name: "weekly_scoped", model_scope: "Fable", used_pct: 100, resets_at: Date.parse("2026-10-26T16:00:00+00:00"), observed_at: now, source: "usage_api" },
+      { name: "weekly_scoped", model_scope: "weekly_scoped", used_pct: 1, resets_at: null, observed_at: now, source: "usage_api" },
     ]);
   });
 

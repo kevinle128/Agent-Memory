@@ -16,17 +16,23 @@ const REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 const SCOPE = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
 const OAUTH_BETA = "oauth-2025-04-20";
 
-const FLAT_WINDOWS = [
-  "five_hour",
-  "seven_day",
-  "seven_day_oauth_apps",
-  "seven_day_opus",
-  "seven_day_sonnet",
-  "seven_day_fable",
-] as const;
+/** Flat window names of the older payload shape, with the model each one limits (null = shared). */
+const FLAT_WINDOWS: ReadonlyArray<readonly [name: string, modelScope: string | null]> = [
+  ["five_hour", null],
+  ["seven_day", null],
+  ["seven_day_oauth_apps", null],
+  ["seven_day_opus", "opus"],
+  ["seven_day_sonnet", "sonnet"],
+  ["seven_day_fable", "fable"],
+];
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function firstText(...values: unknown[]): string | null {
+  for (const value of values) if (typeof value === "string" && value) return value;
+  return null;
 }
 
 function windowOf(name: string, raw: unknown, now: number, modelScope: string | null = null): SubscriptionQuotaWindow | null {
@@ -48,6 +54,10 @@ function windowOf(name: string, raw: unknown, now: number, modelScope: string | 
  * Usage payload of the Claude OAuth usage API.
  * `limits[]` is the current shape. Flat windows are the older shape and are used only when
  * `limits` is absent.
+ * `is_active` marks only the limit that binds now, so inactive rows are real windows and stay.
+ * A `weekly_scoped` row always limits one model. The API can send `scope.model.id: null` with
+ * only a display name, so the scope falls back to that name. It must never become a shared
+ * window, because a full shared window stops the whole account.
  */
 export function parseClaudeUsage(raw: unknown, now = Date.now()): SubscriptionQuotaWindow[] {
   const body = asRecord(raw);
@@ -55,20 +65,20 @@ export function parseClaudeUsage(raw: unknown, now = Date.now()): SubscriptionQu
     const windows: SubscriptionQuotaWindow[] = [];
     for (const item of body.limits) {
       const row = asRecord(item);
-      if (row.is_active === false) continue;
       const kind = String(row.kind ?? "");
       const scope = asRecord(row.scope);
       const model = asRecord(scope.model);
-      const modelId = typeof model.id === "string" && model.id ? model.id : null;
-      const shared = kind === "session" || kind === "weekly_all" || !modelId;
+      const modelScope = firstText(model.id, model.display_name, scope.surface)
+        ?? (kind === "weekly_scoped" ? kind : null);
+      const shared = kind === "session" || kind === "weekly_all" || !modelScope;
       const name = kind === "session" ? "five_hour" : kind === "weekly_all" ? "seven_day" : (kind || "limit");
-      const parsed = windowOf(name, { percent: row.percent, resets_at: row.resets_at }, now, shared ? null : modelId);
+      const parsed = windowOf(name, { percent: row.percent, resets_at: row.resets_at }, now, shared ? null : modelScope);
       if (parsed) windows.push(parsed);
     }
     return windows;
   }
   return FLAT_WINDOWS
-    .map((name) => windowOf(name, body[name], now))
+    .map(([name, modelScope]) => windowOf(name, body[name], now, modelScope))
     .filter((window): window is SubscriptionQuotaWindow => window !== null);
 }
 
