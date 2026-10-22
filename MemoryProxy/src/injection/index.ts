@@ -401,6 +401,7 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
       l1Limit: config.tdai.memory.l1Limit,
       l2Limit: config.tdai.memory.l2Limit,
       timeoutMs: config.tdai.memory.timeoutMs,
+      profileScopeMode: config.tdai.memory.profileScopeMode,
     };
     // fixed-asset-agents（self + 借入≤2）通过内核 MetadataClient 获取；
     // 内核不可达时 injector 自动降级为"只查当前 agent 的记忆"。

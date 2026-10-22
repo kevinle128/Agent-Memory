@@ -23,6 +23,7 @@ import {
   prependTextToMessage,
 } from "./context.js";
 import type { HookCacheRepo } from "../db/hookCacheRepo.js";
+import { hookCacheId } from "./types.js";
 import type { InjectionObserver, HookResult } from "./observer.js";
 import { NoopInjectionObserver } from "./observer.js";
 
@@ -282,7 +283,7 @@ export class InjectionPipeline {
     }
 
     if (strategy === "session_init") {
-      const cached = await this.hookCacheRepo.get(spaceId, userId, agentSource, sessionId, hook.id);
+      const cached = await this.hookCacheRepo.get(spaceId, userId, agentSource, sessionId, hookCacheId(hook));
       if (cached !== null) {
         console.log(`[hook-cache] session=${sessionId} hook=${hook.id} hit blocks=${cached.length}`);
         return cached;
@@ -303,7 +304,7 @@ export class InjectionPipeline {
       const readOnly = ctx.metadata.readOnly === true;
       if (fresh.length > 0 && !readOnly) {
         try {
-          await this.hookCacheRepo.put(spaceId, userId, agentSource, sessionId, hook.id, fresh);
+          await this.hookCacheRepo.put(spaceId, userId, agentSource, sessionId, hookCacheId(hook), fresh);
           console.log(`[hook-cache] session=${sessionId} hook=${hook.id} miss → self-heal put (blocks=${fresh.length})`);
         } catch (err) {
           console.warn(
@@ -320,7 +321,7 @@ export class InjectionPipeline {
     }
 
     // strategy === "hybrid"
-    const cached = await this.hookCacheRepo.get(spaceId, userId, agentSource, sessionId, hook.id) ?? [];
+    const cached = await this.hookCacheRepo.get(spaceId, userId, agentSource, sessionId, hookCacheId(hook)) ?? [];
     const fresh = await hook.execute(ctx);
     if (cached.length === 0) return fresh;
     if (fresh.length === 0) return cached;

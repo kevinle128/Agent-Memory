@@ -167,6 +167,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
       l1Limit: 5,
       l2Limit: 3,
       timeoutMs: 3000,
+      profileScopeMode: "deny",
     },
   },
   coreSkill: {
@@ -568,6 +569,9 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         l1Limit: yaml.tdai?.memory?.l1Limit ?? DEFAULT_CONFIG.tdai.memory.l1Limit,
         l2Limit: yaml.tdai?.memory?.l2Limit ?? DEFAULT_CONFIG.tdai.memory.l2Limit,
         timeoutMs: yaml.tdai?.memory?.timeoutMs ?? DEFAULT_CONFIG.tdai.memory.timeoutMs,
+        // Only an explicit "legacy" restores the earlier behavior; a missing or
+        // misspelled value keeps the deny default.
+        profileScopeMode: yaml.tdai?.memory?.profileScopeMode === "legacy" ? "legacy" : "deny",
       },
       sessionTrace: yaml.tdai?.sessionTrace,
     },

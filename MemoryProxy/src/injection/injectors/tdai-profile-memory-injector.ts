@@ -1,7 +1,7 @@
 import type { AgentContext, AnchorTarget, CacheStrategy, ContextBlock, InjectionHook, HookPriority, PrewarmInput } from "../types.js";
 import { HOOK_PRIORITY } from "../types.js";
 import { TdaiClient } from "../../tdai/client.js";
-import type { TdaiMemoryConfig } from "../../tdai/types.js";
+import type { ProfileScopeMode, TdaiMemoryConfig } from "../../tdai/types.js";
 import { getTdaiIdentity } from "../../tdai/identity.js";
 import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
@@ -30,6 +30,12 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
   description = "Inject TDAI L3 (persona) + L2 scene index (path-only, agent reads via tool)";
   /** L2/L3 profile snapshot is injected once after session registration, like skill listing. */
   cacheStrategy: CacheStrategy = "session_init";
+  /**
+   * Scoped modes get their own cache id, so blocks cached in "legacy" mode are
+   * not served again after the switch, also in running sessions. "legacy"
+   * keeps the earlier id.
+   */
+  cacheVariant: string | undefined;
 
   /**
    * @param baseConfig  starter TdaiClient config; per-request `serviceId` will
@@ -41,7 +47,13 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
   constructor(
     private baseConfig: TdaiMemoryConfig,
     private coreSkillCfg: Pick<CoreSkillConfig, "endpoint" | "serviceToken" | "serviceId" | "timeoutMs"> | null = null,
-  ) {}
+  ) {
+    this.cacheVariant = this.scopeMode() === "legacy" ? undefined : `${this.scopeMode()}:v2`;
+  }
+
+  private scopeMode(): ProfileScopeMode {
+    return this.baseConfig.profileScopeMode === "legacy" ? "legacy" : "deny";
+  }
 
   async execute(ctx: AgentContext): Promise<ContextBlock[]> {
     const caps = ctx.metadata.custom?.assetCapabilities as { chat_memory?: boolean } | undefined;
@@ -75,6 +87,11 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
       ...this.baseConfig,
       serviceId: spaceId || this.baseConfig.serviceId,
     });
+
+    if (this.scopeMode() === "deny") {
+      const l3Groups = await Promise.all(ctxs.map((c) => loadAgentProfile(client, c, { withL2: false })));
+      return renderUserGlobalBlocks(this.id, l3Groups);
+    }
 
     // 对每个 agent 独立拉 L3 + L2 索引（不读 L2 全文）
     const groups = await Promise.all(ctxs.map((c) => loadAgentProfile(client, c)));
@@ -217,9 +234,16 @@ interface AgentProfileBundle {
   l2Entries: Array<{ path: string; summary?: string }>;
 }
 
-async function loadAgentProfile(client: TdaiClient, c: FixedAssetCtx): Promise<AgentProfileBundle> {
+async function loadAgentProfile(
+  client: TdaiClient,
+  c: FixedAssetCtx,
+  opts: { withL2: boolean } = { withL2: true },
+): Promise<AgentProfileBundle> {
   const tdaiCtx = { teamId: c.teamId, userId: c.userId, agentId: c.agentId, agentName: c.agentName };
-  const [l3, l2Entries] = await Promise.all([client.readL3ForCtx(tdaiCtx), client.listL2ForCtx(tdaiCtx)]);
+  const [l3, l2Entries] = await Promise.all([
+    client.readL3ForCtx(tdaiCtx),
+    opts.withL2 ? client.listL2ForCtx(tdaiCtx) : Promise.resolve([]),
+  ]);
   // L3(persona) 可能在尾部内嵌一份「Scene Navigation」场景索引（plugin 侧 read 会带导航段）。
   // 我们已经单独注入 <l2_scene_index>，必须剥掉 persona 尾部这份，避免 L2 索引重复注入。
   const l3Stripped = l3 ? stripSceneNavigation(l3.content) : "";
@@ -245,4 +269,78 @@ export function stripSceneNavigation(personaContent: string): string {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max)}\n...[truncated ${s.length - max} chars]` : s;
+}
+
+// ── Deny mode: user-global L3 only ──────────────────────────────────────────
+
+/**
+ * First line of an L3 that the user-global persona generator wrote and checked
+ * for project facts. Deny mode injects no L3 without it, so a persona written
+ * by the earlier generator is never injected.
+ */
+export const USER_GLOBAL_SCOPE_MARKER = "<!-- agent-memory:scope=user-global v1 -->";
+
+/** True when the L3 starts with {@link USER_GLOBAL_SCOPE_MARKER}. */
+export function hasUserGlobalMarker(content: string): boolean {
+  return content.trimStart().startsWith(USER_GLOBAL_SCOPE_MARKER);
+}
+
+function stripUserGlobalMarker(content: string): string {
+  return content.trimStart().slice(USER_GLOBAL_SCOPE_MARKER.length).trim();
+}
+
+const INJECTED_PROFILE_NOTE =
+  "L3（persona 长期画像）与 L2 场景索引已直接注入 system。L0/L1 需要用工具主动检索。\n" +
+  "已注入的 L2 内容与当前任务相关但信息不足时，按场景索引中的 path 用 `tdai_read_scene` 读取对应正文；内容已足够时无需再读。";
+
+const USER_GLOBAL_PROFILE_NOTE =
+  "system 中最多只注入跨项目通用的 L3（用户长期画像），不注入任何项目信息，也不注入 L2 场景索引。" +
+  "L0/L1/L2 需要用工具主动检索。";
+
+/** Tools guide for deny mode: it does not claim that an L2 index was injected. */
+export const MEMORY_TOOLS_GUIDE_USER_GLOBAL = MEMORY_TOOLS_GUIDE.replace(INJECTED_PROFILE_NOTE, USER_GLOBAL_PROFILE_NOTE);
+
+/** Scope facts written into block metadata; the Langfuse observer copies them to the span. */
+interface ProfileScopeMeta {
+  mode: ProfileScopeMode;
+  scopesInjected: string[];
+  deniedReason?: string;
+  deniedAgentCount: number;
+}
+
+function renderUserGlobalBlocks(source: string, groups: AgentProfileBundle[]): ContextBlock[] {
+  const allowed = groups.filter((g) => g.l3 && hasUserGlobalMarker(g.l3.content));
+  const scope: ProfileScopeMeta = {
+    mode: "deny",
+    scopesInjected: allowed.length > 0 ? ["global-l3"] : [],
+    deniedAgentCount: groups.length - allowed.length,
+    ...(allowed.length === 0 ? { deniedReason: "no-user-global-l3" } : {}),
+  };
+  if (allowed.length === 0) {
+    return [{
+      type: "text",
+      content: MEMORY_TOOLS_GUIDE_USER_GLOBAL,
+      metadata: { source, agentCount: 0, l3Count: 0, l2Count: 0, mode: "tools-only", scope },
+    }];
+  }
+  const lines: string[] = [
+    "<tdai_profile_memory>",
+    "以下是 TDAI 为当前 agent 维护的跨项目通用长期记忆（不含任何项目信息；项目记忆按需用工具检索）：",
+  ];
+  for (const g of allowed) {
+    const tag = g.ctx.isSelf ? "self" : "imported_from";
+    lines.push(
+      `<agent name=${JSON.stringify(g.ctx.agentName)} role=${JSON.stringify(tag)} agent_id=${JSON.stringify(g.ctx.agentId)}>`,
+      "<l3_core_memory>",
+      truncate(stripUserGlobalMarker(g.l3!.content), 6000),
+      "</l3_core_memory>",
+      "</agent>",
+    );
+  }
+  lines.push("</tdai_profile_memory>", "", MEMORY_TOOLS_GUIDE_USER_GLOBAL);
+  return [{
+    type: "text",
+    content: lines.join("\n"),
+    metadata: { source, agentCount: allowed.length, l3Count: allowed.length, l2IndexCount: 0, mode: "user-global", scope },
+  }];
 }

@@ -16,7 +16,18 @@ export interface TdaiMemoryConfig {
   l1Limit: number;
   l2Limit: number;
   timeoutMs: number;
+  /** How the profile injector scopes L2/L3. See {@link ProfileScopeMode}. Missing means "deny". */
+  profileScopeMode?: ProfileScopeMode;
 }
+
+/**
+ * How the profile injector scopes L2/L3 memory:
+ *   - "legacy": inject the agent's whole L3 and L2 index into every session
+ *     (the earlier behavior; leaks project facts into unrelated sessions).
+ *   - "deny": inject only an L3 that carries the user-global scope marker and
+ *     no L2 index. Any other value read from config falls back to "deny".
+ */
+export type ProfileScopeMode = "legacy" | "deny";
 
 export interface TdaiIdentity {
   teamId: string;

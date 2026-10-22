@@ -21,6 +21,7 @@ import type {
   InjectionHook,
   PrewarmInput,
 } from "./types.js";
+import { hookCacheId } from "./types.js";
 
 export interface PrewarmOptions {
   /** Total timeout for the whole prewarm pass, in ms. Defaults to 20000. */
@@ -154,7 +155,7 @@ export async function prewarmAll(
       if (arr.length === 0) {
         return { hookId: hook.id, status: "skipped" as const, reason: "empty blocks" };
       }
-      return { hookId: hook.id, status: "ok" as const, blocks: arr };
+      return { hookId: hook.id, cacheId: hookCacheId(hook), status: "ok" as const, blocks: arr };
     } catch (err) {
       return {
         hookId: hook.id,
@@ -189,11 +190,11 @@ export async function prewarmAll(
       continue;
     }
     const r = s.value as
-      | { hookId: string; status: "ok"; blocks: ContextBlock[] }
+      | { hookId: string; cacheId: string; status: "ok"; blocks: ContextBlock[] }
       | { hookId: string; status: "skipped"; reason: string }
       | { hookId: string; status: "error"; reason: string };
     if (r.status === "ok") {
-      okEntries.push({ hookId: r.hookId, blocks: r.blocks });
+      okEntries.push({ hookId: r.cacheId, blocks: r.blocks });
       cachedHookIds.push(r.hookId);
     } else {
       skipped.push({ hookId: r.hookId, reason: r.reason });

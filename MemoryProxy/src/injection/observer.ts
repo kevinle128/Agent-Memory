@@ -319,6 +319,10 @@ export class LangfuseInjectionObserver implements InjectionObserver {
       // 注入 metadata 的 injection meta 字段（AgentContextMetadata.spaceId）
       // 内部保留 spaceId 名字；只有写进 Langfuse 的 key 改成 instanceId。
       if (this.meta?.spaceId) obsMeta.instanceId = this.meta.spaceId;
+      // Memory-scope decision of the hook (mode, injected scopes, denied reason),
+      // so that a wrong or missing injection is visible in the trace.
+      const scope = blocks[0]?.metadata?.scope;
+      if (scope !== undefined) obsMeta.scope = scope;
 
       const span = startObservation(
         name,

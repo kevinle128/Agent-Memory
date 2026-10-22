@@ -754,6 +754,11 @@ tdai:
     l1Limit: 5              # L1 召回最大条数
     l2Limit: 3              # L2/L3 注入最大条数
     timeoutMs: 5000         # 单次内核调用超时（毫秒）
+    # How L2/L3 are scoped when injected. "deny" (default): inject only an L3 that
+    # carries the user-global scope marker, and no L2 scene index. "legacy": inject
+    # the whole L3 and L2 index into every session (leaks project facts into
+    # unrelated sessions). Any other value means "deny".
+    profileScopeMode: deny
   sessionTrace:
     maxQueuedBytes: 1073741824  # 在途会话上传（/v3/session/add）合计字节上限，超出的轮次直接丢弃。默认 1 GiB
 

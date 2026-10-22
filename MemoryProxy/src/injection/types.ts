@@ -347,6 +347,13 @@ export interface InjectionHook {
    */
   cacheStrategy?: CacheStrategy;
   /**
+   * Optional version of the hook's cached content. When set, the cache entry id
+   * is `<id>::<cacheVariant>` (see {@link hookCacheId}), so a change of variant
+   * stops the pipeline from reading blocks cached under the earlier id —
+   * including blocks of sessions that are already running.
+   */
+  cacheVariant?: string;
+  /**
    * Optional prewarm hook. Called once at session_init when
    * `cacheStrategy ∈ {"session_init", "hybrid"}`. Returns the blocks to be
    * persisted into the per-session cache. If omitted or throwing, the hook
@@ -359,6 +366,11 @@ export interface InjectionHook {
    * @returns ContextBlocks to inject. Return empty array to skip injection.
    */
   execute(ctx: AgentContext): Promise<ContextBlock[]> | ContextBlock[];
+}
+
+/** Id under which a hook's blocks are cached: `<id>` or `<id>::<cacheVariant>`. */
+export function hookCacheId(hook: Pick<InjectionHook, "id" | "cacheVariant">): string {
+  return hook.cacheVariant ? `${hook.id}::${hook.cacheVariant}` : hook.id;
 }
 
 // ── Hook Registry ─────────────────────────────────────────────────────────────

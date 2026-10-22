@@ -324,6 +324,7 @@ export interface TdaiConfig {
     l1Limit: number;
     l2Limit: number;
     timeoutMs: number;
+    profileScopeMode: import("./tdai/types.js").ProfileScopeMode;
   };
   /** Online session trace uploads to `/v3/session/add`. */
   sessionTrace?: {
