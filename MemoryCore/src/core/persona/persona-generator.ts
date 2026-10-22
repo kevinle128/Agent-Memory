@@ -19,6 +19,14 @@ import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import type { ResolvedMemoryPrompt } from "../memory-prompt/types.js";
 import { composeMemorySystemPrompt } from "../memory-prompt/composer.js";
+import {
+  USER_GLOBAL_REJECTED_MARKER,
+  USER_GLOBAL_SCOPE_MARKER,
+  checkUserGlobalPersona,
+  readScopeState,
+  stripScopeMarkers,
+  type ScopeCheckResult,
+} from "./user-global-scope.js";
 
 const TAG = "[memory-tdai] [persona]";
 
@@ -32,6 +40,7 @@ export class PersonaGenerator {
   private instanceId: string | undefined;
   private storage: StorageAdapter | undefined;
   private traceContext: TraceContext | undefined;
+  private scopeJudge: LLMRunner;
 
   constructor(opts: {
     dataDir: string;
@@ -55,6 +64,11 @@ export class PersonaGenerator {
     storage?: StorageAdapter;
     /** langfuse 上报身份四元组（team/user/agent/session），填充 trace 顶级字段。 */
     traceContext?: TraceContext;
+    /**
+     * Text-only runner (enableTools=false) that checks the persona for project
+     * facts. Falls back to a CleanContextRunner on the same model.
+     */
+    scopeJudge?: LLMRunner;
   }) {
     this.dataDir = opts.dataDir;
     this.logger = opts.logger;
@@ -69,6 +83,12 @@ export class PersonaGenerator {
       config: opts.config,
       modelRef: opts.model,
       enableTools: true,
+      logger: opts.logger,
+    });
+    this.scopeJudge = opts.scopeJudge ?? new CleanContextRunner({
+      config: opts.config,
+      modelRef: opts.model,
+      enableTools: false,
       logger: opts.logger,
     });
     this.logger?.debug?.(`${TAG} Generator created: model=${opts.model ?? "(default)"}, promptMode=${this.promptMode}, dataDir=${opts.dataDir}`);
@@ -88,21 +108,33 @@ export class PersonaGenerator {
     const targetFile = StoragePaths.persona;
     const targetLabel = this.promptMode === "code" ? "team operating doctrine" : "persona";
 
-    // 1. Read existing L3 document (strip navigation)
+    // 1. Read existing L3 document (strip navigation). Only a persona that
+    // passed the user-global scope check is updated incrementally. Any other
+    // persona may hold project facts, so it is not shown to the model and is
+    // rewritten from all scenes.
     let existingPersona: string | undefined;
+    let existingRaw: string | null = null;
+    let fullRewrite = false;
     try {
-      let raw: string | null;
       if (this.storage) {
-        raw = await this.storage.readFile(targetFile);
+        existingRaw = await this.storage.readFile(targetFile);
       } else {
         const fs = await import("node:fs/promises");
         const path = await import("node:path");
-        raw = await fs.default.readFile(path.default.join(this.dataDir, targetFile), "utf-8");
+        existingRaw = await fs.default.readFile(path.default.join(this.dataDir, targetFile), "utf-8");
       }
-      if (raw) {
-        existingPersona = stripSceneNavigation(raw).trim() || undefined;
+      if (existingRaw) {
+        const body = stripScopeMarkers(stripSceneNavigation(existingRaw)).trim();
+        if (body && readScopeState(existingRaw) === "accepted") {
+          existingPersona = body;
+        } else if (body) {
+          fullRewrite = true;
+        }
       }
-      this.logger?.debug?.(`${TAG} Existing ${targetLabel}: ${existingPersona ? `${existingPersona.length} chars` : "empty"}`);
+      this.logger?.debug?.(
+        `${TAG} Existing ${targetLabel}: ${existingPersona ? `${existingPersona.length} chars` : "empty"}` +
+        (fullRewrite ? " (no accepted scope marker; full rewrite from all scenes)" : ""),
+      );
     } catch {
       this.logger?.debug?.(`${TAG} No existing ${targetFile} file`);
     }
@@ -110,7 +142,7 @@ export class PersonaGenerator {
     // 2. Load scene index + identify changed scenes
     const index = await readSceneIndex(this.dataDir, this.storage);
     const changedScenes = index.filter((e) => {
-      if (!cp.last_persona_time) return true;
+      if (fullRewrite || !cp.last_persona_time) return true;
       const updatedMs = new Date(e.updated).getTime();
       const personaMs = new Date(cp.last_persona_time).getTime();
       // If either date is unparseable (NaN), treat as changed (conservative)
@@ -193,6 +225,8 @@ export class PersonaGenerator {
     if (!this.storage) {
       const path = await import("node:path");
       await bm.backupFile(path.default.join(this.dataDir, targetFile), "persona", `offset${cp.total_processed}`, this.backupCount);
+    } else if (existingRaw) {
+      await this.backupToStorage(existingRaw, `offset${cp.total_processed}`);
     }
     const personaWriteMarkerBefore = await readPersonaWriteMarker(
       this.dataDir,
@@ -200,78 +234,52 @@ export class PersonaGenerator {
       this.storage,
     );
 
-    // 8. Run LLM agent (sandboxed to dataDir, tools enabled — LLM writes target L3 file directly)
-    try {
-      this.logger?.debug?.(`${TAG} Calling LLM for ${targetFile} generation (timeout=180s, tools=enabled, workspaceDir=${this.dataDir})...`);
-      // langfuse trace 语义：L3 persona 生成有独立 name / 顶级 user/session 列 / 可筛选 tags。
-      const traceParams = buildTraceParams("memory.persona-generate", this.traceContext);
-      await this.runner.run({
+    // 8–10. Run the LLM (it writes the L3 file with tools), read and clean the
+    // result, and check it for project facts. On a failed check, run once more
+    // with the findings; then record the outcome in the scope marker.
+    const sceneHints = index.map((e) => ({ filename: e.filename, summary: e.summary }));
+    const first = await this.writeAndRead({
+      systemPrompt, userPrompt, targetFile, personaFilePath, startMs,
+      fileExistedBefore: existingRaw !== null && existingRaw !== "",
+      personaWriteMarkerBefore,
+    });
+    if (first === null) return "failed";
+    let personaText = first;
+    let scope = await checkUserGlobalPersona({ persona: personaText, sceneIndex: sceneHints, judge: this.scopeJudge });
+    if (!scope.ok) {
+      this.logger?.warn(`${TAG} ${targetFile} failed the user-global scope check (${describeScopeFailure(scope)}); retrying once`);
+      const markerBeforeRetry = await readPersonaWriteMarker(this.dataDir, targetFile, this.storage);
+      const retried = await this.writeAndRead({
         systemPrompt,
-        prompt: userPrompt,
-        taskId: "persona-generation",
-        timeoutMs: 180_000,
-        // maxTokens omitted → core uses the resolved model's maxTokens from catalog
-        workspaceDir: this.dataDir,
-        // Service mode: LLM tools read/write via StorageAdapter (COS) instead of local FS
-        storage: this.storage,
-        storagePrefix: this.storage ? "" : undefined,
-        ...traceParams,
+        userPrompt: `${userPrompt}\n${scopeRetryInstruction(scope)}`,
+        targetFile, personaFilePath, startMs,
+        fileExistedBefore: true,
+        personaWriteMarkerBefore: markerBeforeRetry,
       });
-      this.logger?.debug?.(`${TAG} LLM runner completed`);
-    } catch (err) {
-      const elapsedMs = Date.now() - startMs;
-      this.logger?.error(`${TAG} Persona generation failed after ${elapsedMs}ms: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-      return "failed";
-    }
-    const personaWriteMarkerAfter = await readPersonaWriteMarker(
-      this.dataDir,
-      targetFile,
-      this.storage,
-    );
-
-    // 9. Read LLM-written persona.md and apply post-processing
-    let personaText: string;
-    try {
-      let raw: string | null;
-      if (this.storage) {
-        raw = await this.storage.readFile(targetFile);
-      } else {
-        const fs = await import("node:fs/promises");
-        raw = await fs.default.readFile(personaFilePath, "utf-8");
+      if (retried !== null) {
+        personaText = retried;
+        scope = await checkUserGlobalPersona({ persona: personaText, sceneIndex: sceneHints, judge: this.scopeJudge });
       }
-      if (!raw) throw new Error(`${targetFile} not found`);
-      personaText = raw;
-    } catch {
-      // LLM failed to write persona.md — treat as failure
-      this.logger?.error(`${TAG} LLM did not write ${targetFile} — file not found after runner completed`);
-      return "failed";
     }
-    if (
-      existingPersona &&
-      personaWriteMarkerBefore &&
-      personaWriteMarkerAfter === personaWriteMarkerBefore
-    ) {
-      this.logger?.error(
-        `${TAG} LLM completed without writing ${targetFile}; preserving checkpoint for retry`,
+    if (scope.ok) {
+      this.logger?.info(`${TAG} ${targetFile} passed the user-global scope check`);
+    } else {
+      this.logger?.warn(
+        `${TAG} ${targetFile} failed the user-global scope check twice (${describeScopeFailure(scope)}); ` +
+        `writing it with the rejected marker, so it is not injected`,
       );
-      return "failed";
-    }
-
-    // 10. Strip any navigation the LLM might have added + sanitize for safe injection
-    personaText = escapeXmlTags(stripSceneNavigation(personaText).trim());
-
-    if (!personaText) {
-      this.logger?.error(`${TAG} LLM wrote empty ${targetFile} — skipping`);
-      return "failed";
     }
 
     const personaUnchanged =
+      scope.ok &&
       existingPersona !== undefined &&
       personaText === escapeXmlTags(existingPersona);
 
-    // 11. Append fresh scene navigation and write final content
+    // 11. Prepend the scope marker, append fresh scene navigation, write final content
+    const marker = scope.ok ? USER_GLOBAL_SCOPE_MARKER : USER_GLOBAL_REJECTED_MARKER;
     const nav = generateSceneNavigation(index, undefined, false);
-    const finalContent = nav ? `${personaText}\n\n${nav}\n` : personaText;
+    const markedPersona = `${marker}\n${personaText}`;
+    const finalContent = nav ? `${markedPersona}\n\n${nav}\n` : markedPersona;
     if (this.storage) {
       await this.storage.writeFile(targetFile, finalContent);
     } else {
@@ -314,6 +322,94 @@ export class PersonaGenerator {
   }
 
   /**
+   * Run the tool-enabled LLM that writes the L3 file, then read the file and
+   * return its cleaned body (navigation and scope markers removed, XML tags
+   * escaped). Returns null when the run fails or writes nothing usable.
+   */
+  private async writeAndRead(args: {
+    systemPrompt: string;
+    userPrompt: string;
+    targetFile: string;
+    personaFilePath: string;
+    startMs: number;
+    /** The L3 file existed before this run, so an unchanged write marker means the LLM did not write it. */
+    fileExistedBefore: boolean;
+    personaWriteMarkerBefore: string | undefined;
+  }): Promise<string | null> {
+    const { systemPrompt, userPrompt, targetFile, personaFilePath, startMs, fileExistedBefore, personaWriteMarkerBefore } = args;
+    try {
+      this.logger?.debug?.(`${TAG} Calling LLM for ${targetFile} generation (timeout=180s, tools=enabled, workspaceDir=${this.dataDir})...`);
+      // langfuse trace 语义：L3 persona 生成有独立 name / 顶级 user/session 列 / 可筛选 tags。
+      const traceParams = buildTraceParams("memory.persona-generate", this.traceContext);
+      await this.runner.run({
+        systemPrompt,
+        prompt: userPrompt,
+        taskId: "persona-generation",
+        timeoutMs: 180_000,
+        // maxTokens omitted → core uses the resolved model's maxTokens from catalog
+        workspaceDir: this.dataDir,
+        // Service mode: LLM tools read/write via StorageAdapter (COS) instead of local FS
+        storage: this.storage,
+        storagePrefix: this.storage ? "" : undefined,
+        ...traceParams,
+      });
+      this.logger?.debug?.(`${TAG} LLM runner completed`);
+    } catch (err) {
+      const elapsedMs = Date.now() - startMs;
+      this.logger?.error(`${TAG} Persona generation failed after ${elapsedMs}ms: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+      return null;
+    }
+    const personaWriteMarkerAfter = await readPersonaWriteMarker(this.dataDir, targetFile, this.storage);
+
+    let raw: string | null;
+    try {
+      if (this.storage) {
+        raw = await this.storage.readFile(targetFile);
+      } else {
+        const fs = await import("node:fs/promises");
+        raw = await fs.default.readFile(personaFilePath, "utf-8");
+      }
+      if (!raw) throw new Error(`${targetFile} not found`);
+    } catch {
+      // LLM failed to write persona.md — treat as failure
+      this.logger?.error(`${TAG} LLM did not write ${targetFile} — file not found after runner completed`);
+      return null;
+    }
+    if (fileExistedBefore && personaWriteMarkerBefore && personaWriteMarkerAfter === personaWriteMarkerBefore) {
+      this.logger?.error(`${TAG} LLM completed without writing ${targetFile}; preserving checkpoint for retry`);
+      return null;
+    }
+
+    // Strip any navigation or scope marker the LLM might have added + sanitize for safe injection
+    const personaText = escapeXmlTags(stripScopeMarkers(stripSceneNavigation(raw)).trim());
+    if (!personaText) {
+      this.logger?.error(`${TAG} LLM wrote empty ${targetFile} — skipping`);
+      return null;
+    }
+    return personaText;
+  }
+
+  /**
+   * Keep a copy of the current L3 file before the LLM overwrites it, in storage
+   * mode (COS / row view). `.backup/` keys route to the non-profile backend.
+   * Keeps the newest `backupCount` copies.
+   */
+  private async backupToStorage(content: string, tag: string): Promise<void> {
+    if (!this.storage) return;
+    const dir = ".backup/persona/";
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      await this.storage.writeFile(`${dir}${stamp}-${tag}.md`, content);
+      const names = (await this.storage.readdirNames(dir, ".md")).sort();
+      for (const old of names.slice(0, Math.max(0, names.length - this.backupCount))) {
+        await this.storage.unlink(`${dir}${old}`);
+      }
+    } catch (err) {
+      this.logger?.warn(`${TAG} persona backup failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
    * Backward-compatible wrapper: local generation + checkpoint advance.
    */
   async generate(triggerReason?: string): Promise<boolean> {
@@ -344,4 +440,21 @@ async function readPersonaWriteMarker(
   } catch {
     return undefined;
   }
+}
+
+function describeScopeFailure(scope: ScopeCheckResult): string {
+  return scope.leaks.length > 0 ? `${scope.reason}: ${scope.leaks.slice(0, 10).join(", ")}` : String(scope.reason);
+}
+
+/** Extra user-prompt section for the second attempt after a failed scope check. */
+function scopeRetryInstruction(scope: ScopeCheckResult): string {
+  const items = scope.leaks.length > 0
+    ? scope.leaks.map((l) => `- ${l}`).join("\n")
+    : "- （检查未能完成：请确认全文不含任何项目、产品、工具名、文件、版本或当前任务）";
+  return (
+    `\n## ⛔ 作用域检查未通过\n\n` +
+    `persona.md 会注入到用户所有项目的会话中，因此只能包含跨项目成立的内容。` +
+    `当前 persona.md 含有以下项目相关内容，必须删除或改写成不含具体名称的通用描述，其余内容保持不变：\n\n` +
+    `${items}\n`
+  );
 }

@@ -1388,11 +1388,16 @@ export function createL3Runner(opts: {
   instanceId?: string;
   /** Host-neutral LLM runner for L3 persona generation (standalone/gateway mode). Must have enableTools=true. */
   llmRunner?: import("../core/types.js").LLMRunner;
+  /**
+   * Text-only runner (enableTools=false) for the persona's user-global scope
+   * check. When absent, PersonaGenerator builds one on the persona model.
+   */
+  scopeJudgeRunner?: import("../core/types.js").LLMRunner;
   /** StorageAdapter for file operations (COS/local). */
   storage?: StorageAdapter;
   checkpointLock?: import("./checkpoint.js").CheckpointLockOptions;
 }): ((context?: L3JevExecutionContext) => Promise<void>) {
-  const { pluginDataDir, cfg, openclawConfig, vectorStore, logger, instanceId, llmRunner, storage } = opts;
+  const { pluginDataDir, cfg, openclawConfig, vectorStore, logger, instanceId, llmRunner, scopeJudgeRunner, storage } = opts;
 
   return async (context?: L3JevExecutionContext) => {
     const scopes = await discoverProfileScopes(pluginDataDir, storage, logger);
@@ -1555,6 +1560,7 @@ export function createL3Runner(opts: {
         logger,
         instanceId,
         llmRunner,
+        scopeJudge: scopeJudgeRunner,
         storage: scopedStore,
         traceContext: scopeIsolation,
       });

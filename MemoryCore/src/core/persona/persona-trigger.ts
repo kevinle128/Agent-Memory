@@ -9,6 +9,7 @@ import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 
 import type { Logger } from "../types.js";
+import { readScopeState } from "./user-global-scope.js";
 
 const TAG = "[memory-tdai] [trigger]";
 
@@ -74,6 +75,17 @@ export class PersonaTrigger {
       return result;
     }
 
+    // Priority 2.6: Scope migration — the persona was written before the
+    // user-global scope check existed (no scope marker). The proxy does not
+    // inject such a persona, so regenerate it from all scenes now instead of
+    // waiting for the threshold. A rejected marker does not trigger here, so a
+    // persona that fails the check is retried only on the normal triggers.
+    if (hasPersonaBody && hasSceneFiles && (await this.personaScopeState()) === "none") {
+      const result: TriggerResult = { should: true, reason: "迁移：persona 缺少 user-global 作用域标记，需要按全部场景重新生成" };
+      this.logger?.debug?.(`${TAG} Trigger P2.6 (scope migration): persona has no user-global scope marker`);
+      return result;
+    }
+
     // Priority 3: First scene block extraction
     if (cp.scenes_processed === 1 && cp.memories_since_last_persona > 0) {
       const result: TriggerResult = { should: true, reason: "首次 Scene Block 提取完成" };
@@ -111,26 +123,31 @@ export class PersonaTrigger {
     }
   }
 
+  /** Scope state recorded on the first line of persona.md ("none" when unreadable). */
+  private async personaScopeState(): Promise<ReturnType<typeof readScopeState>> {
+    const raw = await this.readPersona();
+    return raw ? readScopeState(raw) : "none";
+  }
+
+  private async readPersona(): Promise<string | null> {
+    try {
+      if (this.storage) return await this.storage.readFile(StoragePaths.persona);
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      return await fs.default.readFile(path.default.join(this.dataDir, "persona.md"), "utf-8");
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Check whether persona.md has a non-empty body (excluding scene navigation).
    * Returns false if the file doesn't exist, is empty, or only contains
    * scene navigation (no actual persona content).
    */
   private async hasPersonaBody(): Promise<boolean> {
-    try {
-      let raw: string | null;
-      if (this.storage) {
-        raw = await this.storage.readFile(StoragePaths.persona);
-      } else {
-        const fs = await import("node:fs/promises");
-        const path = await import("node:path");
-        raw = await fs.default.readFile(path.default.join(this.dataDir, "persona.md"), "utf-8");
-      }
-      if (!raw) return false;
-      const body = stripSceneNavigation(raw).trim();
-      return body.length > 0;
-    } catch {
-      return false;
-    }
+    const raw = await this.readPersona();
+    if (!raw) return false;
+    return stripSceneNavigation(raw).trim().length > 0;
   }
 }

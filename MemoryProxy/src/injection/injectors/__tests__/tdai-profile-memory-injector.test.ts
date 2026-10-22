@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const profile = vi.hoisted(() => ({
@@ -139,5 +140,15 @@ describe("TdaiProfileMemoryInjector in legacy mode", () => {
     expect(out).toContain("Agent-Memory");
     expect(out).toContain("Agent-Memory-Chay-Local.md");
     expect(out).toContain(MEMORY_TOOLS_GUIDE);
+  });
+});
+
+describe("USER_GLOBAL_SCOPE_MARKER", () => {
+  it("is the same string that the MemoryCore persona generator writes", () => {
+    const core = readFileSync(
+      new URL("../../../../../MemoryCore/src/core/persona/user-global-scope.ts", import.meta.url),
+      "utf-8",
+    );
+    expect(core).toContain(`export const USER_GLOBAL_SCOPE_MARKER = "${USER_GLOBAL_SCOPE_MARKER}";`);
   });
 });

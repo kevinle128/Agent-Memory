@@ -123,6 +123,7 @@ async function createSeedPipeline(opts: SeedRuntimeOptions): Promise<{ pipeline:
     vectorStore: pipeline.vectorStore,
     logger,
     llmRunner: l2l3LlmRunner,
+    scopeJudgeRunner: l1LlmRunner,
   }));
 
   return { pipeline, cfg };

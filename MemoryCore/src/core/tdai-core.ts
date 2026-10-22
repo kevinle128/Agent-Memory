@@ -780,6 +780,7 @@ export class TdaiCore {
         logger: this.logger,
         instanceId: this.instanceId,
         llmRunner: l2l3LlmRunner,
+        scopeJudgeRunner: l1LlmRunner,
         storage: this.storage,
       });
       await l3Runner();
@@ -1213,6 +1214,9 @@ export class TdaiCore {
     const llmRunner = useStandaloneRunner
       ? trackingFactory.createRunner({ enableTools: true })
       : undefined;
+    const scopeJudgeRunner = useStandaloneRunner
+      ? trackingFactory.createRunner({ enableTools: false })
+      : undefined;
 
     const runner = createL3Runner({
       pluginDataDir: this.dataDir,
@@ -1222,11 +1226,13 @@ export class TdaiCore {
       logger: this.logger,
       instanceId: this.instanceId,
       llmRunner,
+      scopeJudgeRunner,
       storage: storage ?? this.getStorage(),
       checkpointLock,
     });
     await runner(executionContext);
-    const creditUsed: number = (llmRunner as any)?.accumulatedCredit ?? 0;
+    const creditUsed: number =
+      ((llmRunner as any)?.accumulatedCredit ?? 0) + ((scopeJudgeRunner as any)?.accumulatedCredit ?? 0);
     return { creditUsed };
   }
 
