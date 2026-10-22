@@ -35,6 +35,7 @@ import type { ProxyConfig } from "../types.js";
 import { emitBridgeToolCallTelemetry, emitBridgeRejectTelemetry, emitSkillUsageTelemetry, agentSourceFromSessionKey } from "../memory/bridge-telemetry.js";
 import { getCoreSkillClient, type CoreSkillClient } from "./core-client.js";
 import { renderSkillResult } from "./selection/query.js";
+import { sessionKeyCandidates } from "../agent-adapters/index.js";
 
 /**
  * 二选一的 pin repo（KvVersionPinRepo 或 VersionPinRepo）——
@@ -300,10 +301,7 @@ function bindingToIdFields(
  * 恢复而不 401。
  */
 function loadSessionIdsL1(sessionId: string): SessionIdFields | null {
-  const candidates = sessionId.includes(":")
-    ? [sessionId]
-    : [sessionId, `codebuddy:${sessionId}`, `claude-code:${sessionId}`];
-  for (const k of candidates) {
+  for (const k of sessionKeyCandidates(sessionId)) {
     const s = getSessionStore().get(k);
     if (s) {
       const fields = stateToIdFields(s, k);

@@ -3090,6 +3090,11 @@ export class TdaiGateway {
               gateway.logger.warn(`[executor] L1 drain enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
             });
           } else if (result.hasMore) {
+            // The worker sets conversation_count after this method returns
+            // (cascadeSchedule). A timer-fired L1 task is skipped when the
+            // count is 0, so ask the worker to keep the count at 1; else the
+            // drain run does nothing and the tail waits for a new conversation.
+            (task as any)._l1TailPending = true;
             gateway.statefulPipelineManager.armL1IdleAfterDrain(task.sessionId, instanceId, teamId, agentId).catch((err) => {
               gateway.logger.warn(`[executor] L1 idle arm failed: ${err instanceof Error ? err.message : String(err)}`);
             });
@@ -3243,9 +3248,12 @@ export class TdaiGateway {
           }
         }
       },
-      async executeFlush(task: TaskPayload) {
-        await core.handleSessionEnd(task.sessionId);
-      },
+      // NOTE: intentionally no `executeFlush`. The pipeline worker falls back
+      // to executeL1 for "flush" tasks (`executeFlush?.(...) ?? executeL1(...)`),
+      // which is what makes `/session/end` actually run extraction. Overriding
+      // it with core.handleSessionEnd() only re-enqueued another flush task
+      // (or no-opped once conversation_count hit 0), so no code path in the
+      // flush flow ever reached runL1WithStore.
 
       // ── Offload executors (L1 summary, L1.5 task judgment, L2 MMD update) ──
       async executeOffloadL1(task: TaskPayload, signal?: AbortSignal) {

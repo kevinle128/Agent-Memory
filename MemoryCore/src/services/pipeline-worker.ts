@@ -18,6 +18,7 @@ import type { IStateBackend, TaskPayload } from "../core/state/types.js";
 import { buildPipelineTimerMember } from "../core/state/timer-member.js";
 import { serializeTraceContext } from "../core/report/trace-propagation.js";
 import { obsLogger } from "../core/report/obs-logger.js";
+import { l1RearmDelayMs } from "../core/record/l1-failure.js";
 
 // ============================
 // Types
@@ -126,6 +127,9 @@ export interface DeadLetterEntry {
 
 const TAG = "[pipeline-worker]";
 
+/** Maximum number of in-process dead-letter entries (oldest dropped first). */
+export const DEAD_LETTER_QUEUE_MAX = 1000;
+
 interface ClaimedTask extends TaskPayload {
   _msgId?: string;
   _ownerId?: string;
@@ -206,6 +210,8 @@ export class PipelineWorker {
     taskOwnershipLost: 0,
     /** Number of parked/active claim heartbeat calls that failed or lost ownership. */
     claimRefreshFailed: 0,
+    /** Number of L1/flush tasks whose L1 extraction failed and were re-armed as an L1_idle timer instead of a dead letter. */
+    tasksRearmed: 0,
   };
 
   constructor(backend: IStateBackend, executor: TaskExecutor, config?: PipelineWorkerConfig, logger?: Logger) {
@@ -539,7 +545,7 @@ export class PipelineWorker {
           }
           this.metrics.tasksRetried++;
         } else {
-          await this.moveToDeadLetter(task, errMsg, retryCount);
+          await this.moveToDeadLetter(task, errMsg, retryCount, err);
         }
       } finally {
         clearInterval(heartbeatTimer);
@@ -697,7 +703,7 @@ export class PipelineWorker {
         }
         this.metrics.tasksRetried++;
       } else {
-        await this.moveToDeadLetter(task, errMsg, retryCount);
+        await this.moveToDeadLetter(task, errMsg, retryCount, err);
       }
     } finally {
       // Step 6: 停止续约 + 释放锁
@@ -1012,8 +1018,12 @@ export class PipelineWorker {
 
     if (task.type === "L1" || task.type === "flush") {
       // L1 完成 → reset session-level L1 state, then advance agent/profile-level L2 timers.
+      // When the executor armed an L1_idle timer to drain an L0 tail
+      // (`_l1TailPending`), keep the count at 1: a timer-fired L1 task is
+      // skipped when the count is 0, and the tail would then wait for the
+      // next conversation.
       await this.backend.updateSessionState(task.instanceId, task.sessionId, {
-        conversation_count: 0,
+        conversation_count: (task as any)._l1TailPending === true ? 1 : 0,
       }, tid, aid);
       const profileScopes = Array.isArray((task as any)._l2ProfileScopes)
         ? ((task as any)._l2ProfileScopes as string[]).filter(Boolean)
@@ -1034,7 +1044,29 @@ export class PipelineWorker {
     if (task.type === "L2") {
       // If L2 was skipped (no new L1 records), don't cascade to L3 or arm timer
       if ((task as any)._l2Skipped) {
-        this.logger?.debug?.(`${TAG} [${task.instanceId}/${task.sessionId}] L2 skipped (no new data), not arming timer or enqueuing L3`);
+        // L2 made no scene change — common once the scene set is at maxScenes,
+        // so CREATE is blocked and no existing scene is updated. Don't arm the
+        // L2 timer or advance L2 state, but DO still enqueue L3. Otherwise,
+        // once every session's L1 is fully drained, no L2 ever produces a
+        // change, so L3 is never reached and the persona can never
+        // (re)generate — even with request_persona_update set — and the dead
+        // end recurs after every restart (l2LastRunTime is in-memory, so the
+        // first post-restart L2 for each session is a cold-start skip).
+        // PersonaTrigger.shouldGenerate() (checkpoint-only, no LLM) stays the
+        // sole gate, so this is cheap and idempotent: it returns should=false
+        // in the steady state and only generates on request/threshold/recovery.
+        this.logger?.debug?.(`${TAG} [${task.instanceId}/${task.sessionId}] L2 skipped (no new data); enqueuing L3 anyway (PersonaTrigger gates actual generation)`);
+        await this.backend.enqueueTask({
+          id: `L3-${task.id}`,
+          type: "L3",
+          instanceId: task.instanceId,
+          sessionId: task.sessionId,
+          teamId: tid,
+          agentId: aid,
+          priority: 2,
+          data: task.data ? { ...task.data, ...serializeTraceContext() } : { teamId: tid, agentId: aid, ...serializeTraceContext() },
+          createdAt: now,
+        });
         return;
       }
 
@@ -1155,8 +1187,21 @@ export class PipelineWorker {
   // Dead Letter (#13)
   // ============================
 
-  private async moveToDeadLetter(task: TaskPayload, error: string, retryCount: number): Promise<void> {
+  private async moveToDeadLetter(task: TaskPayload, error: string, retryCount: number, cause?: unknown): Promise<void> {
     const claimedTask = task as ClaimedTask;
+
+    // An L1 extraction failure keeps its L0 batch: the L1 cursor did not
+    // move. Do not dead-letter it; schedule a new L1 run instead. Transient
+    // failures retry until the provider is back; a deterministic group is
+    // quarantined by the runner after a small number of attempts, so the
+    // retries end.
+    const retryAfterMs = (task.type === "L1" || task.type === "flush")
+      ? l1RearmDelayMs(cause)
+      : undefined;
+    if (retryAfterMs !== undefined) {
+      await this.rearmFailedL1(claimedTask, error, retryCount, retryAfterMs);
+      return;
+    }
 
     // Persist the terminal failure before ACK. If persistence fails, leave the
     // original message in PEL so stale recovery can retry without silent loss.
@@ -1172,6 +1217,9 @@ export class PipelineWorker {
 
     const entry: DeadLetterEntry = { task, error, retryCount, deadAt: Date.now() };
     this.deadLetterQueue.push(entry);
+    if (this.deadLetterQueue.length > DEAD_LETTER_QUEUE_MAX) {
+      this.deadLetterQueue.splice(0, this.deadLetterQueue.length - DEAD_LETTER_QUEUE_MAX);
+    }
     this.metrics.tasksDeadLettered++;
 
     this.logger.error(
@@ -1196,6 +1244,59 @@ export class PipelineWorker {
     });
   }
 
+  /**
+   * Replace the dead letter of an L1 extraction failure with an L1_idle timer.
+   *
+   * The timer scanner enqueues an L1 task when the timer fires. The executor
+   * skips a timer-fired L1 task when conversation_count is 0, so set the
+   * count to at least 1. setTimerIfEarlier keeps an earlier timer (for
+   * example one that a new conversation armed), so the retry delay never
+   * postpones a run that is already due. The L2_schedule timer stays,
+   * because the L2 work of earlier L1 runs is still valid. The side effects
+   * come before the ACK: if one fails, the message stays in the PEL and
+   * stale recovery retries it.
+   */
+  private async rearmFailedL1(
+    task: ClaimedTask,
+    error: string,
+    retryCount: number,
+    retryAfterMs: number,
+  ): Promise<void> {
+    const tid = task.teamId ?? (task.data as any)?.teamId;
+    const aid = task.agentId ?? (task.data as any)?.agentId;
+    const state = await this.backend.getSessionState(task.instanceId, task.sessionId, tid, aid);
+    await this.backend.updateSessionState(task.instanceId, task.sessionId, {
+      conversation_count: Math.max(state?.conversation_count ?? 0, 1),
+    }, tid, aid);
+    const fireAtMs = Date.now() + retryAfterMs;
+    await this.backend.setTimerIfEarlier(
+      task.instanceId,
+      buildPipelineTimerMember(task.sessionId, "L1_idle", { teamId: tid, agentId: aid }),
+      fireAtMs,
+    );
+
+    if (!(await this.ackTaskIfOwned(task))) {
+      this.noteOwnershipLost(task, "L1 re-arm ACK");
+      (task as any)._deferredEnqueue = undefined;
+      return;
+    }
+    this.metrics.tasksRearmed++;
+
+    this.logger.warn(
+      `${TAG} L1 extraction failure re-armed: ${task.type} [${task.instanceId}/${task.sessionId}] ` +
+      `after ${retryCount} retries, next L1 in ${Math.round(retryAfterMs / 1000)}s: ${error}`,
+    );
+    obsLogger.warn("core.task.rearmed", {
+      instance_id: task.instanceId,
+      session_id: task.sessionId,
+      task_type: task.type,
+      task_id: task.id,
+      error,
+      retry_count: retryCount,
+      retry_after_ms: retryAfterMs,
+    });
+  }
+
   private buildRetryTask(task: TaskPayload, newRetryCount: number): TaskPayload {
     const replacement: TaskPayload = {
       ...task,
@@ -1210,6 +1311,7 @@ export class PipelineWorker {
     delete (replacement as any)._l2HasMore;
     delete (replacement as any)._l2LatestCursor;
     delete (replacement as any)._l2ProfileScopes;
+    delete (replacement as any)._l1TailPending;
     delete (replacement as any)._deferredEnqueue;
     return replacement;
   }

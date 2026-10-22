@@ -19,10 +19,13 @@ import { MemoryPipelineManager } from "./pipeline-manager.js";
 import type { L2Runner } from "./pipeline-manager.js";
 import { SessionFilter } from "./session-filter.js";
 import { extractL1Memories } from "../core/record/l1-extractor.js";
+import type { L1ExtractionResult } from "../core/record/l1-extractor.js";
+import { classifyL1Failure } from "../core/record/l1-failure.js";
+import type { L1FailureClass } from "../core/record/l1-failure.js";
 import { readConversationMessagesGroupedBySessionId } from "../core/conversation/l0-recorder.js";
 import type { ConversationMessage } from "../core/conversation/l0-recorder.js";
 import { CheckpointManager } from "./checkpoint.js";
-import type { PipelineSessionState } from "./checkpoint.js";
+import type { L1FailureState, L1QuarantineRecord, PipelineSessionState, RunnerSessionState } from "./checkpoint.js";
 import { createStoreBundle } from "../core/store/factory.js";
 import type { IMemoryStore } from "../core/store/types.js";
 import { memoryPromptResolveKey, resolveMemoryPrompts } from "../core/memory-prompt/resolver.js";
@@ -383,6 +386,74 @@ async function _doInitStores(
 // L1 Runner factory
 // ============================
 
+/** Deterministic failures of the same group before L1 quarantines it. */
+export const L1_QUARANTINE_AFTER = 3;
+/** Base retry delay after a transient L1 failure. */
+export const L1_REARM_BASE_MS = 60_000;
+/** Maximum retry delay after transient L1 failures. */
+export const L1_REARM_CAP_MS = 30 * 60_000;
+/** Maximum number of persisted L2 profile scopes that wait for scheduling. */
+export const L1_PENDING_SCOPES_MAX = 200;
+/** Maximum number of quarantine records kept per session (newest kept). */
+export { L1_QUARANTINE_LOG_MAX } from "./checkpoint.js";
+/** Maximum number of message ids kept in one quarantine record. */
+const L1_QUARANTINE_IDS_MAX = 20;
+
+/**
+ * Retry delay after `streak` consecutive transient failures. The first four
+ * failures use the base delay (the worker also retries with its own short
+ * backoff); after that the delay doubles up to the cap, so a long provider
+ * outage does not cause a retry storm.
+ */
+export function l1RetryAfterMs(streak: number): number {
+  const exponent = Math.max(0, streak - 4);
+  return Math.min(L1_REARM_CAP_MS, L1_REARM_BASE_MS * 2 ** exponent);
+}
+
+/**
+ * Thrown by createL1Runner when an L1 group fails and the batch must be
+ * retried.
+ *
+ * Before the throw, the runner persists the safe part of its progress: the
+ * cursor moves only over the continuous prefix of completed messages, the
+ * replay guard holds completed messages that are still after the cursor, and
+ * the profile scopes of stored groups wait for the next successful run. A
+ * retry thus processes only the failed group: no loss and no duplicates.
+ *
+ * `failureClass` tells the scheduler what to do:
+ * - "transient": retry after `retryAfterMs`, with no attempt limit.
+ * - "deterministic": the normal retry path. After L1_QUARANTINE_AFTER
+ *   failures of the same group, the runner quarantines the group and does
+ *   not throw.
+ */
+export class L1ExtractionFailedError extends Error {
+  readonly failureClass: L1FailureClass;
+  readonly retryAfterMs: number;
+  /** Id of the first message of the failed group. */
+  readonly groupKey: string;
+
+  constructor(
+    public readonly reason: string,
+    public readonly sessionKey: string,
+    details?: {
+      failureClass?: L1FailureClass;
+      retryAfterMs?: number;
+      groupKey?: string;
+      cause?: unknown;
+    },
+  ) {
+    super(
+      `L1 extraction failed (reason=${reason}, sessionKey=${sessionKey}, class=${details?.failureClass ?? "transient"})`,
+      details?.cause !== undefined ? { cause: details.cause } : undefined,
+    );
+    this.name = "L1ExtractionFailedError";
+    // Transient is the safe default: the scheduler then keeps the batch.
+    this.failureClass = details?.failureClass ?? "transient";
+    this.retryAfterMs = details?.retryAfterMs ?? L1_REARM_BASE_MS;
+    this.groupKey = details?.groupKey ?? "";
+  }
+}
+
 /**
  * Create the standard L1 runner function.
  *
@@ -415,9 +486,9 @@ export function createL1Runner(opts: {
 }): (params: { sessionKey: string }) => Promise<{
   processedCount: number;
   storedCount: number;
-  /** True iff the over-fetch returned > L1_BATCH_PROCESS rows (i.e. there's residual past the cursor). */
+  /** True iff unprocessed rows remain in a page that was not full (small tail). */
   hasMore: boolean;
-  /** True iff the over-fetch returned exactly L1_BATCH_QUERY rows (i.e. likely large backlog). */
+  /** True iff the query page was full (i.e. likely large backlog). */
   hasFullBacklog: boolean;
   profileScopes: string[];
 }> {
@@ -430,21 +501,35 @@ export function createL1Runner(opts: {
       return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false, profileScopes: [] };
     }
 
-    const checkpoint = new CheckpointManager(pluginDataDir, logger, storage, checkpointLock);
-    const cp = await checkpoint.read();
-    const runnerState = checkpoint.getRunnerState(cp, sessionKey);
-
-    logger.info(
-      `${TAG} [l1] Session ${sessionKey}: l1_cursor=${runnerState.last_l1_cursor || "(start)"}`,
-    );
+    // Set when available, so the catch below can persist the failure state.
+    let checkpointForErrors: CheckpointManager | undefined;
+    let stateForErrors: RunnerSessionState | undefined;
 
     try {
+      const checkpoint = new CheckpointManager(pluginDataDir, logger, storage, checkpointLock);
+      checkpointForErrors = checkpoint;
+      const cp = await checkpoint.read();
+      const runnerState = checkpoint.getRunnerState(cp, sessionKey);
+      stateForErrors = runnerState;
+      // Ids of completed messages that are still after the cursor. The set
+      // also receives the ids of each group that completes (or is
+      // quarantined) in this run.
+      const replayGuard = new Set<string>(runnerState.l1_replay_guard ?? []);
+      const pendingScopesBefore = runnerState.l1_pending_profile_scopes ?? [];
+      // Guarded rows still use space in the query page. Extend the page so
+      // the usual look-ahead window stays available after the guard filter.
+      const queryLimit = L1_BATCH_QUERY + replayGuard.size;
+
+      logger.info(
+        `${TAG} [l1] Session ${sessionKey}: l1_cursor=${runnerState.last_l1_cursor || "(start)"}`,
+      );
+
       // ── Step 1: over-fetch L0 from DB (or JSONL fallback) ──
       //
-      // Pull at most L1_BATCH_QUERY (= 2N) rows past the cursor. We then keep
-      // the oldest L1_BATCH_PROCESS (= N) for actual processing and use the
-      // remaining rows merely as a *signal* to detect backlog. See file-level
-      // comment on L1_BATCH_PROCESS / L1_BATCH_QUERY for rationale.
+      // Pull at most queryLimit rows past the cursor. We then keep the oldest
+      // L1_BATCH_PROCESS unguarded rows for processing and use the remaining
+      // rows only as a signal to detect backlog. See the file-level comment on
+      // L1_BATCH_PROCESS / L1_BATCH_QUERY.
       type FlatMessage = ConversationMessage & { sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; recordedAtMs: number };
       let flat: FlatMessage[] = [];
       let queriedCount = 0;
@@ -453,7 +538,7 @@ export function createL1Runner(opts: {
         const l1Cursor = runnerState.last_l1_cursor > 0
           ? runnerState.last_l1_cursor
           : undefined;
-        const dbGroups = await vectorStore.queryL0GroupedBySessionId(sessionKey, l1Cursor, L1_BATCH_QUERY);
+        const dbGroups = await vectorStore.queryL0GroupedBySessionId(sessionKey, l1Cursor, queryLimit);
         for (const g of dbGroups) {
           for (const m of g.messages) {
             flat.push({
@@ -471,7 +556,7 @@ export function createL1Runner(opts: {
           }
         }
         queriedCount = flat.length;
-        logger.debug?.(`${TAG} [l1] L0 data source: VectorStore DB, fetched ${queriedCount} rows (limit=${L1_BATCH_QUERY})`);
+        logger.debug?.(`${TAG} [l1] L0 data source: VectorStore DB, fetched ${queriedCount} rows (limit=${queryLimit})`);
       } else {
         logger.debug?.(`${TAG} [l1] L0 data source: JSONL files (VectorStore unavailable)`);
         const jsonlGroups = await readConversationMessagesGroupedBySessionId(
@@ -479,15 +564,12 @@ export function createL1Runner(opts: {
           pluginDataDir,
           runnerState.last_l1_cursor || undefined,
           logger,
-          L1_BATCH_QUERY,
+          undefined,
+          storage,
         );
-        // NOTE: readConversationMessagesGroupedBySessionId's `limit` semantic
-        // historically retains the **newest** N rows when truncating. That is
-        // wrong for our backlog-progress-by-cursor model. Since the JSONL path
-        // is a degraded fallback (only hit when VectorStore is unavailable),
-        // we accept this minor inconsistency for now and rely on the DB path
-        // being the production code path. Resort to oldest-first by sorting +
-        // re-slicing here as a best-effort.
+        // The reader's optional limit keeps the newest conversation-time
+        // rows. Apply our oldest recorded-time window after flattening, so a
+        // degraded read obeys the same cursor contract as a database read.
         for (const g of jsonlGroups) {
           for (const m of g.messages) {
             flat.push({
@@ -496,20 +578,99 @@ export function createL1Runner(opts: {
               content: m.content,
               timestamp: m.timestamp,
               sessionId: g.sessionId,
-              teamId: undefined,
-              taskId: undefined,
-              userId: "",
-              agentId: "",
+              teamId: g.teamId,
+              taskId: g.taskId,
+              userId: g.userId ?? "",
+              agentId: g.agentId ?? "",
               recordedAtMs: m.recordedAtMs,
             });
           }
         }
         // Force chronological (oldest-first) ordering by recordedAtMs ↑ then timestamp ↑.
         flat.sort((a, b) => (a.recordedAtMs - b.recordedAtMs) || (a.timestamp - b.timestamp));
+        flat = flat.slice(0, queryLimit);
         queriedCount = flat.length;
       }
 
-      if (queriedCount === 0) {
+      const rawQueryCount = flat.length;
+      const queryIsFull = rawQueryCount >= queryLimit;
+      const preFilterTimeline = flat
+        .map((m) => ({ id: m.id, ms: m.recordedAtMs }))
+        .sort((a, b) => a.ms - b.ms);
+      const msById = new Map(flat.map((m) => [m.id, m.recordedAtMs] as const));
+
+      // The cursor may move only over a continuous prefix of DONE messages
+      // (ids in replayGuard), on success and on failure. It stops before the
+      // first pending message: a same-ms sibling of a pending message must
+      // not be crossed, or the next `> cursor` query skips it. A full page
+      // cannot certify its last millisecond either, because unseen same-ms
+      // rows can exist after the page. Completed ids after the cursor stay in
+      // the guard until a later query proves that the boundary is complete.
+      const completedPrefixCursor = (): number => {
+        let firstPendingMs = Infinity;
+        for (const entry of preFilterTimeline) {
+          if (!replayGuard.has(entry.id)) {
+            firstPendingMs = entry.ms;
+            break;
+          }
+        }
+        const boundaryMs = queryIsFull && preFilterTimeline.length > 0
+          ? preFilterTimeline[preFilterTimeline.length - 1]!.ms
+          : Infinity;
+        const stopMs = Math.min(firstPendingMs, boundaryMs);
+        let cursor = runnerState.last_l1_cursor;
+        for (const entry of preFilterTimeline) {
+          if (entry.ms >= stopMs) break;
+          cursor = Math.max(cursor, entry.ms);
+        }
+        return cursor;
+      };
+      // Guard ids that the next run still needs. There is no size cap: when
+      // many rows share one millisecond, the guard is the only progress
+      // record, and evicting ids would make the drain extract them again for
+      // ever. The guard is bounded by the largest same-ms group, because the
+      // page grows with the guard until it is not full and the cursor can
+      // cross that millisecond. An id in this window is kept only if it is
+      // after the cursor. An id that is not in the window is
+      // kept only when the page was full (it can be after the page). When
+      // the page was not full, the window holds every row after the old
+      // cursor, so a missing id is at or before the cursor (or was deleted).
+      const guardsPastCursor = (cursor: number): string[] => {
+        const kept = [...replayGuard].filter((id) => {
+          const ms = msById.get(id);
+          return ms === undefined ? queryIsFull : ms > cursor;
+        });
+        return kept;
+      };
+      const capPendingScopes = (scopes: Iterable<string>): string[] => {
+        const all = Array.from(new Set(scopes));
+        if (all.length <= L1_PENDING_SCOPES_MAX) return all;
+        logger.warn(
+          `${TAG} [l1] Pending profile scopes for session ${sessionKey}: ${all.length}; ` +
+          `dropping the ${all.length - L1_PENDING_SCOPES_MAX} oldest (max=${L1_PENDING_SCOPES_MAX})`,
+        );
+        return all.slice(all.length - L1_PENDING_SCOPES_MAX);
+      };
+
+      // Remove messages that already completed in an earlier run but are
+      // still after the cursor, so a retry processes only the failed groups.
+      if (replayGuard.size > 0) {
+        const before = flat.length;
+        flat = flat.filter((m) => !replayGuard.has(m.id));
+        if (flat.length < before) {
+          logger.debug?.(
+            `${TAG} [l1] Replay guard filtered ${before - flat.length} already-processed message(s)`,
+          );
+        }
+        queriedCount = flat.length;
+      }
+
+      if (rawQueryCount === 0) {
+        // Return without a checkpoint write. The stores return [] when their
+        // query fails, so an empty read does not prove that the guarded rows
+        // are gone: rewriting the guard (or clearing the failure state)
+        // here would make the next run extract completed groups again.
+        // Pending scopes wait for a read that returns the failed group.
         logger.debug?.(`${TAG} [l1] No new L0 messages for session ${sessionKey}`);
         return { processedCount: 0, storedCount: 0, hasMore: false, hasFullBacklog: false, profileScopes: [] };
       }
@@ -518,81 +679,68 @@ export function createL1Runner(opts: {
       // groupBy may have permuted ordering across groups; this is cheap).
       flat.sort((a, b) => (a.recordedAtMs - b.recordedAtMs) || (a.timestamp - b.timestamp));
 
-      // ── Step 2: slice the first L1_BATCH_PROCESS rows + same-ms boundary alignment ──
+      // ── Step 2: take a bounded slice ──
       //
-      // To advance the cursor safely we must NOT split a group of rows that
-      // share the same recorded_at_ms. Otherwise the next round's filter
-      // `recorded_at_ms > cursor` would skip the trailing siblings of the
-      // boundary millisecond. Concretely: if rows 20 and 21 carry the same
-      // recordedAtMs, we extend the slice past row 21 (and any further siblings)
-      // until we hit a strictly greater recordedAtMs or exhaust the buffer.
-      //
-      // Cost: at most a handful of extra rows per round (bounded by how many
-      // siblings share one millisecond). Benefit: zero data loss across
-      // millisecond-collision boundaries (e.g. seed bulk-load, multi-message
-      // agent_end where all rows are stamped with one `now`).
-      let sliceEnd = Math.min(L1_BATCH_PROCESS, flat.length);
-      if (sliceEnd < flat.length) {
-        const boundaryMs = flat[sliceEnd - 1].recordedAtMs;
-        while (sliceEnd < flat.length && flat[sliceEnd].recordedAtMs === boundaryMs) {
-          sliceEnd++;
-        }
-      }
+      // Keep extraction batches at most L1_BATCH_PROCESS rows. Same-ms rows
+      // after the slice are safe: the prefix cursor never crosses a pending
+      // row, and the guard holds the completed rows. Extending the slice
+      // instead would make a group that the extractor cuts to its last ten
+      // messages.
+      const sliceEnd = Math.min(L1_BATCH_PROCESS, flat.length);
       const processed = flat.slice(0, sliceEnd);
 
       // ── Step 3: re-group sliced messages by isolation tuple + sessionId (chronological within each group) ──
-      const groupMap = new Map<string, { sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: ConversationMessage[] }>();
-      let maxRecordedAtMs = 0;
+      type L1Group = {
+        sessionId: string;
+        teamId?: string;
+        taskId?: string;
+        userId: string;
+        agentId: string;
+        messages: ConversationMessage[];
+        firstMs: number;
+        lastMs: number;
+      };
+      const groupMap = new Map<string, L1Group>();
       for (const m of processed) {
-        if (m.recordedAtMs > maxRecordedAtMs) maxRecordedAtMs = m.recordedAtMs;
-        const groupKey = `${m.userId}\u0000${m.agentId}\u0000${m.sessionId}`;
+        const groupKey = JSON.stringify([m.teamId, m.userId, m.agentId, m.sessionId, m.taskId]);
         let g = groupMap.get(groupKey);
         if (!g) {
-          g = { sessionId: m.sessionId, teamId: m.teamId, taskId: m.taskId, userId: m.userId, agentId: m.agentId, messages: [] };
+          g = {
+            sessionId: m.sessionId,
+            teamId: m.teamId,
+            taskId: m.taskId,
+            userId: m.userId,
+            agentId: m.agentId,
+            messages: [],
+            firstMs: m.recordedAtMs,
+            lastMs: m.recordedAtMs,
+          };
           groupMap.set(groupKey, g);
         }
         g.messages.push({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp });
+        g.lastMs = Math.max(g.lastMs, m.recordedAtMs);
       }
-      const groups: Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: ConversationMessage[] }> = [];
-      for (const group of groupMap.values()) {
-        groups.push(group);
-      }
+      const groups: L1Group[] = Array.from(groupMap.values());
       // Sort groups by earliest timestamp so extractL1Memories sees them in
       // the same order they were captured (matches pre-existing behavior).
-      groups.sort((a, b) => a.messages[0].timestamp - b.messages[0].timestamp);
+      groups.sort((a, b) => a.messages[0]!.timestamp - b.messages[0]!.timestamp);
 
       // ── Step 4: backlog detection ──
       //
-      // queriedCount is bounded by LIMIT L1_BATCH_QUERY (= 2N).
-      // sliceEnd may exceed L1_BATCH_PROCESS due to boundary alignment but
-      // never exceeds queriedCount.
-      //
-      //   - hasFullBacklog: queriedCount === L1_BATCH_QUERY AND there are
-      //     unprocessed rows in this batch (sliceEnd < queriedCount). DB
-      //     returned a full page → likely many more rows past the cursor;
-      //     pipeline-manager / executor enqueues the next L1 task immediately.
-      //   - hasMore: any unprocessed row in this batch (queriedCount > sliceEnd)
-      //     that is not also flagged as full backlog → small tail; defer to
-      //     the standard l1Idle timer.
-      //
-      // EDGE CASE: if queriedCount === L1_BATCH_QUERY and ALL 2N rows share a
-      // single recordedAtMs, boundary alignment cannot detect siblings beyond
-      // the LIMIT and `sliceEnd` will end up at queriedCount (everything
-      // processed, no unprocessed rows). The cursor advances to that ms; the
-      // next round's `> cursor` filter would skip any further same-ms siblings
-      // existing past the LIMIT. This is unreachable under realistic capture
-      // patterns (agent_end writes ≤ ~10 rows per `now`; seed assigns a fresh
-      // `now` per round). If hit, see TODO below for cursor-tiebreaker fix.
-      // TODO(known-issue): switch to (recorded_at, record_id) composite cursor
-      //   to defend against ≥2N rows sharing one recorded_at_ms.
+      // Use the raw page signal: the guard filter must not hide unseen
+      // backlog or same-ms siblings after the query limit.
+      //   - hasFullBacklog: the page was full → likely many more rows past
+      //     the cursor; the scheduler enqueues the next L1 task immediately.
+      //   - hasMore: unprocessed rows remain in a page that was not full →
+      //     small tail; the scheduler uses the standard l1Idle timer.
       const hasUnprocessedInBatch = queriedCount > sliceEnd;
-      const hasFullBacklog = queriedCount === L1_BATCH_QUERY && hasUnprocessedInBatch;
+      const hasFullBacklog = queryIsFull;
       const hasMore = hasUnprocessedInBatch && !hasFullBacklog;
 
       const totalMessages = processed.length;
       logger.info(
         `${TAG} [l1] Processing ${totalMessages} L0 messages across ${groups.length} sessionId group(s) ` +
-        `for session ${sessionKey} (queried=${queriedCount}, sliceEnd=${sliceEnd}, ` +
+        `for session ${sessionKey} (queried=${rawQueryCount}, pending=${queriedCount}, sliceEnd=${sliceEnd}, ` +
         `hasMore=${hasMore}, hasFullBacklog=${hasFullBacklog})`,
       );
 
@@ -600,6 +748,10 @@ export function createL1Runner(opts: {
       let totalStored = 0;
       let lastSceneName: string | undefined;
       const profileScopes = new Set<string>();
+      const quarantineAppend: L1QuarantineRecord[] = [];
+      // Failure state from earlier runs. It is reset when a group is
+      // quarantined, so a later failure of a different group starts again.
+      let previousFailure: L1FailureState | null = runnerState.l1_failure ?? null;
       const l1PromptTargets = groups.map((group) => ({
         teamId: group.teamId,
         agentId: group.agentId,
@@ -612,38 +764,156 @@ export function createL1Runner(opts: {
           `${TAG} [l1] Group sessionId=${group.sessionId || "(empty)"}: ${group.messages.length} messages`,
         );
 
-        const l1Result = await extractL1Memories({
-          messages: group.messages,
-          sessionKey,
-          sessionId: group.sessionId,
-          taskId: group.taskId,
-          teamId: group.teamId,
-          userId: group.userId,
-          agentId: group.agentId,
-          baseDir: pluginDataDir,
-          config,
-          options: {
-            enableDedup: cfg.extraction.enableDedup,
-            maxMemoriesPerSession: cfg.extraction.maxMemoriesPerSession,
-            model: cfg.extraction.model,
-            promptMode: cfg.extraction.promptMode,
-            memoryPrompt: l1Prompts.get(memoryPromptResolveKey({
-              teamId: group.teamId,
-              agentId: group.agentId,
-              layer: "l1",
-            })),
-            previousSceneName: lastSceneName ?? (runnerState.last_scene_name || undefined),
-            vectorStore,
-            embeddingService,
-            conflictRecallTopK: cfg.embedding.conflictRecallTopK,
-            embeddingTimeoutMs: cfg.embedding.captureTimeoutMs ?? cfg.embedding.timeoutMs,
-            llmRunner,
-          },
-          logger,
-          instanceId: getInstanceId?.(),
-          storage,
-        });
+        let l1Result: L1ExtractionResult;
+        try {
+          l1Result = await extractL1Memories({
+            messages: group.messages,
+            sessionKey,
+            sessionId: group.sessionId,
+            taskId: group.taskId,
+            teamId: group.teamId,
+            userId: group.userId,
+            agentId: group.agentId,
+            baseDir: pluginDataDir,
+            config,
+            options: {
+              enableDedup: cfg.extraction.enableDedup,
+              maxMemoriesPerSession: cfg.extraction.maxMemoriesPerSession,
+              model: cfg.extraction.model,
+              promptMode: cfg.extraction.promptMode,
+              memoryPrompt: l1Prompts.get(memoryPromptResolveKey({
+                teamId: group.teamId,
+                agentId: group.agentId,
+                layer: "l1",
+              })),
+              previousSceneName: lastSceneName ?? (runnerState.last_scene_name || undefined),
+              vectorStore,
+              embeddingService,
+              conflictRecallTopK: cfg.embedding.conflictRecallTopK,
+              embeddingTimeoutMs: cfg.embedding.captureTimeoutMs ?? cfg.embedding.timeoutMs,
+              llmRunner,
+            },
+            logger,
+            instanceId: getInstanceId?.(),
+            storage,
+          });
+        } catch (err) {
+          // A throw (for example from the store or the embedding service)
+          // must use the failure path below. Otherwise the progress of the
+          // groups that completed before it is lost, and a retry writes
+          // their memories again.
+          l1Result = {
+            success: false,
+            extractedCount: 0,
+            storedCount: 0,
+            records: [],
+            sceneNames: [],
+            errorReason: "exception",
+            error: err,
+          };
+        }
 
+        if (!l1Result.success) {
+          const reason = l1Result.errorReason ?? "exception";
+          const { failureClass, detail } = classifyL1Failure(reason, l1Result.error);
+          const groupKey = group.messages[0]!.id;
+          const now = Date.now();
+          const sameGroup = previousFailure?.group_key === groupKey;
+          const reasonText = detail === reason ? reason : `${reason}: ${detail}`;
+          let failure: L1FailureState;
+          let retryAfterMs: number;
+
+          if (failureClass === "deterministic") {
+            const detAttempts = sameGroup ? (previousFailure?.det_attempts ?? 0) + 1 : 1;
+            if (detAttempts >= L1_QUARANTINE_AFTER) {
+              // The same input failed again and again: it will not succeed.
+              // Skip the group (treat it as done) so the session can make
+              // progress, and keep a record so an operator can replay it.
+              const ids = group.messages.map((m) => m.id);
+              for (const id of ids) replayGuard.add(id);
+              quarantineAppend.push({
+                at: now,
+                team_id: group.teamId,
+                user_id: group.userId,
+                agent_id: group.agentId,
+                session_id: group.sessionId,
+                message_ids: ids.slice(0, L1_QUARANTINE_IDS_MAX),
+                first_ms: group.firstMs,
+                last_ms: group.lastMs,
+                reason: reasonText,
+                attempts: detAttempts,
+              });
+              logger.error(
+                `${TAG} [l1] l1-quarantine sessionKey=${sessionKey} sessionId=${group.sessionId || "(empty)"} ` +
+                `reason=${JSON.stringify(reasonText)} attempts=${detAttempts} messages=${ids.length} ` +
+                `ids=${ids.slice(0, L1_QUARANTINE_IDS_MAX).join(",")}`,
+              );
+              previousFailure = null;
+              continue;
+            }
+            failure = {
+              group_key: groupKey,
+              failure_class: "deterministic",
+              reason: reasonText,
+              det_attempts: detAttempts,
+              transient_streak: 0,
+              first_at: sameGroup && previousFailure ? previousFailure.first_at : now,
+              last_at: now,
+            };
+            retryAfterMs = L1_REARM_BASE_MS;
+          } else {
+            // A transient failure says nothing about the input, so the
+            // deterministic counter of the group does not change.
+            const streak = (previousFailure?.transient_streak ?? 0) + 1;
+            failure = {
+              group_key: groupKey,
+              failure_class: "transient",
+              reason: reasonText,
+              det_attempts: sameGroup ? (previousFailure?.det_attempts ?? 0) : 0,
+              transient_streak: streak,
+              first_at: sameGroup && previousFailure ? previousFailure.first_at : now,
+              last_at: now,
+            };
+            retryAfterMs = l1RetryAfterMs(streak);
+          }
+
+          // Persist the safe progress before the throw (see
+          // L1ExtractionFailedError). The throw prevents this run's result
+          // from getting to the L2 scheduler, so keep the profile scopes of
+          // the stored groups for the next successful run.
+          const durableMs = completedPrefixCursor();
+          const nextReplayGuard = guardsPastCursor(durableMs);
+          const nextPendingScopes = capPendingScopes([...pendingScopesBefore, ...profileScopes]);
+          await checkpoint.markL1ExtractionComplete(
+            sessionKey,
+            totalStored,
+            durableMs > 0 ? durableMs : undefined,
+            lastSceneName,
+            {
+              replayGuard: nextReplayGuard,
+              pendingProfileScopes: nextPendingScopes,
+              failure,
+              quarantineAppend,
+            },
+          );
+          logger.warn(
+            `${TAG} [l1] Group failed: sessionKey=${sessionKey} sessionId=${group.sessionId || "(empty)"} ` +
+            `class=${failureClass} reason=${JSON.stringify(reasonText)} detAttempts=${failure.det_attempts} ` +
+            `transientStreak=${failure.transient_streak} retryAfterMs=${retryAfterMs}; ` +
+            `cursor→${durableMs || "(unchanged)"}, replayGuard=${nextReplayGuard.length} id(s), ` +
+            `pendingScopes=${nextPendingScopes.length}`,
+          );
+          throw new L1ExtractionFailedError(reason, sessionKey, {
+            failureClass,
+            retryAfterMs,
+            groupKey,
+            cause: l1Result.error,
+          });
+        }
+
+        for (const m of group.messages) {
+          replayGuard.add(m.id);
+        }
         totalExtracted += l1Result.extractedCount;
         totalStored += l1Result.storedCount;
         if (l1Result.storedCount > 0) {
@@ -663,20 +933,84 @@ export function createL1Runner(opts: {
         }
       }
 
-      // Use maxRecordedAtMs (write time) of the **processed** slice as cursor —
-      // always positive, TCVDB-safe. Boundary alignment guarantees we will not
-      // skip same-ms siblings on the next round.
-      await checkpoint.markL1ExtractionComplete(sessionKey, totalStored, maxRecordedAtMs || undefined, lastSceneName);
+      // A successful slice still must not cross pending rows or a full-page
+      // timestamp boundary. Guards after that safe cursor stay durable.
+      const effectiveCursorMs = completedPrefixCursor();
+      const retainedGuard = guardsPastCursor(effectiveCursorMs);
+      await checkpoint.markL1ExtractionComplete(
+        sessionKey,
+        totalStored,
+        effectiveCursorMs || undefined,
+        lastSceneName,
+        { replayGuard: retainedGuard, pendingProfileScopes: [], failure: null, quarantineAppend },
+      );
       logger.info(
         `${TAG} [l1] L1 complete: extracted=${totalExtracted}, stored=${totalStored} (${groups.length} group(s))`,
       );
 
-      return { processedCount: totalMessages, storedCount: totalStored, hasMore, hasFullBacklog, profileScopes: Array.from(profileScopes) };
+      // Deliver the scopes kept by earlier failed runs (their throws never
+      // got to the scheduler) together with this run's scopes, so L2 is
+      // scheduled for every stored group.
+      const mergedProfileScopes = Array.from(new Set([...pendingScopesBefore, ...profileScopes]));
+
+      return { processedCount: totalMessages, storedCount: totalStored, hasMore, hasFullBacklog, profileScopes: mergedProfileScopes };
     } catch (err) {
       logger.error(`${TAG} [l1] L1 failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-      throw err;
+      if (err instanceof L1ExtractionFailedError) throw err;
+      throw await wrapUnclassifiedL1Error(err, sessionKey, checkpointForErrors, stateForErrors, logger);
     }
   };
+}
+
+/**
+ * Turn an error outside the per-group handling (checkpoint read or lock,
+ * L0 query, prompt lookup, final checkpoint write) into a transient
+ * L1ExtractionFailedError. The scheduler then retries the batch with
+ * backoff instead of dead-lettering it. The cursor did not move, so no
+ * message is lost. When the runner state was read, persist the failure
+ * state (best effort) so the backoff grows across runs; the guard and the
+ * pending scopes are written back unchanged.
+ */
+async function wrapUnclassifiedL1Error(
+  err: unknown,
+  sessionKey: string,
+  checkpoint: CheckpointManager | undefined,
+  state: RunnerSessionState | undefined,
+  logger: PipelineLogger,
+): Promise<L1ExtractionFailedError> {
+  const previous = state?.l1_failure ?? null;
+  const streak = (previous?.transient_streak ?? 0) + 1;
+  const retryAfterMs = l1RetryAfterMs(streak);
+  const detail = classifyL1Failure("exception", err).detail;
+  if (checkpoint && state) {
+    const now = Date.now();
+    try {
+      await checkpoint.markL1ExtractionComplete(sessionKey, 0, undefined, undefined, {
+        replayGuard: state.l1_replay_guard ?? [],
+        pendingProfileScopes: state.l1_pending_profile_scopes ?? [],
+        failure: {
+          group_key: previous?.group_key ?? "",
+          failure_class: "transient",
+          reason: detail === "exception" ? "exception" : `exception: ${detail}`,
+          det_attempts: previous?.det_attempts ?? 0,
+          transient_streak: streak,
+          first_at: previous?.first_at ?? now,
+          last_at: now,
+        },
+      });
+    } catch (persistErr) {
+      logger.warn(
+        `${TAG} [l1] Could not persist L1 failure state for session ${sessionKey}: ` +
+        `${persistErr instanceof Error ? persistErr.message : String(persistErr)}`,
+      );
+    }
+  }
+  return new L1ExtractionFailedError("exception", sessionKey, {
+    failureClass: "transient",
+    retryAfterMs,
+    groupKey: previous?.group_key ?? "",
+    cause: err,
+  });
 }
 
 // ============================
@@ -856,7 +1190,12 @@ export function createL2Runner(opts: {
         layer: "l2",
       }));
       const extractResult = await extractor.extract(memories);
-      if (!(extractResult.success && extractResult.memoriesProcessed > 0)) continue;
+      if (!extractResult.success) {
+        throw new Error(
+          `${TAG} [L2] Scene extraction failed (scope=${groupScope}): ${extractResult.error ?? "unknown error"}`,
+        );
+      }
+      if (extractResult.memoriesProcessed <= 0) continue;
       if (extractResult.emptyExtraction) {
         anyEmptyExtraction = true;
         logger.warn(`${TAG} [L2] Extraction produced no file changes (empty run), skipping checkpoint increment`);

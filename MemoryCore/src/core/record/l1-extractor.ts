@@ -15,7 +15,8 @@
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
 import { batchDedup } from "./l1-dedup.js";
-import { writeMemory, generateMemoryId } from "./l1-writer.js";
+import { writeMemory, generateMemoryId, isL1PersistenceError } from "./l1-writer.js";
+import { buildDedupScopeFilter } from "../store/isolation.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
 import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { sanitizeJsonForParse, shouldExtractL1 } from "../../utils/sanitize.js";
@@ -74,6 +75,13 @@ export interface L1ExtractionResult {
   sceneNames: string[];
   /** Last scene name (for continuity in next extraction) */
   lastSceneName?: string;
+  /**
+   * Why extraction failed. Set only when `success` is false. The caller
+   * uses it (with `error`) to decide between a retry and a quarantine.
+   */
+  errorReason?: L1FailureReason;
+  /** The original error, when the failure came from a thrown error. */
+  error?: unknown;
 }
 
 // ============================
@@ -213,7 +221,15 @@ export async function extractL1Memories(params: {
     logger?.warn?.(
       `${TAG} l1-empty reason=llm_error sessionKey=${sessionKey} msg=${err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)}`,
     );
-    return { success: false, extractedCount: 0, storedCount: 0, records: [], sceneNames: [] };
+    return {
+      success: false,
+      extractedCount: 0,
+      storedCount: 0,
+      records: [],
+      sceneNames: [],
+      errorReason: "llm_error",
+      error: err,
+    };
   }
 
   // Flatten all memories across scenes
@@ -270,6 +286,20 @@ export async function extractL1Memories(params: {
         // 静默忽略，不影响业务逻辑
       }
     }
+    // Only a valid empty answer is a success. An unusable answer (no JSON,
+    // bad JSON, wrong shape, or all memories dropped) is a failure, so the
+    // caller keeps the L0 batch instead of moving the cursor past it.
+    if (finalReason !== "empty_scenes") {
+      return {
+        success: false,
+        extractedCount: 0,
+        storedCount: 0,
+        records: [],
+        sceneNames,
+        lastSceneName: sceneNames[sceneNames.length - 1],
+        errorReason: finalReason,
+      };
+    }
     return {
       success: true,
       extractedCount: 0,
@@ -305,65 +335,95 @@ export async function extractL1Memories(params: {
   const generationPrompt = buildPromptGenerationRef(options.memoryPrompt, "l1");
   const generation = buildGenerationProvenance(generationIdentity, generationPrompt);
 
-  if (enableDedup) {
-    try {
-      const dedupStartMs = Date.now();
-      const decisions = await batchDedup({
-        memories: memoriesWithIds,
-        config,
-        logger,
-        model: options.model,
-        promptMode: options.promptMode,
-        vectorStore: options.vectorStore,
-        embeddingService: options.embeddingService,
-        conflictRecallTopK: options.conflictRecallTopK,
-        embeddingTimeoutMs: options.embeddingTimeoutMs,
-        llmRunner: options.llmRunner,
-        traceContext: { teamId, userId, agentId, sessionId },
-        ...(teamId || userId || agentId || sessionId || taskId ? { filter: { teamId, userId, agentId, sessionId, taskId } } : {}),
-      });
-      dedupLatencyMs = Date.now() - dedupStartMs;
+  try {
+    if (enableDedup) {
+      try {
+        const dedupStartMs = Date.now();
+        const decisions = await batchDedup({
+          memories: memoriesWithIds,
+          config,
+          logger,
+          model: options.model,
+          promptMode: options.promptMode,
+          vectorStore: options.vectorStore,
+          embeddingService: options.embeddingService,
+          conflictRecallTopK: options.conflictRecallTopK,
+          embeddingTimeoutMs: options.embeddingTimeoutMs,
+          llmRunner: options.llmRunner,
+          traceContext: { teamId, userId, agentId, sessionId },
+          // Dedup recall detects same-fact conflicts across sessions/tasks by scope
+          // (team/user/agent) only, without sessionId/taskId — otherwise cross-session
+          // old memories would be filtered out by rowMatchesIsolation, so correction /
+          // duplicate scenes could not recall candidates and dedup would degrade to
+          // within the current session only.
+          // buildDedupScopeFilter always returns a non-empty filter (user/agent
+          // normalized to "default") to avoid the filter disappearing when all three
+          // scope fields are empty, which would cause cross-tenant recall.
+          filter: buildDedupScopeFilter(teamId, userId, agentId),
+        });
+        dedupLatencyMs = Date.now() - dedupStartMs;
 
-      // ── 评测指标：去重决策分布 ──
-      if (metricInstanceId) {
-        try {
-          const dedupCounts = { store: 0, update: 0, merge: 0, skip: 0 };
-          for (const d of decisions) {
-            if (d.action in dedupCounts) {
-              dedupCounts[d.action as keyof typeof dedupCounts]++;
+        // ── 评测指标：去重决策分布 ──
+        if (metricInstanceId) {
+          try {
+            const dedupCounts = { store: 0, update: 0, merge: 0, skip: 0 };
+            for (const d of decisions) {
+              if (d.action in dedupCounts) {
+                dedupCounts[d.action as keyof typeof dedupCounts]++;
+              }
             }
+            metricProducer.send({ metric: "l1_dedup_store_count", instanceId: metricInstanceId, value: dedupCounts.store, source: "core" });
+            metricProducer.send({ metric: "l1_dedup_update_count", instanceId: metricInstanceId, value: dedupCounts.update, source: "core" });
+            metricProducer.send({ metric: "l1_dedup_merge_count", instanceId: metricInstanceId, value: dedupCounts.merge, source: "core" });
+            metricProducer.send({ metric: "l1_dedup_skip_count", instanceId: metricInstanceId, value: dedupCounts.skip, source: "core" });
+          } catch {
+            // 静默忽略，不影响业务逻辑
           }
-          metricProducer.send({ metric: "l1_dedup_store_count", instanceId: metricInstanceId, value: dedupCounts.store, source: "core" });
-          metricProducer.send({ metric: "l1_dedup_update_count", instanceId: metricInstanceId, value: dedupCounts.update, source: "core" });
-          metricProducer.send({ metric: "l1_dedup_merge_count", instanceId: metricInstanceId, value: dedupCounts.merge, source: "core" });
-          metricProducer.send({ metric: "l1_dedup_skip_count", instanceId: metricInstanceId, value: dedupCounts.skip, source: "core" });
-        } catch {
-          // 静默忽略，不影响业务逻辑
         }
+
+        storedRecords = await applyDecisions({
+          memoriesWithIds,
+          decisions,
+          baseDir,
+          sessionKey,
+          sessionId,
+          taskId,
+          teamId,
+          userId,
+          agentId,
+          logger,
+          vectorStore: options.vectorStore,
+          embeddingService: options.embeddingService,
+          storage,
+        });
+
+      } catch (err) {
+        // A persistence failure is not a dedup failure: storing all again
+        // would write the memories that applyDecisions already stored.
+        if (isL1PersistenceError(err)) throw err;
+        logger?.warn?.(`${TAG} Batch dedup failed, storing all as new: ${err instanceof Error ? err.message : String(err)}`);
+        storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage);
       }
-
-      storedRecords = await applyDecisions({
-        memoriesWithIds,
-        decisions,
-        baseDir,
-        sessionKey,
-        sessionId,
-        taskId,
-        teamId,
-        userId,
-        agentId,
-        logger,
-        vectorStore: options.vectorStore,
-        embeddingService: options.embeddingService,
-        storage,
-      });
-
-    } catch (err) {
-      logger?.warn?.(`${TAG} Batch dedup failed, storing all as new: ${err instanceof Error ? err.message : String(err)}`);
+    } else {
       storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage);
     }
-  } else {
-    storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage);
+  } catch (err) {
+    if (!isL1PersistenceError(err)) throw err;
+    // A memory exists in no store. Report a failure so the caller does not
+    // move the L1 cursor past its source messages. Memories of this group
+    // that were stored before the failure can be written again on retry: a
+    // duplicate is better than a loss.
+    logger?.warn?.(`${TAG} l1-store-failed sessionKey=${sessionKey} msg=${err.message.slice(0, 200)}`);
+    return {
+      success: false,
+      extractedCount: extracted.length,
+      storedCount: 0,
+      records: [],
+      sceneNames,
+      lastSceneName: sceneNames[sceneNames.length - 1],
+      errorReason: "exception",
+      error: err,
+    };
   }
 
   const logStorage = storage ?? new StorageAdapter(new LocalStorageBackend(baseDir));
@@ -550,6 +610,15 @@ export type L1EmptyReason =
   | "parse_fail"     // JSON.parse threw on the extracted substring
   | "not_array"      // parse succeeded but result is not an array
   | "empty_scenes";  // parse succeeded, array had 0 scenes OR all scenes had 0 memories
+
+/**
+ * Reason for an L1 extraction failure (`success: false`).
+ *   - `normalized_all_dropped`: the model returned memories, but every type was invalid.
+ *   - `exception`: the caller caught an error thrown during extraction
+ *     (for example by the store or the embedding service).
+ * `empty_scenes` is never a failure reason; it is a valid empty result.
+ */
+export type L1FailureReason = L1EmptyReason | "normalized_all_dropped" | "exception";
 
 interface ParseExtractionOutcome {
   scenes: SceneSegment[];
@@ -739,6 +808,9 @@ async function applyDecisions(params: {
         storedRecords.push(record);
       }
     } catch (err) {
+      // No target stored the memory: fail the group, so the caller keeps
+      // the source messages for a retry. Other write errors stay non-fatal.
+      if (isL1PersistenceError(err)) throw err;
       logger?.warn?.(
         `${TAG} Write failed for memory "${memoryWithId.content.slice(0, 50)}...": ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -792,6 +864,9 @@ async function storeAllDirectly(
         storedRecords.push(record);
       }
     } catch (err) {
+      // No target stored the memory: fail the group, so the caller keeps
+      // the source messages for a retry. Other write errors stay non-fatal.
+      if (isL1PersistenceError(err)) throw err;
       logger?.warn?.(
         `${TAG} Write failed for memory "${memoryWithId.content.slice(0, 50)}...": ${err instanceof Error ? err.message : String(err)}`,
       );

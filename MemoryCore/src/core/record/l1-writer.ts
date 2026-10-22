@@ -18,6 +18,7 @@
 
 import crypto from "node:crypto";
 import { DEFAULT_ISOLATION_ID, type IMemoryStore } from "../store/types.js";
+import { buildDedupScopeFilter } from "../store/isolation.js";
 import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
@@ -138,6 +139,9 @@ export interface DedupDecision {
 
 const TAG = "[memory-tdai][l1-writer]";
 
+/** Waits before each retry of a failed replaced-record delete. */
+const REPLACED_DELETE_RETRY_DELAYS_MS = [200, 1000];
+
 // ============================
 // Core functions
 // ============================
@@ -160,6 +164,23 @@ export function generateMemoryId(): string {
  * v3: supports multi-target removal for update/merge.
  * v3.1: optional VectorStore + EmbeddingService for dual-write (JSONL + vector).
  */
+/**
+ * Thrown by writeMemory when no persistence target stored the record: the
+ * JSONL append failed and the vector upsert failed too (or no vector store
+ * is configured). A record that exists nowhere must not count as stored,
+ * else L1 moves its cursor past the source messages and the memory is lost.
+ */
+export class L1PersistenceError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "L1PersistenceError";
+  }
+}
+
+export function isL1PersistenceError(err: unknown): err is L1PersistenceError {
+  return err instanceof Error && err.name === "L1PersistenceError";
+}
+
 export async function writeMemory(params: {
   memory: ExtractedMemory;
   decision: DedupDecision;
@@ -272,42 +293,21 @@ export async function writeMemory(params: {
     }
   };
 
-  if ((decision.action === "update" || decision.action === "merge") && decision.target_ids.length > 0) {
-    // Remove target records from VectorStore (real-time deletion for retrieval accuracy).
-    // JSONL is append-only — old records remain in files and are cleaned up periodically
-    // by memory-cleaner (which reconciles against VectorStore as source of truth).
-    if (vectorStore) {
-      try {
-        const deleteFilter = teamId || userId || agentId || sessionId
-          ? { teamId, userId, agentId, sessionId: sessionId || undefined, sessionKey }
-          : undefined;
-        if (deleteFilter) {
-          await vectorStore.deleteL1Batch(decision.target_ids, deleteFilter);
-        } else {
-          await vectorStore.deleteL1Batch(decision.target_ids);
-        }
-        logger?.debug?.(`${TAG} VectorStore: deleted ${decision.target_ids.length} target record(s) for ${decision.action}`);
-      } catch (err) {
-        logger?.warn?.(
-          `${TAG} VectorStore delete failed for ${decision.action}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-    try {
-      await appendRecord(JSON.stringify(record) + "\n");
-    } catch (err) {
-      logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
-    }
-    logger?.debug?.(`${TAG} ${decision.action} memory: removed [${decision.target_ids.join(",")}] from VectorStore → ${record.id}: ${finalContent.slice(0, 80)}...`);
-  } else {
-    // store: append a new line
-    try {
-      await appendRecord(JSON.stringify(record) + "\n");
-    } catch (err) {
-      logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
-    }
-    logger?.debug?.(`${TAG} Stored memory ${record.id}: ${finalContent.slice(0, 80)}...`);
+  // Persistence outcome per target. writeMemory succeeds when at least one
+  // durable target has the record (JSONL or vector store).
+  let jsonlFailed = false;
+  let jsonlError: unknown;
+  let vectorStored = false;
+  let vectorError: unknown;
+
+  try {
+    await appendRecord(JSON.stringify(record) + "\n");
+  } catch (err) {
+    jsonlFailed = true;
+    jsonlError = err;
+    logger?.warn?.(`${TAG} JSONL append failed (non-fatal, VDB write continues): ${err instanceof Error ? err.message : String(err)}`);
   }
+  logger?.debug?.(`${TAG} ${decision.action} memory ${record.id}: ${finalContent.slice(0, 80)}...`);
 
   // === Vector Store dual-write ===
   if (vectorStore) {
@@ -337,8 +337,11 @@ export async function writeMemory(params: {
       }
 
       const upsertOk = await vectorStore.upsertL1(record, embedding);
+      vectorStored = upsertOk === true;
+      if (!vectorStored) vectorError = new Error("vector store upsert returned false");
       logger?.debug?.(`${TAG} [vec-dual-write] upsert result=${upsertOk} id=${record.id}`);
     } catch (err) {
+      vectorError = err;
       // Vector write failure should NOT block the main JSONL write
       logger?.warn?.(
         `${TAG} [vec-dual-write] FAILED (JSONL already written) id=${record.id}: ${err instanceof Error ? err.message : String(err)}`,
@@ -350,7 +353,66 @@ export async function writeMemory(params: {
     );
   }
 
+  // Remove the replaced records only after the replacement is in the vector
+  // store, which is the retrieval source of truth (memory-cleaner reconciles the
+  // append-only JSONL against it). If the replacement is missing there, the old
+  // records stay so the memory remains retrievable until a retry.
+  const replacedIds = decision.action === "update" || decision.action === "merge"
+    ? decision.target_ids.filter((id) => id !== record.id)
+    : [];
+  if (vectorStore && replacedIds.length > 0) {
+    if (vectorStored) {
+      // Isolate by scope (team/user/agent) only: target_ids are cross-session
+      // records, so a sessionId/sessionKey condition would keep them from
+      // being deleted. This matches atomic/delete, which omits sessionId too.
+      const deleteFilter = buildDedupScopeFilter(teamId, userId, agentId);
+      // The replacement is already stored, so a failed delete leaves old and new
+      // side by side. Retry briefly for transient store errors; some backends
+      // report failure by returning false instead of throwing.
+      let deleteError: unknown;
+      for (let attempt = 0; attempt <= REPLACED_DELETE_RETRY_DELAYS_MS.length; attempt++) {
+        if (attempt > 0) {
+          await new Promise((resolve) => setTimeout(resolve, REPLACED_DELETE_RETRY_DELAYS_MS[attempt - 1]));
+        }
+        try {
+          if ((await vectorStore.deleteL1Batch(replacedIds, deleteFilter)) === true) {
+            deleteError = undefined;
+            break;
+          }
+          deleteError = new Error("deleteL1Batch returned false");
+        } catch (err) {
+          deleteError = err;
+        }
+      }
+      if (deleteError === undefined) {
+        logger?.debug?.(`${TAG} VectorStore: deleted ${replacedIds.length} target record(s) for ${decision.action}`);
+      } else {
+        logger?.warn?.(
+          `${TAG} VectorStore delete failed for ${decision.action} after ${REPLACED_DELETE_RETRY_DELAYS_MS.length + 1} attempts, ` +
+          `[${replacedIds.join(",")}] remain beside ${record.id}: ${describeError(deleteError)}`,
+        );
+      }
+    } else {
+      logger?.warn?.(
+        `${TAG} Keeping [${replacedIds.join(",")}] for ${decision.action}: replacement ${record.id} is not in the vector store`,
+      );
+    }
+  }
+
+  if (jsonlFailed && !vectorStored) {
+    const reasons = [`jsonl: ${describeError(jsonlError)}`];
+    if (vectorStore) reasons.push(`vector: ${describeError(vectorError)}`);
+    throw new L1PersistenceError(
+      `writeMemory: no persistence target stored record ${record.id} (${reasons.join("; ")})`,
+      { cause: jsonlError },
+    );
+  }
+
   return record;
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 // ============================

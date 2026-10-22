@@ -23,6 +23,19 @@ import { defaultAdapter } from "./default.js";
 
 export type { AgentAdapter, AgentKind, RequestKind } from "./types.js";
 
+/** Every agentSource that `resolveAgentAdapter` maps to a dedicated adapter. */
+export const AGENT_SOURCES = ["codebuddy", "claude-code", "codex", "workbuddy", "dsh", "opencode", "pi"] as const;
+
+/**
+ * Session-store keys to probe for a bridge request. The handler stores state
+ * under `${agentSource}:${sessionId}`, but a bridge curl usually carries only the
+ * bare sessionId, so every known agentSource prefix is tried in order.
+ */
+export function sessionKeyCandidates(sessionId: string): string[] {
+  if (sessionId.includes(":")) return [sessionId];
+  return [sessionId, ...AGENT_SOURCES.map((source) => `${source}:${sessionId}`)];
+}
+
 export function resolveAgentAdapter(agentSource: string): AgentAdapter {
   switch (agentSource) {
     case "claude-code":

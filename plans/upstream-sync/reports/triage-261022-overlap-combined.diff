@@ -1,0 +1,455 @@
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/__tests__/pr1136-anthropic.test.ts sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1136-anthropic.test.ts
+--- baseline/MemoryProxy/src/injection/adapters/__tests__/pr1136-anthropic.test.ts	1970-01-01 08:00:00
++++ sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1136-anthropic.test.ts	2026-10-22 00:46:55
+@@ -0,0 +1,76 @@
++import { describe, it, expect } from "vitest";
++import { AnthropicAdapter } from "../anthropic.js";
++import type { AgentContextMetadata } from "../../types.js";
++
++describe("AnthropicAdapter tool lossless forwarding", () => {
++  const adapter = new AnthropicAdapter();
++  const mockMetadata: AgentContextMetadata = {
++    protocol: "anthropic",
++    traceId: "test",
++    keyId: "test",
++    modelId: "test",
++    stream: false,
++    agentSource: "test",
++  };
++
++  it("should losslessly forward a normal custom tool", () => {
++    const rawTool = {
++      name: "get_weather",
++      description: "Get the current weather in a given location",
++      input_schema: {
++        type: "object",
++        properties: {
++          location: { type: "string" },
++        },
++        required: ["location"],
++      },
++      cache_control: { type: "ephemeral" },
++    };
++
++    const parsed = adapter.parse(
++      { messages: [], tools: [rawTool] },
++      mockMetadata,
++    );
++
++    expect(parsed.tools).toBeDefined();
++    expect(parsed.tools?.length).toBe(1);
++
++    const serialized = adapter.serialize(parsed);
++    const outputTools = serialized.tools as unknown[];
++
++    expect(outputTools).toBeDefined();
++    expect(outputTools?.length).toBe(1);
++    expect(outputTools![0]).toEqual(rawTool);
++  });
++
++  it("should losslessly forward an Anthropic server tool without hallucinating input_schema", () => {
++    // Anthropic server tools omit input_schema and description but have extra fields
++    const rawTool = {
++      type: "web_search_20250305",
++      name: "web_search",
++      max_uses: 5,
++    };
++
++    const parsed = adapter.parse(
++      { messages: [], tools: [rawTool] },
++      mockMetadata,
++    );
++
++    expect(parsed.tools).toBeDefined();
++    expect(parsed.tools?.length).toBe(1);
++
++    // Verify AgentTool structure represents it cleanly
++    const tool = parsed.tools![0];
++    expect(tool.name).toBe("web_search");
++    expect(tool.description).toBe("");
++    expect(tool.parameters).toEqual({});
++
++    const serialized = adapter.serialize(parsed);
++    const outputTools = serialized.tools as unknown[];
++
++    expect(outputTools).toBeDefined();
++    expect(outputTools?.length).toBe(1);
++    expect(outputTools![0]).toEqual(rawTool);
++    expect((outputTools![0] as any).input_schema).toBeUndefined();
++  });
++});
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/__tests__/pr1661-anthropic.test.ts sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1661-anthropic.test.ts
+--- baseline/MemoryProxy/src/injection/adapters/__tests__/pr1661-anthropic.test.ts	1970-01-01 08:00:00
++++ sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1661-anthropic.test.ts	2026-10-22 00:46:55
+@@ -0,0 +1,56 @@
++import { describe, expect, it } from "vitest";
++import { AnthropicAdapter } from "../anthropic.js";
++import type { AgentContextMetadata } from "../../types.js";
++
++const meta = { protocol: "anthropic" } as unknown as AgentContextMetadata;
++const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
++
++function bodyWithToolResult(content: unknown) {
++  return {
++    model: "m",
++    max_tokens: 10,
++    messages: [
++      { role: "user", content: "look" },
++      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "look", input: {} }] },
++      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content }] },
++    ],
++  };
++}
++
++function toolResultOf(body: Record<string, unknown>) {
++  const msgs = body.messages as { content: Record<string, unknown>[] }[];
++  return msgs[2].content[0];
++}
++
++describe("AnthropicAdapter tool_result round-trip", () => {
++  const adapter = new AnthropicAdapter();
++
++  it("keeps images nested in tool_result", () => {
++    const content = [{ type: "text", text: "screenshot" }, image];
++    const out = adapter.serialize(adapter.parse(bodyWithToolResult(content), meta));
++    expect(toolResultOf(out).content).toEqual(content);
++  });
++
++  it("keeps image-only tool_result", () => {
++    const content = [image];
++    const out = adapter.serialize(adapter.parse(bodyWithToolResult(content), meta));
++    expect(toolResultOf(out).content).toEqual(content);
++  });
++
++  it("keeps images when a hook rewrites the text", () => {
++    const ctx = adapter.parse(bodyWithToolResult([{ type: "text", text: "a" }, image, { type: "text", text: "b" }]), meta);
++    const block = ctx.messages[2].blocks[0];
++    expect(block.content).toBe("a\nb");
++    block.content = "rewritten";
++    const out = adapter.serialize(ctx);
++    expect(toolResultOf(out).content).toEqual([{ type: "text", text: "rewritten" }, image]);
++  });
++
++  it("text-only tool_result array is kept as an array", () => {
++    const content = [{ type: "text", text: "x" }, { type: "text", text: "y" }];
++    const out = adapter.serialize(adapter.parse(bodyWithToolResult(content), meta));
++    expect(toolResultOf(out).content).toEqual(content);
++    const out2 = adapter.serialize(adapter.parse(bodyWithToolResult("plain"), meta));
++    expect(toolResultOf(out2).content).toBe("plain");
++  });
++});
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/__tests__/pr1722-anthropic-system-cache.test.ts sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1722-anthropic-system-cache.test.ts
+--- baseline/MemoryProxy/src/injection/adapters/__tests__/pr1722-anthropic-system-cache.test.ts	1970-01-01 08:00:00
++++ sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1722-anthropic-system-cache.test.ts	2026-10-22 00:44:46
+@@ -0,0 +1,30 @@
++import { describe, expect, it } from "vitest";
++import { AnthropicAdapter } from "../anthropic.js";
++import type { AgentContextMetadata } from "../../types.js";
++
++const metadata: AgentContextMetadata = {
++  protocol: "anthropic", traceId: "fixture", keyId: "fixture", modelId: "fixture",
++  stream: false, agentSource: "claude-code",
++};
++function roundtrip(body: Record<string, unknown>) {
++  const adapter = new AnthropicAdapter();
++  return adapter.serialize(adapter.parse(body, metadata));
++}
++describe("Anthropic system prompt cache boundaries", () => {
++  it.each(["5m", "1h"])("preserves the cache marker on a single system block (%s)", async (ttl) => {
++    const system = [{ type: "text", text: "Stable instructions", cache_control: { type: "ephemeral", ttl } }];
++    const body = { model: "fixture", max_tokens: 1, system, messages: [{ role: "user", content: "hello" }] };
++    const out = await roundtrip(body);
++    expect(out.system).toEqual(system);
++    expect(out.model).toBe("fixture");
++    expect(out.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hello" }] }]);
++  });
++  it("preserves the simple string form", async () => {
++    const out = await roundtrip({ system: "Instructions", messages: [] });
++    expect(out.system).toBe("Instructions");
++  });
++  it("preserves marked multi-block system prompts", async () => {
++    const system = [{ type: "text", text: "First" }, { type: "text", text: "Second", cache_control: { type: "ephemeral" } }];
++    expect((await roundtrip({ system, messages: [] })).system).toEqual(system);
++  });
++});
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/__tests__/pr1723-openai-message-names.test.ts sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1723-openai-message-names.test.ts
+--- baseline/MemoryProxy/src/injection/adapters/__tests__/pr1723-openai-message-names.test.ts	1970-01-01 08:00:00
++++ sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1723-openai-message-names.test.ts	2026-10-22 00:44:46
+@@ -0,0 +1,22 @@
++import { describe, expect, it } from "vitest";
++import { OpenAIAdapter } from "../openai.js";
++import type { AgentContextMetadata } from "../../types.js";
++const metadata: AgentContextMetadata = { protocol: "openai", traceId: "fixture", keyId: "fixture", modelId: "fixture", stream: false, agentSource: "codebuddy" };
++async function roundtrip(messages: Record<string, unknown>[]) {
++  const adapter = new OpenAIAdapter();
++  return adapter.serialize(adapter.parse({ messages }, metadata)).messages;
++}
++describe("OpenAI participant names", () => {
++  it.each(["system", "user", "assistant"])("preserves a named %s message", async (role) => {
++    const messages = [{ role, content: "hello", name: "participant_fixture" }];
++    expect(await roundtrip(messages)).toEqual(messages);
++  });
++  it("preserves names alongside assistant reasoning and tool calls", async () => {
++    const messages = [{ role: "assistant", content: null, name: "researcher", reasoning_content: "thinking", tool_calls: [{ id: "call_fixture", type: "function", function: { name: "lookup", arguments: "{}" } }] }];
++    expect(await roundtrip(messages)).toEqual(messages);
++  });
++  it("keeps unnamed messages unchanged", async () => {
++    const messages = [{ role: "system", content: "Instructions" }, { role: "user", content: "hello" }, { role: "assistant", content: "hi" }];
++    expect(await roundtrip(messages)).toEqual(messages);
++  });
++});
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/__tests__/pr1724-anthropic-image-references.test.ts sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1724-anthropic-image-references.test.ts
+--- baseline/MemoryProxy/src/injection/adapters/__tests__/pr1724-anthropic-image-references.test.ts	1970-01-01 08:00:00
++++ sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1724-anthropic-image-references.test.ts	2026-10-22 00:44:46
+@@ -0,0 +1,19 @@
++import { describe, expect, it } from "vitest";
++import { AnthropicAdapter } from "../anthropic.js";
++import type { AgentContextMetadata } from "../../types.js";
++const metadata: AgentContextMetadata = { protocol: "anthropic", traceId: "fixture", keyId: "fixture", modelId: "fixture", stream: false, agentSource: "claude-code" };
++describe("Anthropic referenced images", () => {
++  it.each([
++    { type: "url", url: "https://images.example.test/screenshot.png" },
++    { type: "file", file_id: "file_fixture" },
++    { type: "base64", media_type: "image/png", data: "aW1hZ2U=" },
++  ])("preserves $type image sources through adapter round-trip", async (source) => {
++    const content = [{ type: "image", source, cache_control: { type: "ephemeral" } }, { type: "text", text: "Describe the image" }];
++    const body = { max_tokens: 1, messages: [{ role: "user", content }] };
++    const before = structuredClone(body);
++    const adapter = new AnthropicAdapter();
++    const out = adapter.serialize(adapter.parse(body, metadata));
++    expect(out.messages).toEqual(body.messages);
++    expect(body).toEqual(before);
++  });
++});
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/__tests__/pr1725-openai-custom-parts.test.ts sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1725-openai-custom-parts.test.ts
+--- baseline/MemoryProxy/src/injection/adapters/__tests__/pr1725-openai-custom-parts.test.ts	1970-01-01 08:00:00
++++ sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1725-openai-custom-parts.test.ts	2026-10-22 00:44:46
+@@ -0,0 +1,46 @@
++import { describe, expect, it } from "vitest";
++import { OpenAIAdapter } from "../openai.js";
++import type { AgentContextMetadata } from "../../types.js";
++
++const metadata: AgentContextMetadata = {
++  protocol: "openai",
++  traceId: "fixture",
++  keyId: "fixture",
++  modelId: "fixture",
++  stream: false,
++  agentSource: "codebuddy",
++};
++
++function roundtrip(messages: Record<string, unknown>[]) {
++  const adapter = new OpenAIAdapter();
++  return adapter.serialize(adapter.parse({ messages }, metadata)).messages;
++}
++
++describe("OpenAI content parts the adapter does not model", () => {
++  it("restores input_audio and file parts unchanged", () => {
++    const messages = [
++      {
++        role: "user",
++        content: [
++          { type: "text", text: "transcribe this" },
++          { type: "input_audio", input_audio: { data: "AAAA", format: "wav" } },
++          { type: "file", file: { file_id: "file_fixture" } },
++        ],
++      },
++    ];
++    expect(roundtrip(messages)).toEqual(messages);
++  });
++
++  it("keeps text and image_url parts unchanged", () => {
++    const messages = [
++      {
++        role: "user",
++        content: [
++          { type: "text", text: "look" },
++          { type: "image_url", image_url: { url: "https://example.test/a.png", detail: "low" } },
++        ],
++      },
++    ];
++    expect(roundtrip(messages)).toEqual(messages);
++  });
++});
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/__tests__/pr1726-openai-tool-array-content.test.ts sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1726-openai-tool-array-content.test.ts
+--- baseline/MemoryProxy/src/injection/adapters/__tests__/pr1726-openai-tool-array-content.test.ts	1970-01-01 08:00:00
++++ sandbox/MemoryProxy/src/injection/adapters/__tests__/pr1726-openai-tool-array-content.test.ts	2026-10-22 00:44:46
+@@ -0,0 +1,43 @@
++import { describe, expect, it } from "vitest";
++import { OpenAIAdapter } from "../openai.js";
++import type { AgentContextMetadata } from "../../types.js";
++
++const metadata: AgentContextMetadata = {
++  protocol: "openai",
++  traceId: "fixture",
++  keyId: "fixture",
++  modelId: "fixture",
++  stream: false,
++  agentSource: "codebuddy",
++};
++
++function roundtrip(messages: Record<string, unknown>[]) {
++  const adapter = new OpenAIAdapter();
++  return adapter.serialize(adapter.parse({ messages }, metadata)).messages;
++}
++
++describe("OpenAI tool message content", () => {
++  it("keeps an array of text parts as an array", () => {
++    const messages = [
++      { role: "tool", tool_call_id: "call_fixture", content: [{ type: "text", text: "result" }] },
++    ];
++    expect(roundtrip(messages)).toEqual(messages);
++  });
++
++  it("keeps string content unchanged", () => {
++    const messages = [{ role: "tool", tool_call_id: "call_fixture", content: "result" }];
++    expect(roundtrip(messages)).toEqual(messages);
++  });
++
++  it("sends rewritten text when an injector changes the result", () => {
++    const adapter = new OpenAIAdapter();
++    const ctx = adapter.parse(
++      { messages: [{ role: "tool", tool_call_id: "c", content: [{ type: "text", text: "a" }] }] },
++      metadata,
++    );
++    ctx.messages[0].blocks[0].content = "rewritten";
++    expect(adapter.serialize(ctx).messages).toEqual([
++      { role: "tool", tool_call_id: "c", content: "rewritten" },
++    ]);
++  });
++});
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/anthropic.ts sandbox/MemoryProxy/src/injection/adapters/anthropic.ts
+--- baseline/MemoryProxy/src/injection/adapters/anthropic.ts	2026-10-22 00:41:49
++++ sandbox/MemoryProxy/src/injection/adapters/anthropic.ts	2026-10-22 00:46:40
+@@ -197,10 +197,11 @@
+ 
+   private serializeSystemMessage(msg: ContextMessage): unknown {
+     const textBlocks = msg.blocks.filter((b) => b.type === "text");
+-    if (textBlocks.length === 1) {
++    if (msg.blocks.length === 1 && textBlocks.length === 1
++      && textBlocks[0].metadata?.cache_control === undefined) {
+       return textBlocks[0].content;
+     }
+-    // Multiple blocks → use array format
++    // Multiple blocks or cache metadata require the array format.
+     return msg.blocks.map((b) => this.serializeContentBlock(b));
+   }
+ 
+diff --color -ruN baseline/MemoryProxy/src/injection/adapters/openai.ts sandbox/MemoryProxy/src/injection/adapters/openai.ts
+--- baseline/MemoryProxy/src/injection/adapters/openai.ts	2026-10-22 00:41:49
++++ sandbox/MemoryProxy/src/injection/adapters/openai.ts	2026-10-22 00:46:49
+@@ -19,6 +19,17 @@
+   MessageRole,
+ } from "../types.js";
+ 
++function parseOriginalPart(content: string): Record<string, unknown> | undefined {
++  try {
++    const parsed: unknown = JSON.parse(content);
++    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
++      ? (parsed as Record<string, unknown>)
++      : undefined;
++  } catch {
++    return undefined;
++  }
++}
++
+ export class OpenAIAdapter implements ProtocolAdapter {
+   readonly protocol = "openai" as const;
+ 
+@@ -64,6 +75,7 @@
+   private parseMessage(raw: unknown): ContextMessage {
+     const m = raw as Record<string, unknown>;
+     const role = m.role as MessageRole;
++    const metadata = typeof m.name === "string" ? { name: m.name } : undefined;
+     const blocks: ContextBlock[] = [];
+ 
+     if (role === "tool") {
+@@ -74,7 +86,7 @@
+         content: parsed.text,
+         metadata: { tool_use_id: m.tool_call_id as string, ...parsed.metadata },
+       });
+-      return { role, blocks };
++      return { role, blocks, metadata };
+     }
+ 
+     if (role === "assistant") {
+@@ -107,7 +119,7 @@
+       // Preserve `reasoning_content` (deepseek thinking-mode; dsh 客户端必带此字段
+       // 回传上游,否则 deepseek 官方 400 `reasoning_content ... must be passed back`).
+       // 其它 OpenAI 兼容上游不认识这个字段,pass-through 无害。
+-      const msg: ContextMessage = { role, blocks };
++      const msg: ContextMessage = { role, blocks, metadata };
+       if (typeof m.reasoning_content === "string") {
+         msg.metadata = { ...(msg.metadata ?? {}), reasoning_content: m.reasoning_content };
+       }
+@@ -124,7 +136,7 @@
+       }
+     }
+ 
+-    return { role, blocks };
++    return { role, blocks, metadata };
+   }
+ 
+   private parseContentPart(part: Record<string, unknown>): ContextBlock {
+@@ -161,11 +173,13 @@
+   // ── Private: serialize helpers ──────────────────────────────────────────────
+ 
+   private serializeMessage(msg: ContextMessage): Record<string, unknown> {
++    const identity: Record<string, unknown> = { role: msg.role };
++    if (typeof msg.metadata?.name === "string") identity.name = msg.metadata.name;
+     if (msg.role === "tool") {
+       // Serialize tool role message
+       const toolResult = msg.blocks.find((b) => b.type === "tool_result");
+       return {
+-        role: "tool",
++        ...identity,
+         content: serializeToolResultContent(toolResult),
+         tool_call_id: toolResult?.metadata?.tool_use_id ?? "",
+       };
+@@ -176,7 +190,7 @@
+       const textBlocks = msg.blocks.filter((b) => b.type === "text");
+       const toolUseBlocks = msg.blocks.filter((b) => b.type === "tool_use");
+ 
+-      const result: Record<string, unknown> = { role: "assistant" };
++      const result: Record<string, unknown> = { ...identity };
+ 
+       // Content
+       if (textBlocks.length > 0) {
+@@ -218,7 +232,7 @@
+     if (otherBlocks.length === 0) {
+       // Simple text-only message
+       return {
+-        role: msg.role,
++        ...identity,
+         content: textBlocks.map((b) => b.content).join("\n"),
+       };
+     }
+@@ -236,18 +250,21 @@
+             image_url: { url: block.content, detail: block.metadata?.detail },
+           });
+           break;
++        case "custom": {
++          // Content parts this adapter does not model (input_audio, file, video_url, ...)
++          // were stored verbatim as JSON in parseContentPart; restore the original part
++          // instead of emitting a non-OpenAI `custom` part that upstreams reject.
++          const original = parseOriginalPart(block.content);
++          parts.push(original ?? { type: block.type, content: block.content, ...block.metadata });
++          break;
++        }
+         default:
+-          // Unknown parts (input_audio, file, ...) were stored as JSON on parse.
+-          try {
+-            parts.push(JSON.parse(block.content) as Record<string, unknown>);
+-          } catch {
+-            parts.push({ type: block.type, content: block.content, ...block.metadata });
+-          }
++          parts.push({ type: block.type, content: block.content, ...block.metadata });
+           break;
+       }
+     }
+ 
+-    return { role: msg.role, content: parts };
++    return { ...identity, content: parts };
+   }
+ 
+   private serializeTool(tool: AgentTool): Record<string, unknown> {

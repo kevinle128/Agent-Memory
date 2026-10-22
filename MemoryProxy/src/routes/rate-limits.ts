@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import type { ProxyConfig } from "../types.js";
 import { assertKeySegment } from "../storage/key-utils.js";
 import { getRateLimitStore } from "../rate-limit/guard.js";
+import { checkAdminAuth, adminAuthError } from "./admin-auth.js";
 
 interface RateLimitBody {
   instance_id?: unknown;
@@ -11,10 +12,17 @@ interface RateLimitBody {
 }
 
 export function createRateLimitHandlers(config: ProxyConfig) {
+  // Rate limits change how much traffic every tenant can send, so these
+  // endpoints use the same admin Bearer key as the other /v3/admin routes.
+  const rejectUnauthorized = (c: Context): Response | null => {
+    const result = checkAdminAuth(c, config.admin.apiKey);
+    return result === "ok" ? null : adminAuthError(c, result);
+  };
+
   return {
-    get: (c: Context) => handleGet(c, config),
-    put: (c: Context) => handlePut(c, config),
-    delete: (c: Context) => handleDelete(c, config),
+    get: (c: Context) => rejectUnauthorized(c) ?? handleGet(c, config),
+    put: (c: Context) => rejectUnauthorized(c) ?? handlePut(c, config),
+    delete: (c: Context) => rejectUnauthorized(c) ?? handleDelete(c, config),
   };
 }
 

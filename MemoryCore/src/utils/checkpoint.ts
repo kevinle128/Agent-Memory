@@ -49,7 +49,73 @@ export interface RunnerSessionState {
   last_l1_cursor: number;
   /** Last scene name from the most recent L1 extraction (for cross-batch continuity) */
   last_scene_name: string;
+  /**
+   * L1 replay guard: ids of messages that L1 already completed (or
+   * quarantined) but whose recorded_at_ms is still after the persisted
+   * cursor. This occurs with interleaved sessions, same-ms rows and
+   * multi-page drains. The runner removes these ids from the next queries,
+   * so a retry does not extract (and write) them again. The runner drops an
+   * id when the cursor covers it.
+   */
+  l1_replay_guard: string[];
+  /**
+   * L2 profile scopes that wait for scheduling. A run that stores some groups
+   * and then fails throws before its result (which carries the scopes) gets
+   * to the scheduler. The runner keeps the scopes here and adds them to the
+   * result of the next successful run.
+   */
+  l1_pending_profile_scopes: string[];
+  /**
+   * Failure state of the group that blocks the L1 cursor, or null when the
+   * last run had no failure. The runner uses it to count deterministic
+   * failures of the same group (quarantine after a limit) and to compute
+   * the retry delay for transient failures.
+   */
+  l1_failure: L1FailureState | null;
+  /**
+   * Bounded log of L0 groups that L1 skipped after repeated deterministic
+   * failures. Newest entries are last. Operators can use it to replay the
+   * messages by hand.
+   */
+  l1_quarantine: L1QuarantineRecord[];
 }
+
+/** Failure state of the L1 group that currently blocks the cursor. */
+export interface L1FailureState {
+  /** Id of the first message of the failed group. */
+  group_key: string;
+  failure_class: "transient" | "deterministic";
+  /** Failure reason with optional detail (for example `llm_error: status=503`). */
+  reason: string;
+  /** Number of consecutive deterministic failures of `group_key`. */
+  det_attempts: number;
+  /** Number of consecutive transient failures, for any group. */
+  transient_streak: number;
+  /** Epoch ms of the first failure in this sequence. */
+  first_at: number;
+  /** Epoch ms of the most recent failure. */
+  last_at: number;
+}
+
+/** One L0 group that L1 skipped after repeated deterministic failures. */
+export interface L1QuarantineRecord {
+  /** Epoch ms when the group was quarantined. */
+  at: number;
+  team_id?: string;
+  user_id: string;
+  agent_id: string;
+  session_id: string;
+  /** Message ids of the group (capped; see the runner). */
+  message_ids: string[];
+  /** recorded_at_ms of the first and last message of the group. */
+  first_ms: number;
+  last_ms: number;
+  reason: string;
+  attempts: number;
+}
+
+/** Maximum number of quarantine records kept per session (newest kept). */
+export const L1_QUARANTINE_LOG_MAX = 50;
 
 /**
  * Per-session state managed exclusively by PipelineManager (written via mergePipelineStates).
@@ -112,7 +178,19 @@ const DEFAULT_RUNNER_STATE: RunnerSessionState = {
   last_captured_timestamp: 0,
   last_l1_cursor: 0,
   last_scene_name: "",
+  l1_replay_guard: [],
+  l1_pending_profile_scopes: [],
+  l1_failure: null,
+  l1_quarantine: [],
 };
+
+/**
+ * Return a new runner state with defaults. The default object holds arrays,
+ * so a shallow spread would share one array between all sessions.
+ */
+function newRunnerState(state?: Partial<RunnerSessionState>): RunnerSessionState {
+  return { ...structuredClone(DEFAULT_RUNNER_STATE), ...state };
+}
 
 const DEFAULT_PIPELINE_STATE: PipelineSessionState = {
   conversation_count: 0,
@@ -301,12 +379,11 @@ export class CheckpointManager {
         cp.runner_states = {};
         cp.pipeline_states = {};
         for (const [key, state] of Object.entries(oldStates)) {
-          cp.runner_states[key] = {
-            ...DEFAULT_RUNNER_STATE,
+          cp.runner_states[key] = newRunnerState({
             last_captured_timestamp: (state.last_captured_timestamp as number) ?? 0,
             last_l1_cursor: (state.last_l1_cursor as number) ?? 0,
             last_scene_name: (state.last_scene_name as string) ?? "",
-          };
+          });
           cp.pipeline_states[key] = {
             ...DEFAULT_PIPELINE_STATE,
             conversation_count: (state.conversation_count as number) ?? 0,
@@ -321,7 +398,7 @@ export class CheckpointManager {
         // Ensure per-session states have all fields with defaults
         if (cp.runner_states) {
           for (const [key, state] of Object.entries(cp.runner_states)) {
-            cp.runner_states[key] = { ...DEFAULT_RUNNER_STATE, ...state };
+            cp.runner_states[key] = newRunnerState(state);
           }
         }
         if (cp.pipeline_states) {
@@ -576,7 +653,7 @@ export class CheckpointManager {
     }
     let state = cp.runner_states[sessionKey];
     if (!state) {
-      state = { ...DEFAULT_RUNNER_STATE };
+      state = newRunnerState();
       cp.runner_states[sessionKey] = state;
     }
     return state;
@@ -643,6 +720,28 @@ export class CheckpointManager {
     memoriesExtracted: number,
     cursorRecordedAtMs?: number,
     lastSceneName?: string,
+    /**
+     * L1 retry bookkeeping. Omit it for a plain completion.
+     *
+     * - `replayGuard` / `pendingProfileScopes`: written as given; an omitted
+     *   field clears the stored value (the cursor then covers everything).
+     *   If the cursor write is stale (a newer cursor is already stored), the
+     *   given values are merged with the stored values, so a concurrent run
+     *   does not lose its guard or scopes.
+     * - `failure`: omitted keeps the stored value; `null` clears it; an
+     *   object replaces it.
+     * - `quarantineAppend`: records added to the quarantine log. The log
+     *   keeps only the newest L1_QUARANTINE_LOG_MAX records.
+     */
+    completion?: {
+      /** Message ids to exclude from subsequent L1 queries (interleaved /
+       *  same-ms groups already processed but still past the cursor). */
+      replayGuard?: string[];
+      /** Profile scopes awaiting L2 scheduling on the next successful run. */
+      pendingProfileScopes?: string[];
+      failure?: L1FailureState | null;
+      quarantineAppend?: L1QuarantineRecord[];
+    },
   ): Promise<void> {
     let regressed = false;
     await this.mutate((cp) => {
@@ -662,6 +761,26 @@ export class CheckpointManager {
       }
       if (lastSceneName !== undefined) {
         state.last_scene_name = lastSceneName;
+      }
+      const nextGuard = completion?.replayGuard ?? [];
+      const nextScopes = completion?.pendingProfileScopes ?? [];
+      if (regressed) {
+        // A newer run already moved the cursor. Its guard and scopes can
+        // still be needed, so keep them and add ours.
+        state.l1_replay_guard = Array.from(new Set([...(state.l1_replay_guard ?? []), ...nextGuard]));
+        state.l1_pending_profile_scopes = Array.from(
+          new Set([...(state.l1_pending_profile_scopes ?? []), ...nextScopes]),
+        );
+      } else {
+        state.l1_replay_guard = [...nextGuard];
+        state.l1_pending_profile_scopes = [...nextScopes];
+      }
+      if (completion?.failure !== undefined) {
+        state.l1_failure = completion.failure === null ? null : { ...completion.failure };
+      }
+      if (completion?.quarantineAppend?.length) {
+        state.l1_quarantine = [...(state.l1_quarantine ?? []), ...completion.quarantineAppend]
+          .slice(-L1_QUARANTINE_LOG_MAX);
       }
       cp.total_memories_extracted += memoriesExtracted;
       cp.memories_since_last_persona += memoriesExtracted;

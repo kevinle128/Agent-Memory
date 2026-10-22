@@ -29,6 +29,7 @@ import type { AgentContext } from "../injection/types.js";
 import { resolveFixedAssetCtxs, type FixedAssetCtx } from "../injection/injectors/tdai-fixed-asset.js";
 import type { TdaiIdentity } from "../tdai/types.js";
 import { emitBridgeToolCallTelemetry, emitBridgeRejectTelemetry, agentSourceFromSessionKey } from "./bridge-telemetry.js";
+import { sessionKeyCandidates } from "../agent-adapters/index.js";
 
 const TAG = "[memory-bridge]";
 
@@ -148,12 +149,7 @@ function bindingToIdFields(
  * Returns null on miss (caller decides whether to probe L2).
  */
 function loadSessionIdsL1(sessionId: string): SessionIdFields | null {
-  // handler 层存的 L1 key 形如 `${agentSource}:${sessionId}`; curl 拿到的
-  // 通常是 bare sessionId。按候选前缀顺序探,命中即返回。
-  const candidates = sessionId.includes(":")
-    ? [sessionId]
-    : [sessionId, `codebuddy:${sessionId}`, `claude-code:${sessionId}`];
-  for (const k of candidates) {
+  for (const k of sessionKeyCandidates(sessionId)) {
     const state = getSessionStore().get(k);
     if (state) {
       const fields = toIdFields(state, k);
