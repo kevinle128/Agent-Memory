@@ -179,7 +179,7 @@ describe("writeMemory - batch intra-dedup branches", () => {
   it("update without scope fields still passes a normalised default-bucket filter", async () => {
     // When team/user/agent are all absent, the filter must not disappear (that would
     // allow cross-tenant unisolated deletes); instead it normalizes to the default
-    // bucket: { userId: "default", agentId: "default" } with no teamId key.
+    // bucket and keeps the team-less bucket ("") so other teams' rows never match.
     const existingOld = { id: "c1", version: 0 } as unknown as MemoryRecord;
     const vs = mkVectorStore([existingOld]);
     const storage = mkStorage();
@@ -204,8 +204,7 @@ describe("writeMemory - batch intra-dedup branches", () => {
     expect(vs.deleted).toHaveLength(1);
     expect(vs.deleted[0]!.ids).toEqual(["c1"]);
     const filter = vs.deleted[0]!.filter as Record<string, unknown>;
-    expect(filter).toEqual({ userId: "default", agentId: "default" });
-    expect(filter).not.toHaveProperty("teamId");
+    expect(filter).toEqual({ teamId: "", userId: "default", agentId: "default" });
     expect(filter).not.toHaveProperty("sessionId");
   });
 });

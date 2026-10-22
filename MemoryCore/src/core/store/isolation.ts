@@ -182,10 +182,14 @@ export function rowMatchesIsolation(
  * userId / agentId are normalised to `DEFAULT_ISOLATION_ID`, matching the write
  * side (l1-writer fills missing values with "default"). This keeps the filter
  * always non-empty: a caller that passes no scope fields still gets
- * default-bucket isolation instead of an unfiltered cross-tenant scan. teamId is
- * spread conditionally so an empty string is never emitted — "" would participate
- * in strict-equality and silently match nothing, since rows store "default" or a
- * real id.
+ * default-bucket isolation instead of an unfiltered cross-tenant scan.
+ *
+ * teamId is always part of the filter: omitting it would match every team that
+ * shares the user/agent bucket. It is not normalised to "default", because the
+ * backends store a team-less row differently — SQLite stores "default", TCVDB
+ * and MongoDB store "". Callers pass the team value read back from the L0
+ * group, which already carries the backend's own representation, so an exact
+ * match keeps dedup inside the caller's team bucket on every backend.
  */
 export function buildDedupScopeFilter(
   teamId?: string,
@@ -193,7 +197,7 @@ export function buildDedupScopeFilter(
   agentId?: string,
 ): IsolationFilter {
   return {
-    ...(teamId ? { teamId } : {}),
+    teamId: teamId ?? "",
     userId: userId || DEFAULT_ISOLATION_ID,
     agentId: agentId || DEFAULT_ISOLATION_ID,
   };
