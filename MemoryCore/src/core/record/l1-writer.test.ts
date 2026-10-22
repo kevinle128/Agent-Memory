@@ -10,7 +10,7 @@
  * repo's existing convention (see sdk/typescript/tests/client.test.ts).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { writeMemory } from "./l1-writer.js";
 import type { ExtractedMemory, DedupDecision, MemoryRecord } from "./l1-writer.js";
 import type { IMemoryStore } from "../store/types.js";
@@ -206,5 +206,122 @@ describe("writeMemory - batch intra-dedup branches", () => {
     const filter = vs.deleted[0]!.filter as Record<string, unknown>;
     expect(filter).toEqual({ teamId: "", userId: "default", agentId: "default" });
     expect(filter).not.toHaveProperty("sessionId");
+  });
+});
+
+describe("writeMemory - update/merge replaces old records only after the new one is stored", () => {
+  const updateDecision = (targetIds: string[]): DedupDecision => ({
+    record_id: "m1",
+    action: "update",
+    target_ids: targetIds,
+    merged_content: "merged",
+    merged_type: "episodic",
+    merged_priority: 80,
+    merged_timestamps: ["t1"],
+  });
+
+  it("deletes the targets after the replacement upsert", async () => {
+    const calls: string[] = [];
+    const vs = mkVectorStore();
+    const upsert = vs.upsertL1.bind(vs);
+    const del = vs.deleteL1Batch.bind(vs);
+    vs.upsertL1 = (async (...args: Parameters<IMemoryStore["upsertL1"]>) => {
+      calls.push("upsert");
+      return upsert(...args);
+    }) as IMemoryStore["upsertL1"];
+    vs.deleteL1Batch = (async (...args: Parameters<IMemoryStore["deleteL1Batch"]>) => {
+      calls.push("delete");
+      return del(...args);
+    }) as IMemoryStore["deleteL1Batch"];
+
+    await writeMemory({ memory: mkMemory(), decision: updateDecision(["c1"]), baseDir: "/tmp", sessionKey: "s1", vectorStore: vs, storage: mkStorage() });
+
+    expect(calls).toEqual(["upsert", "delete"]);
+    expect(vs.deleted[0]!.ids).toEqual(["c1"]);
+  });
+
+  it("keeps the targets when the replacement is not in the vector store", async () => {
+    const vs = mkVectorStore();
+    vs.upsertL1 = (async () => false) as IMemoryStore["upsertL1"];
+    const storage = mkStorage();
+
+    const result = await writeMemory({ memory: mkMemory(), decision: updateDecision(["c1"]), baseDir: "/tmp", sessionKey: "s1", vectorStore: vs, storage });
+
+    expect(result).not.toBeNull();
+    expect(storage.appended).toHaveLength(1);
+    expect(vs.deleted).toHaveLength(0);
+  });
+
+  it("keeps the targets and reports a failure when no target stored the replacement", async () => {
+    const vs = mkVectorStore();
+    vs.upsertL1 = (async () => { throw new Error("vdb down"); }) as IMemoryStore["upsertL1"];
+    const storage = mkStorage();
+    storage.appendFile = (async () => { throw new Error("disk full"); }) as StorageAdapter["appendFile"];
+
+    await expect(
+      writeMemory({ memory: mkMemory(), decision: updateDecision(["c1"]), baseDir: "/tmp", sessionKey: "s1", vectorStore: vs, storage }),
+    ).rejects.toThrow("no persistence target");
+    expect(vs.deleted).toHaveLength(0);
+  });
+
+  it("never deletes the replacement itself", async () => {
+    const vs = mkVectorStore();
+
+    await writeMemory({ memory: mkMemory(), decision: updateDecision(["c1", "m1"]), baseDir: "/tmp", sessionKey: "s1", vectorStore: vs, storage: mkStorage() });
+
+    expect(vs.deleted[0]!.ids).toEqual(["c1"]);
+  });
+});
+
+describe("writeMemory - retries a failed delete of the replaced records", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const updateDecision: DedupDecision = {
+    record_id: "m1",
+    action: "update",
+    target_ids: ["c1"],
+    merged_content: "merged",
+    merged_type: "episodic",
+    merged_priority: 80,
+    merged_timestamps: ["t1"],
+  };
+
+  const writeWithDeleteResults = async (results: Array<boolean | Error>) => {
+    vi.useFakeTimers();
+    const vs = mkVectorStore();
+    let attempts = 0;
+    vs.deleteL1Batch = (async () => {
+      const result = results[Math.min(attempts++, results.length - 1)]!;
+      if (result instanceof Error) throw result;
+      return result;
+    }) as IMemoryStore["deleteL1Batch"];
+    const warnings: string[] = [];
+    const logger = { info: () => {}, warn: (msg: string) => warnings.push(msg), error: () => {}, debug: () => {} };
+    const pending = writeMemory({ memory: mkMemory(), decision: updateDecision, baseDir: "/tmp", sessionKey: "s1", vectorStore: vs, storage: mkStorage(), logger });
+    await vi.runAllTimersAsync();
+    const record = await pending;
+    return { record, attempts: () => attempts, warnings };
+  };
+
+  it("succeeds on a retry after the store throws", async () => {
+    const { record, attempts, warnings } = await writeWithDeleteResults([new Error("timeout"), true]);
+    expect(record).not.toBeNull();
+    expect(attempts()).toBe(2);
+    expect(warnings.filter((w) => w.includes("delete failed"))).toHaveLength(0);
+  });
+
+  it("treats a false result as a failure and retries", async () => {
+    const { attempts, warnings } = await writeWithDeleteResults([false, false, true]);
+    expect(attempts()).toBe(3);
+    expect(warnings.filter((w) => w.includes("delete failed"))).toHaveLength(0);
+  });
+
+  it("stops after three attempts, warns, and still returns the stored replacement", async () => {
+    const { record, attempts, warnings } = await writeWithDeleteResults([false]);
+    expect(record?.id).toBe("m1");
+    expect(attempts()).toBe(3);
+    expect(warnings.some((w) => w.includes("delete failed") && w.includes("[c1] remain beside m1"))).toBe(true);
   });
 });
