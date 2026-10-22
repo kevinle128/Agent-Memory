@@ -179,3 +179,56 @@ A: 不会。Subagent 复用主 agent 的 session_id，proxy 检测到已 initial
 
 **Q: CC 的 auxiliary 请求（title-gen / compact）会走注入吗？**  
 A: 不会。proxy 识别到辅助请求后直接透传，不做注入/归档。
+
+---
+
+## 11. 项目上报 Hook
+
+Proxy 只有知道会话属于哪个项目，才能注入项目记忆。Claude Code 的请求本身不带工作目录，所以每台机器需要安装一次 hook：在 `SessionStart` 与 `UserPromptSubmit` 事件上，把会话的工作目录和 git 身份上报给 proxy。
+
+### 11.1 安装
+
+`setup-proxy.sh` 选择 claude-code 时会自动安装（失败只告警，不影响配置）。手动安装：
+
+```bash
+curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- [--base-url URL] [--client claude-code] [--session SID] [--uninstall]
+```
+
+- `--base-url`：默认取环境变量 `ANTHROPIC_BASE_URL`，其次取 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL`；`<proxy-origin>` 是它的 `scheme://host[:port]` 部分
+- `--session SID`：安装后立即用该 session id 上报一次（严格模式），失败则退出码为 1，用于验证链路
+- `--uninstall`：只移除本 hook 的条目与 `~/.agent-memory/hook.sh`，保留 `device.json`
+- 需要 `jq`、`python3`、`node` 之一来编辑 JSON；都没有时脚本会提示安装并退出
+- 重复运行是安全的：不会生成重复条目；每次修改前备份为 `~/.claude/settings.json.agent-memory-backup-<UTC 时间戳>`
+
+安装结果：
+
+| 路径 | 内容 |
+|------|------|
+| `~/.agent-memory/hook.sh` | 从 `<proxy-origin>/setup/hook.sh` 下载（权限 0755） |
+| `~/.agent-memory/device.json` | `{"device_id": "<uuid>", "created_at": "<ISO-8601 UTC>"}`（目录 0700，文件 0600），标识这台机器 |
+| `~/.claude/settings.json` | `hooks.SessionStart` 与 `hooks.UserPromptSubmit` 各追加 `{"hooks":[{"type":"command","command":"<HOME>/.agent-memory/hook.sh claude-code","timeout":5}]}` |
+
+### 11.2 hook 行为
+
+`hook.sh` 从 stdin 读取 `session_id`、`cwd`、`hook_event_name`，向 `${ANTHROPIC_BASE_URL}/v3/hook/report` 发送 POST（`Authorization: Bearer <token>`）：
+
+```json
+{"device_id": "...", "session_id": "...", "cwd": "...", "git_toplevel": null, "git_remote": null,
+ "hook_event": "UserPromptSubmit", "hook_version": "1", "client": "claude-code",
+ "os": "darwin", "arch": "arm64", "hostname": "..."}
+```
+
+- 连接信息：先取环境变量 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`（其次 `ANTHROPIC_API_KEY`），缺失时读 `~/.claude/settings.json` 的 `env`；仍缺失则静默退出
+- `git_toplevel` / `git_remote` 来自 `git rev-parse --show-toplevel` 与 `origin`（没有 origin 时取第一个 remote）；非 git 目录为 `null`
+- remote URL 上报前会去掉 `user:token@` 凭据；`git@host:owner/repo` 形式原样保留
+- 不向 stdout 输出任何内容（Claude Code 会把 hook 的 stdout 加入模型上下文），始终退出 0；连接超时 1 秒、总超时 2 秒
+- 例外：设置 `AGENT_MEMORY_HOOK_STRICT=1` 时，上报失败（连接错误或非 2xx）会向 stderr 写一行错误并退出 1；安装器的 `--session` 使用该模式
+
+### 11.3 排查
+
+```bash
+echo '{"session_id":"test","cwd":"'"$PWD"'","hook_event_name":"Manual"}' \
+  | AGENT_MEMORY_HOOK_STRICT=1 ~/.agent-memory/hook.sh claude-code
+```
+
+退出码 0 且无输出表示 proxy 已收到上报；退出码 1 时 stderr 会给出原因（例如 `HTTP 401`）。

@@ -725,6 +725,18 @@ fi
 
 # ─── Write Functions ──────────────────────────────────────────────────────────
 
+# Install the session-report hooks with the installer that the proxy serves.
+# A failure here only prints a warning: the proxy setup itself is complete.
+install_claude_code_hooks() {
+  local base_url="$1"
+  if curl -fsSL "${PROXY_HOST}/setup/hooks.sh" | bash -s -- --base-url "$base_url"; then
+    success "已安装项目上报 hook（~/.agent-memory/hook.sh）"
+  else
+    warn "hook 安装失败，已跳过（不影响代理配置）。稍后可手动重试："
+    warn "  curl -fsSL ${PROXY_HOST}/setup/hooks.sh | bash -s -- --base-url ${base_url}"
+  fi
+}
+
 write_claude_code() {
   local filepath="$1"
   ensure_dir "$filepath"
@@ -776,6 +788,7 @@ write_claude_code() {
 EOF
   fi
   success "已写入 ${filepath}"
+  install_claude_code_hooks "$base_url"
   echo ""
   info "启动方式:"
   echo -e "  ${GREEN}claude${RESET}   ${DIM}# 直接启动，会从 settings.json 读取 env${RESET}"
