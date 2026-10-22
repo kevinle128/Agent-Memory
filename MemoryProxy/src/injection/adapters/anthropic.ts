@@ -19,6 +19,10 @@ import type {
 } from "../types.js";
 
 const TOP_LEVEL_SYSTEM = "anthropicTopLevelSystem";
+// Message fields other than role/content (for example `output_config` on a
+// directive-only system message). The API rejects a system message with
+// empty content unless these fields survive the round-trip.
+const MESSAGE_EXTRA_FIELDS = "anthropicMessageExtraFields";
 
 export class AnthropicAdapter implements ProtocolAdapter {
   readonly protocol = "anthropic" as const;
@@ -109,7 +113,12 @@ export class AnthropicAdapter implements ProtocolAdapter {
       }
     }
 
-    return { role, blocks };
+    const extra: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(m)) {
+      if (key !== "role" && key !== "content") extra[key] = value;
+    }
+    if (Object.keys(extra).length === 0) return { role, blocks };
+    return { role, blocks, metadata: { [MESSAGE_EXTRA_FIELDS]: extra } };
   }
 
   private parseContentBlock(block: Record<string, unknown>): ContextBlock {
@@ -207,7 +216,8 @@ export class AnthropicAdapter implements ProtocolAdapter {
 
   private serializeMessage(msg: ContextMessage): Record<string, unknown> {
     const content = msg.blocks.map((b) => this.serializeContentBlock(b));
-    return { role: msg.role, content };
+    const extra = msg.metadata?.[MESSAGE_EXTRA_FIELDS] as Record<string, unknown> | undefined;
+    return { ...extra, role: msg.role, content };
   }
 
   private serializeContentBlock(block: ContextBlock): Record<string, unknown> {
