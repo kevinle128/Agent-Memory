@@ -6,7 +6,7 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - [x] Giai đoạn 1: Request phụ không nhận memory
 - [x] Giai đoạn 2: Chế độ mặc định không inject (`profileScopeMode: deny`, `cacheVariant`)
 - [x] Giai đoạn 3: L3 toàn cục đã được lọc (prompt mới, bước kiểm tra, sao lưu và tạo lại)
-- [~] Giai đoạn 4: Hạ tầng báo cáo của hook (endpoint, bảng đăng ký máy, `hook.sh`, `install.sh`)
+- [x] Giai đoạn 4: Hạ tầng báo cáo của hook (endpoint, bảng đăng ký máy, `hook.sh`, `install.sh`)
 - [ ] Giai đoạn 5: Gắn dự án khi ghi memory (L0/L1 `project_key`, L2/L3 theo dự án)
 - [ ] Giai đoạn 6: Đọc theo dự án (chế độ `scoped`)
 - [ ] Giai đoạn 7: Bắt buộc cài hook với Claude Code
@@ -83,3 +83,8 @@ Kế hoạch chi tiết: [plan.md](plan.md)
   - Test: `project-key.test.ts` (18), `hook-report.test.ts` (17).
 - Khác với kế hoạch: gộp `device/register` vào `hook/report`, vì báo cáo đã mang đủ thông tin máy.
 - Subagent: bảng đăng ký máy ở Core (`/v3/meta/device/upsert|list`); script `hook.sh`, `install.sh` và thay đổi trong `setup-proxy.sh`.
+- Test local (proxy chạy ở 127.0.0.1:18096, HOME tạm, Claude Code thật): cài lần hai không tạo hook trùng; `permissions` sẵn có giữ nguyên; `device.json` có quyền 0600. `~/Movies` cho `project=none`; gốc repo và `MemoryProxy/src` cùng cho `github.com/kevinle128/agent-memory` (hash `db73c988534bc1c8`). Báo cáo đến trước request model; log không có token.
+- Lỗi khi commit, đã sửa trước khi push: mẫu `workspace/` trong `.gitignore` gốc chặn `src/workspace/`, và `git add` vẫn stage các file khác, nên một commit bị gộp và thiếu file. Đã đổi tên thư mục thành `src/project-scope/` và tách lại commit.
+- Deploy (sao lưu trước: `~/backups/agent-memory-core-data-20261022-181257-before-device-registry.tgz`): core và proxy cùng ở `5a3c698`, đều healthy.
+- Test trên server (HOME tạm, token thật, proxy production): cài từ `/setup/hooks.sh` thành công; ba thư mục cho kết quả giống hệt bản local; bảng `meta_device_setups` trong Core có một bản ghi (`darwin`, `arm64`, hook phiên bản 1); `proxy_kv` có `workspace.json` cho từng session; không có lần cập nhật máy nào thất bại. Bản ghi máy `93895e8b…` là dữ liệu test.
+- Phát hiện riêng (không do thay đổi này): Core lặp lỗi `[skill-worker-pool] standalone SkillExtractor unavailable` khoảng 300 lần mỗi giây, CPU khoảng 79%. Diff hôm nay không chạm phần tạo skill extractor. Cần bạn quyết định có điều tra hay không.
