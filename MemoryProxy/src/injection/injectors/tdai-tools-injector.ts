@@ -22,7 +22,7 @@
  *     - L0/L1 **不再每轮自动召回**注入到 user prompt（会破坏 KV/prompt cache），
  *       改为静态工具按需检索；system prompt 稳定 → 命中 prompt cache。
  *     - L3（persona）由 tdai-profile-memory-injector **直接注入** system，无需工具。
- *     - L2 索引也直接注入 system（`<l2_scene_index>`），正文按需用 read_scene。
+ *     - L2 索引只在 legacy 模式注入 system（`<l2_scene_index>`），正文按需用 read_scene。
  *
  *   写操作 (atomic/update / conversation/delete / scenario/write / scenario/rm / core/write)
  *   不在 bridge allowlist 里；写入由主链路注入器控制。
@@ -43,6 +43,7 @@ import type {
 } from "../types.js";
 import { HOOK_PRIORITY } from "../types.js";
 import { getTdaiIdentity } from "../../tdai/identity.js";
+import type { ProfileScopeMode } from "../../tdai/types.js";
 
 export interface TdaiMemoryToolsInjectorConfig {
   /**
@@ -50,6 +51,8 @@ export interface TdaiMemoryToolsInjectorConfig {
    * E.g. `http://127.0.0.1:8096`. Trailing slash trimmed.
    */
   proxyBaseUrl: string;
+  /** Profile scope mode of the profile injector; decides what the coverage text says. Missing means "deny". */
+  profileScopeMode?: ProfileScopeMode;
 }
 
 /** 渲染整段 `<tdai_memory_tools>` 文本，纯函数便于测试。 */
@@ -57,7 +60,9 @@ export function renderTdaiMemoryToolsBlock(
   proxyBaseUrl: string,
   sessionId?: string,
   spaceId?: string,
+  profileScopeMode: ProfileScopeMode = "deny",
 ): string {
+  const legacyProfile = profileScopeMode === "legacy";
   const base = proxyBaseUrl.replace(/\/$/, "");
   const bridge = `${base}/memory-bridge/v3`;
   // gateway 需要 `x-tdai-service-id: <spaceId>` 才放行；`x-conversation-id`
@@ -76,7 +81,9 @@ export function renderTdaiMemoryToolsBlock(
     "调用方式：Bash 里执行 curl 命中 proxy 的 memory-bridge 路径。proxy 会自动注入身份鉴权（team_id/user_id/agent_id），body 只需业务字段。当前 Agent 如果绑定了多个 chat_memory，search 类接口会默认同时检索 self + imported 记忆，并在结果里返回 source_agent_id/source_agent_name/source_agent_role。",
     "",
     "覆盖范围：",
-    "- L3（persona 长期画像）与 L2 场景索引（`<l2_scene_index>`）已直接注入 system，无需查询；",
+    legacyProfile
+      ? "- L3（persona 长期画像）与 L2 场景索引（`<l2_scene_index>`）已直接注入 system，无需查询；"
+      : "- system 中最多只注入跨项目通用的 L3（用户长期画像），不注入项目信息；L2 场景索引不注入，需要时用 tdai_scenario_ls 列出；",
     "- L2 正文按需用 tdai_read_scene 读取；",
     "- L0/L1（原始对话 / 原子记忆）**不再每轮自动召回**（会破坏 KV cache），需要时主动调工具检索。",
     "",
@@ -115,7 +122,9 @@ export function renderTdaiMemoryToolsBlock(
     "  <tool name=\"tdai_read_scene\">",
     `    curl: ${bridge}/scenario/read`,
     `    body: {"path": "<scene path>", "agent_id": "?来自 <agent agent_id=...>，读取 imported 记忆时传"}`,
-    "    use:  按 path 读取 L2 场景文件全文。path 必须先从 `<l2_scene_index>` 或 tdai_scenario_ls 获取，不要凭空构造；读取 imported_from 分段的 path 时带上该分段 agent_id。",
+    legacyProfile
+      ? "    use:  按 path 读取 L2 场景文件全文。path 必须先从 `<l2_scene_index>` 或 tdai_scenario_ls 获取，不要凭空构造；读取 imported_from 分段的 path 时带上该分段 agent_id。"
+      : "    use:  按 path 读取 L2 场景文件全文。path 必须先从 tdai_scenario_ls 获取，不要凭空构造；读取 imported_from 分段的 path 时带上该分段 agent_id。",
     "  </tool>",
     "",
     "## 调用约束",
@@ -148,8 +157,12 @@ export class TdaiMemoryToolsInjector implements InjectionHook {
   description = "Inject <tdai_memory_tools> curl recipes block into system prompt";
   /** Static tool instructions are session-stable; render once at session_init. */
   cacheStrategy: CacheStrategy = "session_init";
+  /** The coverage text depends on the profile scope mode; see TdaiProfileMemoryInjector.cacheVariant. */
+  cacheVariant: string | undefined;
 
-  constructor(private cfg: TdaiMemoryToolsInjectorConfig) {}
+  constructor(private cfg: TdaiMemoryToolsInjectorConfig) {
+    this.cacheVariant = cfg.profileScopeMode === "legacy" ? undefined : "deny:v2";
+  }
 
   execute(ctx: AgentContext): ContextBlock[] {
     const caps = ctx.metadata.custom?.assetCapabilities as { chat_memory?: boolean } | undefined;
@@ -172,7 +185,12 @@ export class TdaiMemoryToolsInjector implements InjectionHook {
   private renderBlocks(sessionId: string, spaceId?: string): ContextBlock[] {
     return [{
       type: "text",
-      content: renderTdaiMemoryToolsBlock(this.cfg.proxyBaseUrl, sessionId, spaceId),
+      content: renderTdaiMemoryToolsBlock(
+        this.cfg.proxyBaseUrl,
+        sessionId,
+        spaceId,
+        this.cfg.profileScopeMode === "legacy" ? "legacy" : "deny",
+      ),
       metadata: {
         source: this.id,
         sessionId,
