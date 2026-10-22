@@ -81,6 +81,30 @@ export interface TaskEntity {
   source_type?: string;
 }
 
+/** Device setup record (`/v3/meta/device/*`). Times use the Core metadata time format. */
+export interface DeviceSetupEntity {
+  user_id: string;
+  device_id: string;
+  client: string;
+  os: string;
+  arch: string;
+  hostname: string;
+  hook_version: string;
+  status: "installed";
+  installed_at: string | number;
+  last_seen_at: string | number;
+}
+
+export interface UpsertDeviceSetupInput {
+  user_id: string;
+  device_id: string;
+  client: string;
+  os?: string;
+  arch?: string;
+  hostname?: string;
+  hook_version: string;
+}
+
 /**
  * /v3/meta/user-session-default/get · set · delete 的实体返回。
  *
@@ -413,6 +437,22 @@ export class MetadataClient {
         task_id: input.task_id,
       },
     );
+  }
+
+  // ── Device setup registry ──────────────────────────────────────────────
+  //
+  // One record per (user, device, client) that installed the Agent-Memory
+  // client hook. The hook report route upserts it.
+
+  /** Insert or refresh the caller's device record (`/v3/meta/device/upsert`). */
+  async upsertDeviceSetup(input: UpsertDeviceSetupInput): Promise<DeviceSetupEntity> {
+    return this.fetch<DeviceSetupEntity>("/v3/meta/device/upsert", { ...input });
+  }
+
+  /** List a user's device records, newest first (`/v3/meta/device/list`). */
+  async listDeviceSetups(userId: string): Promise<DeviceSetupEntity[]> {
+    const data = await this.fetch<{ items?: DeviceSetupEntity[] }>("/v3/meta/device/list", { user_id: userId });
+    return data.items ?? [];
   }
 
   /** 清除用户默认配置。幂等: 不存在也返 ok。 */

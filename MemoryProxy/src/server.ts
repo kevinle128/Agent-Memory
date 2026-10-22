@@ -162,6 +162,18 @@ export function createApp(config: ProxyConfig): Hono {
 
   app.get("/v3/admin/model-aliases", createModelAliasHandler(config));
 
+  // ── Client hook: install scripts and session workspace reports ──
+  // Registered before the agent-prefixed model routes and the catch-all.
+  app.get("/setup/hooks.sh", (c) =>
+    import("./routes/setup-scripts.js").then(({ createSetupScriptHandler }) => createSetupScriptHandler("hooks.sh")(c)),
+  );
+  app.get("/setup/hook.sh", (c) =>
+    import("./routes/setup-scripts.js").then(({ createSetupScriptHandler }) => createSetupScriptHandler("hook.sh")(c)),
+  );
+  app.post("/:agent/:spaceId/v3/hook/report", (c) =>
+    import("./routes/hook-report.js").then(({ createHookReportHandler }) => createHookReportHandler(config)(c)),
+  );
+
   // ── Session management endpoints (mem: command 底层接口, 面板前端可复用) ──
   app.post("/v3/session/refresh-cache", (c) => {
     return import("./routes/session-refresh.js").then(({ createSessionRefreshHandler }) =>
