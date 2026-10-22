@@ -18,6 +18,7 @@ import { DuplicateUserKeyError, type IMetadataStore } from "../store/interface.j
 // (类型), MetadataError 是本模块的 class, 顶层 class 声明在 import 之前已完成 hoisting,
 // 真实实例化只发生在 Router 调用时, 届时所有模块已完成初始化, 不会 ReferenceError。
 import { UserSessionDefaultService as UserSessionDefaultServiceCtor } from "./user-session-default-service.js";
+import { DeviceSetupService as DeviceSetupServiceCtor } from "./device-setup-service.js";
 import {
   checkPermission,
   canBindAsset,
@@ -301,6 +302,7 @@ export class MetadataService {
   private readonly memorySystemUser?: MemorySystemUserConfig;
   private _configParams?: import("./config-param-service.js").IConfigParamService;
   private _userSessionDefault?: import("./user-session-default-service.js").IUserSessionDefaultService;
+  private _deviceSetup?: import("./device-setup-service.js").IDeviceSetupService;
 
   /**
    * 进程内 LRU 缓存：已确认（在 store 里存在的） chat_memory 资产 id 集合。
@@ -376,6 +378,19 @@ export class MetadataService {
       );
     }
     return this._userSessionDefault;
+  }
+
+  // ── DeviceSetup ──
+  //
+  // Lazy init, same as userSessionDefault: device-setup-service.ts imports
+  // MetadataError from this module, so the instance is not made at construction.
+  get deviceSetup(): import("./device-setup-service.js").IDeviceSetupService {
+    if (!this._deviceSetup) {
+      this._deviceSetup = new (DeviceSetupServiceCtor as unknown as new (
+        store: IMetadataStore,
+      ) => import("./device-setup-service.js").IDeviceSetupService)(this.store);
+    }
+    return this._deviceSetup;
   }
 
   /**

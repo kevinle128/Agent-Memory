@@ -64,6 +64,8 @@ import type {
   ListConfigParamsFilter,
   UserSessionDefaultEntity,
   UpsertUserSessionDefaultInput,
+  DeviceSetupEntity,
+  UpsertDeviceSetupInput,
   InstanceUpstreamConfigEntity,
   InstanceUpstreamConfigFilter,
   CreateInstanceUpstreamGroupInput,
@@ -419,6 +421,26 @@ export class SqliteMetadataStore implements IMetadataStore {
         ON meta_user_session_defaults(agent_id);
       CREATE INDEX IF NOT EXISTS idx_meta_user_session_defaults_task
         ON meta_user_session_defaults(task_id);
+
+      -- DeviceSetup: devices on which a user installed the client hook.
+      -- The primary key (user_id, device_id, client) allows one row for each key.
+      -- CREATE TABLE IF NOT EXISTS adds the table to an existing database at start.
+      CREATE TABLE IF NOT EXISTS meta_device_setups (
+        user_id      TEXT NOT NULL,
+        device_id    TEXT NOT NULL,
+        client       TEXT NOT NULL,
+        os           TEXT NOT NULL DEFAULT '',
+        arch         TEXT NOT NULL DEFAULT '',
+        hostname     TEXT NOT NULL DEFAULT '',
+        hook_version TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'installed',
+        installed_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY (user_id, device_id, client),
+        FOREIGN KEY (user_id) REFERENCES meta_users(user_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_meta_device_setups_user_seen
+        ON meta_device_setups(user_id, last_seen_at DESC);
 
     `);
     // The table is created outside the big statement above because the migration below
@@ -2116,6 +2138,64 @@ export class SqliteMetadataStore implements IMetadataStore {
       task_id: String(r.task_id),
       created_at: String(r.created_at),
       updated_at: String(r.updated_at),
+    };
+  }
+
+  // ============================================================
+  // DeviceSetup — devices on which a user installed the client hook
+  // ============================================================
+
+  upsertDeviceSetup(input: UpsertDeviceSetupInput): DeviceSetupEntity {
+    const now = nowIso();
+    // One statement is atomic. installed_at is not in the UPDATE list, so it stays
+    // as the first report time.
+    this.run(
+      `INSERT INTO meta_device_setups
+         (user_id, device_id, client, os, arch, hostname, hook_version,
+          status, installed_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'installed', ?, ?)
+       ON CONFLICT(user_id, device_id, client) DO UPDATE SET
+         os = excluded.os,
+         arch = excluded.arch,
+         hostname = excluded.hostname,
+         hook_version = excluded.hook_version,
+         last_seen_at = excluded.last_seen_at`,
+      input.user_id, input.device_id, input.client, input.os, input.arch,
+      input.hostname, input.hook_version, now, now,
+    );
+    const row = this.get<Row>(
+      `SELECT * FROM meta_device_setups
+        WHERE user_id = ? AND device_id = ? AND client = ?`,
+      input.user_id, input.device_id, input.client,
+    );
+    if (!row) {
+      throw new Error("upsertDeviceSetup: row disappeared after write");
+    }
+    return this.mapDeviceSetup(row);
+  }
+
+  listDeviceSetups(userId: string): DeviceSetupEntity[] {
+    return this.all<Row>(
+      `SELECT * FROM meta_device_setups
+        WHERE user_id = ?
+        ORDER BY last_seen_at DESC, device_id ASC, client ASC`,
+      userId,
+    ).map((row) => this.mapDeviceSetup(row));
+  }
+
+  private mapDeviceSetup(row: Row): DeviceSetupEntity {
+    const r = row as Record<string, unknown>;
+    return {
+      user_id: String(r.user_id),
+      device_id: String(r.device_id),
+      client: String(r.client),
+      os: String(r.os),
+      arch: String(r.arch),
+      hostname: String(r.hostname),
+      hook_version: String(r.hook_version),
+      status: "installed",
+      installed_at: String(r.installed_at),
+      last_seen_at: String(r.last_seen_at),
     };
   }
 

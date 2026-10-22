@@ -592,6 +592,41 @@ export interface UpsertUserSessionDefaultInput {
 }
 
 // ============================
+// Device Setup
+// ============================
+//
+// Per-user record of the machines on which the client hook is installed.
+// The proxy writes one row for each hook report. The identity key is
+// (user_id, device_id, client). Time fields use ISO 8601 strings, the same
+// format as UserSessionDefaultEntity.
+
+export interface DeviceSetupEntity {
+  user_id: string;
+  device_id: string;
+  /** Client name, for example "claude-code". Lower case letters, digits and "-". */
+  client: string;
+  os: string;
+  arch: string;
+  hostname: string;
+  hook_version: string;
+  status: "installed";
+  /** Time of the first report for this key. An update does not change it. */
+  installed_at: string;
+  /** Time of the latest report for this key. */
+  last_seen_at: string;
+}
+
+export interface UpsertDeviceSetupInput {
+  user_id: string;
+  device_id: string;
+  client: string;
+  os: string;
+  arch: string;
+  hostname: string;
+  hook_version: string;
+}
+
+// ============================
 // InstanceUpstreamConfig 类型（v2 模型组结构）
 // ============================
 //

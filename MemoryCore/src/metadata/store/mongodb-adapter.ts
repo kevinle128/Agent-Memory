@@ -62,6 +62,8 @@ import type {
   ListConfigParamsFilter,
   UserSessionDefaultEntity,
   UpsertUserSessionDefaultInput,
+  DeviceSetupEntity,
+  UpsertDeviceSetupInput,
   InstanceUpstreamConfigEntity,
   InstanceUpstreamConfigFilter,
   CreateInstanceUpstreamGroupInput,
@@ -319,6 +321,13 @@ export class MongoMetadataStore implements IMetadataStore {
       this.ensureIndex("meta_user_session_defaults", { team_id: 1 }),
       this.ensureIndex("meta_user_session_defaults", { agent_id: 1 }),
       this.ensureIndex("meta_user_session_defaults", { task_id: 1 }),
+
+      // ── meta_device_setups ──
+      // The unique key matches the SQLite primary key. The second index serves
+      // the list query (one user, newest last_seen_at first).
+      this.ensureIndex("meta_device_setups",
+        { user_id: 1, device_id: 1, client: 1 }, { unique: true }),
+      this.ensureIndex("meta_device_setups", { user_id: 1, last_seen_at: -1 }),
 
       // ── meta_instance_upstream_config (v2 模型组) ──
       this.ensureIndex("meta_instance_upstream_config",
@@ -1611,6 +1620,52 @@ export class MongoMetadataStore implements IMetadataStore {
   async deleteUserSessionDefault(userId: string): Promise<number> {
     const res = await this.col("meta_user_session_defaults").deleteOne({ user_id: userId });
     return res.deletedCount ?? 0;
+  }
+
+  // ============================================================
+  // DeviceSetup — devices on which a user installed the client hook
+  // ============================================================
+
+  async upsertDeviceSetup(input: UpsertDeviceSetupInput): Promise<DeviceSetupEntity> {
+    const now = nowIso();
+    const key = { user_id: input.user_id, device_id: input.device_id, client: input.client };
+    const update = {
+      // installed_at is only in $setOnInsert, so an update keeps the first report time.
+      $set: {
+        os: input.os,
+        arch: input.arch,
+        hostname: input.hostname,
+        hook_version: input.hook_version,
+        last_seen_at: now,
+      },
+      $setOnInsert: { ...key, status: "installed" as const, installed_at: now },
+    };
+    // Two concurrent first reports can both try to insert. The loser gets a duplicate
+    // key error (11000). One retry then takes the update path.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const doc = await this.col("meta_device_setups").findOneAndUpdate(
+          key,
+          update,
+          { upsert: true, returnDocument: "after", ...PROJECT_NO_ID },
+        );
+        if (!doc) {
+          throw new Error("upsertDeviceSetup: row disappeared after write");
+        }
+        return doc as unknown as DeviceSetupEntity;
+      } catch (err) {
+        if (attempt === 0 && (err as { code?: number }).code === 11000) continue;
+        throw err;
+      }
+    }
+  }
+
+  async listDeviceSetups(userId: string): Promise<DeviceSetupEntity[]> {
+    const docs = await this.col("meta_device_setups")
+      .find({ user_id: userId }, PROJECT_NO_ID)
+      .sort({ last_seen_at: -1, device_id: 1, client: 1 })
+      .toArray();
+    return docs as unknown as DeviceSetupEntity[];
   }
 
   // ── InstanceUpstreamConfig (v2 模型组) ─────────────────────────────────

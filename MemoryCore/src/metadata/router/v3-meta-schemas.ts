@@ -453,6 +453,24 @@ export const userSessionDefaultDeleteSchema = z.object({
   user_id: nonEmpty,
 });
 
+// ── DeviceSetup ──
+// device_id and client form part of the storage key, so their character sets are strict.
+const deviceInfoText = z.string().max(128);
+
+export const deviceUpsertSchema = z.object({
+  user_id: nonEmpty,
+  device_id: z.string().regex(/^[A-Za-z0-9-]{1,128}$/, "device_id must be 1-128 chars of [A-Za-z0-9-]"),
+  client: z.string().regex(/^[a-z0-9-]{1,32}$/, "client must be 1-32 chars of [a-z0-9-]"),
+  os: deviceInfoText.optional(),
+  arch: deviceInfoText.optional(),
+  hostname: deviceInfoText.optional(),
+  hook_version: z.string().min(1).max(32),
+});
+
+export const deviceListSchema = z.object({
+  user_id: nonEmpty,
+});
+
 // ── InstanceUpstreamConfig (v2 模型组) ──
 // 详见 docs/design/2026-08-25-instance-upstream-config.md §6.B / §6.C。
 const upstreamGroupType = z.enum(["default", "custom", "extraction"]);
@@ -632,6 +650,9 @@ export const V3_SCHEMAS = {
   "/v3/meta/user-session-default/get": userSessionDefaultGetSchema,
   "/v3/meta/user-session-default/set": userSessionDefaultSetSchema,
   "/v3/meta/user-session-default/delete": userSessionDefaultDeleteSchema,
+  // DeviceSetup
+  "/v3/meta/device/upsert": deviceUpsertSchema,
+  "/v3/meta/device/list": deviceListSchema,
   // v2 InstanceUpstream (§6.A / §6.B / §6.C)
   "/v3/meta/upstream/supported-agents": supportedAgentsSchema,
   "/v3/meta/instance-upstream/groups/list": upstreamGroupsListSchema,

@@ -50,6 +50,8 @@ import type {
   ListConfigParamsFilter,
   UserSessionDefaultEntity,
   UpsertUserSessionDefaultInput,
+  DeviceSetupEntity,
+  UpsertDeviceSetupInput,
   InstanceUpstreamConfigEntity,
   InstanceUpstreamConfigFilter,
   CreateInstanceUpstreamGroupInput,
@@ -228,6 +230,19 @@ export interface IMetadataStore {
   upsertUserSessionDefault(input: UpsertUserSessionDefaultInput): MaybePromise<UserSessionDefaultEntity>;
   /** 返回被删除的行数:1 表示存在被删,0 表示本来就不存在。幂等。 */
   deleteUserSessionDefault(userId: string): MaybePromise<number>;
+
+  // ── DeviceSetup ──
+  //
+  // Per-user record of the devices that have the client hook installed.
+  // The identity key is (user_id, device_id, client).
+  /**
+   * Insert the row when the key is absent (installed_at = last_seen_at = now).
+   * When the key is present, keep installed_at and refresh os, arch, hostname,
+   * hook_version and last_seen_at. Returns the stored row.
+   */
+  upsertDeviceSetup(input: UpsertDeviceSetupInput): MaybePromise<DeviceSetupEntity>;
+  /** Rows of one user, newest last_seen_at first. Empty array when none. */
+  listDeviceSetups(userId: string): MaybePromise<DeviceSetupEntity[]>;
 
   // ── InstanceUpstreamConfig (v2 模型组) ──
   //

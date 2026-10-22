@@ -369,6 +369,17 @@ const routeTable: Record<string, Handler> = {
     },
   ),
 
+  // DeviceSetup — per-user registry of devices with the client hook installed.
+  // The service checks that the caller owns user_id (or is a system admin).
+  [`${V3_PREFIX}/device/upsert`]: bind(S.deviceUpsertSchema, async (d, c, s) => {
+    await requireEntity(s, EntityType.User, d.user_id);
+    return s.deviceSetup.upsert(c, d);
+  }),
+  [`${V3_PREFIX}/device/list`]: bind(S.deviceListSchema, async (d, c, s) => {
+    await requireEntity(s, EntityType.User, d.user_id);
+    return s.deviceSetup.list(c, d.user_id);
+  }),
+
   // InstanceUpstreamConfig v2 (see docs/design/2026-08-25-instance-upstream-config.md §6)
   //
   // 依赖 deps.getSupportedAgents():从 Core gateway config 里读 upstream.supportedAgents。
