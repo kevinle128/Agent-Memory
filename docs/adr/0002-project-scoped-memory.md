@@ -26,6 +26,10 @@ known. A mandatory client hook reports the project; the proxy cannot see the cli
   user selects a model, for example `/advisor <model>`) are classified as `sidequery`.
   Compaction stays `fork`: it keeps read-only memory so that it reuses the main prompt cache.
   Deny-by-default injection removes the risk that a summary copies wrong memory.
+- **The user-global persona is checked before it is injected.** After generation, a deterministic
+  pattern check and a text-only LLM judge (which also sees the scene index) look for project facts;
+  both fail closed. The generator writes the result on the first line of `persona.md` (accepted or
+  rejected marker). A persona with no marker is regenerated from all scenes on the next L3 run.
 - **Storage keeps the `team|agent` scope key.** Project data uses key prefixes inside that scope
   (`scene_blocks/projects/<hash>/`, `project_personas/<hash>.md`) and an additive `project_key`
   column on L0/L1, following the `task_id` precedent.

@@ -78,7 +78,8 @@ Thứ tự được sắp để lớp bảo vệ mặc định không inject có
 - `persona-generator.ts`: thêm tùy chọn `variant` và một bước kiểm tra cố định sau khi ghi.
   - Bước này loại kết quả chứa đường dẫn, host git, phần mở rộng file hoặc số phiên bản, và nhãn dự án khi đã có bảng đăng ký dự án từ Giai đoạn 4.
   - Nếu lỗi, thử lại một lần, rồi để file không có dấu scope (fail-closed). **Persona không qua được bước kiểm tra sẽ không được inject cho đến khi được tạo lại.** Log và metadata Langfuse ghi rõ lý do để lỗi không bị âm thầm.
-- Endpoint admin `POST /v3/admin/persona/regenerate`: **sao lưu `persona.md` trước**, rồi mới tạo lại.
+- ~~Endpoint admin `POST /v3/admin/persona/regenerate`~~ Đã thay bằng trigger P2.6: persona chưa có dấu thì tự tạo lại từ tất cả scene ở lần L3 kế tiếp, áp dụng cho mọi agent. Bản cũ được sao lưu vào `.backup/persona/` trước khi ghi đè.
+- Ngoài bước kiểm tra cố định, có thêm giám khảo LLM chỉ trả văn bản (nhận cả scene index) để bắt tên dự án mà regex không nhận ra. Cả hai fail-closed; không đạt thì thử lại một lần rồi ghi dấu "bị từ chối".
 - Kiểm chứng: persona mới của `agt-f0bzvpye01` có dấu scope và không chứa tên các dự án.
 
 ### Giai đoạn 4: Hạ tầng báo cáo của hook (chỉ thu thập, chưa chặn)
