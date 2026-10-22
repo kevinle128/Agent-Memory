@@ -6,7 +6,7 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - [x] Giai đoạn 1: Request phụ không nhận memory
 - [x] Giai đoạn 2: Chế độ mặc định không inject (`profileScopeMode: deny`, `cacheVariant`)
 - [x] Giai đoạn 3: L3 toàn cục đã được lọc (prompt mới, bước kiểm tra, sao lưu và tạo lại)
-- [ ] Giai đoạn 4: Hạ tầng báo cáo của hook (endpoint, bảng đăng ký máy, `hook.sh`, `install.sh`)
+- [~] Giai đoạn 4: Hạ tầng báo cáo của hook (endpoint, bảng đăng ký máy, `hook.sh`, `install.sh`)
 - [ ] Giai đoạn 5: Gắn dự án khi ghi memory (L0/L1 `project_key`, L2/L3 theo dự án)
 - [ ] Giai đoạn 6: Đọc theo dự án (chế độ `scoped`)
 - [ ] Giai đoạn 7: Bắt buộc cài hook với Claude Code
@@ -72,3 +72,14 @@ Kế hoạch chi tiết: [plan.md](plan.md)
   - Lần L3 kế tiếp: "No trigger conditions met", không tạo lại lặp vòng.
   - Session ở `~/Movies` (`bca91533`): khối persona chỉ có L3 toàn cục, không có L2, không lộ dấu, không có tên dự án. Span ghi `memoryScope: {"mode":"deny","scopesInjected":["global-l3"],"deniedAgentCount":0}`. Agent trả lời rằng nó không biết bạn đang làm gì.
 - Hai agent còn lại (`agt-i8ntpqq1fp`, `agt-i7922llw41`) sẽ tự chuyển ở lần dùng kế tiếp.
+
+### 2026-10-22, Giai đoạn 4 (đang làm)
+- Proxy (tôi làm):
+  - `src/project-scope/project-key.ts`: `normalizeRemote`, `buildProjectIdentity` (`git:<host>/<path>`, rồi `local:<device>:<toplevel>`, rồi null), `projectHash` (16 hex).
+  - `src/project-scope/session-workspace.ts`: lưu `workspace.json` cạnh `inj-sess.json` trong `ttl/<space>/<user>/<agent>/<session>/` qua `ProxyStorage` (production: sqlite). Không bật storage thì dùng `MemoryStorage`.
+  - `src/routes/hook-report.ts`: `POST /:agent/:spaceId/v3/hook/report`, xác thực bằng `stageAuth` (giống route model), trả 204; cập nhật bản ghi máy ở Core, mỗi máy tối đa một lần mỗi 10 phút (lần `Install` luôn cập nhật).
+  - `src/routes/setup-scripts.ts`: `GET /setup/hooks.sh` và `GET /setup/hook.sh`, đọc từ `assets/client-hooks/`.
+  - `meta/client.ts`: `upsertDeviceSetup`, `listDeviceSetups`.
+  - Test: `project-key.test.ts` (18), `hook-report.test.ts` (17).
+- Khác với kế hoạch: gộp `device/register` vào `hook/report`, vì báo cáo đã mang đủ thông tin máy.
+- Subagent: bảng đăng ký máy ở Core (`/v3/meta/device/upsert|list`); script `hook.sh`, `install.sh` và thay đổi trong `setup-proxy.sh`.
