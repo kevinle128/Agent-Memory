@@ -98,3 +98,8 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - Cách lưu đã chốt: tiền tố đường dẫn trong scope `team|agent`, không dùng scope có dự án. Lý do: `ProfileFilter` không có chiều dự án (advisor xác nhận, đúng ADR 0002).
 - Proxy: `TdaiIdentity.projectKey/projectHash`; `withSessionProject()` tra `SessionWorkspace` theo `sessionKey`; nối vào runner anthropic, runner openai-chat và lệnh `mem:`; `addConversation` gửi `project_key`/`project_hash` chỉ khi có cả hai. Test: `session-project.test.ts` (8). Proxy 356/356, `tsc` sạch.
 - Core (subagent): cột hoặc trường `project_key`/`project_hash` cho L0 và L1 trên sqlite, tcvdb và mongo; L1 lấy dự án từ các tin nguồn chỉ khi tất cả cùng một dự án.
+- Core (subagent): `resolveIsolation` lấy cặp `project_key`/`project_hash` từ một nguồn duy nhất (body, nếu không có thì header), cặp thiếu hoặc hash sai thì bỏ qua; cột sqlite và `ALTER`, index `project_hash`; mongo và tcvdb map trường (tcvdb chỉ đánh index cho collection mới); L1 lấy dự án qua `l1-project.ts` khi tất cả tin nguồn cùng một dự án. FTS chưa mang dự án (cần dựng lại bảng; chưa cần). Core 545/545.
+- Test local: L0 có dự án được lưu đúng; không có dự án thì rỗng; hash sai thì rỗng và request vẫn thành công.
+- Commit `5aab6c0d` (`promptMode: code`) do phiên khác tạo; bạn chọn A, deploy cùng. Server đã chạy nó từ trước.
+- Deploy (sao lưu trước: `~/backups/agent-memory-core-data-20261023-153439-before-project-columns.tgz`): core và proxy ở `1ae3aea`, 0 lỗi; hai bảng L0 và L1 đã có hai cột mới.
+- Test trên server (HOME tạm, token thật): session ở repo cho L0 có `git:github.com/kevinle128/agent-memory`/`db73c988534bc1c8`; session ở `~/Movies` cho L0 rỗng. Việc L1 nhận dự án sẽ được kiểm khi L1 chạy.
