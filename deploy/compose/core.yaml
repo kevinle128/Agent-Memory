@@ -15,3 +15,7 @@ skill:
   enabled: true
   routing:
     mode: bm25
+  # Learn skills from conversations: one LLM extraction per 10 tool calls of an agent.
+  # Without it no extractor exists, so the skill worker pool and queue stay off.
+  extraction:
+    enabled: true
