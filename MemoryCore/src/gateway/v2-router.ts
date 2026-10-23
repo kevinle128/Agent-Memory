@@ -15,6 +15,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { PROJECT_DIR } from "../core/storage/project-paths.js";
 import type http from "node:http";
 import { classifyError } from "./error-handler.js";
 import type { IMemoryStore, L0Record, ProfileSyncRecord } from "../core/store/types.js";
@@ -1781,6 +1782,10 @@ async function handleScenarioLs(body: unknown, _auth: V2AuthContext, requestId: 
   const parsed = scenarioListRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
   const { path_prefix } = parsed.data;
+  // Project scenes live under scene_blocks/projects/<hash>/. This route has no
+  // project parameter, so it serves only the scope's own scenes: listing
+  // project scenes here would show one project's memory in every session.
+  if (path_prefix && isProjectScopedPath(path_prefix)) return successEnvelope({ entries: [], total: 0 }, requestId);
 
   const baseStorage = deps.getStorage();
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
@@ -1796,7 +1801,10 @@ async function handleScenarioLs(body: unknown, _auth: V2AuthContext, requestId: 
   const backend = storage.getBackend();
   const result = await backend.listObjects(prefix, { recursive: true });
   deps.logger.debug?.(`${TAG} [scenario/ls] listObjects returned ${result.entries.length} entries`);
-  const allEntries = result.entries;
+  const allEntries = result.entries.filter((e) => {
+    const rel = e.key.startsWith(StoragePaths.sceneBlocksDir) ? e.key.slice(StoragePaths.sceneBlocksDir.length) : e.key;
+    return !isProjectScopedPath(rel) && rel !== PROJECT_DIR.slice(0, -1);
+  });
 
   // Read scene_index.json for summary + created/updated lookup
   const { readSceneIndex } = await import("../core/scene/scene-index.js");
@@ -1836,17 +1844,22 @@ async function handleScenarioCount(body: unknown, _auth: V2AuthContext, requestI
   const parsed = scenarioCountRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
   const { path_prefix } = parsed.data;
+  // Same rule as scenario/ls: project scenes are not counted for the scope.
+  if (path_prefix && isProjectScopedPath(path_prefix)) return successEnvelope<CountData>({ total: 0 }, requestId);
 
   const store = deps.getStore();
   if (typeof store?.countProfiles === "function") {
-    const total = await store.countProfiles({
-      type: "l2",
-      pathPrefix: path_prefix,
+    const filter = {
+      type: "l2" as const,
       teamId: deps.requestIsolation?.teamId,
       userId: deps.requestIsolation?.teamId ? undefined : deps.requestIsolation?.userId,
       agentId: deps.requestIsolation?.agentId,
-    });
-    return successEnvelope<CountData>({ total }, requestId);
+    };
+    let total = await store.countProfiles({ ...filter, pathPrefix: path_prefix });
+    if (PROJECT_DIR.startsWith(path_prefix ?? "")) {
+      total -= await store.countProfiles({ ...filter, pathPrefix: PROJECT_DIR });
+    }
+    return successEnvelope<CountData>({ total: Math.max(0, total) }, requestId);
   }
 
   const baseStorage = deps.getStorage();
@@ -1856,7 +1869,11 @@ async function handleScenarioCount(body: unknown, _auth: V2AuthContext, requestI
     ? `${StoragePaths.sceneBlocksDir}${path_prefix}`
     : StoragePaths.sceneBlocksDir;
   const result = await storage.getBackend().listObjects(prefix, { recursive: true });
-  const total = result.entries.filter((e) => !e.isDirectory).length;
+  const total = result.entries.filter((e) => {
+    if (e.isDirectory) return false;
+    const rel = e.key.startsWith(StoragePaths.sceneBlocksDir) ? e.key.slice(StoragePaths.sceneBlocksDir.length) : e.key;
+    return !isProjectScopedPath(rel);
+  }).length;
   return successEnvelope<CountData>({ total }, requestId);
 }
 
@@ -1864,6 +1881,16 @@ async function handleScenarioRead(body: unknown, _auth: V2AuthContext, requestId
   const parsed = scenarioReadRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
   const { path } = parsed.data;
+  // A project scene is not readable through this route (see scenario/ls);
+  // answer as for a missing file.
+  if (isProjectScopedPath(path)) {
+    return successEnvelope<ScenarioFile>({
+      path,
+      content: null as unknown as string,
+      created_at: null as unknown as string,
+      updated_at: null as unknown as string,
+    }, requestId);
+  }
 
   const baseStorage = deps.getStorage();
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
@@ -1929,6 +1956,8 @@ async function handleScenarioWrite(body: unknown, _auth: V2AuthContext, requestI
   const parsed = scenarioWriteRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
   const { path, content, summary } = parsed.data;
+  // Project scenes are managed by their project's extraction only (see scenario/ls).
+  if (isProjectScopedPath(path)) return errorEnvelope(404, `Scenario file not found: ${path}`, requestId);
 
   const baseStorage = deps.getStorage();
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
@@ -2001,6 +2030,8 @@ async function handleScenarioRm(body: unknown, _auth: V2AuthContext, requestId: 
   const parsed = scenarioRmRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
   const { path } = parsed.data;
+  // Project scenes are managed by their project's extraction only (see scenario/ls).
+  if (isProjectScopedPath(path)) return errorEnvelope(404, `Scenario file not found: ${path}`, requestId);
 
   const baseStorage = deps.getStorage();
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
@@ -2081,8 +2112,12 @@ async function handleCoreCount(body: unknown, _auth: V2AuthContext, requestId: s
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
   const store = deps.getStore();
   if (typeof store?.countProfiles === "function") {
+    // Only the user-global document counts. Project documents share the L3
+    // type but live under `project_personas/`, and `pathPrefix` is a string
+    // prefix on the filename, so "persona.md" matches that one file.
     const total = await store.countProfiles({
       type: "l3",
+      pathPrefix: StoragePaths.persona,
       teamId: deps.requestIsolation?.teamId,
       userId: deps.requestIsolation?.teamId ? undefined : deps.requestIsolation?.userId,
       agentId: deps.requestIsolation?.agentId,
@@ -2315,3 +2350,14 @@ export {
   handleTaskDelete,
   handlePipelineStatus,
 };
+
+/**
+ * True for a scene path inside the project prefix (`projects/...`). Empty and
+ * "." segments are dropped first, because the storage backends resolve them
+ * away ("./projects/x" reads "projects/x"); the match ignores case for
+ * case-insensitive file systems.
+ */
+function isProjectScopedPath(path: string): boolean {
+  const first = path.replace(/\\+/g, "/").split("/").find((part) => part !== "" && part !== ".");
+  return first?.toLowerCase() === PROJECT_DIR.slice(0, -1);
+}

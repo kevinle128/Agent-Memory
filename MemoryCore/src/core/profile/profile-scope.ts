@@ -29,6 +29,14 @@ export type ProfileIsolation = { teamId?: string; userId?: string; agentId?: str
 export interface ProfileScopeOptions {
   scope?: string;
   isolation?: ProfileIsolation;
+  /**
+   * Sync one project's files of the scope instead of the user-global files.
+   * The storage passed with these options must be the project view. Row
+   * filenames then carry the project prefix (`projects/<H>/<name>.md`,
+   * `project_personas/<H>.md`), which keeps row ids apart from the
+   * user-global rows of the same scope.
+   */
+  projectHash?: string;
 }
 
 export function buildProfileIsolationScope(ctx?: ProfileIsolation): string {

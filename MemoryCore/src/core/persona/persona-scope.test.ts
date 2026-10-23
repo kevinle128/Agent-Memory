@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StorageAdapter } from "../storage/adapter.js";
 import { LocalStorageBackend } from "../storage/local-backend.js";
 import type { LLMRunParams, LLMRunner } from "../types.js";
-import { PersonaGenerator } from "./persona-generator.js";
+import { MAX_INLINED_SCENE_CHARS, PersonaGenerator } from "./persona-generator.js";
 import { PersonaTrigger } from "./persona-trigger.js";
 import { USER_GLOBAL_REJECTED_MARKER, USER_GLOBAL_SCOPE_MARKER } from "./user-global-scope.js";
 
@@ -186,5 +186,28 @@ describe("PersonaGenerator backup in storage mode", () => {
     await gen().generateLocalPersona("threshold");
     await gen().generateLocalPersona("threshold");
     expect(await storage.readdirNames(".backup/persona/", ".md")).toHaveLength(2);
+  });
+});
+
+describe("PersonaGenerator scene size budget", () => {
+  it("inlines the newest scenes up to the budget and lists the rest by summary", async () => {
+    const big = "x".repeat(Math.ceil(MAX_INLINED_SCENE_CHARS / 3));
+    const entries = [];
+    for (let i = 0; i < 6; i++) {
+      const name = `big-${i}.md`;
+      writeFileSync(path.join(dir, "scene_blocks", name), `-----META-START-----\nsummary: summary ${i}\n-----META-END-----\n${big}`);
+      entries.push({ filename: name, summary: `summary ${i}`, heat: 1, created: "2026-10-01T00:00:00Z", updated: `2026-10-0${i + 1}T00:00:00Z` });
+    }
+    writeFileSync(path.join(dir, ".metadata", "scene_index.json"), JSON.stringify(entries));
+    writePersona(LEGACY_PERSONA);
+    const runner = writerRunner([CLEAN_PERSONA]);
+
+    await generator(runner, judge('{"leaks": []}')).generateLocalPersona("migration");
+
+    const prompt = runner.calls[0].prompt;
+    expect(prompt.length).toBeLessThan(MAX_INLINED_SCENE_CHARS * 1.6);
+    // The newest scene is inlined; the oldest is listed by summary only.
+    expect(prompt).toContain("### [1] big-5.md");
+    expect(prompt).toContain("- big-0.md — summary 0");
   });
 });

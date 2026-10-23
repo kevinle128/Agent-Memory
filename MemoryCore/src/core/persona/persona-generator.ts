@@ -16,6 +16,7 @@ import { reportL3LatencyMetrics } from "../report/metric-tracking-l3-latency.js"
 import type { LLMRunner, Logger, TraceContext } from "../types.js";
 import { buildTraceParams } from "../types.js";
 import type { StorageAdapter } from "../storage/adapter.js";
+import { isProjectSceneFilename } from "../storage/project-paths.js";
 import { StoragePaths } from "../storage/types.js";
 import type { ResolvedMemoryPrompt } from "../memory-prompt/types.js";
 import { composeMemorySystemPrompt } from "../memory-prompt/composer.js";
@@ -152,8 +153,19 @@ export class PersonaGenerator {
     this.logger?.debug?.(`${TAG} Scene index: ${index.length} total, ${changedScenes.length} changed since last persona`);
 
     // 3. Read changed scene contents (full raw content including META, matching Python reference)
+    // The user-global run reads the scenes of every project, so a full rewrite
+    // can see many scenes. Inline the most recently updated ones up to a size
+    // budget and list the rest by name and summary, so the prompt cannot grow
+    // past the model's context with the number of projects.
     const changedSceneContents: string[] = [];
-    for (const entry of changedScenes) {
+    const omittedScenes: Array<{ filename: string; summary: string }> = [];
+    let inlinedChars = 0;
+    const byRecency = [...changedScenes].sort((a, b) => sceneTime(b.updated) - sceneTime(a.updated));
+    for (const entry of byRecency) {
+      if (inlinedChars >= MAX_INLINED_SCENE_CHARS) {
+        omittedScenes.push({ filename: entry.filename, summary: entry.summary });
+        continue;
+      }
       try {
         let raw: string | null;
         if (this.storage) {
@@ -164,12 +176,23 @@ export class PersonaGenerator {
           raw = await fs.default.readFile(path.default.join(this.dataDir, "scene_blocks", entry.filename), "utf-8");
         }
         if (!raw) continue;
+        inlinedChars += raw.length;
         changedSceneContents.push(
           `### [${changedSceneContents.length + 1}] ${entry.filename}\n\n\`\`\`markdown\n${raw}\n\`\`\``,
         );
       } catch {
         this.logger?.warn(`${TAG} Could not read scene block: ${entry.filename}`);
       }
+    }
+
+    if (omittedScenes.length > 0) {
+      this.logger?.warn(
+        `${TAG} ${omittedScenes.length} changed scenes over the ${MAX_INLINED_SCENE_CHARS}-char budget are listed by summary only`,
+      );
+      changedSceneContents.push(
+        `### 其余 ${omittedScenes.length} 个变化场景（仅摘要，超出单次篇幅上限）\n\n` +
+          omittedScenes.map((e) => `- ${e.filename}${e.summary ? ` — ${e.summary}` : ""}`).join("\n"),
+      );
     }
 
     if (changedSceneContents.length === 0 && existingPersona) {
@@ -277,7 +300,11 @@ export class PersonaGenerator {
 
     // 11. Prepend the scope marker, append fresh scene navigation, write final content
     const marker = scope.ok ? USER_GLOBAL_SCOPE_MARKER : USER_GLOBAL_REJECTED_MARKER;
-    const nav = generateSceneNavigation(index, undefined, false);
+    // The navigation is injected into sessions of every project, so it lists
+    // user-global scenes only. Project scenes were read above to build the
+    // persona, but their paths and summaries must not appear in another
+    // project's session.
+    const nav = generateSceneNavigation(index.filter((e) => !isProjectSceneFilename(e.filename)), undefined, false);
     const markedPersona = `${marker}\n${personaText}`;
     const finalContent = nav ? `${markedPersona}\n\n${nav}\n` : markedPersona;
     if (this.storage) {
@@ -457,4 +484,15 @@ function scopeRetryInstruction(scope: ScopeCheckResult): string {
     `当前 persona.md 含有以下项目相关内容，必须删除或改写成不含具体名称的通用描述，其余内容保持不变：\n\n` +
     `${items}\n`
   );
+}
+
+/**
+ * Character budget for scene text inlined into one persona prompt (about 20k
+ * tokens). Scenes past it are listed by summary only.
+ */
+export const MAX_INLINED_SCENE_CHARS = 80_000;
+
+function sceneTime(updated: string): number {
+  const ms = new Date(updated).getTime();
+  return Number.isNaN(ms) ? 0 : ms;
 }

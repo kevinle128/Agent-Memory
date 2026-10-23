@@ -5,6 +5,13 @@ import type { IMemoryStore, ProfileRecord, ProfileSyncRecord } from "../store/ty
 import { readSceneIndex, syncSceneIndex } from "../scene/scene-index.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
 import type { StorageAdapter } from "../storage/adapter.js";
+import {
+  assertProjectHash,
+  isProjectProfile,
+  projectHashOfProfile,
+  projectPersonaKey,
+  projectSceneFilenamePrefix,
+} from "../storage/project-paths.js";
 import { StoragePaths } from "../storage/types.js";
 import type { Logger } from "../types.js";
 import {
@@ -19,6 +26,28 @@ import {
 function resolveProfileScope(options?: ProfileScopeOptions): { scope: string; isolation?: ProfileIsolation } {
   const scope = options?.scope ?? buildProfileIsolationScope(options?.isolation);
   return { scope, isolation: options?.isolation ?? parseProfileIsolationScope(scope) };
+}
+
+/**
+ * Row filename of a local file. A project file is stored under the project
+ * prefix so its row id differs from a user-global file of the same name.
+ */
+function rowFilename(type: "l2" | "l3", localName: string, projectHash?: string): string {
+  if (!projectHash) return localName;
+  return type === "l2" ? `${projectSceneFilenamePrefix(projectHash)}${localName}` : projectPersonaKey(projectHash);
+}
+
+/** Local file name of a row: inverse of {@link rowFilename}. */
+function localFilename(record: ProfileRecord, projectHash?: string): string {
+  if (!projectHash) return record.filename;
+  return record.type === "l2" ? record.filename.slice(projectSceneFilenamePrefix(projectHash).length) : StoragePaths.persona;
+}
+
+/** A project sync needs the project storage view; plain files have no project layout. */
+function requireStorageForProject(projectHash: string | undefined, storage: StorageAdapter | undefined): void {
+  if (!projectHash) return;
+  assertProjectHash(projectHash);
+  if (!storage) throw new Error("Project profile sync requires a storage adapter");
 }
 
 function profileMatchesScope(record: ProfileRecord, scope: string, isolation?: ProfileIsolation): boolean {
@@ -96,6 +125,8 @@ export async function listLocalProfiles(
 ): Promise<ProfileRecord[]> {
   const profiles: ProfileRecord[] = [];
   const { scope, isolation } = resolveProfileScope(options);
+  const projectHash = options?.projectHash;
+  requireStorageForProject(projectHash, storage);
 
   // ── List L2 scene blocks ──
   if (storage) {
@@ -108,10 +139,11 @@ export async function listLocalProfiles(
         const now = Date.now();
         const createdAtMs = stat?.createdAt ?? now;
         const updatedAtMs = stat?.lastModified ?? now;
+        const rowName = rowFilename("l2", filename, projectHash);
         profiles.push({
-          id: buildProfileStableId(scope, "l2", filename),
+          id: buildProfileStableId(scope, "l2", rowName),
           type: "l2",
-          filename,
+          filename: rowName,
           content,
           contentMd5: md5(content),
           teamId: isolation?.teamId,
@@ -165,10 +197,11 @@ export async function listLocalProfiles(
         if (!body) continue;
         const stat = await storage.stat(filename);
         const now = Date.now();
+        const rowName = rowFilename("l3", filename, projectHash);
         profiles.push({
-          id: buildProfileStableId(scope, "l3", filename),
+          id: buildProfileStableId(scope, "l3", rowName),
           type: "l3",
-          filename,
+          filename: rowName,
           content: body,
           contentMd5: md5(body),
           teamId: isolation?.teamId,
@@ -231,8 +264,19 @@ export async function pullProfilesToLocal(
   }
 
   const { scope, isolation } = resolveProfileScope(options);
+  const projectHash = options?.projectHash;
+  requireStorageForProject(projectHash, storage);
   const allRecords = await store.pullProfiles();
-  const records = allRecords.filter((record) => profileMatchesScope(record, scope, isolation));
+  // A pull handles one file set: the user-global files, or one project's files.
+  // A project row in the user-global set would be written over a user-global
+  // file (a project persona maps to persona.md) or would be reported as
+  // deleted by the next sync-back, because the user-global file listing does
+  // not contain it.
+  const records = allRecords
+    .filter((record) => profileMatchesScope(record, scope, isolation))
+    .filter((record) => projectHash
+      ? projectHashOfProfile(record) === projectHash
+      : !isProjectProfile(record));
   const baseline = new Map<string, ProfileBaseline>();
 
   // ── Storage-backed path (COS / abstracted backend) ──
@@ -263,12 +307,13 @@ export async function pullProfilesToLocal(
       if (record.type === "l2") {
         // Mark presence first so a corrupted L2 record does not look "deleted"
         // and trigger an unintended unlink below.
-        remoteL2Files.add(record.filename);
+        const localName = localFilename(record, projectHash);
+        remoteL2Files.add(localName);
         if (md5(record.content) !== record.contentMd5) {
           logger.debug?.(`[memory-tdai][profile-sync] MD5 mismatch for ${record.filename} (skip write, keep local)`);
           continue;
         }
-        await storage.writeFile(`${StoragePaths.sceneBlocksDir}${record.filename}`, record.content);
+        await storage.writeFile(`${StoragePaths.sceneBlocksDir}${localName}`, record.content);
       } else if (record.type === "l3") {
         // Mark presence first so a corrupted L3 record cannot accidentally
         // delete the local persona.md (the previous failure mode).

@@ -6,6 +6,7 @@
 import { CheckpointManager } from "../../utils/checkpoint.js";
 import { stripSceneNavigation } from "../scene/scene-navigation.js";
 import type { StorageAdapter } from "../storage/adapter.js";
+import { hasProjectSceneFiles } from "../storage/project-scoped-storage.js";
 import { StoragePaths } from "../storage/types.js";
 
 import type { Logger } from "../types.js";
@@ -111,7 +112,10 @@ export class PersonaTrigger {
     try {
       if (this.storage) {
         const files = await this.storage.readdirNames(StoragePaths.sceneBlocksDir, ".md");
-        return files.length > 0;
+        if (files.length > 0) return true;
+        // The user-global persona is built from all scenes. A user who works
+        // only inside projects has no root scene file, but still needs it.
+        return await hasProjectSceneFiles(this.storage);
       }
       const fs = await import("node:fs/promises");
       const path = await import("node:path");

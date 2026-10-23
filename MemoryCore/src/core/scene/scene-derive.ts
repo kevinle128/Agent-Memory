@@ -16,13 +16,23 @@ import type { ProfileIsolation } from "../profile/profile-scope.js";
 import { profileScopeFilter } from "../profile/profile-scope.js";
 import type { ProfileRowCapableStore } from "../store/types.js";
 import { parseSceneBlock } from "./scene-format.js";
+import { isProjectSceneFilename, projectSceneFilenamePrefix } from "../storage/project-paths.js";
 import type { SceneIndexEntry } from "./scene-index.js";
+
+/**
+ * Which rows of one isolation scope an index covers.
+ *  - omitted: every L2 row of the scope, unfiltered;
+ *  - `"root"`: the user-global scenes, without anything below `projects/`;
+ *  - `{ projectHash }`: one project's scenes, filenames relative to that project.
+ */
+export type SceneIndexView = "root" | { projectHash: string };
 
 /**
  * Build scene index entries from the L2 rows of one isolation scope.
  *
  * @param store     Data plane holding the profile rows.
  * @param isolation Tenancy to read; omitted reads the store's whole L2 set.
+ * @param view      Row subset to project (see {@link SceneIndexView}).
  * @returns Entries sorted by filename, so repeated calls are comparable.
  *          Ordering for display is the caller's business —
  *          `generateSceneNavigation()` re-sorts by heat.
@@ -33,14 +43,21 @@ import type { SceneIndexEntry } from "./scene-index.js";
 export async function deriveSceneIndexFromProfiles(
   store: ProfileRowCapableStore,
   isolation?: ProfileIsolation,
+  view?: SceneIndexView,
 ): Promise<SceneIndexEntry[]> {
-  const rows = await store.queryProfiles(profileScopeFilter(isolation, { type: "l2" }));
+  const projectPrefix = typeof view === "object" ? projectSceneFilenamePrefix(view.projectHash) : undefined;
+  const rows = await store.queryProfiles(profileScopeFilter(isolation, {
+    type: "l2",
+    ...(projectPrefix ? { pathPrefix: projectPrefix } : {}),
+  }));
 
   return rows
+    .filter((row) => view !== "root" || !isProjectSceneFilename(row.filename))
     .map((row) => {
-      const { meta } = parseSceneBlock(row.content, row.filename);
+      const filename = projectPrefix ? row.filename.slice(projectPrefix.length) : row.filename;
+      const { meta } = parseSceneBlock(row.content, filename);
       return {
-        filename: row.filename,
+        filename,
         summary: meta.summary,
         heat: meta.heat,
         created: meta.created,

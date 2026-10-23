@@ -40,6 +40,11 @@ import type {
 } from "../store/types.js";
 import { pageEntries } from "./list-page.js";
 import {
+  PROJECT_PERSONA_DIR,
+  projectHashOfPersonaKey,
+  projectSceneFilenamePrefix,
+} from "./project-paths.js";
+import {
   StoragePaths,
   type IStorageBackend,
   type ListEntry,
@@ -66,10 +71,15 @@ export interface ProfileRowPath {
  * @returns The backing row coordinates, or `null` when the key is outside the
  *          row-view key space — including the legacy `scenes/` spelling, which
  *          is rejected on purpose rather than aliased.
+ *
+ * A project scene (`scene_blocks/projects/<H>/<name>.md`) needs no special
+ * case: its row filename is `projects/<H>/<name>.md`. A project L3 document
+ * (`project_personas/<H>.md`) is an L3 row whose filename is the whole key.
  */
 export function classifyPath(key: string): ProfileRowPath | null {
   if (!key || key.includes("\0") || key.startsWith("/")) return null;
   if (key === StoragePaths.persona) return { type: "l3", filename: StoragePaths.persona };
+  if (projectHashOfPersonaKey(key)) return { type: "l3", filename: key };
   if (!key.startsWith(StoragePaths.sceneBlocksDir)) return null;
 
   const filename = key.slice(StoragePaths.sceneBlocksDir.length);
@@ -141,8 +151,15 @@ export class ProfileRowStorageBackend implements IStorageBackend {
    * `.metadata/scene_index.json`。`scene-index.ts` 的
    * readSceneIndex/syncSceneIndex 通过结构化探测发现本方法。
    */
-  async deriveSceneIndex(): Promise<SceneIndexEntry[]> {
-    return deriveSceneIndexFromProfiles(this.store, this.isolation);
+  async deriveSceneIndex(opts?: { projectHash?: string }): Promise<SceneIndexEntry[]> {
+    // The default view is the user-global scene set. Project scenes live in the
+    // same scope under `projects/<H>/`, and a caller that wants them asks for
+    // that project by hash, so root extraction can never list or rewrite them.
+    return deriveSceneIndexFromProfiles(
+      this.store,
+      this.isolation,
+      opts?.projectHash ? { projectHash: opts.projectHash } : "root",
+    );
   }
 
   // ── Reads ────────────────────────────────────────────────
@@ -152,7 +169,7 @@ export class ProfileRowStorageBackend implements IStorageBackend {
     if (!row) return null;
 
     const content = row.type === "l3" && this.navigation
-      ? await this.personaWithNavigation(row.content)
+      ? await this.personaWithNavigation(row.content, projectHashOfPersonaKey(row.filename))
       : row.content;
 
     return {
@@ -171,11 +188,19 @@ export class ProfileRowStorageBackend implements IStorageBackend {
    * {@link getObject} reads with, so every path this emits is a path this
    * instance can serve — the invariant the `scenes/` bug violated.
    */
-  private async personaWithNavigation(stored: string): Promise<string> {
+  private async personaWithNavigation(stored: string, projectHash?: string): Promise<string> {
     const body = stripSceneNavigation(stored);
-    const entries = await deriveSceneIndexFromProfiles(this.store, this.isolation);
+    // A user-global persona lists only user-global scenes, and a project
+    // persona lists only its own project's scenes. Mixing them would show one
+    // project's scene summaries in another project's session.
+    const entries = await deriveSceneIndexFromProfiles(
+      this.store,
+      this.isolation,
+      projectHash ? { projectHash } : "root",
+    );
+    const filenamePrefix = projectHash ? projectSceneFilenamePrefix(projectHash) : "";
     const nav = renderSceneNavigation(entries, {
-      pathFor: (e) => rowToKey({ type: "l2", filename: e.filename }),
+      pathFor: (e) => rowToKey({ type: "l2", filename: `${filenamePrefix}${e.filename}` }),
       readTool: this.navigation!.readTool,
       footer: storageNavFooter(this.navigation!.readTool),
     });
@@ -339,7 +364,11 @@ export class ProfileRowStorageBackend implements IStorageBackend {
       if (dir.startsWith(prefix)) {
         rows.push(...await this.store.queryProfiles(this.scopeFilter({ type: "l2" })));
       }
-      if (StoragePaths.persona.startsWith(prefix)) {
+      const personaDir = PROJECT_PERSONA_DIR;
+      if (prefix.startsWith(personaDir)) {
+        // Fully inside project_personas/ → the L3 filename is the whole key.
+        rows.push(...await this.store.queryProfiles(this.scopeFilter({ type: "l3", pathPrefix: prefix })));
+      } else if (StoragePaths.persona.startsWith(prefix) || personaDir.startsWith(prefix)) {
         rows.push(...await this.store.queryProfiles(this.scopeFilter({ type: "l3" })));
       }
     }

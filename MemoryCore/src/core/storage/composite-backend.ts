@@ -1,7 +1,7 @@
 /**
  * CompositeStorageBackend — one file surface over two backends.
  *
- * Profile keys (`scene_blocks/<name>.md`, `persona.md`) are served by the
+ * Profile keys (`scene_blocks/<name>.md`, `persona.md`, `project_personas/<H>.md`) are served by the
  * row-view backend (ProfileRowStorageBackend); every other key — records/,
  * conversations/, .metadata/, .backup/, skill resources, … — passes through
  * to the "others" file backend (local/COS/mongofs). This is what FILE_STORE_MODE=rowfs
@@ -27,6 +27,7 @@
 import type { ProfileIsolation } from "../profile/profile-scope.js";
 import type { SceneIndexEntry } from "../scene/scene-index.js";
 import { classifyPath } from "./profile-row-backend.js";
+import { PROJECT_PERSONA_DIR } from "./project-paths.js";
 import {
   StoragePaths,
   type IStorageBackend,
@@ -109,14 +110,16 @@ export class CompositeStorageBackend implements IStorageBackend {
    * readSceneIndex/syncSceneIndex 通过结构化探测发现本方法——rowfs 模式下
    * 索引从 L2 行实时投影，`.metadata/scene_index.json` 不读不写。
    */
-  async deriveSceneIndex(): Promise<SceneIndexEntry[]> {
-    const profile = this.profile as unknown as { deriveSceneIndex?: () => Promise<SceneIndexEntry[]> };
+  async deriveSceneIndex(opts?: { projectHash?: string }): Promise<SceneIndexEntry[]> {
+    const profile = this.profile as unknown as {
+      deriveSceneIndex?: (opts?: { projectHash?: string }) => Promise<SceneIndexEntry[]>;
+    };
     if (typeof profile.deriveSceneIndex !== "function") {
       throw new Error(
         `${TAG} deriveSceneIndex: profile backend (type=${this.profile.type}) cannot derive scene index`,
       );
     }
-    return profile.deriveSceneIndex();
+    return profile.deriveSceneIndex(opts);
   }
 
   // ── Point operations ─────────────────────────────────────
@@ -162,9 +165,9 @@ export class CompositeStorageBackend implements IStorageBackend {
   }
 
   /**
-   * A prefix selects the profile space when it reaches into `scene_blocks/`
-   * or names `persona.md` — including partial spellings of those two (a list
-   * of "scene_bl" must still see rows). Such a partial spelling can shadow
+   * A prefix selects the profile space when it reaches into `scene_blocks/`,
+   * names `persona.md` or reaches into `project_personas/` — including partial
+   * spellings of those (a list of "scene_bl" must still see rows). Such a partial spelling can shadow
    * same-spelled others-leg keys; accepted, because real callers always list a
    * concrete directory. The empty prefix selects the others leg only.
    */
@@ -172,7 +175,8 @@ export class CompositeStorageBackend implements IStorageBackend {
     if (!prefix) return this.othersBackend;
     const dir = StoragePaths.sceneBlocksDir;
     const hitsProfile =
-      prefix.startsWith(dir) || dir.startsWith(prefix) || StoragePaths.persona.startsWith(prefix);
+      prefix.startsWith(dir) || dir.startsWith(prefix) || StoragePaths.persona.startsWith(prefix) ||
+      prefix.startsWith(PROJECT_PERSONA_DIR) || PROJECT_PERSONA_DIR.startsWith(prefix);
     const backend = hitsProfile ? this.profile : this.othersBackend;
     this.logger?.debug?.(`${TAG} route ${backend.type}: prefix ${prefix}`);
     return backend;

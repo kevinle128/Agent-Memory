@@ -75,6 +75,8 @@ import {
   syncLocalProfilesToStore,
 } from "../core/profile/profile-sync.js";
 import { createScopedStorageAdapter, scopeProfileStorageView, StorageAdapter } from "../core/storage/adapter.js";
+import { createAllProjectsSceneView, createProjectScopedStorage } from "../core/storage/project-scoped-storage.js";
+import { isProjectHash } from "../core/storage/project-paths.js";
 import type { Logger } from "../core/types.js";
 
 const TAG = "[memory-tdai] [pipeline-factory]";
@@ -1077,6 +1079,7 @@ export function createL2Runner(opts: {
 }): L2Runner {
   const { pluginDataDir, cfg, openclawConfig, vectorStore, logger, instanceId, llmRunner, storage, checkpointLock } = opts;
   let profileBaseline = new Map<string, { version: number; contentMd5: string; createdAtMs: number }>();
+  let loggedProjectFallback = false;
 
   return async (sessionKey: string, cursor?: string) => {
     const jevGateId = opts.executionContext?.jevGateId ?? randomUUID();
@@ -1091,7 +1094,7 @@ export function createL2Runner(opts: {
       return;
     }
 
-    let records: Array<{ content: string; created_at: string; id: string; updatedAt: string; teamId?: string; userId?: string; agentId?: string; sessionId?: string; taskId?: string }>;
+    let records: Array<{ content: string; created_at: string; id: string; updatedAt: string; teamId?: string; userId?: string; agentId?: string; sessionId?: string; taskId?: string; projectKey?: string; projectHash?: string }>;
 
     if (vectorStore && !vectorStore.isDegraded()) {
       const { queryMemoryRecords } = await import("../core/record/l1-reader.js");
@@ -1127,6 +1130,8 @@ export function createL2Runner(opts: {
         agentId: r.agentId,
         sessionId: r.sessionId,
         taskId: r.taskId,
+        projectKey: r.projectKey,
+        projectHash: r.projectHash,
       }));
     } else {
       throw new Error(`${TAG} [L2] VectorStore unavailable — cannot read L1 memories for scene extraction (session=${sessionKey})`);
@@ -1137,9 +1142,28 @@ export function createL2Runner(opts: {
       return;
     }
 
+    // One group per (profile scope, project). A memory without a project keeps
+    // the pre-project grouping, so its extraction is unchanged. Project files
+    // need a storage adapter to be partitioned: without one (plain-file mode)
+    // every memory joins the user-global group, as before projects existed.
     const grouped = new Map<string, typeof records>();
+    let loggedInvalidHash = false;
     for (const record of records) {
-      const key = buildIsolationScope(record);
+      // Core accepts only 16-hex hashes on write; a row with another value is
+      // treated as "no project" so that one bad row cannot fail every L2 run
+      // of the scope.
+      if (record.projectHash && !isProjectHash(record.projectHash) && !loggedInvalidHash) {
+        loggedInvalidHash = true;
+        logger.warn(`${TAG} [L2] Invalid project_hash on L1 record ${record.id}; extracted without a project`);
+      }
+      const projectHash = storage && isProjectHash(record.projectHash) ? record.projectHash : undefined;
+      if (record.projectHash && !storage && !loggedProjectFallback) {
+        loggedProjectFallback = true;
+        logger.debug?.(`${TAG} [L2] No storage adapter: project memories are extracted into the user-global scene set`);
+      }
+      const key = projectHash
+        ? `${buildIsolationScope(record)}|project:${projectHash}`
+        : buildIsolationScope(record);
       const list = grouped.get(key) ?? [];
       list.push(record);
       grouped.set(key, list);
@@ -1155,10 +1179,26 @@ export function createL2Runner(opts: {
     const l2Prompts = await resolveMemoryPrompts(vectorStore, l2PromptTargets);
     for (const groupRecords of grouped.values()) {
       const ctx = groupRecords[0];
-      const groupStorage = scopedStorage(storage, ctx);
-      const groupDataDir = scopedDataDir(pluginDataDir, ctx);
+      const scopeStorage = scopedStorage(storage, ctx);
+      const scopeDataDir = scopedDataDir(pluginDataDir, ctx);
       const groupScope = buildIsolationScope(ctx);
-      const groupProfileOptions = profileOptionsForScope(groupScope);
+      // Set only when a storage adapter exists (see grouping above).
+      const projectHash = scopeStorage && isProjectHash(ctx.projectHash) ? ctx.projectHash : undefined;
+      // The project view maps every key into the project prefix inside this
+      // scope, so the extractor, its file tools and its checkpoint cannot touch
+      // a user-global file. The data directory is only a fallback path; the
+      // storage view is authoritative.
+      const groupStorage = projectHash ? createProjectScopedStorage(scopeStorage!, projectHash) : scopeStorage;
+      const groupDataDir = projectHash ? path.join(scopeDataDir, "projects", projectHash) : scopeDataDir;
+      const scopeProfileOptions = profileOptionsForScope(groupScope);
+      const groupProfileOptions: ProfileScopeOptions | undefined = projectHash
+        ? { ...scopeProfileOptions, projectHash }
+        : scopeProfileOptions;
+      // A project run also moves the user-global persona counters, because the
+      // user-global persona is built from the scenes of every project.
+      const scopeCheckpoint = projectHash
+        ? new CheckpointManager(scopeDataDir, logger, scopeStorage, checkpointLock)
+        : undefined;
       const groupBaseline = vectorStore?.pullProfiles && !vectorStore.isDegraded()
         ? await pullProfilesToLocal(groupDataDir, vectorStore, logger, groupStorage, groupProfileOptions)
         : profileBaseline;
@@ -1203,7 +1243,7 @@ export function createL2Runner(opts: {
       const extractResult = await extractor.extract(memories);
       if (!extractResult.success) {
         throw new Error(
-          `${TAG} [L2] Scene extraction failed (scope=${groupScope}): ${extractResult.error ?? "unknown error"}`,
+          `${TAG} [L2] Scene extraction failed (scope=${groupScope}${projectHash ? `, project=${projectHash}` : ""}): ${extractResult.error ?? "unknown error"}`,
         );
       }
       if (extractResult.memoriesProcessed <= 0) continue;
@@ -1315,10 +1355,19 @@ export function createL2Runner(opts: {
           groupDataDir, vectorStore, groupBaseline, logger, groupStorage, groupProfileOptions,
         )) ?? changedProfiles;
       }
-      if (changedProfiles.length === 0) {
-        logger.debug?.(`${TAG} [L2] No changed Scene profiles, skipping generation provenance`);
+      // Every counter below moves through a locked read-modify-write, never a
+      // whole-object write (see the warning above).
+      const advanceCounters = async () => {
         await checkpoint.incrementScenesProcessed();
         await checkpoint.incrementMemoriesSincePersona(extractResult.memoriesProcessed);
+        if (scopeCheckpoint) {
+          await scopeCheckpoint.incrementScenesProcessed();
+          await scopeCheckpoint.incrementMemoriesSincePersona(extractResult.memoriesProcessed);
+        }
+      };
+      if (changedProfiles.length === 0) {
+        logger.debug?.(`${TAG} [L2] No changed Scene profiles, skipping generation provenance`);
+        await advanceCounters();
         processedTotal += extractResult.memoriesProcessed;
         continue;
       }
@@ -1362,8 +1411,7 @@ export function createL2Runner(opts: {
             })))
           : undefined,
       });
-      await checkpoint.incrementScenesProcessed();
-      await checkpoint.incrementMemoriesSincePersona(extractResult.memoriesProcessed);
+      await advanceCounters();
       processedTotal += extractResult.memoriesProcessed;
     }
 
@@ -1443,6 +1491,10 @@ export function createL3Runner(opts: {
       const scopeStartedAt = Date.now();
       const scopedDir = scopedDataDirForScope(pluginDataDir, scope);
       const scopedStore = scopedStorageForScope(storage, scope);
+      // The user-global persona is built from the scenes of every project.
+      // This view widens only the scene index; persona, checkpoint and profile
+      // sync keep using `scopedStore`, so they still address user-global files.
+      const sceneStore = scopedStore ? createAllProjectsSceneView(scopedStore) : undefined;
       const profileOptions = profileOptionsForScope(scope);
       const personaBeforeHash = (cfg.persona.jev?.diagnostics?.mode ?? "off") === "off"
         ? undefined
@@ -1468,7 +1520,7 @@ export function createL3Runner(opts: {
           cfg,
           logger,
           instanceId,
-          storage: scopedStore,
+          storage: sceneStore,
           checkpointLock: opts.checkpointLock,
           triggerReason: triggerResult.reason,
           context: {
@@ -1533,7 +1585,7 @@ export function createL3Runner(opts: {
       // Guard: no scene files → nothing to generate from. Skip without marking
       // checkpoint so cold-start trigger remains available for the next attempt.
       const { readSceneIndex } = await import("../core/scene/scene-index.js");
-      const sceneIndex = await readSceneIndex(scopedDir, scopedStore);
+      const sceneIndex = await readSceneIndex(scopedDir, sceneStore);
       if (sceneIndex.length === 0) {
         logger.info(`${TAG} [L3] No scene files available for scope=${scope}, skipping (checkpoint unchanged)`);
         continue;
@@ -1572,7 +1624,7 @@ export function createL3Runner(opts: {
         instanceId,
         llmRunner,
         scopeJudge: scopeJudgeRunner,
-        storage: scopedStore,
+        storage: sceneStore,
         traceContext: scopeIsolation,
       });
       const genResult = await generator.generateLocalPersona(generationReason);
