@@ -6,6 +6,9 @@ server:
 data:
   baseDir: /data/tdai-memory
 memory:
+  # Team work-memory prompts for L1-L3 (facts, tasks, methods, artifacts) instead of
+  # personal-assistant prompts. L2/L3 are shared by every user of an agent in a team.
+  promptMode: code
   storeBackend: sqlite
   embedding:
     provider: none
