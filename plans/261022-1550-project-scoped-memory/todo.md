@@ -7,7 +7,7 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - [x] Giai đoạn 2: Chế độ mặc định không inject (`profileScopeMode: deny`, `cacheVariant`)
 - [x] Giai đoạn 3: L3 toàn cục đã được lọc (prompt mới, bước kiểm tra, sao lưu và tạo lại)
 - [x] Giai đoạn 4: Hạ tầng báo cáo của hook (endpoint, bảng đăng ký máy, `hook.sh`, `install.sh`)
-- [ ] Giai đoạn 5: Gắn dự án khi ghi memory (L0/L1 `project_key`, L2/L3 theo dự án)
+- [~] Giai đoạn 5: Gắn dự án khi ghi memory (L0/L1 `project_key`, L2/L3 theo dự án)
 - [ ] Giai đoạn 6: Đọc theo dự án (chế độ `scoped`)
 - [ ] Giai đoạn 7: Bắt buộc cài hook với Claude Code
 - [ ] Giai đoạn 8: Các client khác
@@ -88,3 +88,13 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - Deploy (sao lưu trước: `~/backups/agent-memory-core-data-20261022-181257-before-device-registry.tgz`): core và proxy cùng ở `5a3c698`, đều healthy.
 - Test trên server (HOME tạm, token thật, proxy production): cài từ `/setup/hooks.sh` thành công; ba thư mục cho kết quả giống hệt bản local; bảng `meta_device_setups` trong Core có một bản ghi (`darwin`, `arm64`, hook phiên bản 1); `proxy_kv` có `workspace.json` cho từng session; không có lần cập nhật máy nào thất bại. Bản ghi máy `93895e8b…` là dữ liệu test.
 - Phát hiện riêng (không do thay đổi này): Core lặp lỗi `[skill-worker-pool] standalone SkillExtractor unavailable` khoảng 300 lần mỗi giây, CPU khoảng 79%. Diff hôm nay không chạm phần tạo skill extractor. Cần bạn quyết định có điều tra hay không.
+
+### 2026-10-23, sửa lỗi skill worker (ngoài kế hoạch)
+- Core lặp lỗi `standalone SkillExtractor unavailable` khoảng 34.000 lần mỗi phút, CPU 108%. Nguyên nhân: `core.yaml` thiếu `skill.extraction.enabled`, cộng ba lỗ hổng trong mã. Báo cáo: `plans/reports/debugger-261023-1345-skill-worker-hot-loop.md`.
+- Sửa: không chạy pool và trả `skipped` khi phần trích xuất tắt (`68413711`); bật trích xuất trong cấu hình theo lựa chọn A của bạn (`63ce17a2`); log tranh khóa chuyển sang debug theo lựa chọn C của bạn (`dc71f524`). Sau deploy: 0 lỗi, CPU 3–20%.
+- Sơ suất: lần deploy Core lúc 14:23 kéo cả PR #3 (reset-credits, có `ALTER TABLE … ADD COLUMN`) mà chưa sao lưu ngay trước đó. Đã sao lưu sau: `~/backups/agent-memory-core-data-20261023-142448-after-reset-credits-merge.tgz`.
+
+### 2026-10-23, Giai đoạn 5a (đang làm)
+- Cách lưu đã chốt: tiền tố đường dẫn trong scope `team|agent`, không dùng scope có dự án. Lý do: `ProfileFilter` không có chiều dự án (advisor xác nhận, đúng ADR 0002).
+- Proxy: `TdaiIdentity.projectKey/projectHash`; `withSessionProject()` tra `SessionWorkspace` theo `sessionKey`; nối vào runner anthropic, runner openai-chat và lệnh `mem:`; `addConversation` gửi `project_key`/`project_hash` chỉ khi có cả hai. Test: `session-project.test.ts` (8). Proxy 356/356, `tsc` sạch.
+- Core (subagent): cột hoặc trường `project_key`/`project_hash` cho L0 và L1 trên sqlite, tcvdb và mongo; L1 lấy dự án từ các tin nguồn chỉ khi tất cả cùng một dự án.
