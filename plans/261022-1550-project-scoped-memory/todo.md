@@ -124,3 +124,10 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - Commit `d5cb4423` (core), `29870e68` (proxy). Deploy (sao lưu trước: `~/backups/agent-memory-core-data-20261023-104457-before-project-personas.tgz`, tên theo giờ UTC): core `29870e6`, 0 lỗi mới. Proxy chưa deploy (chưa có nơi gọi tham số mới; sẽ deploy cùng Giai đoạn 6).
 - Production: gọi không hash trả persona toàn cục có dấu như cũ; có hash trả đúng scene của từng dự án; hash sai trả 400.
 - 2026-10-23 17:59: task L3 đầu tiên sau deploy tạo persona cho cả 4 dự án của `agt-f0bzvpye01` (cold start), mỗi file khoảng 1.500 ký tự, chỉ chứa nội dung của dự án đó, không có dấu scope. Persona toàn cục được tạo lại lúc 17:58, vẫn có dấu "đã duyệt". Lưu ý chất lượng: persona của Agent-Memory lấy nhiều câu từ prompt giao việc cho subagent (ví dụ "không sửa, không commit"), ghi thành quy ước của dự án.
+
+### 2026-10-23, sửa nguồn dữ liệu bẩn của memory dự án (đã deploy)
+- Nguyên nhân (báo cáo `plans/reports/debugger-261023-1833-project-memory-task-instruction-noise.md`): request đầu của subagent (và mọi bước của subagent haiku) được ghi L0 dưới session id và dự án của session chính; prompt giao việc thành L1 `work_method`/`work_task`, rồi thành SOP của scene và "quy ước" của persona dự án. Đồng thời hầu hết lượt chính bị xếp `fork` (marker nằm trên tin `role: "system"` của hook) nên không vào L0.
+- Bạn chọn A. Proxy `5a54d7ae`: marker trên tin system ở cuối là `main`; request có header `x-claude-code-agent-id` không ghi L0 và không vào bộ đệm skill; chỉ ghi câu của bạn khi tin user cuối có chữ thật, các bước tool chỉ ghi câu trả lời; form khởi tạo session và lượt nạp skill vẫn ghi câu hỏi. Core `544ec4fa`: prompt L1, scene công việc và ba prompt persona không lưu chỉ dẫn chỉ dùng cho một việc.
+- Review độc lập: sửa 2 lỗi HIGH (mất câu hỏi đầu sau form khởi tạo; transcript subagent vào bộ đệm skill) và các điểm nhỏ. Test: Core 672/672, Proxy 389/389, tsc sạch.
+- Deploy: proxy và core `5256c7c` (không đổi schema). Production: subagent ghi "skip L0 write (subagent)" và bỏ qua bộ đệm skill; lượt chính xếp `main` và ghi L0.
+- Đang làm: lập danh sách dọn dữ liệu bẩn (chỉ đọc), sẽ đưa bạn duyệt trước khi xóa.
