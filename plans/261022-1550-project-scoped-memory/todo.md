@@ -103,3 +103,12 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - Commit `5aab6c0d` (`promptMode: code`) do phiên khác tạo; bạn chọn A, deploy cùng. Server đã chạy nó từ trước.
 - Deploy (sao lưu trước: `~/backups/agent-memory-core-data-20261023-153439-before-project-columns.tgz`): core và proxy ở `1ae3aea`, 0 lỗi; hai bảng L0 và L1 đã có hai cột mới.
 - Test trên server (HOME tạm, token thật): session ở repo cho L0 có `git:github.com/kevinle128/agent-memory`/`db73c988534bc1c8`; session ở `~/Movies` cho L0 rỗng. Việc L1 nhận dự án sẽ được kiểm khi L1 chạy.
+
+### 2026-10-23, Giai đoạn 5b (đã deploy)
+- Subagent: `core/storage/project-scoped-storage.ts` và `project-paths.ts` (lớp bọc đổi đường dẫn theo dự án, view hợp scene của mọi dự án); runner L2 nhóm theo `(scope, projectHash)`; persona toàn cục đọc hợp scene, trigger tính cả scene dự án; checkpoint gốc được cộng sau mỗi lần chạy của dự án; rowfs nhận `project_personas/<H>.md`; `/core/count` chỉ đếm `persona.md`; profile sync tách hàng của dự án khỏi hàng gốc (subagent phát hiện thêm lỗi ghi đè persona dự án lên gốc và đã sửa).
+- Tôi bổ sung: các route `scenario/ls|count|read` ở gốc ẩn `projects/`; hash không hợp lệ quay về nhóm gốc.
+- Review độc lập kết luận SHIP_WITH_FIXES. Đã sửa: chặn cách vượt bằng `./projects` (chuẩn hóa phần `.` và phần rỗng, không phân biệt hoa thường), chặn `write`/`rm` vào `projects/`, giới hạn 80.000 ký tự scene trong một prompt persona (phần thừa chỉ liệt kê tóm tắt).
+- Test: Core 602/602. HTTP local: `ls`/`count`/`read` ở gốc không thấy scene dự án; `./projects`, `Projects`, `/projects` đều bị chặn; `write`/`rm` trả 404; file dự án còn nguyên.
+- Để sau (theo review): tool file của L3 nên chỉ đọc với `scene_blocks/`; tín hiệu cập nhật persona của dự án chưa đẩy lên gốc; trên rowfs checkpoint có thể trùng giữa các team (lỗi sẵn có).
+- Deploy (sao lưu trước: `~/backups/agent-memory-core-data-20261023-162947-before-project-scenes.tgz`): core `75b7501`, 0 lỗi.
+- Production: L0 có 2 dòng mang dự án (từ session thử), L1 chưa có, nên chưa có scene dự án. Cần lưu lượng thật từ máy đã cài hook để kiểm chứng.
