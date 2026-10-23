@@ -1185,6 +1185,8 @@ export class TdaiGateway {
         // 返回完整 WiredConversationAdd:
         //   - handleConversationAdd 用 .handler
         //   - handleExtract 用 .trigger (direct-trigger)
+        skillDeps.isSkillExtractionEnabled = () =>
+          this.core.getResolvedSkillConfig()?.extraction.enabled === true;
         skillDeps.resolveConversationAdd = async (instanceId: string) => {
           const wired = storePool.mode === "tcvdb" || storePool.mode === "mongodb"
             ? await this.ensureConversationAddForInstance(instanceId)
@@ -2469,6 +2471,12 @@ export class TdaiGateway {
     const skillCfg = this.core.getResolvedSkillConfig();
     if (!skillCfg) {
       this.logger.info(`[skill-worker-pool] resolved skill config missing (skill.enabled=false?); pool not started`);
+      return null;
+    }
+    // Without extraction there is no extractor: every dequeued agent would fail
+    // and stay at the queue head, so the loops would retry it without end.
+    if (!skillCfg.extraction.enabled) {
+      this.logger.info(`[skill-worker-pool] skill.extraction.enabled is not true; pool not started`);
       return null;
     }
     const queue = this.ensureSkillSharedQueue();

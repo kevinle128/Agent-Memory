@@ -122,6 +122,13 @@ export interface SkillRouterDeps {
     import("../core/skill/conversation-add/wire.js").WiredConversationAddHandler | undefined
   >;
   /**
+   * Optional. False when skill extraction is off (`skill.extraction.enabled`
+   * not true). Then conversation-add answers "skipped" and buffers nothing:
+   * no worker consumes the queue, so an archived task would never be
+   * processed. Absent means on (earlier behavior).
+   */
+  isSkillExtractionEnabled?: () => boolean;
+  /**
    * 可选. Analytics ClickHouse 只读客户端 (跟 /v3/analytics/* 复用同一 lazy singleton)。
    * 用于 `handleListing` 的 `mode='activity'` 分支读 `skill_usage_logs` 计算 MRR。
    *
@@ -1216,6 +1223,13 @@ export async function handleConversationAdd(
     return errorEnvelope(40001, formatZodErr(parsed.error), requestId);
   }
   const input = parsed.data;
+
+  if (deps.isSkillExtractionEnabled && !deps.isSkillExtractionEnabled()) {
+    obsLogger.info("skill.handleConversationAdd.done", {
+      req_id: requestId, code: 0, dur_ms: Date.now() - t0, reason: "extraction_disabled",
+    });
+    return successEnvelope({ status: "skipped", reason: "extraction_disabled" }, requestId);
+  }
 
   // service 模式下用 auth.serviceId 解析租户级 wired; standalone 忽略 serviceId
   // 由 wiring 返回单例。
