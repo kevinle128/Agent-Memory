@@ -66,3 +66,20 @@ describe("buildPersonaPrompt variants", () => {
     expect(explicit).toEqual(chat);
   });
 });
+
+describe("one-task directive rule", () => {
+  const marker = "仅针对单次任务的指令";
+  const keep = "只有当内容被明确表述为长期规则";
+
+  it("is present in the project, team and user-global persona prompts", () => {
+    const project = buildPersonaPrompt({ ...base, variant: "project" }).systemPrompt;
+    const team = buildPersonaPrompt({ ...base, promptMode: "code" }).systemPrompt;
+    const user = buildPersonaPrompt({ ...base, promptMode: "chat" }).systemPrompt;
+
+    for (const prompt of [project, team, user]) {
+      expect(prompt).toContain(marker);
+      expect(prompt).toContain("不要提交");
+      expect(prompt).toContain(keep);
+    }
+  });
+});
