@@ -88,7 +88,7 @@ import { matchSystemUserByUserId, hasSystemUsers } from "../../systemUser.js";
 import { handleSystemUserPassthrough } from "../../systemUserPassthrough.js";
 import { TdaiClient, buildTdaiClientForRequest } from "../../tdai/client.js";
 import { deriveTdaiIdentity } from "../../tdai/identity.js";
-import { extractLatestUserMessage, recordTdaiTurn } from "../../tdai/recorder.js";
+import { extractLatestUserMessage, recordTdaiTurn, resolveL0Capture, type L0Capture } from "../../tdai/recorder.js";
 import { trackWrite, withL0Retry } from "../../tdai/pending-writes.js";
 import {
   AnthropicMessageAssembler,
@@ -970,7 +970,11 @@ export async function runAnthropicPipeline(
         config,
         { spaceId, userId: userId || "anonymous", agentSource, sessionId: sessionKey ?? "" },
       );
-  const tdaiUserMessage = extractLatestUserMessage(messages);
+  const l0Capture = resolveL0Capture({
+    agentSource, headers: lcHeaders, body, messages, messageFormat: "anthropic", sessionJustRegistered,
+    fallbackUserMessage: extractLatestUserMessage(messages),
+  });
+  const tdaiUserMessage = l0Capture.userMessage;
 
   // ── Context injection (via shared stage, before cost guard) ────────────
   // CC 分流:
@@ -1381,6 +1385,7 @@ export async function runAnthropicPipeline(
       tdaiClient,
       tdaiIdentity,
       tdaiUserMessage,
+      l0Capture,
       assetCapabilities,
       lf,
       spaceId,
@@ -1612,7 +1617,9 @@ export async function runAnthropicPipeline(
 
   // Skill extract trigger — count tool_use blocks + buffer conversation.
   // 同步 await：直到 store 落盘再继续，保证下一轮跨节点读到最新数据。
-  if (isMainDialog && isExtractionAllowed(config, "skill")) {
+  // A subagent shares the lead's session id; its transcript must not enter the lead's skill buffer.
+  const bufferSkill = isMainDialog && !l0Capture.skip;
+  if (bufferSkill && isExtractionAllowed(config, "skill")) {
     await triggerSkillExtractIfReady({
       config,
       sessionKey,
@@ -1623,10 +1630,10 @@ export async function runAnthropicPipeline(
       protocol: "anthropic",
       assetCapabilities,
     });
-  } else if (isMainDialog) {
+  } else if (bufferSkill) {
     logExtractionSkipped(config, "skill", sessionKey);
   } else {
-    console.log(`[cc-routing] skip skill buffer for kind=${requestKind} session=${sessionKey}`);
+    console.log(`[cc-routing] skip skill buffer for kind=${requestKind} subagent=${l0Capture.skip} session=${sessionKey}`);
   }
 
   // TDAI L0 write (non-streaming).
@@ -1635,9 +1642,12 @@ export async function runAnthropicPipeline(
   // 短期记忆。**此前仅 stream=true 会写**，non-stream 请求（如工具/测试脚本
   // 常用的 stream:false）沉默丢失。缺失该调用意味着 CC non-stream 场景
   // 完全没有 L0 记忆写入。
-  if (isMainDialog && tdaiClient && isExtractionAllowed(config, "tdai-memory")) {
-    recordTdaiTurn(tdaiClient, tdaiIdentity, tdaiUserMessage, outputContent)
-      .catch((err: unknown) => pipe.error("TDAI_L0", err));
+  if (isMainDialog && l0Capture.skip) {
+    console.log(`[tdai-l0] skip L0 write (subagent) session=${sessionKey}`);
+  } else if (isMainDialog && tdaiClient && isExtractionAllowed(config, "tdai-memory")) {
+    recordTdaiTurn(tdaiClient, tdaiIdentity, tdaiUserMessage, outputContent, {
+      allowAssistantOnly: l0Capture.allowAssistantOnly,
+    }).catch((err: unknown) => pipe.error("TDAI_L0", err));
   } else if (isMainDialog && tdaiClient) {
     logExtractionSkipped(config, "tdai-memory", sessionKey);
   } else if (!isMainDialog) {
@@ -1812,6 +1822,8 @@ interface AnthropicTapContext {
   tdaiClient: TdaiClient | null;
   tdaiIdentity: TdaiIdentity | null;
   tdaiUserMessage: TdaiMessage | null;
+  /** What the L0 write holds for this request (subagent skip, assistant-only steps). */
+  l0Capture: L0Capture;
   assetCapabilities?: import("../../injection/types.js").AssetCapabilityFlags;
   /** Langfuse turn-trace context (trace = one turn). */
   lf: LangfuseTurnContext;
@@ -1943,7 +1955,9 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
       const isMainDialog = ctx.requestKind === "main";
 
       // Tdai L0 write
-      if (isMainDialog && ctx.tdaiClient && isExtractionAllowed(ctx.config, "tdai-memory")) {
+      if (isMainDialog && ctx.l0Capture.skip) {
+        console.log(`[tdai-l0] skip L0 write (subagent) session=${ctx.sessionKeyForSkill}`);
+      } else if (isMainDialog && ctx.tdaiClient && isExtractionAllowed(ctx.config, "tdai-memory")) {
         // Streaming 不 await（会拖慢 SSE 关流），trackWrite + withL0Retry 应对两条丢包线：
         //   - trackWrite 注册 in-flight promise 到全局 set；SIGTERM 时 index.ts 会
         //     flushPendingWrites 兜底，避免 pod rolling 时 event loop 未 flush 就退出丢 L0。
@@ -1952,6 +1966,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
           withL0Retry(() => recordTdaiTurn(
             ctx.tdaiClient!, ctx.tdaiIdentity, ctx.tdaiUserMessage,
             outputText || null,
+            { allowAssistantOnly: ctx.l0Capture.allowAssistantOnly },
           )).catch((err: unknown) => pipe.error("TDAI_L0", err))
         );
       } else if (isMainDialog && ctx.tdaiClient) {
@@ -2001,7 +2016,8 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
 
       // Skill extract trigger — after stream finalization.
       // 同步 await：直到 store 落盘再继续，保证下一轮跨节点读到最新数据。
-      if (isMainDialog && isExtractionAllowed(ctx.config, "skill")) {
+      const bufferSkill = isMainDialog && !ctx.l0Capture.skip;
+      if (bufferSkill && isExtractionAllowed(ctx.config, "skill")) {
         await triggerSkillExtractIfReady({
           config: ctx.config,
           sessionKey: ctx.sessionKeyForSkill,
@@ -2015,10 +2031,10 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
           assetCapabilities: ctx.assetCapabilities,
           toolCallCountOverride: toolUseCount,
         });
-      } else if (isMainDialog) {
+      } else if (bufferSkill) {
         logExtractionSkipped(ctx.config, "skill", ctx.sessionKeyForSkill);
       } else {
-        console.log(`[cc-routing] skip skill buffer (stream) for kind=${ctx.requestKind} session=${ctx.sessionKeyForSkill}`);
+        console.log(`[cc-routing] skip skill buffer (stream) for kind=${ctx.requestKind} subagent=${ctx.l0Capture.skip} session=${ctx.sessionKeyForSkill}`);
       }
 
       // Credit usage reporting (streaming) via shared stageCredit.

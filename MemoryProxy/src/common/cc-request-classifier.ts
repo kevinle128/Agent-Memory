@@ -34,6 +34,14 @@ export function classifyCcRequest(body: Record<string, unknown>): CcRequestKind 
   if (detectCcSideRequest(body)) return "sidequery";
 
   const rawMsgs = Array.isArray(body.messages) ? (body.messages as unknown[]) : [];
+
+  // Claude Code puts hook output as trailing role:"system" messages and, on a
+  // normal turn, moves the turn marker onto the last one. The filter below
+  // drops system messages, so the marker would be lost and the previous
+  // assistant marker (n-2) would make the real turn look like a fork. A fork
+  // never marks a system message, so a marker on a trailing system message
+  // means MAIN.
+  if (hasTrailingSystemMarker(rawMsgs)) return "main";
   // Filter out non-conversation messages (e.g. role:"system" injected by some CC
   // versions into the messages array). Only user/assistant participate in the
   // cache_control marker position logic that distinguishes main from fork.
@@ -61,6 +69,18 @@ export function classifyCcRequest(body: Record<string, unknown>): CcRequestKind 
   if (toolsEmpty && thinkingOff) return "sidequery";
 
   return "main";
+}
+
+/** True when the last cache_control marker sits on a system message that follows every user/assistant message. */
+function hasTrailingSystemMarker(rawMsgs: unknown[]): boolean {
+  const markerIdx = findLastCacheControlIndex(rawMsgs);
+  if (markerIdx < 0) return false;
+  if ((rawMsgs[markerIdx] as { role?: string })?.role !== "system") return false;
+  for (let i = markerIdx + 1; i < rawMsgs.length; i++) {
+    const role = (rawMsgs[i] as { role?: string })?.role;
+    if (role === "user" || role === "assistant") return false;
+  }
+  return true;
 }
 
 export type CcSideRequestKind = "title" | "model-probe";

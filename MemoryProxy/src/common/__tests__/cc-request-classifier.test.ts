@@ -99,4 +99,33 @@ describe("classifyCcRequest", () => {
     ];
     expect(classifyCcRequest(body)).toBe("fork");
   });
+
+  describe("trailing system message (mid-conversation system messages)", () => {
+    const plain = (text: string) => ({ type: "text", text });
+    const u = (marked = false) => ({ role: "user", content: [marked ? cached("q") : plain("q")] });
+    const a = (marked = false) => ({ role: "assistant", content: [marked ? cached("r") : plain("r")] });
+    const sys = (marked = false) => ({ role: "system", content: [marked ? cached("hook") : plain("hook")] });
+    const classify = (messages: unknown[]) => classifyCcRequest({ ...mainRequest(), messages });
+
+    it("treats a marker on the trailing system message as main", () => {
+      expect(classify([u(), a(true), u(), sys(true)])).toBe("main");
+    });
+
+    it("keeps the compact shape (marker on the assistant, unmarked system tail) as fork", () => {
+      expect(classify([u(), a(true), u(), sys()])).toBe("fork");
+    });
+
+    it("treats a first request with a marked system message as main", () => {
+      expect(classify([u(), sys(true)])).toBe("main");
+    });
+
+    it("keeps a marker on the last user message as main", () => {
+      expect(classify([u(), a(true), u(true)])).toBe("main");
+      expect(classify([u(true)])).toBe("main");
+    });
+
+    it("keeps a fork that follows a system message as fork", () => {
+      expect(classify([u(), a(), u(true), sys(), u()])).toBe("fork");
+    });
+  });
 });

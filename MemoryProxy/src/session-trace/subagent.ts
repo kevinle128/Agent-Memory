@@ -126,3 +126,13 @@ export function detectSubagent(agent: string, req: SubagentRequest): Required<Su
   const subagentId = info.subagentId || subagentIdFromMessages(messagesOf(req.body)) || UNKNOWN_SUBAGENT_ID;
   return { parentSessionId: info.parentSessionId, subagentId };
 }
+
+/**
+ * True when this single request comes from a subagent of `agent`. Callers use
+ * it to keep subagent work out of the main line's memory. `headers` must be
+ * lower-cased. Agents without a detector are never subagents.
+ */
+export function isSubagentRequest(agent: string, headers: Record<string, string>, body: unknown): boolean {
+  const detector = DETECTORS[agent];
+  return detector ? detector({ headers, body, sessionId: "" }) !== null : false;
+}

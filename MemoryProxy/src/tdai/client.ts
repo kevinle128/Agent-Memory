@@ -151,7 +151,7 @@ export class TdaiClient {
       project: identity.projectHash,
       msgs: messages.length,
       chunks: chunkedMessages.length,
-      userLen: (messages[0]?.content ?? "").length,
+      userLen: messages[0]?.role === "user" ? messages[0].content.length : 0,
     });
 
     for (let offset = 0; offset < chunkedMessages.length; offset += TDAI_CONVERSATION_MAX_MESSAGES) {

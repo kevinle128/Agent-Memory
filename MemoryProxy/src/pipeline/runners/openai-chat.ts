@@ -85,7 +85,7 @@ import { handleSystemUserPassthrough } from "../../systemUserPassthrough.js";
 import { requireWecomIdentity } from "../../wecom-identity-form.js";
 import { TdaiClient, buildTdaiClientForRequest } from "../../tdai/client.js";
 import { deriveTdaiIdentity } from "../../tdai/identity.js";
-import { extractLatestUserMessage, recordTdaiTurn } from "../../tdai/recorder.js";
+import { extractLatestUserMessage, recordTdaiTurn, resolveL0Capture, type L0Capture } from "../../tdai/recorder.js";
 import { opencodeAdapter } from "../../agent-adapters/opencode.js";
 import { trackWrite, withL0Retry } from "../../tdai/pending-writes.js";
 import type { TdaiIdentity, TdaiMessage } from "../../tdai/types.js";
@@ -998,9 +998,13 @@ export async function runOpenaiChatPipeline(
         ? (opencodeAdapter.extractUserText(lastInboundMessage.content) ?? "")
         : "")
     : null;
-  const tdaiUserMessage: TdaiMessage | null = agentSource === "opencode"
-    ? (opencodeUserQuery ? { role: "user", content: opencodeUserQuery } : null)
-    : extractLatestUserMessage(messages);
+  const l0Capture = resolveL0Capture({
+    agentSource, headers: lcHeaders, body, messages, messageFormat: "openai",
+    fallbackUserMessage: agentSource === "opencode"
+      ? (opencodeUserQuery ? { role: "user", content: opencodeUserQuery } : null)
+      : extractLatestUserMessage(messages),
+  });
+  const tdaiUserMessage: TdaiMessage | null = l0Capture.userMessage;
 
   // ── Context injection (via shared stage, before cost guard) ─────────────
   {
@@ -1349,6 +1353,7 @@ export async function runOpenaiChatPipeline(
       tdaiClient,
       tdaiIdentity,
       tdaiUserMessage,
+      l0Capture,
       assetCapabilities,
       pipe,
       sessionKeyForSkill: sessionKey,
@@ -1552,7 +1557,9 @@ export async function runOpenaiChatPipeline(
   // upstream omits usage. Only token accounting requires usage data.
   if (upstreamResp.ok) {
     if (!usage) pipe.info("USAGE_MISSING", "non-stream response had no usage object");
-    if (tdaiClient && isExtractionAllowed(config, "tdai-memory")) {
+    if (l0Capture.skip) {
+      console.log(`[tdai-l0] skip L0 write (subagent) session=${sessionKey}`);
+    } else if (tdaiClient && isExtractionAllowed(config, "tdai-memory")) {
       await recordTdaiTurn(tdaiClient, tdaiIdentity, tdaiUserMessage, assistantContentForTdai(assistantMessage));
     } else if (tdaiClient) {
       logExtractionSkipped(config, "tdai-memory", sessionKey);
@@ -1694,6 +1701,8 @@ interface TapContext {
   tdaiClient: TdaiClient | null;
   tdaiIdentity: TdaiIdentity | null;
   tdaiUserMessage: TdaiMessage | null;
+  /** What the L0 write holds for this request (subagent skip). */
+  l0Capture: L0Capture;
   assetCapabilities?: import("../../injection/types.js").AssetCapabilityFlags;
   pipe: ReturnType<typeof createPipeline>;
   /** For skill extract trigger; null when session_init is disabled. */
@@ -1962,7 +1971,9 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
       pipe.error("LANGFUSE_SPAN", langfuseErr);
     }
 
-    if (ctx.tdaiClient && isExtractionAllowed(ctx.config, "tdai-memory")) {
+    if (ctx.l0Capture.skip) {
+      console.log(`[tdai-l0] skip L0 write (subagent) session=${ctx.sessionKeyForSkill}`);
+    } else if (ctx.tdaiClient && isExtractionAllowed(ctx.config, "tdai-memory")) {
       // Streaming 不 await（会拖慢 SSE 关流体感），改成 trackWrite + 重试：
       //   - trackWrite 注册 in-flight promise 到全局 set；SIGTERM 时 index.ts 会
       //     flushPendingWrites 等待或超时兜底，避免 pod rolling 时丢 L0。
