@@ -259,10 +259,10 @@ export class SkillConversationExtractWorker {
       // 2026-08-03: 原子路径下 agent 已在 List (peek 保证), 不需要 requeue;
       // 降级路径下走 v1 语义, mutex 外 requeue 保证 agent 不丢。
       if (isDowngrade) {
-        this.logger.info(`[skill-conv-worker] extract-lock contended agent=${agentKey}, requeue+sleep (downgrade)`);
+        this.logger.debug?.(`[skill-conv-worker] extract-lock contended agent=${agentKey}, requeue+sleep (downgrade)`);
         await q.requeueAgent(agent);
       } else {
-        this.logger.info(`[skill-conv-worker] extract-lock contended agent=${agentKey}, sleep (peek keeps agent in queue)`);
+        this.logger.debug?.(`[skill-conv-worker] extract-lock contended agent=${agentKey}, sleep (peek keeps agent in queue)`);
       }
       const jitter = Math.floor(Math.random() * (this.opts.lockContentionSleepJitterMs ?? 500));
       await sleep((this.opts.lockContentionSleepMs ?? 2000) + jitter);
