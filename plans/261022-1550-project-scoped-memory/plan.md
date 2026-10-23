@@ -180,3 +180,20 @@ Thứ tự được sắp để lớp bảo vệ mặc định không inject có
 5. Với `-p` và chế độ headless: bỏ qua việc chặn hay vẫn chặn?
 6. Có cần hỗ trợ hook trên Windows không?
 7. Scene cũ: có cần công cụ gán lại vào dự án, hay để cách ly vĩnh viễn?
+
+## Giai đoạn 5, chi tiết (chốt 2026-10-23)
+
+Cách lưu: giữ khóa scope `team|agent`, dự án dùng tiền tố đường dẫn trong scope đó (đúng ADR 0002). Không dùng scope `team|agent|project`, vì `ProfileFilter` của backend lưu theo hàng (tcvdb, mongo) không có chiều dự án, nên danh sách sẽ lẫn giữa các dự án. Tiền tố thì lọc được bằng `pathPrefix` sẵn có.
+
+- **5a, L0/L1 mang dự án:**
+  - Proxy tra `SessionWorkspace` theo `(spaceId, userId, agentSource, sessionKey)` cho mỗi request có ghi L0, rồi gửi `project_key` và `project_hash` trong body `/v3/conversation/add` (chỉ khi hook đã báo dự án).
+  - Core thêm cột hoặc trường `project_key`, `project_hash` cho L0 và L1 trên sqlite, tcvdb (không đánh index trên collection cũ) và mongo.
+  - Dự án của một bản ghi L1 lấy từ các tin L0 nguồn của nó: tất cả cùng một dự án thì dùng dự án đó; lẫn dự án hoặc thiếu thì để trống. Để trống nghĩa là không inject (mặc định không inject).
+- **5b, L2 theo dự án:**
+  - L2 nhóm theo `(scope, projectHash)`. Wrapper đổi đường dẫn: `scene_blocks/` → `scene_blocks/projects/<h>/`, `.metadata/` → `.metadata/projects/<h>/`, `persona.md` → `project_personas/<h>.md` (kể cả phần điều hướng mà `SceneExtractor` ghi).
+  - Persona toàn cục đọc hợp của index gốc và mọi index `projects/<h>/`.
+  - Sau mỗi lần L2 chạy cho một dự án, cộng bộ đếm ở checkpoint gốc để trigger của persona toàn cục vẫn chạy.
+- **5c, L3 theo dự án:**
+  - Runner L3 liệt kê `scene_blocks/projects/*/` trong mỗi scope và tạo persona dự án qua wrapper.
+  - `classifyPath`, `routePrefix` và `keysForPrefix` nhận `project_personas/`; `handleCoreCount` chỉ đếm `persona.md`; `/core/read` nhận thêm `project_hash`.
+- Mỗi phần deploy riêng, sao lưu Core trước mỗi lần deploy. Scene cũ ở gốc giữ nguyên, không di chuyển.
