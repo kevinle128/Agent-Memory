@@ -148,6 +148,7 @@ export class TdaiClient {
       user: identity.userId,
       session: identity.sessionId,
       task: identity.taskId,
+      project: identity.projectHash,
       msgs: messages.length,
       chunks: chunkedMessages.length,
       userLen: (messages[0]?.content ?? "").length,
@@ -164,6 +165,9 @@ export class TdaiClient {
           agent_id: identity.agentId,
           session_id: identity.sessionId,
           task_id: identity.taskId,
+          ...(identity.projectKey && identity.projectHash
+            ? { project_key: identity.projectKey, project_hash: identity.projectHash }
+            : {}),
           messages: batch,
         },
         identity.sessionId,

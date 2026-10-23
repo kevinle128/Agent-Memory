@@ -38,6 +38,14 @@ export interface TdaiIdentity {
   /** Task dimension for L0/L1 only. */
   taskId?: string;
   /**
+   * Project of the session, from the client hook report (see
+   * project-scope/session-workspace.ts). Absent when the hook has not reported
+   * a project, for example in a folder outside git. Sent with each L0 write.
+   */
+  projectKey?: string;
+  /** First 16 hex chars of sha256(projectKey). Present only with projectKey. */
+  projectHash?: string;
+  /**
    * 请求发起者 user_key（原始 `sk-mem-...`）。用于 tdai `/v3/meta/*` 路由的
    * Layer 3 用户鉴权（`x-tdai-user-key` header）—— ACL 校验路径必须。
    *

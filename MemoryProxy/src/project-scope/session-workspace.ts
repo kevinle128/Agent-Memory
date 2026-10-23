@@ -73,6 +73,32 @@ export async function getSessionWorkspaceStore(config: {
   return instance;
 }
 
+/**
+ * Add the session's reported project to a TDAI identity, for the L0 write.
+ * Returns the identity unchanged when there is no report, the report has no
+ * project, or the lookup fails: a missing project means "no project", never a
+ * guess.
+ */
+export async function withSessionProject<T extends { projectKey?: string; projectHash?: string }>(
+  identity: T | null,
+  config: { storage?: import("../types.js").ProxyConfig["storage"] },
+  key: SessionWorkspaceKey,
+): Promise<T | null> {
+  if (!identity || !key.sessionId || !key.userId || !key.agentSource) return identity;
+  try {
+    const store = await getSessionWorkspaceStore(config);
+    const ws = await store.get(key);
+    if (!ws?.projectKey || !ws.projectHash) return identity;
+    return { ...identity, projectKey: ws.projectKey, projectHash: ws.projectHash };
+  } catch (err) {
+    console.warn(
+      `[session-workspace] project lookup failed session=${key.sessionId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return identity;
+  }
+}
+
 /** Replace the process-wide store (tests). */
 export function setSessionWorkspaceStore(store: SessionWorkspaceStore | null): void {
   instance = store;

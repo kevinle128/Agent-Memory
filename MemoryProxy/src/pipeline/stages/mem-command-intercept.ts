@@ -15,6 +15,7 @@
  */
 
 import type { ProxyConfig } from "../../types.js";
+import { withSessionProject } from "../../project-scope/session-workspace.js";
 import type { TdaiClient } from "../../tdai/client.js";
 import { recordTdaiTurn } from "../../tdai/recorder.js";
 import { deriveTdaiIdentity } from "../../tdai/identity.js";
@@ -162,12 +163,16 @@ export async function stageMemCommandIntercept(
 
   // L0 write (同步 await 保证落盘)
   const tdaiClientForMem = createTdaiClientFn(config, spaceId);
-  const tdaiIdentityForMem = deriveTdaiIdentity({
-    sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
-    userId: userId || null,
-    sessionKey,
-    userKey: callerUserKey,
-  });
+  const tdaiIdentityForMem = await withSessionProject(
+    deriveTdaiIdentity({
+      sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
+      userId: userId || null,
+      sessionKey,
+      userKey: callerUserKey,
+    }),
+    config,
+    { spaceId, userId: userId || "anonymous", agentSource, sessionId: sessionKey ?? "" },
+  );
   if (tdaiClientForMem && tdaiIdentityForMem && isExtractionAllowed(config, "tdai-memory")) {
     const userMsg = { role: "user" as const, content: memCmd.rawMessage };
     try {

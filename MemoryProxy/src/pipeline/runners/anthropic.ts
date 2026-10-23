@@ -8,6 +8,7 @@
  */
 
 import type { Context } from "hono";
+import { withSessionProject } from "../../project-scope/session-workspace.js";
 import { createHash } from "node:crypto";
 import { writeLog, createPipeline } from "../../logger.js";
 import { applyMainModel } from "../../mainModel.js";
@@ -959,12 +960,16 @@ export async function runAnthropicPipeline(
   const tdaiClient = assetCapabilities?.chat_memory === false ? null : createTdaiClient(config, spaceId);
   const tdaiIdentity = injectedSkipped
     ? null
-    : deriveTdaiIdentity({
-        sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
-        userId: userId || null,
-        sessionKey,
-        userKey: callerUserKey,
-      });
+    : await withSessionProject(
+        deriveTdaiIdentity({
+          sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
+          userId: userId || null,
+          sessionKey,
+          userKey: callerUserKey,
+        }),
+        config,
+        { spaceId, userId: userId || "anonymous", agentSource, sessionId: sessionKey ?? "" },
+      );
   const tdaiUserMessage = extractLatestUserMessage(messages);
 
   // ── Context injection (via shared stage, before cost guard) ────────────

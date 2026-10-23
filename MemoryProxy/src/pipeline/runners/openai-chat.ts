@@ -1,6 +1,7 @@
 /** Core request handler: intercept → forward → parse usage → log. */
 
 import type { Context } from "hono";
+import { withSessionProject } from "../../project-scope/session-workspace.js";
 import { createHash } from "node:crypto";
 import { writeLog, createPipeline } from "../../logger.js";
 import { applyMainModel } from "../../mainModel.js";
@@ -979,11 +980,15 @@ export async function runOpenaiChatPipeline(
   const tdaiClient = isAuxiliary || _dshHeadless || assetCapabilities?.chat_memory === false ? null : createTdaiClient(config, spaceId);
   const tdaiIdentity = injectedSkipped
     ? null
-    : deriveTdaiIdentity({
-        sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
-        userId: userId || null,
-        sessionKey,
-      });
+    : await withSessionProject(
+        deriveTdaiIdentity({
+          sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
+          userId: userId || null,
+          sessionKey,
+        }),
+        config,
+        { spaceId, userId: userId || "anonymous", agentSource, sessionId: sessionKey ?? "" },
+      );
   // OpenCode places a fresh human turn at the end of messages. A tool-loop
   // continuation ends with a tool message and must not be counted as another
   // human input. Capture this before injection can prepend recalled memories.
