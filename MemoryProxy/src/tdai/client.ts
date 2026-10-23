@@ -235,7 +235,12 @@ export class TdaiClient {
     });
   }
 
-  async listL2ForCtx(ctx: TdaiAgentCtx): Promise<TdaiL2Entry[]> {
+  /**
+   * List the scenes of an agent. With `projectHash` the list holds that
+   * project's scenes, with paths relative to the project; without it, the
+   * user-global scenes. The field is sent only when given.
+   */
+  async listL2ForCtx(ctx: TdaiAgentCtx, projectHash?: string): Promise<TdaiL2Entry[]> {
     if (!this.isEnabled() || !this.config.injectL2L3) return [];
     const data = await this.postForCtx<{ entries?: Array<Record<string, unknown>> }>(
       "/v3/scenario/ls",
@@ -244,6 +249,7 @@ export class TdaiClient {
         team_id: ctx.teamId,
         agent_id: ctx.agentId,
         path_prefix: "",
+        ...(projectHash ? { project_hash: projectHash } : {}),
       },
       "",
       undefined,
@@ -266,7 +272,12 @@ export class TdaiClient {
     );
   }
 
-  async readL2ForCtx(ctx: TdaiAgentCtx, path: string): Promise<TdaiL2File | null> {
+  /**
+   * Read one scene. With `projectHash` the path is relative to that project;
+   * without it, the scene is a user-global one. The field is sent only when
+   * given.
+   */
+  async readL2ForCtx(ctx: TdaiAgentCtx, path: string, projectHash?: string): Promise<TdaiL2File | null> {
     if (!this.isEnabled() || !this.config.injectL2L3 || !path) return null;
     const data = await this.postForCtx<Record<string, unknown> | null>(
       "/v3/scenario/read",
@@ -275,6 +286,7 @@ export class TdaiClient {
         team_id: ctx.teamId,
         agent_id: ctx.agentId,
         path,
+        ...(projectHash ? { project_hash: projectHash } : {}),
       },
       "",
       undefined,
@@ -297,7 +309,12 @@ export class TdaiClient {
     });
   }
 
-  async readL3ForCtx(ctx: TdaiAgentCtx): Promise<TdaiL3Core | null> {
+  /**
+   * Read the L3 document of an agent. With `projectHash` it is that project's
+   * memory document; without it, the user-global persona. The field is sent
+   * only when given.
+   */
+  async readL3ForCtx(ctx: TdaiAgentCtx, projectHash?: string): Promise<TdaiL3Core | null> {
     if (!this.isEnabled() || !this.config.injectL2L3) return null;
     const data = await this.postForCtx<Record<string, unknown> | null>(
       "/v3/core/read",
@@ -305,6 +322,7 @@ export class TdaiClient {
       {
         team_id: ctx.teamId,
         agent_id: ctx.agentId,
+        ...(projectHash ? { project_hash: projectHash } : {}),
       },
       "",
       undefined,
