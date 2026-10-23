@@ -91,6 +91,7 @@ import {
 import { DEFAULT_PAGINATION } from "../pagination.js";
 import { buildChatMemoryAssetId } from "../utils/chat-memory-asset.js";
 import { DuplicateUserKeyError } from "./interface.js";
+import { parseStoredResetCredits } from "./reset-credits-codec.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -2387,6 +2388,7 @@ export class MongoMetadataStore implements IMetadataStore {
         token_expires_at: input.token_expires_at,
         provider_account_id: input.provider_account_id,
         usage: { windows: [] },
+        reset_credits: null,
         usage_updated_at: null,
         exhausted_until: null,
         usage_fail_count: 0,
@@ -2447,7 +2449,7 @@ export class MongoMetadataStore implements IMetadataStore {
       const setDoc: Document = { updated_at: nowIso() };
       const fields: Array<keyof UpdateSubscriptionAccountPatch> = [
         "display_name", "account_label", "enabled", "status", "access_token", "refresh_token",
-        "token_expires_at", "usage", "usage_updated_at", "exhausted_until", "usage_fail_count",
+        "token_expires_at", "usage", "reset_credits", "usage_updated_at", "exhausted_until", "usage_fail_count",
         "refresh_fail_count", "last_error", "active_sessions",
       ];
       for (const field of fields) {
@@ -2512,6 +2514,7 @@ export class MongoMetadataStore implements IMetadataStore {
       token_expires_at: nullableNumber(doc.token_expires_at),
       provider_account_id: String(doc.provider_account_id),
       usage,
+      reset_credits: parseStoredResetCredits(doc.reset_credits),
       usage_updated_at: nullableNumber(doc.usage_updated_at),
       exhausted_until: nullableNumber(doc.exhausted_until),
       usage_fail_count: Number(doc.usage_fail_count ?? 0),

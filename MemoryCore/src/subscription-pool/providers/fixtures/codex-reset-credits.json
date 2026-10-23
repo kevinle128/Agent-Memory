@@ -1,0 +1,50 @@
+{
+  "credits": [
+    {
+      "id": "RateLimitResetCredit_42d4ee458b4481918c1d2779d413f6d6",
+      "reset_type": "codex_rate_limits",
+      "is_supported_by_plan": true,
+      "status": "available",
+      "granted_at": "2026-09-22T18:47:23.536914Z",
+      "expires_at": "2026-10-22T18:47:23.536914Z",
+      "redeem_started_at": null,
+      "redeemed_at": null,
+      "profile_image_url": "https://openaiassets.blob.core.windows.net/$web/codex/codex-icon-200.png",
+      "profile_user_id": "Codex Team",
+      "title": "Full reset",
+      "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+    },
+    {
+      "id": "RateLimitResetCredit_fd993e473ad48191bceb0869f244ec63",
+      "reset_type": "codex_rate_limits",
+      "is_supported_by_plan": true,
+      "status": "available",
+      "granted_at": "2026-09-29T18:37:36.265852Z",
+      "expires_at": "2026-10-29T18:37:36.265852Z",
+      "redeem_started_at": null,
+      "redeemed_at": null,
+      "profile_image_url": "https://openaiassets.blob.core.windows.net/$web/codex/codex-icon-200.png",
+      "profile_user_id": "Codex Team",
+      "title": "Full reset",
+      "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+    },
+    {
+      "id": "RateLimitResetCredit_0abf60d04a308191a966135abd0b5ddc",
+      "reset_type": "codex_rate_limits",
+      "is_supported_by_plan": true,
+      "status": "available",
+      "granted_at": "2026-10-07T22:55:00.186289Z",
+      "expires_at": "2026-11-06T22:55:00.186289Z",
+      "redeem_started_at": null,
+      "redeemed_at": null,
+      "profile_image_url": "https://openaiassets.blob.core.windows.net/$web/codex/codex-icon-200.png",
+      "profile_user_id": "Codex Team",
+      "title": "Full reset",
+      "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+    }
+  ],
+  "available_count": 3,
+  "total_earned_count": 0,
+  "immediate_reset_purchase_eligible": false,
+  "history_enabled": true
+}

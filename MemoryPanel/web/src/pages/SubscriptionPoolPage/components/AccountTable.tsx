@@ -5,15 +5,20 @@
  */
 import { useTranslation } from 'react-i18next';
 import { Button, StatusTip, Table, Tag, Text, Bubble } from 'tea-component';
+
+const { scrollable } = Table.addons;
 import i18n from '@/i18n';
 import type { SubscriptionAccount } from '@/lib/api/subscription-pool';
 import {
   accountState,
+  describeCreditExpiry,
   describeWindow,
   formatClock,
   formatResetAt,
   groupWindows,
+  windowColumns,
   latestObservation,
+  nearestExpiringCredit,
   thresholdMark,
   usageCheckFailing,
   type AccountState,
@@ -33,6 +38,7 @@ interface Props {
   onToggleEnabled: (account: SubscriptionAccount) => void;
   onDelete: (account: SubscriptionAccount) => void;
   onRelogin: (account: SubscriptionAccount) => void;
+  onShowCredits: (account: SubscriptionAccount) => void;
   emptyText: React.ReactNode;
 }
 
@@ -119,6 +125,7 @@ export function AccountTable({
   onToggleEnabled,
   onDelete,
   onRelogin,
+  onShowCredits,
   emptyText,
 }: Props) {
   const { t } = useTranslation();
@@ -139,15 +146,22 @@ export function AccountTable({
     );
   }
 
+  const visible = windowColumns(accounts);
+  // Every column has a fixed width. When their sum is wider than the page, the table scrolls
+  // sideways instead of squeezing the account name into one letter per line.
+  const minWidth = 220 + 150 + (visible.primary ? 220 : 0) + 220 + (visible.models ? 220 : 0) + 170 + 120 + 150 + 260;
+
   return (
     <Table
       verticalTop
+      addons={[scrollable({ minWidth })]}
       records={accounts}
       recordKey="account_id"
       columns={[
         {
           key: 'account',
           header: t('subscriptionPool.col.account'),
+          width: 220,
           render: (account: SubscriptionAccount) => (
             <div className="_memory-pool-account">
               <b>{account.display_name}</b>
@@ -158,6 +172,7 @@ export function AccountTable({
         {
           key: 'status',
           header: t('subscriptionPool.col.status'),
+          width: 150,
           render: (account: SubscriptionAccount) => {
             const state = stateOf(account);
             const tag = STATE_TAG[state];
@@ -183,7 +198,7 @@ export function AccountTable({
             );
           },
         },
-        {
+        ...(visible.primary ? [{
           key: 'primary',
           header: t('subscriptionPool.col.primary'),
           width: 220,
@@ -198,7 +213,7 @@ export function AccountTable({
               />
             );
           },
-        },
+        }] : []),
         {
           key: 'secondary',
           header: t('subscriptionPool.col.secondary'),
@@ -215,7 +230,7 @@ export function AccountTable({
             );
           },
         },
-        {
+        ...(visible.models ? [{
           key: 'models',
           header: t('subscriptionPool.col.models'),
           width: 220,
@@ -234,6 +249,41 @@ export function AccountTable({
                     label={windowLabel(window, t)}
                   />
                 ))}
+              </div>
+            );
+          },
+        }] : []),
+        {
+          key: 'credits',
+          header: t('subscriptionPool.col.credits'),
+          width: 170,
+          render: (account: SubscriptionAccount) => {
+            const credits = account.reset_credits;
+            if (!credits) {
+              return (
+                <div>
+                  <div>—</div>
+                  <Text theme="weak" className="_memory-pool-small">{t('subscriptionPool.window.noData')}</Text>
+                </div>
+              );
+            }
+            const nearest = nearestExpiringCredit(credits.credits, now);
+            const expiry = nearest ? describeCreditExpiry(nearest.expires_at, now, { locale: i18n.language }) : null;
+            return (
+              <div>
+                <Button type="link" onClick={() => onShowCredits(account)}>
+                  {t('subscriptionPool.credits.available', { count: credits.available })}
+                </Button>
+                {expiry?.at && expiry.remaining && (
+                  <Text theme={expiry.soon ? 'warning' : 'weak'} parent="div" className="_memory-pool-small">
+                    {t('subscriptionPool.credits.nearest', { at: expiry.at, remaining: expiry.remaining })}
+                  </Text>
+                )}
+                {credits.available === 0 && credits.note && (
+                  <Bubble content={credits.note}>
+                    <Text theme="weak" parent="div" className="_memory-pool-small">{credits.note}</Text>
+                  </Bubble>
+                )}
               </div>
             );
           },

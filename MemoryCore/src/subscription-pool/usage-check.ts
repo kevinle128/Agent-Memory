@@ -3,6 +3,7 @@ import {
   SubscriptionAccountWriteConflictError,
   type SubscriptionAccountEntity,
   type SubscriptionQuotaWindow,
+  type SubscriptionResetCredits,
   type UpdateSubscriptionAccountPatch,
 } from "../metadata/types.js";
 import type { SubscriptionProviderAdapter } from "./providers/types.js";
@@ -46,8 +47,11 @@ export async function checkAccountUsage(
   if (!before) throw new SubscriptionAccountWriteConflictError("account_not_found", `subscription account not found: ${accountId}`);
 
   let reading: SubscriptionQuotaWindow[] | null = null;
+  let resetCredits: SubscriptionResetCredits | null = null;
   try {
-    reading = withNextCheck(await adapter.fetchUsage(before.access_token, before.provider_account_id), thresholdPct, now);
+    const usage = await adapter.fetchUsage(before.access_token, before.provider_account_id);
+    reading = withNextCheck(usage.windows, thresholdPct, now);
+    resetCredits = usage.resetCredits;
   } catch {
     reading = null;
   }
@@ -68,14 +72,20 @@ export async function checkAccountUsage(
 
     // Drop expired windows and old synthetic 429 windows absent from this provider reading.
     // A newer 429 arriving while the check was in flight must still be retained.
+    // An older usage API row absent from this reading is dropped too: the usage API is the
+    // authority for its own rows, so a window it no longer sends (or now sends under another
+    // name) must not stay until its old reset time.
     const fresh = new Set(reading.map((window) => `${window.name}\0${window.model_scope ?? ""}`));
     const windows = mergeUsageWindows(current.usage.windows, reading).filter((window) => (
       fresh.has(`${window.name}\0${window.model_scope ?? ""}`)
-      || ((window.source !== "429" || window.observed_at > now)
+      || (window.source !== "usage_api"
+        && (window.source !== "429" || window.observed_at > now)
         && (window.resets_at === null || window.resets_at > now))
     ));
     const patch: UpdateSubscriptionAccountPatch = {
       usage: { windows },
+      // A check without a credit reading clears the old one, so the Panel never shows a stale count.
+      reset_credits: resetCredits,
       usage_updated_at: now,
       usage_fail_count: 0,
       last_error: current.last_error === USAGE_CHECK_FAILED ? null : undefined,

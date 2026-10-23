@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   USAGE_FAIL_LIMIT,
+  CREDIT_EXPIRING_SOON_MS,
   accountState,
+  classifyRedeemOutcome,
+  describeCreditExpiry,
+  isExpiringSoon,
+  nearestExpiringCredit,
+  type PoolResetCredit,
   describeWindow,
   effectiveWindow,
   groupWindows,
+  windowColumns,
   meterLevel,
   oauthCompleteInput,
   parsePoolErrorCode,
@@ -195,6 +202,19 @@ describe('groupWindows', () => {
   });
 });
 
+describe('windowColumns', () => {
+  it('hides the 5-hour and per-model columns when no account has those windows', () => {
+    const weeklyOnly = { usage: { windows: [win({ name: 'secondary_window' })] } };
+    expect(windowColumns([weeklyOnly])).toEqual({ primary: false, models: false });
+  });
+
+  it('shows a column as soon as one account has such a window', () => {
+    const weeklyOnly = { usage: { windows: [win({ name: 'secondary_window' })] } };
+    const full = { usage: { windows: [win({ name: 'five_hour' }), win({ name: 'weekly_scoped', model_scope: 'opus' })] } };
+    expect(windowColumns([weeklyOnly, full])).toEqual({ primary: true, models: true });
+  });
+});
+
 describe('describeWindow', () => {
   it('formats a same-day reset as a clock time with the time left (Asia/Saigon)', () => {
     // 11:30 now, reset in 3h40m = 15:10
@@ -254,5 +274,59 @@ describe('oauthCompleteInput', () => {
 
   it('returns null for empty input', () => {
     expect(oauthCompleteInput('   ')).toBeNull();
+  });
+});
+
+describe('reset credits', () => {
+  const credit = (over: Partial<PoolResetCredit>): PoolResetCredit => ({
+    id: 'c',
+    label: null,
+    remaining: 1,
+    total: null,
+    expires_at: null,
+    usable_now: null,
+    unavailable_reason: null,
+    ...over,
+  });
+
+  it.each([
+    ['reset', 'success'],
+    ['nothing_to_reset', 'info'],
+    ['not_limited', 'info'],
+    ['already_redeemed', 'already'],
+    ['already_used', 'already'],
+    ['cooldown', 'error'],
+    ['', 'error'],
+  ])('classifies outcome %s as %s', (outcome, kind) => {
+    expect(classifyRedeemOutcome(outcome)).toBe(kind);
+  });
+
+  it('flags a credit that ends within 24 hours only', () => {
+    expect(isExpiringSoon(NOW + HOUR, NOW)).toBe(true);
+    expect(isExpiringSoon(NOW + CREDIT_EXPIRING_SOON_MS, NOW)).toBe(true);
+    expect(isExpiringSoon(NOW + CREDIT_EXPIRING_SOON_MS + 1, NOW)).toBe(false);
+    expect(isExpiringSoon(NOW - 1, NOW)).toBe(false);
+    expect(isExpiringSoon(null, NOW)).toBe(false);
+  });
+
+  it('picks the nearest end among credits that are left and not ended', () => {
+    const credits = [
+      credit({ id: 'ended', expires_at: NOW - HOUR }),
+      credit({ id: 'spent', remaining: 0, expires_at: NOW + HOUR }),
+      credit({ id: 'none', expires_at: null }),
+      credit({ id: 'late', expires_at: NOW + 5 * HOUR }),
+      credit({ id: 'soon', expires_at: NOW + 2 * HOUR }),
+    ];
+    expect(nearestExpiringCredit(credits, NOW)?.id).toBe('soon');
+    expect(nearestExpiringCredit([credit({ expires_at: null })], NOW)).toBeNull();
+    expect(nearestExpiringCredit([], NOW)).toBeNull();
+  });
+
+  it('describes the expiry of a credit', () => {
+    const fmt = { timeZone: 'Asia/Saigon', locale: 'en-US' };
+    const view = describeCreditExpiry(NOW + 3 * HOUR + 40 * MIN, NOW, fmt);
+    expect(view).toEqual({ at: '10/19, 15:10', remaining: '3h 40m', expired: false, soon: true });
+    expect(describeCreditExpiry(NOW - MIN, NOW, fmt)).toMatchObject({ expired: true, remaining: null, soon: false });
+    expect(describeCreditExpiry(null, NOW, fmt)).toEqual({ at: null, remaining: null, expired: false, soon: false });
   });
 });

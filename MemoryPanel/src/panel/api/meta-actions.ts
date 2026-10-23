@@ -95,6 +95,7 @@ export const META_ACTIONS = [
   'subscription-pool/account/update',
   'subscription-pool/account/delete',
   'subscription-pool/account/check-usage',
+  'subscription-pool/account/redeem-reset-credit',
   'subscription-pool/check-all',
 ] as const;
 

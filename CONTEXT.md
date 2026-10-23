@@ -37,6 +37,10 @@ _Avoid_: sticky session, assignment
 One usage limit of a Subscription Account with its own used percentage and reset time, such as the 5-hour window, the 7-day window or a per-model weekly window.
 _Avoid_: quota, rate limit (alone)
 
+**Reset Credit**:
+One grant from the provider that lets a Subscription Account clear its Quota Windows once, before the reset time, and that expires at a set time. A System Admin redeems it; nothing redeems it automatically.
+_Avoid_: reset (as a verb on the account), free reset, token
+
 **Threshold**:
 The used percentage of a Quota Window at which a Subscription Account stops getting new Session Bindings.
 _Avoid_: limit, cap

@@ -1,6 +1,8 @@
-import type { SubscriptionQuotaWindow } from "../../metadata/types.js";
+import type { SubscriptionQuotaWindow, SubscriptionResetCredit, SubscriptionResetCredits } from "../../metadata/types.js";
 import {
+  byExpiry,
   parseResetTime,
+  shortMessage,
   readProviderError,
   type ExchangedSubscriptionTokens,
   type SubscriptionCodeExchangeInput,
@@ -11,6 +13,8 @@ import {
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+const RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
+const REDEEM_RESET_CREDIT_URL = `${RESET_CREDITS_URL}/consume`;
 const REDIRECT_URI = "http://localhost:1455/auth/callback";
 const SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
@@ -60,13 +64,33 @@ function windowOf(name: string, raw: unknown, now: number): SubscriptionQuotaWin
   };
 }
 
+/**
+ * Name of a rate-limit window by its length: about 5 hours is the "primary_window", about
+ * 7 days is the "secondary_window". Null when the length is missing or between the two.
+ */
+function windowNameByLength(raw: unknown): "primary_window" | "secondary_window" | null {
+  const seconds = (raw as { limit_window_seconds?: unknown } | null | undefined)?.limit_window_seconds;
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) return null;
+  if (seconds <= 24 * 3600) return "primary_window";
+  if (seconds >= 6 * 24 * 3600) return "secondary_window";
+  return null;
+}
+
 export function parseCodexUsage(raw: unknown, now = Date.now()): SubscriptionQuotaWindow[] {
   const body = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
   const rate = body.rate_limit as { primary_window?: unknown; secondary_window?: unknown } | undefined;
-  const windows = [
-    windowOf("primary_window", rate?.primary_window, now),
-    windowOf("secondary_window", rate?.secondary_window, now),
-  ].filter((window): window is SubscriptionQuotaWindow => window !== null);
+  // A weekly-only plan (for example prolite) sends its weekly window as "primary_window". The
+  // window length tells which window it is, so the weekly usage never shows as the 5-hour one.
+  // Position stays the name when a length is unknown or both windows map to the same name.
+  const parsed = [
+    { position: "primary_window", raw: rate?.primary_window },
+    { position: "secondary_window", raw: rate?.secondary_window },
+  ].filter((item) => item.raw && typeof item.raw === "object");
+  const lengthNames = parsed.map((item) => windowNameByLength(item.raw));
+  const useLength = lengthNames.every((name) => name !== null) && new Set(lengthNames).size === lengthNames.length;
+  const windows = parsed
+    .map((item, index) => windowOf(useLength ? lengthNames[index]! : item.position, item.raw, now))
+    .filter((window): window is SubscriptionQuotaWindow => window !== null);
   const extra = body.additional_rate_limits;
   if (Array.isArray(extra)) {
     for (const item of extra) {
@@ -78,6 +102,41 @@ export function parseCodexUsage(raw: unknown, now = Date.now()): SubscriptionQuo
     }
   }
   return windows;
+}
+
+/** How many reset credits can clear a limit now. The usage payload carries it; null when it is absent. */
+function applicableCreditCount(usageBody: unknown): number | null {
+  const block = (usageBody as { rate_limit_reset_credits?: { applicable_available_count?: unknown } } | null)?.rate_limit_reset_credits;
+  const count = block?.applicable_available_count;
+  return typeof count === "number" && Number.isFinite(count) ? count : null;
+}
+
+/**
+ * Reset credits from the credits endpoint. Only credits with status `available` count.
+ * A credit is usable now when the plan supports it and at least one credit applies to a limit
+ * that is in use; `applicableCount` comes from the usage payload. Null when the body has an
+ * unknown shape.
+ */
+export function parseCodexResetCredits(raw: unknown, applicableCount: number | null, now = Date.now()): SubscriptionResetCredits | null {
+  const list = (raw as { credits?: unknown } | null)?.credits;
+  if (!Array.isArray(list)) return null;
+  const credits: SubscriptionResetCredit[] = [];
+  for (const item of list) {
+    const credit = item as { id?: unknown; title?: unknown; status?: unknown; expires_at?: unknown; is_supported_by_plan?: unknown } | null;
+    if (!credit || credit.status !== "available" || typeof credit.id !== "string" || !credit.id) continue;
+    const supported = credit.is_supported_by_plan !== false;
+    credits.push({
+      id: credit.id,
+      label: typeof credit.title === "string" && credit.title ? credit.title : null,
+      remaining: 1,
+      total: null,
+      expires_at: parseResetTime(credit.expires_at),
+      usable_now: applicableCount === null ? null : supported && applicableCount > 0,
+      unavailable_reason: !supported ? "not_supported_by_plan" : applicableCount === 0 ? "not_applicable" : null,
+    });
+  }
+  credits.sort(byExpiry);
+  return { available: credits.length, usable_now: applicableCount, note: null, observed_at: now, credits };
 }
 
 async function postToken(fetchImpl: SubscriptionFetch, body: Record<string, string>): Promise<Record<string, unknown>> {
@@ -101,6 +160,14 @@ function tokensFrom(body: Record<string, unknown>, now: number, previousAccountI
     expiresAt: expiresAtOf(body, accessToken, now),
     providerAccountId: identity.providerAccountId || previousAccountId,
     accountLabel: identity.accountLabel,
+  };
+}
+
+function apiHeaders(accessToken: string, providerAccountId: string): Record<string, string> {
+  return {
+    authorization: `Bearer ${accessToken}`,
+    "chatgpt-account-id": providerAccountId,
+    accept: "application/json",
   };
 }
 
@@ -131,15 +198,43 @@ export function createCodexAdapter(fetchImpl: SubscriptionFetch = fetch): Subscr
     },
     async fetchUsage(accessToken: string, providerAccountId: string) {
       const response = await fetchImpl(USAGE_URL, {
-        headers: {
-          authorization: `Bearer ${accessToken}`,
-          "chatgpt-account-id": providerAccountId,
-          accept: "application/json",
-        },
+        headers: apiHeaders(accessToken, providerAccountId),
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) throw await readProviderError(response);
-      return parseCodexUsage(await response.json());
+      const body = await response.json();
+      const windows = parseCodexUsage(body);
+
+      // Credits are extra data. If this call fails, the usage reading stays valid.
+      let resetCredits: SubscriptionResetCredits | null = null;
+      try {
+        const creditsResponse = await fetchImpl(RESET_CREDITS_URL, {
+          headers: apiHeaders(accessToken, providerAccountId),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (creditsResponse.ok) resetCredits = parseCodexResetCredits(await creditsResponse.json(), applicableCreditCount(body));
+      } catch {
+        resetCredits = null;
+      }
+      return { windows, resetCredits };
+    },
+    async redeemResetCredit(accessToken: string, providerAccountId: string, input) {
+      const response = await fetchImpl(REDEEM_RESET_CREDIT_URL, {
+        method: "POST",
+        headers: { ...apiHeaders(accessToken, providerAccountId), "content-type": "application/json" },
+        body: JSON.stringify({ redeem_request_id: input.requestId, credit_id: input.creditId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) throw await readProviderError(response);
+      const text = await response.text();
+      let code: unknown;
+      try {
+        code = (JSON.parse(text) as { code?: unknown } | null)?.code;
+      } catch {
+        // A body that is not JSON stays in the message as it is.
+      }
+      const outcome = typeof code === "string" && code ? code : "unknown";
+      return { outcome, resetApplied: outcome === "reset", message: outcome === "unknown" ? shortMessage(text) : null };
     },
   };
 }

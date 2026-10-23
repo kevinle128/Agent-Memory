@@ -1,0 +1,19 @@
+{
+  "eligible": false,
+  "ineligible_reason": "no_grant",
+  "at_limit": false,
+  "exhausted": [],
+  "grants": [],
+  "next_grant_id": null,
+  "weekly_resets_at": "2026-10-27T10:00:00+00:00",
+  "cooldown_until": null,
+  "event_props": {
+    "surface": "claude_code_cli",
+    "tier": "claude_max_20x",
+    "tenure_bucket": "14-29",
+    "billing_path": "stripe",
+    "billing_period": "unknown",
+    "extra_usage_state": "not_configured"
+  },
+  "paused_held": false
+}

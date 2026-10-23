@@ -504,6 +504,12 @@ export const subscriptionPoolOAuthCompleteSchema = z.object({
   display_name: z.string().min(1).optional(),
 });
 export const subscriptionPoolAccountCheckSchema = z.object({ account_id: z.string().min(1) });
+export const subscriptionPoolAccountRedeemResetCreditSchema = z.object({
+  account_id: z.string().min(1),
+  credit_id: z.string().min(1).max(200),
+  /** Made once per admin click. The provider uses it to ignore a repeat of the same click. */
+  request_id: z.string().min(8).max(100),
+});
 export const subscriptionPoolCheckAllSchema = z.object({}).catchall(z.unknown());
 export const subscriptionPoolRefreshSchema = z.object({
   account_id: z.string().min(1),

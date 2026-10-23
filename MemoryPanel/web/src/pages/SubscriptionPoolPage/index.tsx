@@ -11,7 +11,7 @@ import { useAuthStore } from '@/stores/auth';
 import { isGlobalAdmin } from '@/services';
 import { tea } from '@/lib/tea-bridge';
 import { subscriptionPoolApi, type PoolProvider, type SubscriptionAccount } from '@/lib/api/subscription-pool';
-import { accountState } from '@/lib/subscription-pool-display';
+import { accountState, classifyRedeemOutcome } from '@/lib/subscription-pool-display';
 import { usePoolStatus } from './use-pool-status';
 import { poolErrorCode, poolErrorMessage } from './pool-errors';
 import { PoolHeader } from './components/PoolHeader';
@@ -21,6 +21,7 @@ import { AccountTable } from './components/AccountTable';
 import { AddAccountDialog } from './components/AddAccountDialog';
 import { PoolSwitchConfirmDialog } from './components/PoolSwitchConfirmDialog';
 import { DeleteAccountDialog } from './components/DeleteAccountDialog';
+import { ResetCreditsDialog } from './components/ResetCreditsDialog';
 import './style.css';
 
 /** Pool errors that mean the shown data is stale. */
@@ -77,6 +78,8 @@ function SubscriptionPoolContent() {
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<SubscriptionAccount | null>(null);
   const [deletingBusy, setDeletingBusy] = useState(false);
+  const [creditsAccountId, setCreditsAccountId] = useState<string | null>(null);
+  const [redeemingCreditId, setRedeemingCreditId] = useState<string | null>(null);
 
   const now = Date.now();
   const accounts = pool?.accounts ?? [];
@@ -158,6 +161,37 @@ function SubscriptionPoolContent() {
       await refresh();
     });
 
+  /** Redeems one credit. The outcome decides the message; only "reset" counts as success. */
+  async function redeemCredit(account: SubscriptionAccount, creditId: string, requestId: string) {
+    setRedeemingCreditId(creditId);
+    try {
+      const result = await subscriptionPoolApi.redeemResetCredit({
+        account_id: account.account_id,
+        credit_id: creditId,
+        request_id: requestId,
+      });
+      const name = account.display_name;
+      switch (classifyRedeemOutcome(result.outcome)) {
+        case 'success':
+          tea.notify.success(t('subscriptionPool.toast.redeemed', { name }));
+          break;
+        case 'info':
+          tea.notify.warning(t('subscriptionPool.toast.redeemNothing', { name }));
+          break;
+        case 'already':
+          tea.notify.warning(t('subscriptionPool.toast.redeemAlready', { name }));
+          break;
+        default:
+          tea.notify.error(result.message || t('subscriptionPool.toast.redeemFailed', { outcome: result.outcome }));
+      }
+      await refresh();
+    } catch (e) {
+      reportError(e);
+    } finally {
+      setRedeemingCreditId(null);
+    }
+  }
+
   const toggleEnabled = (account: SubscriptionAccount) =>
     withBusy(account.account_id, async () => {
       const enable = !account.enabled;
@@ -188,6 +222,7 @@ function SubscriptionPoolContent() {
     }
   }
 
+  const creditsAccount = accounts.find((a) => a.account_id === creditsAccountId) ?? null;
   const lastUpdate = accounts.reduce<number | null>(
     (best, a) => (a.usage_updated_at !== null && (best === null || a.usage_updated_at > best) ? a.usage_updated_at : best),
     null,
@@ -271,6 +306,7 @@ function SubscriptionPoolContent() {
                 onToggleEnabled={(a) => void toggleEnabled(a)}
                 onDelete={setDeleting}
                 onRelogin={(a) => setAdding({ reloginName: a.display_name })}
+                onShowCredits={(a) => setCreditsAccountId(a.account_id)}
                 emptyText={t(`subscriptionPool.accounts.empty.${provider}`)}
               />
               {accounts.length > 0 && (
@@ -306,6 +342,16 @@ function SubscriptionPoolContent() {
             setSavedNotice(t(created ? 'subscriptionPool.toast.added' : 'subscriptionPool.toast.reloggedIn', { name }));
             void refresh();
           }}
+        />
+      )}
+      {creditsAccount && (
+        <ResetCreditsDialog
+          account={creditsAccount}
+          now={now}
+          canRedeem={!readOnly}
+          busyCreditId={redeemingCreditId}
+          onRedeem={(creditId, requestId) => redeemCredit(creditsAccount, creditId, requestId)}
+          onClose={() => setCreditsAccountId(null)}
         />
       )}
       {!readOnly && deleting && (

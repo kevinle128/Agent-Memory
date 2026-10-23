@@ -29,6 +29,45 @@ describe("parseCodexQuotaHeaders", () => {
     expect(parseCodexQuotaHeaders(new Headers({ "x-codex-primary-used-percent": "abc" }), NOW_MS)).toEqual([]);
   });
 
+  it("names a weekly-only primary window by its length", () => {
+    const headers = new Headers({
+      "x-codex-primary-used-percent": "14",
+      "x-codex-primary-reset-at": String(NOW_S + 3600),
+      "x-codex-primary-window-minutes": "10080",
+    });
+    expect(parseCodexQuotaHeaders(headers, NOW_MS).map((window) => window.name)).toEqual(["secondary_window"]);
+  });
+
+  it("names two windows by length and accepts both secondary header spellings", () => {
+    const doubled = new Headers({
+      "x-codex-primary-used-percent": "1",
+      "x-codex-primary-window-minutes": "300",
+      "x-codex-secondary-primary-used-percent": "2",
+      "x-codex-secondary-primary-window-minutes": "10080",
+    });
+    const plain = new Headers({
+      "x-codex-primary-used-percent": "1",
+      "x-codex-primary-window-minutes": "300",
+      "x-codex-secondary-used-percent": "2",
+      "x-codex-secondary-reset-at": String(NOW_S + 60),
+      "x-codex-secondary-window-minutes": "10080",
+    });
+    expect(parseCodexQuotaHeaders(doubled, NOW_MS).map((window) => window.name)).toEqual(["primary_window", "secondary_window"]);
+    const plainWindows = parseCodexQuotaHeaders(plain, NOW_MS);
+    expect(plainWindows.map((window) => window.name)).toEqual(["primary_window", "secondary_window"]);
+    expect(plainWindows[1]!.resets_at).toBe((NOW_S + 60) * 1000);
+  });
+
+  it("keeps the position name when both windows have the same length", () => {
+    const headers = new Headers({
+      "x-codex-primary-used-percent": "1",
+      "x-codex-primary-window-minutes": "300",
+      "x-codex-secondary-primary-used-percent": "2",
+      "x-codex-secondary-primary-window-minutes": "300",
+    });
+    expect(parseCodexQuotaHeaders(headers, NOW_MS).map((window) => window.name)).toEqual(["primary_window", "secondary_window"]);
+  });
+
   it("clamps the percentage into 0..100", () => {
     const windows = parseCodexQuotaHeaders(new Headers({ "x-codex-primary-used-percent": "130" }), NOW_MS);
     expect(windows[0]!.used_pct).toBe(100);

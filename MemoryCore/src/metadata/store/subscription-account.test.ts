@@ -281,3 +281,50 @@ describe("SqliteMetadataStore subscription pool migration", () => {
     }
   });
 });
+
+describe("sqlite subscription account table from an earlier build", () => {
+  it("adds the reset credit column and treats damaged stored JSON as no reading", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "reset-credits-column-"));
+    const dbPath = path.join(dir, "meta.sqlite");
+    try {
+      const first = new SqliteMetadataStore(dbPath);
+      first.init();
+      first.close();
+
+      const raw = new DatabaseSync(dbPath);
+      raw.exec("ALTER TABLE meta_upstream_subscription_account DROP COLUMN reset_credits_json");
+      raw.close();
+
+      const store = new SqliteMetadataStore(dbPath);
+      store.init();
+      try {
+        const group = await store.createInstanceUpstreamGroup({
+          group_type: "custom", name: "pool", agents: ["codex"], mode: "subscription_pool",
+        });
+        const { account } = await store.upsertSubscriptionAccountByProviderId({
+          group_id: group.group_id, provider: "codex", provider_account_id: "acct-1", display_name: "One",
+          access_token: "a", refresh_token: "r", token_expires_at: null,
+        });
+        expect(account.reset_credits).toBeNull();
+      } finally {
+        store.close();
+      }
+
+      const check = new DatabaseSync(dbPath);
+      try {
+        check.exec("UPDATE meta_upstream_subscription_account SET reset_credits_json = '{not json'");
+      } finally {
+        check.close();
+      }
+      const reopened = new SqliteMetadataStore(dbPath);
+      reopened.init();
+      try {
+        expect((await reopened.listSubscriptionAccounts())[0]!.reset_credits).toBeNull();
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createClaudeAdapter, parseClaudeUsage } from "./claude.js";
+import { readFileSync } from "node:fs";
+import { createClaudeAdapter, parseClaudeResetCredits, parseClaudeUsage } from "./claude.js";
 import { SubscriptionProviderError, type SubscriptionFetch } from "./types.js";
 
 interface Captured { url: string; init?: RequestInit }
@@ -22,7 +23,11 @@ function fetchByUrl(handlers: Record<string, { status: number; body: unknown }>,
 
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
-const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const USAGE_URL = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1";
+const CLI_USER_AGENT = "claude-cli/2.1.308 (external, cli)";
+const fixture = (name: string) => JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"));
+const GRANT_BLOCK = fixture("claude-cedar-ember-grant.json");
+const NO_GRANT_BLOCK = fixture("claude-cedar-ember-no-grant.json");
 
 describe("parseClaudeUsage", () => {
   const now = 1_800_000_000_000;
@@ -195,14 +200,75 @@ describe("claude adapter", () => {
     const calls: Captured[] = [];
     const adapter = createClaudeAdapter(fetchReturning(200, { five_hour: { utilization: 5, resets_at: 1_800_000_000 } }, calls));
 
-    const windows = await adapter.fetchUsage("access-1", "unused");
+    const reading = await adapter.fetchUsage("access-1", "unused");
 
     expect(calls[0].url).toBe(USAGE_URL);
     const headers = calls[0].init?.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer access-1");
     expect(headers["anthropic-beta"]).toBe("oauth-2025-04-20");
-    expect(windows).toHaveLength(1);
-    expect(windows[0]?.name).toBe("five_hour");
+    expect(headers["user-agent"]).toBe(CLI_USER_AGENT);
+    expect(reading.windows).toHaveLength(1);
+    expect(reading.windows[0]?.name).toBe("five_hour");
+    expect(reading.resetCredits).toBeNull();
+  });
+
+  it("reads windows and reset credits from one usage call", async () => {
+    const calls: Captured[] = [];
+    const adapter = createClaudeAdapter(fetchReturning(200, {
+      five_hour: { utilization: 5, resets_at: 1_800_000_000 },
+      cedar_ember: NO_GRANT_BLOCK,
+    }, calls));
+
+    const reading = await adapter.fetchUsage("access-1", "unused");
+
+    expect(calls).toHaveLength(1);
+    expect(reading.windows).toHaveLength(1);
+    expect(reading.resetCredits).toMatchObject({ available: 0, note: "no_grant", credits: [] });
+  });
+
+  it("redeems through the organization route found in the profile", async () => {
+    const calls: Captured[] = [];
+    const adapter = createClaudeAdapter(async (url, init) => {
+      calls.push({ url, init });
+      if (url === PROFILE_URL) return new Response(JSON.stringify({ organization: { uuid: "org-1" } }), { status: 200 });
+      return new Response(JSON.stringify({ result: "reset" }), { status: 200 });
+    });
+
+    const result = await adapter.redeemResetCredit("access-1", "unused", { creditId: "grant-1", requestId: "request-1" });
+
+    expect(calls.map((call) => call.url)).toEqual([PROFILE_URL, "https://api.anthropic.com/api/organizations/org-1/reset_rate_limits"]);
+    const profileHeaders = calls[0].init?.headers as Record<string, string>;
+    expect(profileHeaders["user-agent"]).toBe(CLI_USER_AGENT);
+    expect(profileHeaders["anthropic-beta"]).toBe("oauth-2025-04-20");
+    expect(calls[1].init?.method).toBe("POST");
+    const headers = calls[1].init?.headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer access-1");
+    expect(headers["user-agent"]).toBe(CLI_USER_AGENT);
+    expect(headers["content-type"]).toBe("application/json");
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ program: "cedar_ember", grant_id: "grant-1", request_id: "request-1" });
+    expect(result).toEqual({ outcome: "reset", resetApplied: true, message: null });
+  });
+
+  it("keeps the raw text when the redeem response has no known result field", async () => {
+    const adapter = createClaudeAdapter(async (url) => (
+      url === PROFILE_URL
+        ? new Response(JSON.stringify({ organization: { uuid: "org-1" } }), { status: 200 })
+        : new Response("something new", { status: 200 })
+    ));
+    const result = await adapter.redeemResetCredit("a", "b", { creditId: "g", requestId: "r" });
+    expect(result).toEqual({ outcome: "unknown", resetApplied: false, message: "something new" });
+  });
+
+  it("fails the redeem when the profile has no organization or the provider rejects", async () => {
+    const noOrg = createClaudeAdapter(fetchReturning(200, { account: {} }));
+    await expect(noOrg.redeemResetCredit("a", "b", { creditId: "g", requestId: "r" })).rejects.toThrow("organization");
+    const rejected = createClaudeAdapter(async (url) => (
+      url === PROFILE_URL
+        ? new Response(JSON.stringify({ organization: { uuid: "org-1" } }), { status: 200 })
+        : new Response(JSON.stringify({ error: { message: "nope" } }), { status: 403 })
+    ));
+    const error = await rejected.redeemResetCredit("a", "b", { creditId: "g", requestId: "r" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SubscriptionProviderError);
   });
 
   it("does not put a token into a provider error message", async () => {
@@ -211,5 +277,41 @@ describe("claude adapter", () => {
     expect(error.message).not.toContain("access-secret");
     expect(error).toBeInstanceOf(SubscriptionProviderError);
     expect((error as SubscriptionProviderError).permanent).toBe(true);
+  });
+});
+
+describe("parseClaudeResetCredits", () => {
+  const now = 1_800_000_000_000;
+
+  it("keeps only grants with resets left", () => {
+    expect(parseClaudeResetCredits({ cedar_ember: GRANT_BLOCK }, now)).toEqual({
+      available: 0, usable_now: 0, note: null, observed_at: now, credits: [],
+    });
+    const withLeft = { ...GRANT_BLOCK, grants: [
+      { ...GRANT_BLOCK.grants[0], id: "late", resets_left: 1, usable_now: true, unavailable_reason: null, ends_at: "2026-11-30T00:00:00+00:00" },
+      { ...GRANT_BLOCK.grants[0], id: "none", resets_left: 0 },
+      { ...GRANT_BLOCK.grants[0], id: "soon", resets_left: 2, resets_total: 3, usable_now: false, ends_at: "2026-11-01T00:00:00+00:00" },
+      { ...GRANT_BLOCK.grants[0], id: "never", resets_left: 1, ends_at: null },
+    ] };
+    const parsed = parseClaudeResetCredits({ cedar_ember: withLeft }, now)!;
+    expect(parsed.credits.map((credit) => credit.id)).toEqual(["soon", "late", "never"]);
+    expect(parsed.available).toBe(4);
+    expect(parsed.usable_now).toBe(1);
+    expect(parsed.credits[0]).toMatchObject({
+      remaining: 2, total: 3, expires_at: Date.parse("2026-11-01T00:00:00+00:00"), usable_now: false, unavailable_reason: "unavailable",
+    });
+  });
+
+  it("gives the ineligible reason as a note and no credit", () => {
+    expect(parseClaudeResetCredits({ cedar_ember: NO_GRANT_BLOCK }, now)).toEqual({
+      available: 0, usable_now: 0, note: "no_grant", observed_at: now, credits: [],
+    });
+  });
+
+  it("gives null when the block is missing or has an unknown shape", () => {
+    expect(parseClaudeResetCredits({}, now)).toBeNull();
+    expect(parseClaudeResetCredits({ cedar_ember: "x" }, now)).toBeNull();
+    expect(parseClaudeResetCredits({ cedar_ember: { eligible: true } }, now)).toBeNull();
+    expect(parseClaudeResetCredits(null, now)).toBeNull();
   });
 });

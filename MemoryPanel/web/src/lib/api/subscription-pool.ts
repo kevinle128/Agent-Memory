@@ -6,7 +6,7 @@
  * Core never returns login tokens, and this module has no field for them.
  */
 import { metaPost } from './base';
-import type { PoolAccountStatus, PoolProvider, PoolWindow } from '../subscription-pool-display';
+import type { PoolAccountStatus, PoolProvider, PoolResetCredits, PoolWindow } from '../subscription-pool-display';
 
 export type { PoolProvider } from '../subscription-pool-display';
 
@@ -23,6 +23,8 @@ export interface SubscriptionAccount {
   provider_account_id: string;
   usage: { windows: PoolWindow[] };
   usage_updated_at: number | null;
+  /** Null until the first usage check reads the credits, or when the provider gives none. */
+  reset_credits: PoolResetCredits | null;
   exhausted_until: number | null;
   usage_fail_count: number;
   refresh_fail_count: number;
@@ -31,6 +33,14 @@ export interface SubscriptionAccount {
   version: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface RedeemResetCreditResult {
+  /** Provider outcome, for example "reset" or "nothing_to_reset". */
+  outcome: string;
+  reset_applied: boolean;
+  message: string | null;
+  account: SubscriptionAccount;
 }
 
 export interface SubscriptionPoolProviderStatus {
@@ -96,6 +106,10 @@ export const subscriptionPoolApi = {
 
   checkUsage: (accountId: string) =>
     metaPost<SubscriptionAccount>('subscription-pool/account/check-usage', { account_id: accountId }),
+
+  /** `requestId` makes one click safe to retry: the provider spends the credit once per id. */
+  redeemResetCredit: (input: { account_id: string; credit_id: string; request_id: string }) =>
+    metaPost<RedeemResetCreditResult>('subscription-pool/account/redeem-reset-credit', input),
 
   checkAll: () => metaPost<{ checked: number; failed: number }>('subscription-pool/check-all', {}),
 };

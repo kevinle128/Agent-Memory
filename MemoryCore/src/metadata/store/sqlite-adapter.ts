@@ -88,6 +88,7 @@ import type {
 import { DEFAULT_PAGINATION } from "../pagination.js";
 import { buildChatMemoryAssetId } from "../utils/chat-memory-asset.js";
 import { DuplicateUserKeyError } from "./interface.js";
+import { parseStoredResetCredits } from "./reset-credits-codec.js";
 
 const require = createRequire(import.meta.url);
 function requireNodeSqlite(): typeof import("node:sqlite") {
@@ -165,6 +166,7 @@ const SUBSCRIPTION_ACCOUNT_TABLE_DDL = `
     token_expires_at INTEGER,
     provider_account_id TEXT NOT NULL,
     usage_json TEXT NOT NULL DEFAULT '{"windows":[]}',
+    reset_credits_json TEXT,
     usage_updated_at INTEGER,
     exhausted_until INTEGER,
     usage_fail_count INTEGER NOT NULL DEFAULT 0,
@@ -514,6 +516,14 @@ export class SqliteMetadataStore implements IMetadataStore {
     );
     if (hasSessionColumn.length === 0) {
       this.db.exec("ALTER TABLE meta_upstream_subscription_account ADD COLUMN active_sessions INTEGER NOT NULL DEFAULT 0");
+    }
+
+    // An account table from an earlier build has no reset credit column.
+    const hasResetCreditsColumn = this.all<{ name: string }>(
+      "SELECT name FROM pragma_table_info('meta_upstream_subscription_account') WHERE name = 'reset_credits_json'",
+    );
+    if (hasResetCreditsColumn.length === 0) {
+      this.db.exec("ALTER TABLE meta_upstream_subscription_account ADD COLUMN reset_credits_json TEXT");
     }
   }
 
@@ -2896,6 +2906,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       setColumn("refresh_token", patch.refresh_token);
       setColumn("token_expires_at", patch.token_expires_at);
       setColumn("usage_json", patch.usage === undefined ? undefined : JSON.stringify(patch.usage));
+      setColumn("reset_credits_json", patch.reset_credits === undefined ? undefined : patch.reset_credits === null ? null : JSON.stringify(patch.reset_credits));
       setColumn("usage_updated_at", patch.usage_updated_at);
       setColumn("exhausted_until", patch.exhausted_until);
       setColumn("usage_fail_count", patch.usage_fail_count);
@@ -2967,6 +2978,12 @@ export class SqliteMetadataStore implements IMetadataStore {
     } catch {
       /* keep the empty usage when the stored JSON is damaged */
     }
+    let resetCredits: SubscriptionAccountEntity["reset_credits"] = null;
+    try {
+      resetCredits = r.reset_credits_json == null ? null : parseStoredResetCredits(JSON.parse(String(r.reset_credits_json)));
+    } catch {
+      /* keep null when the stored JSON is damaged */
+    }
     const nullableNumber = (v: unknown): number | null => (v == null ? null : Number(v));
     return {
       account_id: String(r.account_id),
@@ -2981,6 +2998,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       token_expires_at: nullableNumber(r.token_expires_at),
       provider_account_id: String(r.provider_account_id),
       usage,
+      reset_credits: resetCredits,
       usage_updated_at: nullableNumber(r.usage_updated_at),
       exhausted_until: nullableNumber(r.exhausted_until),
       usage_fail_count: Number(r.usage_fail_count ?? 0),
