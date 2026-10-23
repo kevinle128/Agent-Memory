@@ -34,6 +34,8 @@ export interface MemoryGenerationLog {
   output_refs: MemoryGenerationRef[];
   model?: string;
   prompt_mode?: string;
+  /** Set for the L3 document of one project; absent for user-global generations. */
+  variant?: "project";
   started_at_ms: number;
   finished_at_ms: number;
   latency_ms: number;

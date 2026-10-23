@@ -32,13 +32,11 @@ export {
   atomicDeleteDataSchema,
   atomicQueryRequestSchema,
   atomicQueryDataSchema,
-  scenarioListRequestSchema,
   scenarioEntrySchema,
   scenarioListDataSchema,
   scenarioFileSchema,
   scenarioWriteDataSchema,
   coreFileSchema,
-  coreReadRequestSchema,
   coreWriteRequestSchema,
   coreWriteDataSchema,
   conversationSearchRequestSchema,
@@ -62,8 +60,6 @@ export type {
   AtomicUpdateData,
   AtomicDeleteData,
   AtomicQueryRequest,
-  ScenarioListRequest,
-  CoreReadRequest,
   CoreWriteRequest,
   ConversationSearchRequest,
   ConversationSearchData,
@@ -135,9 +131,69 @@ export const atomicCountRequestSchema = z.object({
 });
 export type AtomicCountRequest = z.infer<typeof atomicCountRequestSchema>;
 
+/**
+ * Optional project selector of the L2/L3 read routes. Without it a route serves
+ * the user-global files of the scope. With it the route serves that project's
+ * files only. The selector is a 16-character lowercase hex hash, the same form
+ * the proxy computes for a project.
+ */
+export const projectHashSchema = z.string().regex(/^[0-9a-f]{16}$/, {
+  message: "project_hash must be 16 lowercase hex characters",
+});
+
+/**
+ * A relative path has no NUL, no backslash, no leading slash and no `..`
+ * segment. The project view would reject such a key anyway; checking here
+ * turns the rejection into a plain 400.
+ */
+function isSafeRelativePath(p: string): boolean {
+  return !p.includes("\0")
+    && !p.includes("\\")
+    && !p.startsWith("/")
+    && !p.split("/").some((part) => part === "..");
+}
+
+/**
+ * Drop empty and "." segments, as the project view does, and keep a trailing
+ * slash. Returns "" when no segment is left ("", ".", "./").
+ */
+export function normalizeProjectRelativePath(p: string): string {
+  const parts = p.split("/").filter((part) => part !== "" && part !== ".");
+  if (parts.length === 0) return "";
+  return `${parts.join("/")}${p.endsWith("/") ? "/" : ""}`;
+}
+
+/** With a project selector the prefix must stay inside the project. */
+function checkProjectPrefix(
+  value: { path_prefix?: string; project_hash?: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.project_hash && value.path_prefix !== undefined && !isSafeRelativePath(value.path_prefix)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["path_prefix"],
+      message: "Path must be relative (no '..', no leading '/', no backslash/NUL)",
+    });
+  }
+}
+
+/** scenarioList: optional prefix plus optional project selector. */
+export const scenarioListRequestSchema = z.object({
+  path_prefix: z.string().optional(),
+  project_hash: projectHashSchema.optional(),
+}).superRefine(checkProjectPrefix);
+export type ScenarioListRequest = z.infer<typeof scenarioListRequestSchema>;
+
+/** coreRead: optional project selector. */
+export const coreReadRequestSchema = z.object({
+  project_hash: projectHashSchema.optional(),
+});
+export type CoreReadRequest = z.infer<typeof coreReadRequestSchema>;
+
 export const scenarioCountRequestSchema = z.object({
   path_prefix: z.string().optional(),
-});
+  project_hash: projectHashSchema.optional(),
+}).superRefine(checkProjectPrefix);
 export type ScenarioCountRequest = z.infer<typeof scenarioCountRequestSchema>;
 
 export const coreCountRequestSchema = z.object({});
@@ -254,15 +310,20 @@ export const taskBatchDeleteRequestSchema = z.object({ task_ids: z.array(z.strin
 // ============================
 
 const safePath = z.string().min(1).refine(
-  (p) => !p.includes("\0")
-    && !p.includes("\\")
-    && !p.startsWith("/")
-    && !p.split("/").some((part) => part === ".."),
+  isSafeRelativePath,
   { message: "Path must be relative (no '..', no leading '/', no backslash/NUL)" },
 );
 
-/** scenarioRead with path traversal prevention. */
-export const scenarioReadRequestSchema = z.object({ path: safePath });
+/** scenarioRead with path traversal prevention and an optional project selector. */
+export const scenarioReadRequestSchema = z.object({
+  path: safePath,
+  project_hash: projectHashSchema.optional(),
+}).superRefine((value, ctx) => {
+  // "." names the project directory, not a file; the project view rejects it.
+  if (value.project_hash && normalizeProjectRelativePath(value.path) === "") {
+    ctx.addIssue({ code: "custom", path: ["path"], message: "Path must name a file inside the project" });
+  }
+});
 export type ScenarioReadRequest = z.infer<typeof scenarioReadRequestSchema>;
 
 /** scenarioWrite with path traversal prevention + summary. */

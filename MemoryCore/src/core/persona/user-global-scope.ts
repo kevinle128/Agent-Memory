@@ -36,16 +36,23 @@ export function readScopeState(content: string): UserGlobalScopeState {
   return "none";
 }
 
-/** Remove every scope marker line, wherever the model or an older run put it. */
+/**
+ * Remove every scope marker, wherever the model or an older run put it. A line
+ * that holds only markers is dropped. A marker that shares a line with text is
+ * cut out and the text stays.
+ */
 export function stripScopeMarkers(content: string): string {
-  return content
-    .split("\n")
-    .filter((line) => {
-      const t = line.trim();
-      return t !== USER_GLOBAL_SCOPE_MARKER && t !== USER_GLOBAL_REJECTED_MARKER;
-    })
-    .join("\n")
-    .trim();
+  const lines: string[] = [];
+  for (const line of content.split("\n")) {
+    const stripped = line.split(USER_GLOBAL_SCOPE_MARKER).join("").split(USER_GLOBAL_REJECTED_MARKER).join("");
+    if (stripped === line) {
+      lines.push(line);
+    } else if (stripped.trim() !== "") {
+      // The marker stood in front of the text: do not leave its spacing behind.
+      lines.push(stripped.replace(/^[ \t]+/, ""));
+    }
+  }
+  return lines.join("\n").trim();
 }
 
 const STRUCTURAL_PATTERNS: Array<{ label: string; re: RegExp }> = [

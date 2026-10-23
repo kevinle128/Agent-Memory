@@ -62,6 +62,21 @@ describe("readScopeState / stripScopeMarkers", () => {
     const text = `${USER_GLOBAL_SCOPE_MARKER}\n# Profile\n${USER_GLOBAL_REJECTED_MARKER}\n- a`;
     expect(stripScopeMarkers(text)).toBe("# Profile\n- a");
   });
+
+  it("cuts a marker that shares a line with text and keeps the text", () => {
+    expect(stripScopeMarkers(`${USER_GLOBAL_SCOPE_MARKER} # Project Memory\n- a`)).toBe("# Project Memory\n- a");
+    expect(stripScopeMarkers(`# Title\n- a ${USER_GLOBAL_REJECTED_MARKER} b`)).toBe("# Title\n- a  b");
+  });
+
+  it("cuts two markers on one line, and drops a line that holds only markers", () => {
+    const both = `${USER_GLOBAL_SCOPE_MARKER}${USER_GLOBAL_REJECTED_MARKER} # Project Memory`;
+    expect(stripScopeMarkers(`${both}\n- a`)).toBe("# Project Memory\n- a");
+    expect(stripScopeMarkers(`# Title\n  ${USER_GLOBAL_SCOPE_MARKER} ${USER_GLOBAL_REJECTED_MARKER}  \n- a`)).toBe("# Title\n- a");
+  });
+
+  it("leaves text without a marker unchanged", () => {
+    expect(stripScopeMarkers("# Profile\n  - indented\n")).toBe("# Profile\n  - indented");
+  });
 });
 
 describe("findStructuralLeaks", () => {

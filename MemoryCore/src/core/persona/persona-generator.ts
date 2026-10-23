@@ -8,7 +8,7 @@ import { CleanContextRunner } from "../../utils/clean-context-runner.js";
 import { CheckpointManager } from "../../utils/checkpoint.js";
 import { readSceneIndex } from "../scene/scene-index.js";
 import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
-import { buildPersonaPrompt } from "../prompts/persona-generation.js";
+import { buildPersonaPrompt, type PersonaVariant } from "../prompts/persona-generation.js";
 import { BackupManager } from "../../utils/backup.js";
 import { escapeXmlTags } from "../../utils/sanitize.js";
 import { report } from "../report/reporter.js";
@@ -41,7 +41,8 @@ export class PersonaGenerator {
   private instanceId: string | undefined;
   private storage: StorageAdapter | undefined;
   private traceContext: TraceContext | undefined;
-  private scopeJudge: LLMRunner;
+  private scopeJudge: LLMRunner | undefined;
+  private variant: PersonaVariant;
 
   constructor(opts: {
     dataDir: string;
@@ -70,6 +71,13 @@ export class PersonaGenerator {
      * facts. Falls back to a CleanContextRunner on the same model.
      */
     scopeJudge?: LLMRunner;
+    /**
+     * L3 document to generate (default: user-global). The project variant
+     * writes a project memory document through a project-scoped storage view:
+     * it needs no user-global scope check, so no judge is built or called,
+     * and the file carries no scope marker.
+     */
+    variant?: PersonaVariant;
   }) {
     this.dataDir = opts.dataDir;
     this.logger = opts.logger;
@@ -79,6 +87,7 @@ export class PersonaGenerator {
     this.instanceId = opts.instanceId;
     this.storage = opts.storage;
     this.traceContext = opts.traceContext;
+    this.variant = opts.variant ?? "user-global";
     // Use injected LLMRunner if available, otherwise fall back to CleanContextRunner
     this.runner = opts.llmRunner ?? new CleanContextRunner({
       config: opts.config,
@@ -86,13 +95,15 @@ export class PersonaGenerator {
       enableTools: true,
       logger: opts.logger,
     });
-    this.scopeJudge = opts.scopeJudge ?? new CleanContextRunner({
-      config: opts.config,
-      modelRef: opts.model,
-      enableTools: false,
-      logger: opts.logger,
-    });
-    this.logger?.debug?.(`${TAG} Generator created: model=${opts.model ?? "(default)"}, promptMode=${this.promptMode}, dataDir=${opts.dataDir}`);
+    this.scopeJudge = this.variant === "project"
+      ? undefined
+      : opts.scopeJudge ?? new CleanContextRunner({
+          config: opts.config,
+          modelRef: opts.model,
+          enableTools: false,
+          logger: opts.logger,
+        });
+    this.logger?.debug?.(`${TAG} Generator created: model=${opts.model ?? "(default)"}, promptMode=${this.promptMode}, variant=${this.variant}, dataDir=${opts.dataDir}`);
   }
 
   /**
@@ -106,13 +117,15 @@ export class PersonaGenerator {
     const cp = await cpManager.read();
     this.logger?.debug?.(`${TAG} Checkpoint: total_processed=${cp.total_processed}, last_persona_at=${cp.last_persona_at}`);
 
+    const isProject = this.variant === "project";
     const targetFile = StoragePaths.persona;
-    const targetLabel = this.promptMode === "code" ? "team operating doctrine" : "persona";
+    const targetLabel = isProject ? "project memory" : this.promptMode === "code" ? "team operating doctrine" : "persona";
 
     // 1. Read existing L3 document (strip navigation). Only a persona that
     // passed the user-global scope check is updated incrementally. Any other
     // persona may hold project facts, so it is not shown to the model and is
-    // rewritten from all scenes.
+    // rewritten from all scenes. A project document has no scope check, so it
+    // is always updated incrementally.
     let existingPersona: string | undefined;
     let existingRaw: string | null = null;
     let fullRewrite = false;
@@ -126,7 +139,7 @@ export class PersonaGenerator {
       }
       if (existingRaw) {
         const body = stripScopeMarkers(stripSceneNavigation(existingRaw)).trim();
-        if (body && readScopeState(existingRaw) === "accepted") {
+        if (body && (isProject || readScopeState(existingRaw) === "accepted")) {
           existingPersona = body;
         } else if (body) {
           fullRewrite = true;
@@ -228,6 +241,7 @@ export class PersonaGenerator {
     const { systemPrompt: baseSystemPrompt, userPrompt } = buildPersonaPrompt({
       mode,
       promptMode: this.promptMode,
+      variant: this.variant,
       currentTime: new Date().toISOString(),
       totalProcessed: cp.total_processed,
       sceneCount: index.length,
@@ -259,7 +273,9 @@ export class PersonaGenerator {
 
     // 8–10. Run the LLM (it writes the L3 file with tools), read and clean the
     // result, and check it for project facts. On a failed check, run once more
-    // with the findings; then record the outcome in the scope marker.
+    // with the findings; then record the outcome in the scope marker. The
+    // project variant skips the check: a project document may hold project
+    // facts, and it is valid as written.
     const sceneHints = index.map((e) => ({ filename: e.filename, summary: e.summary }));
     const first = await this.writeAndRead({
       systemPrompt, userPrompt, targetFile, personaFilePath, startMs,
@@ -268,29 +284,32 @@ export class PersonaGenerator {
     });
     if (first === null) return "failed";
     let personaText = first;
-    let scope = await checkUserGlobalPersona({ persona: personaText, sceneIndex: sceneHints, judge: this.scopeJudge });
-    if (!scope.ok) {
-      this.logger?.warn(`${TAG} ${targetFile} failed the user-global scope check (${describeScopeFailure(scope)}); retrying once`);
-      const markerBeforeRetry = await readPersonaWriteMarker(this.dataDir, targetFile, this.storage);
-      const retried = await this.writeAndRead({
-        systemPrompt,
-        userPrompt: `${userPrompt}\n${scopeRetryInstruction(scope)}`,
-        targetFile, personaFilePath, startMs,
-        fileExistedBefore: true,
-        personaWriteMarkerBefore: markerBeforeRetry,
-      });
-      if (retried !== null) {
-        personaText = retried;
-        scope = await checkUserGlobalPersona({ persona: personaText, sceneIndex: sceneHints, judge: this.scopeJudge });
+    let scope: ScopeCheckResult = { ok: true, leaks: [] };
+    if (!isProject) {
+      scope = await checkUserGlobalPersona({ persona: personaText, sceneIndex: sceneHints, judge: this.scopeJudge! });
+      if (!scope.ok) {
+        this.logger?.warn(`${TAG} ${targetFile} failed the user-global scope check (${describeScopeFailure(scope)}); retrying once`);
+        const markerBeforeRetry = await readPersonaWriteMarker(this.dataDir, targetFile, this.storage);
+        const retried = await this.writeAndRead({
+          systemPrompt,
+          userPrompt: `${userPrompt}\n${scopeRetryInstruction(scope)}`,
+          targetFile, personaFilePath, startMs,
+          fileExistedBefore: true,
+          personaWriteMarkerBefore: markerBeforeRetry,
+        });
+        if (retried !== null) {
+          personaText = retried;
+          scope = await checkUserGlobalPersona({ persona: personaText, sceneIndex: sceneHints, judge: this.scopeJudge! });
+        }
       }
-    }
-    if (scope.ok) {
-      this.logger?.info(`${TAG} ${targetFile} passed the user-global scope check`);
-    } else {
-      this.logger?.warn(
-        `${TAG} ${targetFile} failed the user-global scope check twice (${describeScopeFailure(scope)}); ` +
-        `writing it with the rejected marker, so it is not injected`,
-      );
+      if (scope.ok) {
+        this.logger?.info(`${TAG} ${targetFile} passed the user-global scope check`);
+      } else {
+        this.logger?.warn(
+          `${TAG} ${targetFile} failed the user-global scope check twice (${describeScopeFailure(scope)}); ` +
+          `writing it with the rejected marker, so it is not injected`,
+        );
+      }
     }
 
     const personaUnchanged =
@@ -298,15 +317,23 @@ export class PersonaGenerator {
       existingPersona !== undefined &&
       personaText === escapeXmlTags(existingPersona);
 
-    // 11. Prepend the scope marker, append fresh scene navigation, write final content
-    const marker = scope.ok ? USER_GLOBAL_SCOPE_MARKER : USER_GLOBAL_REJECTED_MARKER;
-    // The navigation is injected into sessions of every project, so it lists
-    // user-global scenes only. Project scenes were read above to build the
-    // persona, but their paths and summaries must not appear in another
-    // project's session.
-    const nav = generateSceneNavigation(index.filter((e) => !isProjectSceneFilename(e.filename)), undefined, false);
-    const markedPersona = `${marker}\n${personaText}`;
-    const finalContent = nav ? `${markedPersona}\n\n${nav}\n` : markedPersona;
+    // 11. Write the final content. The user-global persona gets its scope
+    // marker and fresh scene navigation. The project document is written
+    // clean: the model may have added a marker or navigation, and
+    // writeAndRead already removed both.
+    let finalContent: string;
+    if (isProject) {
+      finalContent = personaText;
+    } else {
+      const marker = scope.ok ? USER_GLOBAL_SCOPE_MARKER : USER_GLOBAL_REJECTED_MARKER;
+      // The navigation is injected into sessions of every project, so it lists
+      // user-global scenes only. Project scenes were read above to build the
+      // persona, but their paths and summaries must not appear in another
+      // project's session.
+      const nav = generateSceneNavigation(index.filter((e) => !isProjectSceneFilename(e.filename)), undefined, false);
+      const markedPersona = `${marker}\n${personaText}`;
+      finalContent = nav ? `${markedPersona}\n\n${nav}\n` : markedPersona;
+    }
     if (this.storage) {
       await this.storage.writeFile(targetFile, finalContent);
     } else {
@@ -317,8 +344,10 @@ export class PersonaGenerator {
     const elapsedMs = Date.now() - startMs;
     this.logger?.info(`${TAG} ${targetFile} written (${finalContent.length} chars) in ${elapsedMs}ms`);
 
+    // The persona metrics describe the user-global persona. A project document
+    // would mix a different kind of text into the same series, so it is left out.
     // ── l3_persona_generation metric ──
-    if (this.instanceId && this.logger) {
+    if (!isProject && this.instanceId && this.logger) {
       report("l3_persona_generation", {
         triggerReason: triggerReason ?? "unknown",
         mode: existingPersona ? "incremental" : "initial",
@@ -331,18 +360,20 @@ export class PersonaGenerator {
     }
 
     // ── 评测指标：L3 延迟 + 画像变化 ──
-    try {
-      reportL3LatencyMetrics({
-        instanceId: this.instanceId ?? "",
-        generationLatencyMs: elapsedMs,
-        personaLengthBefore: existingPersona ? existingPersona.length : 0,
-        personaLengthAfter: finalContent.length,
-        personaTextBefore: existingPersona ?? "",
-        personaTextAfter: personaText,
-        hasError: false,
-      });
-    } catch {
-      // 静默忽略
+    if (!isProject) {
+      try {
+        reportL3LatencyMetrics({
+          instanceId: this.instanceId ?? "",
+          generationLatencyMs: elapsedMs,
+          personaLengthBefore: existingPersona ? existingPersona.length : 0,
+          personaLengthAfter: finalContent.length,
+          personaTextBefore: existingPersona ?? "",
+          personaTextAfter: personaText,
+          hasError: false,
+        });
+      } catch {
+        // 静默忽略
+      }
     }
 
     return personaUnchanged ? "unchanged" : "generated";

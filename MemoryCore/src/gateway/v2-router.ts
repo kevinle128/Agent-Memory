@@ -15,7 +15,8 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { PROJECT_DIR } from "../core/storage/project-paths.js";
+import { PROJECT_DIR, projectPersonaKey, projectSceneFilenamePrefix } from "../core/storage/project-paths.js";
+import { createProjectScopedStorage } from "../core/storage/project-scoped-storage.js";
 import type http from "node:http";
 import { classifyError } from "./error-handler.js";
 import type { IMemoryStore, L0Record, ProfileSyncRecord } from "../core/store/types.js";
@@ -47,6 +48,7 @@ import {
   scenarioWriteRequestSchema,
   scenarioRmRequestSchema,
   scenarioCountRequestSchema,
+  coreReadRequestSchema,
   coreWriteRequestSchema,
   coreCountRequestSchema,
   teamCreateRequestSchema,
@@ -66,6 +68,7 @@ import {
   taskUpdateRequestSchema,
   taskBatchDeleteRequestSchema,
   formatZodError,
+  normalizeProjectRelativePath,
   resolveIsolation,
   type ApiResponseEnvelope,
   type V2AuthContext,
@@ -1576,6 +1579,17 @@ function scopedProfileStorage(storage: StorageAdapter, isolation?: RequestIsolat
   });
 }
 
+/**
+ * Profile-scope storage, narrowed to one project when `projectHash` is given.
+ * The project view maps every key into the project prefix and maps listed
+ * keys back, so callers use the same keys and see project-relative paths. It
+ * wraps the scope view, never the other way round.
+ */
+function scopedSceneStorage(storage: StorageAdapter, isolation: RequestIsolation | undefined, projectHash?: string): StorageAdapter {
+  const scoped = scopedProfileStorage(storage, isolation);
+  return projectHash ? createProjectScopedStorage(scoped, projectHash) : scoped;
+}
+
 function md5Hex(text: string): string {
   return createHash("md5").update(text).digest("hex");
 }
@@ -1781,18 +1795,24 @@ async function refreshSceneIndex(storage: StorageAdapter, logger: Logger): Promi
 async function handleScenarioLs(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const parsed = scenarioListRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { path_prefix } = parsed.data;
-  // Project scenes live under scene_blocks/projects/<hash>/. This route has no
-  // project parameter, so it serves only the scope's own scenes: listing
-  // project scenes here would show one project's memory in every session.
+  const { path_prefix, project_hash } = parsed.data;
+  // Project scenes live under scene_blocks/projects/<hash>/. Without a
+  // `project_hash` this route serves only the scope's own scenes: listing
+  // project scenes here would show one project's memory in every session. With
+  // one, it serves that project only, and a prefix cannot name another project.
   if (path_prefix && isProjectScopedPath(path_prefix)) return successEnvelope({ entries: [], total: 0 }, requestId);
 
   const baseStorage = deps.getStorage();
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
-  const storage = scopedProfileStorage(baseStorage, deps.requestIsolation);
+  const storage = scopedSceneStorage(baseStorage, deps.requestIsolation, project_hash);
+  // Row filenames of project scenes carry the project prefix; the listing,
+  // the scene index and the returned paths are relative to the project.
+  const rowPrefix = project_hash ? projectSceneFilenamePrefix(project_hash) : "";
+  // The project view drops "." segments, so "." means the whole project.
+  const listPrefix = project_hash && path_prefix ? normalizeProjectRelativePath(path_prefix) : path_prefix;
 
-  const prefix = path_prefix
-    ? `${StoragePaths.sceneBlocksDir}${path_prefix}`
+  const prefix = listPrefix
+    ? `${StoragePaths.sceneBlocksDir}${listPrefix}`
     : StoragePaths.sceneBlocksDir;
 
   deps.logger.debug?.(`${TAG} [scenario/ls] storage.type=${storage.type}, prefix="${prefix}"`);
@@ -1817,7 +1837,7 @@ async function handleScenarioLs(body: unknown, _auth: V2AuthContext, requestId: 
       ? e.key.slice(StoragePaths.sceneBlocksDir.length)
       : e.key;
   });
-  const versionMap = await getProfileVersionBatch(deps.getStore(), "l2", l2Filenames, deps.requestIsolation);
+  const versionMap = await getProfileVersionBatch(deps.getStore(), "l2", l2Filenames.map((fn) => `${rowPrefix}${fn}`), deps.requestIsolation);
 
   const entries: ScenarioEntry[] = allEntries.map((e) => {
     const externalPath = e.key.startsWith(StoragePaths.sceneBlocksDir)
@@ -1829,7 +1849,7 @@ async function handleScenarioLs(body: unknown, _auth: V2AuthContext, requestId: 
     return {
       path: displayPath,
       summary: indexEntry?.summary || undefined,
-      version: e.isDirectory ? 0 : (versionMap.get(externalPath) ?? 0),
+      version: e.isDirectory ? 0 : (versionMap.get(`${rowPrefix}${externalPath}`) ?? 0),
       team_id: deps.requestIsolation?.teamId,
       agent_id: deps.requestIsolation?.agentId,
       created_at: indexEntry?.created || fallbackTime,
@@ -1843,9 +1863,12 @@ async function handleScenarioLs(body: unknown, _auth: V2AuthContext, requestId: 
 async function handleScenarioCount(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const parsed = scenarioCountRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { path_prefix } = parsed.data;
-  // Same rule as scenario/ls: project scenes are not counted for the scope.
+  const { path_prefix, project_hash } = parsed.data;
+  // Same rule as scenario/ls: project scenes are not counted for the scope,
+  // unless `project_hash` selects the project to count.
   if (path_prefix && isProjectScopedPath(path_prefix)) return successEnvelope<CountData>({ total: 0 }, requestId);
+  // The project view drops "." segments, so "." means the whole project.
+  const countPrefix = project_hash && path_prefix ? normalizeProjectRelativePath(path_prefix) : path_prefix;
 
   const store = deps.getStore();
   if (typeof store?.countProfiles === "function") {
@@ -1855,6 +1878,13 @@ async function handleScenarioCount(body: unknown, _auth: V2AuthContext, requestI
       userId: deps.requestIsolation?.teamId ? undefined : deps.requestIsolation?.userId,
       agentId: deps.requestIsolation?.agentId,
     };
+    if (project_hash) {
+      const total = await store.countProfiles({
+        ...filter,
+        pathPrefix: `${projectSceneFilenamePrefix(project_hash)}${countPrefix ?? ""}`,
+      });
+      return successEnvelope<CountData>({ total: Math.max(0, total) }, requestId);
+    }
     let total = await store.countProfiles({ ...filter, pathPrefix: path_prefix });
     if (PROJECT_DIR.startsWith(path_prefix ?? "")) {
       total -= await store.countProfiles({ ...filter, pathPrefix: PROJECT_DIR });
@@ -1864,9 +1894,9 @@ async function handleScenarioCount(body: unknown, _auth: V2AuthContext, requestI
 
   const baseStorage = deps.getStorage();
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
-  const storage = scopedProfileStorage(baseStorage, deps.requestIsolation);
-  const prefix = path_prefix
-    ? `${StoragePaths.sceneBlocksDir}${path_prefix}`
+  const storage = scopedSceneStorage(baseStorage, deps.requestIsolation, project_hash);
+  const prefix = countPrefix
+    ? `${StoragePaths.sceneBlocksDir}${countPrefix}`
     : StoragePaths.sceneBlocksDir;
   const result = await storage.getBackend().listObjects(prefix, { recursive: true });
   const total = result.entries.filter((e) => {
@@ -1880,9 +1910,10 @@ async function handleScenarioCount(body: unknown, _auth: V2AuthContext, requestI
 async function handleScenarioRead(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const parsed = scenarioReadRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { path } = parsed.data;
-  // A project scene is not readable through this route (see scenario/ls);
-  // answer as for a missing file.
+  const { path, project_hash } = parsed.data;
+  // A project scene is not readable through this route without `project_hash`
+  // (see scenario/ls); answer as for a missing file. The same answer covers a
+  // path that names a `projects/` directory inside a project view.
   if (isProjectScopedPath(path)) {
     return successEnvelope<ScenarioFile>({
       path,
@@ -1894,9 +1925,13 @@ async function handleScenarioRead(body: unknown, _auth: V2AuthContext, requestId
 
   const baseStorage = deps.getStorage();
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
-  const storage = scopedProfileStorage(baseStorage, deps.requestIsolation);
+  const storage = scopedSceneStorage(baseStorage, deps.requestIsolation, project_hash);
+  // Inside a project the view drops "." segments; use the same form for the
+  // key, the row filename and the index lookup.
+  const relPath = project_hash ? normalizeProjectRelativePath(path) : path;
+  const rowFilename = `${project_hash ? projectSceneFilenamePrefix(project_hash) : ""}${relPath}`;
 
-  const key = `${StoragePaths.sceneBlocksDir}${path}`;
+  const key = `${StoragePaths.sceneBlocksDir}${relPath}`;
   const content = await storage.readFile(key);
 
   // File not found → return 200 with null content (not 404)
@@ -1929,7 +1964,7 @@ async function handleScenarioRead(body: unknown, _auth: V2AuthContext, requestId
     // Fallback: try scene_index
     const { readSceneIndex } = await import("../core/scene/scene-index.js");
     const sceneIndex = await readSceneIndex("", storage);
-    const entry = sceneIndex.find((e) => e.filename === path);
+    const entry = sceneIndex.find((e) => e.filename === relPath);
     if (entry) {
       createdAt = entry.created || now;
       updatedAt = entry.updated || now;
@@ -1944,7 +1979,7 @@ async function handleScenarioRead(body: unknown, _auth: V2AuthContext, requestId
 
   return successEnvelope<ScenarioFile>({
     path, content,
-    version: await getProfileVersion(deps.getStore(), "l2", path, deps.requestIsolation),
+    version: await getProfileVersion(deps.getStore(), "l2", rowFilename, deps.requestIsolation),
     team_id: deps.requestIsolation?.teamId,
     agent_id: deps.requestIsolation?.agentId,
     created_at: createdAt,
@@ -2076,12 +2111,18 @@ async function handleScenarioRm(body: unknown, _auth: V2AuthContext, requestId: 
 // L3 Core Handlers
 // ============================
 
-async function handleCoreRead(_body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+async function handleCoreRead(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  // The body is optional: without `project_hash` the route needs no field.
+  const parsed = coreReadRequestSchema.safeParse(body ?? {});
+  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
+  const { project_hash } = parsed.data;
+
   const baseStorage = deps.getStorage();
   if (!baseStorage) return errorEnvelope(503, "Storage not available", requestId);
-  const storage = scopedProfileStorage(baseStorage, deps.requestIsolation);
+  // With `project_hash` the view maps persona.md to that project's document.
+  const storage = scopedSceneStorage(baseStorage, deps.requestIsolation, project_hash);
 
-  deps.logger.debug?.(`${TAG} [core/read] storage.type=${storage.type}, key="${StoragePaths.persona}"`);
+  deps.logger.debug?.(`${TAG} [core/read] storage.type=${storage.type}, key="${StoragePaths.persona}"${project_hash ? `, project=${project_hash}` : ""}`);
   const content = await storage.readFile(StoragePaths.persona);
   deps.logger.debug?.(`${TAG} [core/read] readFile result: ${content === null ? "null (not found)" : `${content.length} chars`}`);
 
@@ -2099,7 +2140,12 @@ async function handleCoreRead(_body: unknown, _auth: V2AuthContext, requestId: s
 
   return successEnvelope<CoreFile>({
     content,
-    version: await getProfileVersion(deps.getStore(), "l3", StoragePaths.persona, deps.requestIsolation),
+    version: await getProfileVersion(
+      deps.getStore(),
+      "l3",
+      project_hash ? projectPersonaKey(project_hash) : StoragePaths.persona,
+      deps.requestIsolation,
+    ),
     team_id: deps.requestIsolation?.teamId,
     agent_id: deps.requestIsolation?.agentId,
     created_at: stat ? new Date(stat.createdAt).toISOString() : now,

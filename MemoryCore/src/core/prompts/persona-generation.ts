@@ -8,10 +8,19 @@
 
 import type { MemoryPromptMode } from "../../config.js";
 
+/**
+ * Which L3 document is generated.
+ *  - "user-global": the cross-project persona (root `persona.md`).
+ *  - "project": the memory document of one project (`project_personas/<H>.md`).
+ */
+export type PersonaVariant = "user-global" | "project";
+
 export interface PersonaPromptParams {
   mode: "first" | "incremental";
-  /** Prompt family for L3 generation (default: chat). */
+  /** Prompt family for L3 generation (default: chat). Ignored by the project variant. */
   promptMode?: MemoryPromptMode;
+  /** L3 document to generate (default: user-global). */
+  variant?: PersonaVariant;
   currentTime: string;
   totalProcessed: number;
   sceneCount: number;
@@ -288,6 +297,87 @@ const TEAM_MEMORY_SYSTEM_PROMPT = `# Team Operating Doctrine Architect
 - ✅ 不要添加场景导航（工程会自动追加 Scene Navigation 和场景索引）
 - ✅ 只操作 \`persona.md\``;
 
+/**
+ * System prompt of the project variant. The document is injected only into
+ * sessions of this project, so (unlike the user-global prompts) project names,
+ * files, commands and versions are wanted here. Personal traits of the user
+ * stay out: they belong to the user-global persona.
+ */
+const PROJECT_MEMORY_SYSTEM_PROMPT = `# Project Memory Architect
+
+**输出语言**：\`persona.md\` 的所有自然语言内容使用与变化场景内容相同的语言；Markdown 语法、文件名 \`persona.md\` 保持英文。
+
+请你结合已有的 \`persona.md\` 和新增/变化的 L2 场景块，生成或更新一份**仅属于当前这一个项目**的项目记忆文档。它只会注入到该项目的会话中，用来让 Agent 在这个项目里工作时立即掌握必要背景。
+
+## ⛔ 文件操作约束（必须严格遵守）
+
+1. **必须使用文件工具将最终内容写入 \`persona.md\`**。当前工作目录已设为数据目录，直接使用文件名 \`persona.md\`。
+   - 首次生成 / 大幅重写：使用 **write**，参数：\`path\`=\`persona.md\`, \`content\`=完整内容。
+   - 增量更新：使用 **edit**，参数：\`path\`=\`persona.md\`, \`edits\`=[{\`oldText\`: 旧内容片段, \`newText\`: 新内容片段}]。
+2. **只能操作 \`persona.md\` 这一个文件**，禁止读取或写入任何其他文件（包括 scene_blocks/、.metadata/ 等）。
+3. **无需 read 工具**：当前 \`persona.md\` 的完整内容已在用户消息中提供。
+4. 写入内容必须只包含最终 Markdown 文档，不要包含思考过程、分析步骤或解释。
+
+## 🚫 严格禁止
+
+- **禁止超过 1500 字符**：最终 \`persona.md\` 必须高度压缩，及时合并和删除不重要或已过时的信息。
+- **禁止个人画像**：不写用户的性格、兴趣、沟通习惯、生活信息等个人特征（这些属于用户的跨项目画像，不属于项目）。
+- **禁止过度推测**：只写场景数据中有证据的内容，没有信息的章节直接省略。
+- **禁止流水账**：不记录谁在何时做了什么；只保留对以后工作仍有用的结论。
+- **禁止使用非场景来源的信息**：不要从 workspace 目录结构、文件路径、系统信息等技术元数据中提取内容。
+- **禁止操作 \`persona.md\` 以外的任何文件**。
+
+## ✅ 允许写入
+
+这份文档只属于这个项目，所以**允许并鼓励**写入项目名称、模块名、文件和目录名、命令、工具和库的名称、版本号等具体信息，只要它们帮助 Agent 在这个项目里工作。
+
+## 📝 内容范围
+
+按以下六类组织，信息不足的类别可以省略：
+
+1. **目的与范围**：这个项目做什么、为谁做、边界在哪里。
+2. **架构与关键组件**：主要模块、数据流、关键文件和入口。
+3. **约定与工作流规则**：代码风格、分支和发布流程、测试与验证方式、团队规定。
+4. **决策与原因**：已做出的重要选择，以及为什么这样选。
+5. **当前状态与未决问题**：正在进行的工作、已知缺口、待决事项。
+6. **注意事项与陷阱**：容易踩的坑、历史上出过的问题、必须避免的做法。
+
+## 增量更新策略
+
+面对变化场景，自主判断：强化（佐证已有内容，不改）/ 补充（新的事实或规则）/ 修正（旧内容被新证据推翻，直接改写）/ 删除（已完成或已过时的状态）/ 重构（文档变长或变散时整体压缩重写）。不要把每次变化都追加为新条目。
+
+## 输出模板
+
+使用 **write** 或 **edit** 写入最终内容，必须保持 Markdown 格式，全文不超过 1500 字符：
+
+# Project Memory
+
+## Purpose & Scope
+[一到两句话]
+
+## Architecture
+- [组件]：[职责 / 关键文件]
+
+## Conventions & Workflow
+- [规则]
+
+## Decisions
+- [决策]：[原因]
+
+## Status & Open Issues
+- [当前状态 / 未决问题]
+
+## Pitfalls
+- [陷阱]：[如何避免]
+
+## 成功标准
+
+- ✅ 必须使用 write 或 edit 写入 \`persona.md\`
+- ✅ 最终内容不超过 1500 字符
+- ✅ 只包含这个项目的内容，不含用户的个人特征
+- ✅ 不要添加场景导航，也不要添加任何作用域标记
+- ✅ 只操作 \`persona.md\`，不要操作其他文件`;
+
 // ============================
 // User Prompt builder (dynamic data)
 // ============================
@@ -296,6 +386,7 @@ export function buildPersonaPrompt(params: PersonaPromptParams): PersonaPromptRe
   const {
     mode,
     promptMode = "chat",
+    variant = "user-global",
     currentTime,
     totalProcessed,
     sceneCount,
@@ -305,7 +396,9 @@ export function buildPersonaPrompt(params: PersonaPromptParams): PersonaPromptRe
     triggerInfo,
   } = params;
 
-  const isCodeMode = promptMode === "code";
+  const isProject = variant === "project";
+  // The project variant has one prompt for both modes.
+  const isCodeMode = !isProject && promptMode === "code";
   const targetFile = "persona.md";
   const modeLabel = mode === "first" ? "🆕 首次生成" : "🔄 迭代更新";
 
@@ -314,7 +407,11 @@ export function buildPersonaPrompt(params: PersonaPromptParams): PersonaPromptRe
     : "";
 
   const existingPersonaSection = existingPersona
-    ? isCodeMode
+    ? isProject
+      ? `\n## 📄 当前项目记忆文档（工程已预加载）\n\n` +
+        `*以下是现有 persona.md 的完整内容（${existingPersona.length} 字符）。更新后必须压缩在 1500 字符以内：*\n\n` +
+        `\`\`\`markdown\n${existingPersona}\n\`\`\`\n\n---\n`
+      : isCodeMode
       ? `\n## 📄 当前 Team Operating Doctrine（工程已预加载）\n\n` +
         `*以下是现有 persona.md 中 Team Operating Doctrine 的完整内容（${existingPersona.length} 字符）。更新后必须压缩在 1200 字以内：*\n\n` +
         `\`\`\`markdown\n${existingPersona}\n\`\`\`\n\n---\n`
@@ -324,7 +421,10 @@ export function buildPersonaPrompt(params: PersonaPromptParams): PersonaPromptRe
     : "";
 
   const iterationGuide = mode === "incremental"
-    ? isCodeMode
+    ? isProject
+      ? `\n## 🔄 迭代决策指南\n\n` +
+        `面对变化场景，自主判断处理方式：强化（佐证已有内容）/ 补充（新事实或规则）/ 修正（旧内容被推翻）/ 删除（已完成或过时的状态）/ 重构（内容变长或变散）/ 不改（无有用新增内容）。\n`
+      : isCodeMode
       ? `\n## 🔄 迭代决策指南\n\n` +
         `面对变化场景，自主判断处理方式：强化（佐证已有原则）/ 补充（新的通用 SOP、禁忌、判断逻辑或 Agent 规则）/ 修正（旧原则被更新）/ 重构（内容变长、变散、变项目化）/ 不改（只有项目状态或低层事实）。\n`
       : `\n## 🔄 迭代决策指南\n\n` +
@@ -348,7 +448,9 @@ ${existingPersonaSection}
 ${iterationGuide}`;
 
   return {
-    systemPrompt: isCodeMode ? TEAM_MEMORY_SYSTEM_PROMPT : PERSONA_SYSTEM_PROMPT,
+    systemPrompt: isProject
+      ? PROJECT_MEMORY_SYSTEM_PROMPT
+      : isCodeMode ? TEAM_MEMORY_SYSTEM_PROMPT : PERSONA_SYSTEM_PROMPT,
     userPrompt,
   };
 }

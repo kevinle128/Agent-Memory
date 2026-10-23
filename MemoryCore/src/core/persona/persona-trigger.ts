@@ -8,6 +8,7 @@ import { stripSceneNavigation } from "../scene/scene-navigation.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { hasProjectSceneFiles } from "../storage/project-scoped-storage.js";
 import { StoragePaths } from "../storage/types.js";
+import type { PersonaVariant } from "../prompts/persona-generation.js";
 
 import type { Logger } from "../types.js";
 import { readScopeState } from "./user-global-scope.js";
@@ -26,12 +27,25 @@ export class PersonaTrigger {
   private interval: number;
   private logger: TriggerLogger | undefined;
   private storage: StorageAdapter | undefined;
+  private variant: PersonaVariant;
 
-  constructor(opts: { dataDir: string; interval: number; logger?: TriggerLogger; storage?: StorageAdapter }) {
+  constructor(opts: {
+    dataDir: string;
+    interval: number;
+    logger?: TriggerLogger;
+    storage?: StorageAdapter;
+    /**
+     * Document the trigger serves (default: user-global). A project document
+     * carries no user-global scope marker by design, so the scope migration
+     * rule does not apply to it.
+     */
+    variant?: PersonaVariant;
+  }) {
     this.dataDir = opts.dataDir;
     this.interval = opts.interval;
     this.logger = opts.logger;
     this.storage = opts.storage;
+    this.variant = opts.variant ?? "user-global";
   }
 
   async shouldGenerate(): Promise<TriggerResult> {
@@ -81,7 +95,12 @@ export class PersonaTrigger {
     // inject such a persona, so regenerate it from all scenes now instead of
     // waiting for the threshold. A rejected marker does not trigger here, so a
     // persona that fails the check is retried only on the normal triggers.
-    if (hasPersonaBody && hasSceneFiles && (await this.personaScopeState()) === "none") {
+    if (
+      this.variant === "user-global" &&
+      hasPersonaBody &&
+      hasSceneFiles &&
+      (await this.personaScopeState()) === "none"
+    ) {
       const result: TriggerResult = { should: true, reason: "迁移：persona 缺少 user-global 作用域标记，需要按全部场景重新生成" };
       this.logger?.debug?.(`${TAG} Trigger P2.6 (scope migration): persona has no user-global scope marker`);
       return result;
@@ -115,7 +134,8 @@ export class PersonaTrigger {
         if (files.length > 0) return true;
         // The user-global persona is built from all scenes. A user who works
         // only inside projects has no root scene file, but still needs it.
-        return await hasProjectSceneFiles(this.storage);
+        // A project document is built from the scenes of its own view only.
+        return this.variant === "user-global" && await hasProjectSceneFiles(this.storage);
       }
       const fs = await import("node:fs/promises");
       const path = await import("node:path");

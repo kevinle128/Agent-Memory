@@ -262,7 +262,7 @@ L1 计数（**仅 v3**）。
 
 L2 场景文件列表（一次性全量列举，无分页）。
 
-**请求体**：`path_prefix?`（空/不传 = 根目录递归列举）+ 隔离字段。
+**请求体**：`path_prefix?`（空/不传 = 根目录递归列举）、`project_hash?`（`^[0-9a-f]{16}$`，格式非法返回 400） + 隔离字段。不传 `project_hash` 只列出 user-global 场景（`projects/…` 一律不可见）；传入则只列出该项目的场景，`path` 与 `path_prefix` 都相对于项目（不带 `projects/<hash>/` 前缀），摘要取自该项目的场景索引，`version` 为该项目场景行的版本。
 
 **响应** `data`：`{ entries: ScenarioEntry[], total }`。
 
@@ -272,7 +272,7 @@ L2 场景文件列表（一次性全量列举，无分页）。
 
 读取单个 L2 文件。
 
-**请求体**：`path`（相对路径，防穿越校验）、`version?` + 隔离字段。
+**请求体**：`path`（相对路径，防穿越校验）、`version?`、`project_hash?`（`^[0-9a-f]{16}$`，格式非法返回 400） + 隔离字段。不传 `project_hash` 读取 user-global 场景；传入则读取该项目的场景（`path` 相对于项目）。`path` 以 `projects/` 开头一律按「文件不存在」处理。
 
 **响应** `data`：`{ path, version?, content, created_at, updated_at }`。**文件不存在返回 200，content/created_at/updated_at 为 null（非 404）**。
 
@@ -296,7 +296,7 @@ L2 场景文件列表（一次性全量列举，无分页）。
 
 L2 计数（**仅 v3**）。
 
-**请求体**：`path_prefix?`。
+**请求体**：`path_prefix?`、`project_hash?`（`^[0-9a-f]{16}$`，格式非法返回 400）。不传 `project_hash` 只统计 user-global 场景；传入则只统计该项目的场景。
 
 **响应** `data`：`{ total: number }`。
 
@@ -306,9 +306,9 @@ L2 计数（**仅 v3**）。
 
 读取 L3 核心记忆（persona.md）。
 
-**请求体**：`version?` + 隔离字段（body 可空）。
+**请求体**：`version?`、`project_hash?`（`^[0-9a-f]{16}$`，格式非法返回 400） + 隔离字段（body 可空）。不传 `project_hash` 返回 user-global 的 persona.md；传入则返回该项目的项目记忆文档（`project_personas/<hash>.md`），响应结构相同。
 
-**响应** `data`：`{ content, version?, team_id?, agent_id?, created_at, updated_at }`。**文件不存在返回 200，content 为 null**。
+**响应** `data`：`{ content, version?, team_id?, agent_id?, created_at, updated_at }`。**文件不存在（含该项目尚无项目记忆文档）返回 200，content 为 null**。
 
 ### POST /v3/core/write
 

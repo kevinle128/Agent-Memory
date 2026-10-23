@@ -97,6 +97,20 @@ describe("PersonaGenerator user-global scope", () => {
     expect(readPersona().startsWith(`${USER_GLOBAL_SCOPE_MARKER}\n# User Narrative Profile`)).toBe(true);
   });
 
+  it("writes exactly one marker on line 1 when the model puts markers inline in its text", async () => {
+    writePersona(LEGACY_PERSONA);
+    const inline = `${USER_GLOBAL_REJECTED_MARKER} ${USER_GLOBAL_SCOPE_MARKER} ${CLEAN_PERSONA}`;
+    const runner = writerRunner([inline]);
+
+    await generator(runner, judge('{"leaks": []}')).generateLocalPersona("migration");
+
+    const written = readPersona();
+    expect(written.split("\n")[0]).toBe(USER_GLOBAL_SCOPE_MARKER);
+    expect(written.split(USER_GLOBAL_SCOPE_MARKER)).toHaveLength(2);
+    expect(written).not.toContain(USER_GLOBAL_REJECTED_MARKER);
+    expect(written.split("\n")[1]).toBe("# User Narrative Profile");
+  });
+
   it("retries once with the findings and accepts a clean second version", async () => {
     writePersona(LEGACY_PERSONA);
     const runner = writerRunner([LEAKY_PERSONA, CLEAN_PERSONA]);
