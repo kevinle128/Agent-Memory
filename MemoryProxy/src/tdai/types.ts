@@ -16,7 +16,7 @@ export interface TdaiMemoryConfig {
   l1Limit: number;
   l2Limit: number;
   timeoutMs: number;
-  /** How the profile injector scopes L2/L3. See {@link ProfileScopeMode}. Missing means "deny". */
+  /** How the profile injector scopes L2/L3. See {@link ProfileScopeMode}. Missing means "scoped". */
   profileScopeMode?: ProfileScopeMode;
 }
 
@@ -25,9 +25,13 @@ export interface TdaiMemoryConfig {
  *   - "legacy": inject the agent's whole L3 and L2 index into every session
  *     (the earlier behavior; leaks project facts into unrelated sessions).
  *   - "deny": inject only an L3 that carries the user-global scope marker and
- *     no L2 index. Any other value read from config falls back to "deny".
+ *     no L2 index.
+ *   - "scoped": like "deny", plus the L3 and the L2 index of the session's
+ *     project when the client hook has reported one. Without a known project it
+ *     is the same as "deny". A missing config value means "scoped"; a value that
+ *     is present but not recognized falls back to "deny".
  */
-export type ProfileScopeMode = "legacy" | "deny";
+export type ProfileScopeMode = "legacy" | "deny" | "scoped";
 
 export interface TdaiIdentity {
   teamId: string;

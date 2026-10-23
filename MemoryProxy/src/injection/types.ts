@@ -354,6 +354,14 @@ export interface InjectionHook {
    */
   cacheVariant?: string;
   /**
+   * Optional per-request variant, for content that depends on the request
+   * (for example the project of the session). It receives `metadata.custom` of
+   * the request, or `undefined` at prewarm, and replaces {@link cacheVariant}
+   * in the cache id. Return the same value as `cacheVariant` for the request
+   * state that prewarm sees, so that a prewarmed block is found again.
+   */
+  cacheVariantFor?(custom: Record<string, unknown> | undefined): string | undefined;
+  /**
    * Optional prewarm hook. Called once at session_init when
    * `cacheStrategy ∈ {"session_init", "hybrid"}`. Returns the blocks to be
    * persisted into the per-session cache. If omitted or throwing, the hook
@@ -368,9 +376,17 @@ export interface InjectionHook {
   execute(ctx: AgentContext): Promise<ContextBlock[]> | ContextBlock[];
 }
 
-/** Id under which a hook's blocks are cached: `<id>` or `<id>::<cacheVariant>`. */
-export function hookCacheId(hook: Pick<InjectionHook, "id" | "cacheVariant">): string {
-  return hook.cacheVariant ? `${hook.id}::${hook.cacheVariant}` : hook.id;
+/**
+ * Id under which a hook's blocks are cached: `<id>` or `<id>::<variant>`. The
+ * variant is `cacheVariantFor(custom)` when the hook declares it and returns a
+ * value, else `cacheVariant`.
+ */
+export function hookCacheId(
+  hook: Pick<InjectionHook, "id" | "cacheVariant" | "cacheVariantFor">,
+  custom?: Record<string, unknown>,
+): string {
+  const variant = hook.cacheVariantFor?.(custom) ?? hook.cacheVariant;
+  return variant ? `${hook.id}::${variant}` : hook.id;
 }
 
 // ── Hook Registry ─────────────────────────────────────────────────────────────

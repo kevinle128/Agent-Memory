@@ -1016,6 +1016,7 @@ export async function runOpenaiChatPipeline(
       sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
       assetCapabilities,
       callerUserKey: apiKey,
+      projectHash: tdaiIdentity?.projectHash,
       // 权威 turnSeq (与 mem-command / lf 构造共用) — 让
       // LangfuseInjectionObserver 创建的 injection span 挂在 LLM generation
       // 同一条 Langfuse trace 下。治理前走 stateless countHumanTurns, 和 lf

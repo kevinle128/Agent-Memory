@@ -133,3 +133,72 @@ describe("prewarm with cacheVariant", () => {
     expect(cache.entries.get("profile::deny:v2")).toEqual([text("prewarmed")]);
   });
 });
+
+/** A hook whose cache id depends on the project in `metadata.custom`, like the profile injector in scoped mode. */
+function makeProjectHook(execute: (custom: Record<string, unknown> | undefined) => ContextBlock[]): InjectionHook {
+  const variantOf = (custom: Record<string, unknown> | undefined) => `scoped:v1:${(custom?.projectHash as string | undefined) ?? "none"}`;
+  return {
+    id: "profile",
+    point: "system.suffix",
+    priority: 50,
+    description: "project hook",
+    cacheStrategy: "session_init",
+    cacheVariant: variantOf(undefined),
+    cacheVariantFor: variantOf,
+    execute: (ctx) => execute(ctx.metadata.custom),
+    prewarm: () => [text("PREWARMED_NO_PROJECT")],
+  } as InjectionHook;
+}
+
+const metadataWith = (projectHash?: string): AgentContextMetadata => ({
+  ...metadata,
+  custom: { session: { session_id: "s1" }, ...(projectHash ? { projectHash } : {}) },
+});
+
+describe("hookCacheId with cacheVariantFor", () => {
+  it("prefers the per-request variant and falls back to the static one", () => {
+    const hook = makeProjectHook(() => []);
+    expect(hookCacheId(hook, { projectHash: "aaaaaaaaaaaaaaaa" })).toBe("profile::scoped:v1:aaaaaaaaaaaaaaaa");
+    expect(hookCacheId(hook)).toBe("profile::scoped:v1:none");
+    expect(hookCacheId({ id: "profile", cacheVariant: "deny:v2" }, { projectHash: "aaaaaaaaaaaaaaaa" })).toBe("profile::deny:v2");
+  });
+});
+
+describe("session_init cache keyed by project", () => {
+  it("does not reuse a block prewarmed without a project once the project is known", async () => {
+    const cache = new MemoryHookCache();
+    const hook = makeProjectHook((custom) => [text(`LIVE_${custom?.projectHash ?? "none"}`)]);
+    const registry = new HookRegistryImpl();
+    registry.register(hook);
+    await prewarmAll(registry, cache, {
+      keyId: "k1", userId: "u1", agentSource: "claude-code",
+      sessionInfo: { session_id: "s1" }, agentDetail: null, taskDetail: null,
+    } as unknown as PrewarmInput);
+    expect(cache.entries.get("profile::scoped:v1:none")).toEqual([text("PREWARMED_NO_PROJECT")]);
+    const pipeline = makePipeline(hook, cache);
+
+    const before = JSON.stringify(await pipeline.process(body(), metadataWith()));
+    const after = JSON.stringify(await pipeline.process(body(), metadataWith("aaaaaaaaaaaaaaaa")));
+
+    expect(before).toContain("PREWARMED_NO_PROJECT");
+    expect(after).toContain("LIVE_aaaaaaaaaaaaaaaa");
+    expect(after).not.toContain("PREWARMED_NO_PROJECT");
+    expect(cache.entries.get("profile::scoped:v1:aaaaaaaaaaaaaaaa")).toEqual([text("LIVE_aaaaaaaaaaaaaaaa")]);
+  });
+
+  it("renders the blocks of the new project when the project changes mid-session, and reuses each cached block", async () => {
+    const cache = new MemoryHookCache();
+    const execute = vi.fn((custom: Record<string, unknown> | undefined) => [text(`LIVE_${custom?.projectHash}`)]);
+    const pipeline = makePipeline(makeProjectHook(execute), cache);
+
+    const a1 = JSON.stringify(await pipeline.process(body(), metadataWith("aaaaaaaaaaaaaaaa")));
+    const b = JSON.stringify(await pipeline.process(body(), metadataWith("bbbbbbbbbbbbbbbb")));
+    const a2 = JSON.stringify(await pipeline.process(body(), metadataWith("aaaaaaaaaaaaaaaa")));
+
+    expect(a1).toContain("LIVE_aaaaaaaaaaaaaaaa");
+    expect(b).toContain("LIVE_bbbbbbbbbbbbbbbb");
+    expect(b).not.toContain("LIVE_aaaaaaaaaaaaaaaa");
+    expect(a2).toContain("LIVE_aaaaaaaaaaaaaaaa");
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+});

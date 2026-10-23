@@ -2,7 +2,8 @@ import type { AgentContext, AnchorTarget, CacheStrategy, ContextBlock, Injection
 import { HOOK_PRIORITY } from "../types.js";
 import { TdaiClient } from "../../tdai/client.js";
 import type { ProfileScopeMode, TdaiMemoryConfig } from "../../tdai/types.js";
-import { getTdaiIdentity } from "../../tdai/identity.js";
+import { getProjectHash, getTdaiIdentity } from "../../tdai/identity.js";
+import { resolveProfileScopeMode } from "../../tdai/profile-scope-mode.js";
 import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
 import { resolveFixedAssetCtxs, type FixedAssetCtx } from "./tdai-fixed-asset.js";
@@ -33,7 +34,8 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
   /**
    * Scoped modes get their own cache id, so blocks cached in "legacy" mode are
    * not served again after the switch, also in running sessions. "legacy"
-   * keeps the earlier id.
+   * keeps the earlier id. In "scoped" mode this is the id for a session without
+   * a known project, which is also the id that prewarm writes.
    */
   cacheVariant: string | undefined;
 
@@ -48,11 +50,22 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
     private baseConfig: TdaiMemoryConfig,
     private coreSkillCfg: Pick<CoreSkillConfig, "endpoint" | "serviceToken" | "serviceId" | "timeoutMs"> | null = null,
   ) {
-    this.cacheVariant = this.scopeMode() === "legacy" ? undefined : `${this.scopeMode()}:v2`;
+    const mode = this.scopeMode();
+    this.cacheVariant = mode === "legacy" ? undefined : mode === "scoped" ? scopedCacheVariant(undefined) : `${mode}:v2`;
+  }
+
+  /**
+   * The project of the session is part of the cache id in "scoped" mode. A
+   * session that reports its project after the first request, or changes it
+   * later, then misses the cache and renders the blocks of the new project,
+   * and a block prewarmed before the report (no project) is not reused.
+   */
+  cacheVariantFor(custom: Record<string, unknown> | undefined): string | undefined {
+    return this.scopeMode() === "scoped" ? scopedCacheVariant(getProjectHash(custom)) : this.cacheVariant;
   }
 
   private scopeMode(): ProfileScopeMode {
-    return this.baseConfig.profileScopeMode === "legacy" ? "legacy" : "deny";
+    return resolveProfileScopeMode(this.baseConfig.profileScopeMode);
   }
 
   async execute(ctx: AgentContext): Promise<ContextBlock[]> {
@@ -88,9 +101,22 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
       serviceId: spaceId || this.baseConfig.serviceId,
     });
 
-    if (this.scopeMode() === "deny") {
+    const mode = this.scopeMode();
+    if (mode === "deny") {
       const l3Groups = await Promise.all(ctxs.map((c) => loadAgentProfile(client, c, { withL2: false })));
-      return renderUserGlobalBlocks(this.id, l3Groups);
+      return renderUserGlobalBlocks(this.id, l3Groups, "deny");
+    }
+    if (mode === "scoped") {
+      // The project comes from the identity that the runner built from the hook
+      // report. It is never derived from request text.
+      const projectHash = getProjectHash(ctx.metadata.custom);
+      const [l3Groups, projectGroups] = await Promise.all([
+        Promise.all(ctxs.map((c) => loadAgentProfile(client, c, { withL2: false }))),
+        projectHash
+          ? Promise.all(ctxs.map((c) => loadAgentProfile(client, c, { withL2: true, projectHash })))
+          : Promise.resolve([] as AgentProfileBundle[]),
+      ]);
+      return renderScopedBlocks(this.id, l3Groups, projectHash, projectGroups);
     }
 
     // 对每个 agent 独立拉 L3 + L2 索引（不读 L2 全文）
@@ -237,12 +263,12 @@ interface AgentProfileBundle {
 async function loadAgentProfile(
   client: TdaiClient,
   c: FixedAssetCtx,
-  opts: { withL2: boolean } = { withL2: true },
+  opts: { withL2: boolean; projectHash?: string } = { withL2: true },
 ): Promise<AgentProfileBundle> {
   const tdaiCtx = { teamId: c.teamId, userId: c.userId, agentId: c.agentId, agentName: c.agentName };
   const [l3, l2Entries] = await Promise.all([
-    client.readL3ForCtx(tdaiCtx),
-    opts.withL2 ? client.listL2ForCtx(tdaiCtx) : Promise.resolve([]),
+    client.readL3ForCtx(tdaiCtx, opts.projectHash),
+    opts.withL2 ? client.listL2ForCtx(tdaiCtx, opts.projectHash) : Promise.resolve([]),
   ]);
   // L3(persona) 可能在尾部内嵌一份「Scene Navigation」场景索引（plugin 侧 read 会带导航段）。
   // 我们已经单独注入 <l2_scene_index>，必须剥掉 persona 尾部这份，避免 L2 索引重复注入。
@@ -300,21 +326,43 @@ const USER_GLOBAL_PROFILE_NOTE =
 /** Tools guide for deny mode: it does not claim that an L2 index was injected. */
 export const MEMORY_TOOLS_GUIDE_USER_GLOBAL = MEMORY_TOOLS_GUIDE.replace(INJECTED_PROFILE_NOTE, USER_GLOBAL_PROFILE_NOTE);
 
+const PROJECT_PROFILE_NOTE =
+  "system 中注入两类记忆：`<user_global_memory>` 是跨项目通用的 L3（用户长期画像），不含项目信息；" +
+  "`<project_memory>` 是当前项目的 L3 与 L2 场景索引，只适用于当前项目。" +
+  "user-global 的 L2 场景索引不注入，需要时用 tdai_scenario_ls 列出。" +
+  "已注入的项目场景按索引中的 path 用 `tdai_read_scene` 读取正文；内容已足够时无需再读。L0/L1 需要用工具主动检索。";
+
+/** Tools guide for a session with injected project memory. */
+export const MEMORY_TOOLS_GUIDE_PROJECT = MEMORY_TOOLS_GUIDE.replace(INJECTED_PROFILE_NOTE, PROJECT_PROFILE_NOTE);
+
+/** Cache id part of "scoped" mode; `none` is the session without a known project. */
+function scopedCacheVariant(projectHash: string | undefined): string {
+  return `scoped:v1:${projectHash ?? "none"}`;
+}
+
 /** Scope facts written into block metadata; the Langfuse observer copies them to the span. */
 interface ProfileScopeMeta {
   mode: ProfileScopeMode;
   scopesInjected: string[];
   deniedReason?: string;
   deniedAgentCount: number;
+  /** Hash of the project of the session. Never the project key or the remote URL. */
+  projectHash?: string;
 }
 
-function renderUserGlobalBlocks(source: string, groups: AgentProfileBundle[]): ContextBlock[] {
+function renderUserGlobalBlocks(
+  source: string,
+  groups: AgentProfileBundle[],
+  mode: "deny" | "scoped",
+  projectHash?: string,
+): ContextBlock[] {
   const allowed = groups.filter((g) => g.l3 && hasUserGlobalMarker(g.l3.content));
   const scope: ProfileScopeMeta = {
-    mode: "deny",
+    mode,
     scopesInjected: allowed.length > 0 ? ["global-l3"] : [],
     deniedAgentCount: groups.length - allowed.length,
     ...(allowed.length === 0 ? { deniedReason: "no-user-global-l3" } : {}),
+    ...(projectHash ? { projectHash } : {}),
   };
   if (allowed.length === 0) {
     return [{
@@ -327,20 +375,107 @@ function renderUserGlobalBlocks(source: string, groups: AgentProfileBundle[]): C
     "<tdai_profile_memory>",
     "以下是 TDAI 为当前 agent 维护的跨项目通用长期记忆（不含任何项目信息；项目记忆按需用工具检索）：",
   ];
+  pushUserGlobalAgents(lines, allowed);
+  lines.push("</tdai_profile_memory>", "", MEMORY_TOOLS_GUIDE_USER_GLOBAL);
+  return [{
+    type: "text",
+    content: lines.join("\n"),
+    metadata: { source, agentCount: allowed.length, l3Count: allowed.length, l2IndexCount: 0, mode: "user-global", scope },
+  }];
+}
+
+function agentOpenTag(g: AgentProfileBundle): string {
+  const tag = g.ctx.isSelf ? "self" : "imported_from";
+  return `<agent name=${JSON.stringify(g.ctx.agentName)} role=${JSON.stringify(tag)} agent_id=${JSON.stringify(g.ctx.agentId)}>`;
+}
+
+/** One `<agent>` segment per allowed agent. Shared by "deny" and "scoped" so that both render the same text. */
+function pushUserGlobalAgents(lines: string[], allowed: AgentProfileBundle[]): void {
   for (const g of allowed) {
-    const tag = g.ctx.isSelf ? "self" : "imported_from";
     lines.push(
-      `<agent name=${JSON.stringify(g.ctx.agentName)} role=${JSON.stringify(tag)} agent_id=${JSON.stringify(g.ctx.agentId)}>`,
+      agentOpenTag(g),
       "<l3_core_memory>",
       truncate(stripUserGlobalMarker(g.l3!.content), 6000),
       "</l3_core_memory>",
       "</agent>",
     );
   }
-  lines.push("</tdai_profile_memory>", "", MEMORY_TOOLS_GUIDE_USER_GLOBAL);
+}
+
+/**
+ * "scoped" mode. The user-global part follows the same marker gate as "deny".
+ * The project part is added only when the session has a known project and that
+ * project has memory; it needs no marker, because project memory is meant to
+ * hold project facts. Without project memory the result is the "deny" output.
+ */
+function renderScopedBlocks(
+  source: string,
+  globalGroups: AgentProfileBundle[],
+  projectHash: string | undefined,
+  projectGroups: AgentProfileBundle[],
+): ContextBlock[] {
+  const withProject = projectGroups.filter((g) => g.l3 || g.l2Entries.length > 0);
+  if (!projectHash || withProject.length === 0) {
+    return renderUserGlobalBlocks(source, globalGroups, "scoped", projectHash);
+  }
+
+  const allowed = globalGroups.filter((g) => g.l3 && hasUserGlobalMarker(g.l3.content));
+  const label = projectHash.slice(0, 8);
+  const lines: string[] = [
+    "<tdai_profile_memory>",
+    "以下是 TDAI 为当前 agent 维护的长期记忆，分为两类：" +
+      "`<user_global_memory>` 是跨项目通用记忆（不含项目信息）；" +
+      `\`<project_memory>\` 只属于当前项目 ${label}，不要把它当作其他项目的事实：`,
+  ];
+  if (allowed.length > 0) {
+    lines.push("<user_global_memory>");
+    pushUserGlobalAgents(lines, allowed);
+    lines.push("</user_global_memory>");
+  }
+
+  let projectL3Count = 0;
+  let projectL2Count = 0;
+  lines.push(`<project_memory project=${JSON.stringify(label)}>`);
+  for (const g of withProject) {
+    lines.push(agentOpenTag(g));
+    if (g.l3) {
+      projectL3Count++;
+      lines.push("<l3_core_memory scope=\"project\">", truncate(g.l3.content, 6000), "</l3_core_memory>");
+    }
+    if (g.l2Entries.length > 0) {
+      lines.push("<l2_scene_index scope=\"project\">");
+      for (const e of g.l2Entries) {
+        projectL2Count++;
+        lines.push(e.summary ? `- \`${e.path}\` — ${truncate(e.summary, 200)}` : `- \`${e.path}\``);
+      }
+      lines.push("</l2_scene_index>");
+    }
+    lines.push("</agent>");
+  }
+  lines.push("</project_memory>", "</tdai_profile_memory>", "", MEMORY_TOOLS_GUIDE_PROJECT);
+
+  const scopesInjected = [
+    ...(allowed.length > 0 ? ["global-l3"] : []),
+    ...(projectL3Count > 0 ? ["project-l3"] : []),
+    ...(projectL2Count > 0 ? ["project-l2"] : []),
+  ];
+  const scope: ProfileScopeMeta = {
+    mode: "scoped",
+    scopesInjected,
+    deniedAgentCount: globalGroups.length - allowed.length,
+    projectHash,
+    ...(allowed.length === 0 ? { deniedReason: "no-user-global-l3" } : {}),
+  };
   return [{
     type: "text",
     content: lines.join("\n"),
-    metadata: { source, agentCount: allowed.length, l3Count: allowed.length, l2IndexCount: 0, mode: "user-global", scope },
+    metadata: {
+      source,
+      agentCount: new Set([...allowed, ...withProject].map((g) => g.ctx.agentId)).size,
+      l3Count: allowed.length + projectL3Count,
+      l2IndexCount: projectL2Count,
+      mode: "user-global+project",
+      scope,
+    },
   }];
 }

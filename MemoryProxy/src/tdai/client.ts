@@ -9,6 +9,7 @@ import type {
   TdaiMessage,
 } from "./types.js";
 import { log } from "../report/log.js";
+import { isProjectAnswer } from "./project-echo.js";
 
 interface TdaiEnvelope<T = unknown> {
   code?: number;
@@ -255,6 +256,8 @@ export class TdaiClient {
       undefined,
       { includeSession: false, includeTask: false },
     );
+    // A project list counts only when Core echoed the project; else it is the user-global list.
+    if (projectHash && !isProjectAnswer(data, projectHash)) return [];
     return (data.entries ?? [])
       .map((entry) => ({
         path: String(entry.path ?? ""),
@@ -292,6 +295,7 @@ export class TdaiClient {
       undefined,
       { includeSession: false, includeTask: false },
     );
+    if (projectHash && !isProjectAnswer(data, projectHash)) return null;
     const content = typeof data?.content === "string" ? data.content : "";
     if (!content) return null;
     return {
@@ -328,6 +332,7 @@ export class TdaiClient {
       undefined,
       { includeSession: false, includeTask: false },
     );
+    if (projectHash && !isProjectAnswer(data, projectHash)) return null;
     const content = typeof data?.content === "string" ? data.content : "";
     if (!content) return null;
     return { content, updatedAt: typeof data?.updated_at === "string" ? data.updated_at : undefined };

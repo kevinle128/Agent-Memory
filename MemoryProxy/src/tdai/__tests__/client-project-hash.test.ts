@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TdaiClient } from "../client.js";
+import { resetProjectEchoWarning } from "../project-echo.js";
 import type { TdaiAgentCtx } from "../types.js";
 
 const HASH = "0123456789abcdef";
@@ -51,7 +52,7 @@ describe("TdaiClient project_hash on L2/L3 reads", () => {
   });
 
   it("readL3ForCtx sends project_hash when given", async () => {
-    const fetchMock = stubFetch({ content: "project memory" });
+    const fetchMock = stubFetch({ content: "project memory", project_hash: HASH });
 
     const result = await makeClient().readL3ForCtx(ctx, HASH);
 
@@ -78,7 +79,7 @@ describe("TdaiClient project_hash on L2/L3 reads", () => {
   });
 
   it("listL2ForCtx sends project_hash when given", async () => {
-    const fetchMock = stubFetch({ entries: [{ path: "work.md" }] });
+    const fetchMock = stubFetch({ entries: [{ path: "work.md" }], project_hash: HASH });
 
     const entries = await makeClient().listL2ForCtx(ctx, HASH);
 
@@ -99,7 +100,7 @@ describe("TdaiClient project_hash on L2/L3 reads", () => {
   });
 
   it("readL2ForCtx sends project_hash when given", async () => {
-    const fetchMock = stubFetch({ content: "scene" });
+    const fetchMock = stubFetch({ content: "scene", project_hash: HASH });
 
     await makeClient().readL2ForCtx(ctx, "work.md", HASH);
 
@@ -119,5 +120,56 @@ describe("TdaiClient project_hash on L2/L3 reads", () => {
 
     await expect(makeClient().readL3ForCtx(ctx, HASH)).resolves.toBeNull();
     await expect(makeClient().listL2ForCtx(ctx, HASH)).resolves.toEqual([]);
+  });
+});
+
+describe("TdaiClient project reads against a Core that does not echo project_hash", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    resetProjectEchoWarning();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("drops the user-global answer an older Core gives to a project request", async () => {
+    stubFetch({ content: "USER-GLOBAL PERSONA", entries: [{ path: "root.md" }] });
+
+    await expect(makeClient().readL3ForCtx(ctx, HASH)).resolves.toBeNull();
+    await expect(makeClient().listL2ForCtx(ctx, HASH)).resolves.toEqual([]);
+    await expect(makeClient().readL2ForCtx(ctx, "root.md", HASH)).resolves.toBeNull();
+  });
+
+  it("drops an answer that echoes another project", async () => {
+    stubFetch({ content: "OTHER PROJECT", project_hash: "ffffffffffffffff" });
+
+    await expect(makeClient().readL3ForCtx(ctx, HASH)).resolves.toBeNull();
+  });
+
+  it("warns once per process, not on every dropped answer", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubFetch({ content: "USER-GLOBAL PERSONA" });
+
+    await makeClient().readL3ForCtx(ctx, HASH);
+    await makeClient().readL3ForCtx(ctx, HASH);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain("core does not support project_hash; project memory skipped");
+  });
+
+  it("does not warn when the call itself failed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
+
+    await expect(makeClient().readL3ForCtx(ctx, HASH)).resolves.toBeNull();
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps user-global reads without a hash unaffected", async () => {
+    stubFetch({ content: "USER-GLOBAL PERSONA" });
+
+    await expect(makeClient().readL3ForCtx(ctx)).resolves.toMatchObject({ content: "USER-GLOBAL PERSONA" });
   });
 });

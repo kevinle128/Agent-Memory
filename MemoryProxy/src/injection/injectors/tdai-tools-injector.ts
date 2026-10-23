@@ -42,7 +42,8 @@ import type {
   PrewarmInput,
 } from "../types.js";
 import { HOOK_PRIORITY } from "../types.js";
-import { getTdaiIdentity } from "../../tdai/identity.js";
+import { getProjectHash, getTdaiIdentity } from "../../tdai/identity.js";
+import { resolveProfileScopeMode } from "../../tdai/profile-scope-mode.js";
 import type { ProfileScopeMode } from "../../tdai/types.js";
 
 export interface TdaiMemoryToolsInjectorConfig {
@@ -51,18 +52,28 @@ export interface TdaiMemoryToolsInjectorConfig {
    * E.g. `http://127.0.0.1:8096`. Trailing slash trimmed.
    */
   proxyBaseUrl: string;
-  /** Profile scope mode of the profile injector; decides what the coverage text says. Missing means "deny". */
+  /** Profile scope mode of the profile injector; decides what the coverage text says. Missing means "scoped". */
   profileScopeMode?: ProfileScopeMode;
 }
 
-/** 渲染整段 `<tdai_memory_tools>` 文本，纯函数便于测试。 */
+/**
+ * 渲染整段 `<tdai_memory_tools>` 文本，纯函数便于测试。
+ *
+ * `projectKnown` only matters in "scoped" mode: it describes the project scenes
+ * and the `scope` field of the scene tools. Without it, "scoped" renders the
+ * same text as "deny". The text with a project holds whether or not the profile
+ * injector renders a `<project_memory>` block: the block is described as
+ * conditional, and the scene tools act on the known project in both cases.
+ */
 export function renderTdaiMemoryToolsBlock(
   proxyBaseUrl: string,
   sessionId?: string,
   spaceId?: string,
   profileScopeMode: ProfileScopeMode = "deny",
+  projectKnown = false,
 ): string {
   const legacyProfile = profileScopeMode === "legacy";
+  const projectScenes = profileScopeMode === "scoped" && projectKnown;
   const base = proxyBaseUrl.replace(/\/$/, "");
   const bridge = `${base}/memory-bridge/v3`;
   // gateway 需要 `x-tdai-service-id: <spaceId>` 才放行；`x-conversation-id`
@@ -83,7 +94,9 @@ export function renderTdaiMemoryToolsBlock(
     "覆盖范围：",
     legacyProfile
       ? "- L3（persona 长期画像）与 L2 场景索引（`<l2_scene_index>`）已直接注入 system，无需查询；"
-      : "- system 中最多只注入跨项目通用的 L3（用户长期画像），不注入项目信息；L2 场景索引不注入，需要时用 tdai_scenario_ls 列出；",
+      : projectScenes
+        ? "- system 中注入跨项目通用的 L3（user-global）。当前会话的项目已知：若该项目有记忆，system 还会有 `<project_memory>`（项目 L3 与项目 L2 场景索引）；没有该块表示项目暂无可注入的记忆。user-global 的 L2 场景索引不注入，需要时用 tdai_scenario_ls 列出；"
+        : "- system 中最多只注入跨项目通用的 L3（用户长期画像），不注入项目信息；L2 场景索引不注入，需要时用 tdai_scenario_ls 列出；",
     "- L2 正文按需用 tdai_read_scene 读取；",
     "- L0/L1（原始对话 / 原子记忆）**不再每轮自动召回**（会破坏 KV cache），需要时主动调工具检索。",
     "",
@@ -115,16 +128,24 @@ export function renderTdaiMemoryToolsBlock(
     "",
     "  <tool name=\"tdai_scenario_ls\">",
     `    curl: ${bridge}/scenario/ls`,
-    `    body: {"path_prefix": "?可选前缀"}`,
-    "    use:  列出 L2 scene_blocks 路径索引（含 summary，不含正文）。一般 system 已注入索引，需刷新/按前缀过滤时才用。",
+    projectScenes
+      ? `    body: {"path_prefix": "?可选前缀", "scope": "?project|global"}`
+      : `    body: {"path_prefix": "?可选前缀"}`,
+    projectScenes
+      ? "    use:  列出 L2 场景路径索引（含 summary，不含正文）。返回当前项目的场景（scope=project，path 相对于项目）和 user-global 场景（scope=global）；用 scope 只看其中一类。若 system 已注入项目场景索引则无需再列；需刷新/看 user-global 场景/按前缀过滤时才用。"
+      : "    use:  列出 L2 scene_blocks 路径索引（含 summary，不含正文）。一般 system 已注入索引，需刷新/按前缀过滤时才用。",
     "  </tool>",
     "",
     "  <tool name=\"tdai_read_scene\">",
     `    curl: ${bridge}/scenario/read`,
-    `    body: {"path": "<scene path>", "agent_id": "?来自 <agent agent_id=...>，读取 imported 记忆时传"}`,
+    projectScenes
+      ? `    body: {"path": "<scene path>", "scope": "?project|global", "agent_id": "?来自 <agent agent_id=...>，读取 imported 记忆时传"}`
+      : `    body: {"path": "<scene path>", "agent_id": "?来自 <agent agent_id=...>，读取 imported 记忆时传"}`,
     legacyProfile
       ? "    use:  按 path 读取 L2 场景文件全文。path 必须先从 `<l2_scene_index>` 或 tdai_scenario_ls 获取，不要凭空构造；读取 imported_from 分段的 path 时带上该分段 agent_id。"
-      : "    use:  按 path 读取 L2 场景文件全文。path 必须先从 tdai_scenario_ls 获取，不要凭空构造；读取 imported_from 分段的 path 时带上该分段 agent_id。",
+      : projectScenes
+        ? "    use:  按 path 读取 L2 场景文件全文。path 必须先从 `<l2_scene_index scope=\"project\">` 或 tdai_scenario_ls 获取，不要凭空构造。默认先在当前项目里找该 path，找不到再读 user-global 场景；两边有同名 path 时用 scope 指定。读取 imported_from 分段的 path 时带上该分段 agent_id。"
+        : "    use:  按 path 读取 L2 场景文件全文。path 必须先从 tdai_scenario_ls 获取，不要凭空构造；读取 imported_from 分段的 path 时带上该分段 agent_id。",
     "  </tool>",
     "",
     "## 调用约束",
@@ -149,6 +170,10 @@ export function renderTdaiMemoryToolsBlock(
   return lines.join("\n");
 }
 
+function scopedToolsVariant(projectKnown: boolean): string {
+  return `scoped:v1:${projectKnown ? "project" : "none"}`;
+}
+
 export class TdaiMemoryToolsInjector implements InjectionHook {
   id = "tdai-memory-tools-injector";
   point = "system.suffix" as const;
@@ -161,7 +186,17 @@ export class TdaiMemoryToolsInjector implements InjectionHook {
   cacheVariant: string | undefined;
 
   constructor(private cfg: TdaiMemoryToolsInjectorConfig) {
-    this.cacheVariant = cfg.profileScopeMode === "legacy" ? undefined : "deny:v2";
+    const mode = this.scopeMode();
+    this.cacheVariant = mode === "legacy" ? undefined : mode === "scoped" ? scopedToolsVariant(false) : "deny:v2";
+  }
+
+  /** In "scoped" mode the text depends on whether the session has a known project. */
+  cacheVariantFor(custom: Record<string, unknown> | undefined): string | undefined {
+    return this.scopeMode() === "scoped" ? scopedToolsVariant(getProjectHash(custom) !== undefined) : this.cacheVariant;
+  }
+
+  private scopeMode(): ProfileScopeMode {
+    return resolveProfileScopeMode(this.cfg.profileScopeMode);
   }
 
   execute(ctx: AgentContext): ContextBlock[] {
@@ -174,7 +209,7 @@ export class TdaiMemoryToolsInjector implements InjectionHook {
       | Record<string, unknown>
       | undefined;
     const spaceId = typeof session?.space_id === "string" ? session.space_id : undefined;
-    return this.renderBlocks(identity.sessionId, spaceId);
+    return this.renderBlocks(identity.sessionId, spaceId, getProjectHash(ctx.metadata.custom) !== undefined);
   }
 
   prewarm(input: PrewarmInput): ContextBlock[] {
@@ -182,14 +217,15 @@ export class TdaiMemoryToolsInjector implements InjectionHook {
     return this.renderBlocks(input.sessionInfo.session_id, input.sessionInfo.space_id);
   }
 
-  private renderBlocks(sessionId: string, spaceId?: string): ContextBlock[] {
+  private renderBlocks(sessionId: string, spaceId?: string, projectKnown = false): ContextBlock[] {
     return [{
       type: "text",
       content: renderTdaiMemoryToolsBlock(
         this.cfg.proxyBaseUrl,
         sessionId,
         spaceId,
-        this.cfg.profileScopeMode === "legacy" ? "legacy" : "deny",
+        this.scopeMode(),
+        projectKnown,
       ),
       metadata: {
         source: this.id,

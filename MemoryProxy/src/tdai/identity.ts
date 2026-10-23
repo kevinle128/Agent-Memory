@@ -43,6 +43,18 @@ export function getTdaiIdentity(custom: Record<string, unknown> | undefined): Td
   });
 }
 
+const PROJECT_HASH_RE = /^[0-9a-f]{16}$/;
+
+/**
+ * Project hash of the request, as the runner put it into `custom.projectHash`.
+ * Returns undefined for anything but 16 lowercase hex chars, so a malformed
+ * value never reaches a cache id or a Core request.
+ */
+export function getProjectHash(custom: Record<string, unknown> | undefined): string | undefined {
+  const value = custom?.projectHash;
+  return typeof value === "string" && PROJECT_HASH_RE.test(value) ? value : undefined;
+}
+
 function pickString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

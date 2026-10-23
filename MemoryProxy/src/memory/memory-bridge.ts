@@ -30,6 +30,9 @@ import { resolveFixedAssetCtxs, type FixedAssetCtx } from "../injection/injector
 import type { TdaiIdentity } from "../tdai/types.js";
 import { emitBridgeToolCallTelemetry, emitBridgeRejectTelemetry, agentSourceFromSessionKey } from "./bridge-telemetry.js";
 import { sessionKeyCandidates } from "../agent-adapters/index.js";
+import { withSessionProject } from "../project-scope/session-workspace.js";
+import { isProjectAnswer } from "../tdai/project-echo.js";
+import { resolveProfileScopeMode } from "../tdai/profile-scope-mode.js";
 
 const TAG = "[memory-bridge]";
 
@@ -245,6 +248,74 @@ function selectTargetCtx(ctxs: FixedAssetCtx[], requestedAgentId: unknown): Fixe
 
 const MULTI_SEARCH_SUBPATHS = new Set(["atomic/search", "conversation/search"]);
 
+/** Scene routes that Core scopes by `project_hash`. */
+const SCENE_SUBPATHS = new Set(["scenario/ls", "scenario/read"]);
+
+type SceneScope = "project" | "global";
+
+/**
+ * Project of the session, from the workspace the client hook reported. The key
+ * is the one the runners use: the session store key is `<agentSource>:<sessionId>`
+ * where sessionId is the id the hook reported. Returns undefined when the hook
+ * has not reported a project; the scene tools then read user-global scenes only.
+ */
+async function resolveSessionProjectHash(
+  config: ProxyConfig,
+  ids: SessionIdFields,
+  sessionKey: string,
+): Promise<string | undefined> {
+  const composite = ids.composite_key ?? sessionKey;
+  const sep = composite.indexOf(":");
+  if (sep <= 0) return undefined;
+  const withProject = await withSessionProject<{ projectKey?: string; projectHash?: string }>(
+    {},
+    config,
+    {
+      spaceId: ids.space_id ?? "",
+      userId: ids.user_id,
+      agentSource: composite.slice(0, sep),
+      sessionId: composite.slice(sep + 1),
+    },
+  );
+  return withProject?.projectHash;
+}
+
+function sceneScopeFrom(body: Record<string, unknown>): SceneScope | undefined {
+  return body.scope === "project" || body.scope === "global" ? body.scope : undefined;
+}
+
+interface UpstreamResult { status: number; text: string; contentType: string }
+
+/**
+ * Re-emit a user-global or project scene answer with its `scope` added to
+ * `data`. The echoed `project_hash` is dropped: the model needs the scope, not
+ * the hash. An answer that is not a success envelope passes through unchanged.
+ */
+function tagScene(r: UpstreamResult, scope: SceneScope): Response {
+  const headers = { "content-type": r.contentType };
+  try {
+    const env = JSON.parse(r.text) as { code?: unknown; data?: Record<string, unknown> };
+    if (r.status >= 200 && r.status < 300 && env && env.code === 0 && env.data && typeof env.data === "object") {
+      const { project_hash: _echo, ...data } = env.data;
+      return new Response(JSON.stringify({ ...env, data: { ...data, scope } }), { status: r.status, headers });
+    }
+  } catch {
+    // not JSON: pass through
+  }
+  return new Response(r.text, { status: r.status, headers });
+}
+
+/** Parsed Core envelope when the upstream answer is a success, else null. */
+function parseOkEnvelope(r: { status: number; text: string }): { data?: Record<string, unknown> } | null {
+  if (r.status < 200 || r.status >= 300) return null;
+  try {
+    const env = JSON.parse(r.text) as { code?: unknown; data?: Record<string, unknown> };
+    return env && env.code === 0 ? env : null;
+  } catch {
+    return null;
+  }
+}
+
 function limitFromBody(body: Record<string, unknown>, fallback = 5): number {
   const n = typeof body.limit === "number" ? body.limit : fallback;
   return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 50) : fallback;
@@ -386,8 +457,12 @@ export function createMemoryBridgeHandler(
     // task_id 优先级：caller 显式传 > session 注入。session_id 保持"仅 caller 显式传"，
     // 因为 search 类希望默认跨 session（agent 维度）；task_id 属于身份维度，仍应强制。
     const effectiveTaskId = modelTaskId ?? ids.task_id;
-    const makeOutbound = (target: FixedAssetCtx): Record<string, unknown> => ({
-      ...inboundBody,
+    // The model never chooses the project: `project_hash` comes from the session
+    // only, and `scope` is a bridge field that Core does not know.
+    const { project_hash: _ignoredProjectHash, scope: _bridgeScope, ...modelBody } = inboundBody;
+    const makeOutbound = (target: FixedAssetCtx, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+      ...modelBody,
+      ...extra,
       user_id: target.userId,
       team_id: target.teamId,
       agent_id: target.agentId,
@@ -395,8 +470,11 @@ export function createMemoryBridgeHandler(
       ...(effectiveTaskId ? { task_id: effectiveTaskId } : {}),
     });
 
-    const callUpstream = async (target: FixedAssetCtx): Promise<{ status: number; text: string; contentType: string }> => {
-      const outboundBody = JSON.stringify(makeOutbound(target));
+    const callUpstream = async (
+      target: FixedAssetCtx,
+      extra: Record<string, unknown> = {},
+    ): Promise<UpstreamResult> => {
+      const outboundBody = JSON.stringify(makeOutbound(target, extra));
       const callStart = (deps.now ?? Date.now)();
       let status = 0;
       let text = "";
@@ -488,6 +566,106 @@ export function createMemoryBridgeHandler(
         status: 200,
         headers: { "content-type": "application/json" },
       });
+    }
+
+    // Project scenes only exist in "scoped" mode. "deny" and "legacy" keep the
+    // earlier global-only reads, whatever the hook reported.
+    const projectHash = SCENE_SUBPATHS.has(sub) && resolveProfileScopeMode(config.tdai?.memory?.profileScopeMode) === "scoped"
+      ? await resolveSessionProjectHash(config, ids, sessionKey)
+      : undefined;
+    if (projectHash) {
+      const target = selectTargetCtx(ctxs, inboundBody.agent_id);
+      const scope = sceneScopeFrom(inboundBody);
+      // A project call counts only when Core echoed the requested hash. A Core
+      // that ignores `project_hash` answers with user-global data, and that
+      // answer must not be tagged as project data.
+      const projectEnvelope = (r: UpstreamResult) => {
+        const env = parseOkEnvelope(r);
+        return env && isProjectAnswer(env.data, projectHash) ? env : null;
+      };
+
+      if (sub === "scenario/read") {
+        // Project first: project paths are relative to the project, so a path
+        // from the injected project index resolves only there. A miss, an error
+        // or an unsupported Core falls back to the user-global scene of the same
+        // path, unless the caller asked for the project only.
+        if (scope !== "global") {
+          let inProject: UpstreamResult | null = null;
+          try {
+            inProject = await callUpstream(target, { project_hash: projectHash });
+          } catch (err) {
+            console.warn(`${TAG} sub=${sub} project call failed: ${(err as Error).message}`);
+            if (scope === "project") return envelope(50301, `${TAG} upstream unavailable: ${(err as Error).message}`, 502);
+          }
+          const env = inProject ? projectEnvelope(inProject) : null;
+          const content = env?.data?.content;
+          if (inProject && env && typeof content === "string" && content !== "") {
+            console.log(`${TAG} sub=${sub} scope=project status=${inProject.status}`);
+            return tagScene(inProject, "project");
+          }
+          if (scope === "project") {
+            return Response.json({
+              code: 0, message: "ok", request_id: `mem-bridge-${Date.now()}`,
+              data: { path: inboundBody.path, content: null, scope: "project" },
+            });
+          }
+        }
+        try {
+          const global = await callUpstream(target);
+          console.log(`${TAG} sub=${sub} scope=global status=${global.status}`);
+          return tagScene(global, "global");
+        } catch (err) {
+          console.warn(`${TAG} upstream fetch failed sub=${sub} err=${(err as Error).message}`);
+          return envelope(50301, `${TAG} upstream unavailable: ${(err as Error).message}`, 502);
+        }
+      }
+
+      // scenario/ls: both lists, each entry tagged with where it lives. One side
+      // may fail without hiding the other; the answer then says it is partial.
+      const sides: Array<{ scope: SceneScope; call: Promise<UpstreamResult> }> = [];
+      if (scope !== "global") sides.push({ scope: "project", call: callUpstream(target, { project_hash: projectHash }) });
+      if (scope !== "project") sides.push({ scope: "global", call: callUpstream(target) });
+      const settled = await Promise.allSettled(sides.map((x) => x.call));
+      const entries: Record<string, unknown>[] = [];
+      const failedScopes: SceneScope[] = [];
+      let firstAnswer: UpstreamResult | null = null;
+      let firstError = "";
+      settled.forEach((r, i) => {
+        const side = sides[i].scope;
+        if (r.status === "rejected") {
+          firstError ||= r.reason instanceof Error ? r.reason.message : String(r.reason);
+          console.warn(`${TAG} sub=${sub} ${side} call failed: ${firstError}`);
+          failedScopes.push(side);
+          return;
+        }
+        firstAnswer ??= r.value;
+        const env = side === "project" ? projectEnvelope(r.value) : parseOkEnvelope(r.value);
+        if (!env) {
+          failedScopes.push(side);
+          return;
+        }
+        const rows = Array.isArray(env.data?.entries) ? (env.data!.entries as unknown[]) : [];
+        for (const row of rows) {
+          if (row && typeof row === "object") entries.push({ ...(row as Record<string, unknown>), scope: side });
+        }
+      });
+      if (failedScopes.length === sides.length) {
+        // Pass the upstream failure through instead of an empty list that looks like "no scenes".
+        const answer = firstAnswer as UpstreamResult | null;
+        if (answer) return new Response(answer.text, { status: answer.status, headers: { "content-type": answer.contentType } });
+        return envelope(50301, `${TAG} upstream unavailable: ${firstError}`, 502);
+      }
+      console.log(`${TAG} sub=${sub} project+global entries=${entries.length} failed=${failedScopes.join(",") || "none"}`);
+      return new Response(JSON.stringify({
+        code: 0,
+        message: "ok",
+        request_id: `mem-bridge-${Date.now()}`,
+        data: {
+          entries,
+          total: entries.length,
+          ...(failedScopes.length > 0 ? { partial: true, failed_scopes: failedScopes } : {}),
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
     }
 
     let upstream;

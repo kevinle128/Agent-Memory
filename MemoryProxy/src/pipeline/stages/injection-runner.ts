@@ -32,6 +32,11 @@ export interface InjectionRunnerInput {
   sessionInfo: Record<string, unknown> | null | undefined;
   assetCapabilities?: AssetCapabilityFlags;
   callerUserKey?: string;
+  /**
+   * Project of the session as the client hook reported it (hash only). Lets the
+   * profile injector add project memory and key its cache by project.
+   */
+  projectHash?: string;
   /** anthropic 独有: fork 请求 readOnly=true 不触发 self-heal */
   readOnly?: boolean;
   /**
@@ -92,6 +97,7 @@ export async function stageInjectionRunner(
             session: input.sessionInfo,
             assetCapabilities: input.assetCapabilities,
             userKey: input.callerUserKey || undefined,
+            projectHash: input.projectHash || undefined,
           }
         : undefined,
       readOnly: input.readOnly,

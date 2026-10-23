@@ -13,6 +13,7 @@ import type {
   SelectionStrategyConfig,
   SkillSelectionConfig,
 } from "./types.js";
+import { resolveProfileScopeMode } from "./tdai/profile-scope-mode.js";
 
 const DEFAULT_UPSTREAM = "https://llm-upstream.example.com/v2/chat/completions";
 
@@ -167,7 +168,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
       l1Limit: 5,
       l2Limit: 3,
       timeoutMs: 3000,
-      profileScopeMode: "deny",
+      profileScopeMode: "scoped",
     },
   },
   coreSkill: {
@@ -326,6 +327,18 @@ function parseUpstreamAgents(
       : { url };
   }
   return out;
+}
+
+/**
+ * A missing value means "scoped". A value that is present but not recognized
+ * means "deny" and is logged, so a typo never restores the legacy leak.
+ */
+function parseProfileScopeMode(raw: unknown): import("./tdai/types.js").ProfileScopeMode {
+  const mode = resolveProfileScopeMode(raw);
+  if (mode === "deny" && raw !== "deny") {
+    console.warn(`[config] tdai.memory.profileScopeMode: unrecognized value ${JSON.stringify(raw)}; using "deny"`);
+  }
+  return mode;
 }
 
 /**
@@ -569,9 +582,9 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
         l1Limit: yaml.tdai?.memory?.l1Limit ?? DEFAULT_CONFIG.tdai.memory.l1Limit,
         l2Limit: yaml.tdai?.memory?.l2Limit ?? DEFAULT_CONFIG.tdai.memory.l2Limit,
         timeoutMs: yaml.tdai?.memory?.timeoutMs ?? DEFAULT_CONFIG.tdai.memory.timeoutMs,
-        // Only an explicit "legacy" restores the earlier behavior; a missing or
-        // misspelled value keeps the deny default.
-        profileScopeMode: yaml.tdai?.memory?.profileScopeMode === "legacy" ? "legacy" : "deny",
+        // Missing: "scoped". Unrecognized: "deny" with a warning. Only an explicit
+        // "legacy" restores the earlier behavior.
+        profileScopeMode: parseProfileScopeMode(yaml.tdai?.memory?.profileScopeMode),
       },
       sessionTrace: yaml.tdai?.sessionTrace,
     },

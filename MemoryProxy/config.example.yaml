@@ -754,11 +754,17 @@ tdai:
     l1Limit: 5              # L1 召回最大条数
     l2Limit: 3              # L2/L3 注入最大条数
     timeoutMs: 5000         # 单次内核调用超时（毫秒）
-    # How L2/L3 are scoped when injected. "deny" (default): inject only an L3 that
-    # carries the user-global scope marker, and no L2 scene index. "legacy": inject
-    # the whole L3 and L2 index into every session (leaks project facts into
-    # unrelated sessions). Any other value means "deny".
-    profileScopeMode: deny
+    # How L2/L3 are scoped when injected.
+    #   "scoped" (default): inject the user-global L3 (only with the scope marker)
+    #     and, when the client hook has reported the session's git project, that
+    #     project's L3 and L2 scene index. Without a known project it is the same
+    #     as "deny".
+    #   "deny": inject only the user-global L3 with the scope marker, and no L2 index.
+    #   "legacy": inject the whole L3 and L2 index into every session (leaks project
+    #     facts into unrelated sessions).
+    # A missing value means "scoped". A value that is present but not recognized
+    # means "deny" and is logged as a warning.
+    profileScopeMode: scoped
   sessionTrace:
     maxQueuedBytes: 1073741824  # 在途会话上传（/v3/session/add）合计字节上限，超出的轮次直接丢弃。默认 1 GiB
 
