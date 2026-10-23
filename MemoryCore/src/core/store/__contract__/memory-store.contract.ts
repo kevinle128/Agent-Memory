@@ -158,6 +158,70 @@ export function runMemoryStoreContract(harness: MemoryStoreContractHarness): voi
       }
     });
 
+    it("L0 round-trips project fields and keeps project out of the session group key", async () => {
+      const store = await harness.createStore();
+      try {
+        const projectKey = "git:github.com/kevinle128/agent-memory";
+        const projectHash = "0123456789abcdef";
+        expect(await store.upsertL0(makeL0("l0-proj", "A message inside a project", { projectKey, projectHash }))).toBe(true);
+        expect(await store.upsertL0(makeL0("l0-noproj", "A message without any project"))).toBe(true);
+
+        const rows = await store.queryL0ForL1("sk-contract");
+        const withProject = rows.find((r) => r.record_id === "l0-proj");
+        const without = rows.find((r) => r.record_id === "l0-noproj");
+        expect(withProject?.project_key).toBe(projectKey);
+        expect(withProject?.project_hash).toBe(projectHash);
+        // A row written without a project reads back empty.
+        expect(without?.project_key ?? "").toBe("");
+        expect(without?.project_hash ?? "").toBe("");
+
+        const page = await store.queryL0Paginated?.({ limit: 10, offset: 0 });
+        expect(page?.rows.find((r) => r.record_id === "l0-proj")?.project_hash).toBe(projectHash);
+
+        // Same isolation tuple and session: one group, project kept per message.
+        const groups = await store.queryL0GroupedBySessionId("sk-contract");
+        expect(groups).toHaveLength(1);
+        const byId = new Map(groups[0]!.messages.map((m) => [m.id, m] as const));
+        expect(byId.get("l0-proj")?.projectKey).toBe(projectKey);
+        expect(byId.get("l0-proj")?.projectHash).toBe(projectHash);
+        expect(byId.get("l0-noproj")?.projectKey ?? "").toBe("");
+        expect(byId.get("l0-noproj")?.projectHash ?? "").toBe("");
+      } finally {
+        await harness.disposeStore(store);
+      }
+    });
+
+    it("L1 round-trips project fields and replaces them on re-upsert", async () => {
+      const store = await harness.createStore();
+      try {
+        const projectKey = "local:device-1:/work/app";
+        const projectHash = "fedcba9876543210";
+        expect(await store.upsertL1(makeL1("l1-proj", "Memory inside a project", { projectKey, projectHash }))).toBe(true);
+        expect(await store.upsertL1(makeL1("l1-noproj", "Memory without a project"))).toBe(true);
+
+        const rows = await store.queryL1Records();
+        const withProject = rows.find((r) => r.record_id === "l1-proj");
+        const without = rows.find((r) => r.record_id === "l1-noproj");
+        expect(withProject?.project_key).toBe(projectKey);
+        expect(withProject?.project_hash).toBe(projectHash);
+        expect(without?.project_key ?? "").toBe("");
+        expect(without?.project_hash ?? "").toBe("");
+
+        const page = await store.queryL1Paginated?.({ limit: 10, offset: 0 });
+        expect(page?.rows.find((r) => r.record_id === "l1-proj")?.project_hash).toBe(projectHash);
+
+        // A re-upsert of the same id carries the new project value.
+        const otherHash = "aaaaaaaaaaaaaaaa";
+        expect(await store.upsertL1(makeL1("l1-proj", "Memory inside a project", {
+          projectKey: "git:example.org/other", projectHash: otherHash, version: 1,
+        }))).toBe(true);
+        const [updated] = await store.queryL1Records({ recordIds: ["l1-proj"] });
+        expect(updated?.project_hash).toBe(otherHash);
+      } finally {
+        await harness.disposeStore(store);
+      }
+    });
+
     it.each<{ dimension: keyof L1QueryFilter; filter: L1QueryFilter; distractor: Partial<MemoryRecord> }>([
       { dimension: "recordIds", filter: { recordIds: ["l1-match"] }, distractor: {} },
       { dimension: "sessionId", filter: { sessionId: "sid-contract" }, distractor: { sessionId: "sid-other" } },

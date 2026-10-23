@@ -98,6 +98,9 @@ export interface VectorSearchResult {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Absent for FTS hits: the FTS tables do not carry project columns. */
+  project_key?: string;
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   /** Raw metadata JSON string (e.g., contains activity_start_time / activity_end_time for episodic) */
@@ -111,6 +114,9 @@ export interface L0VectorSearchResult {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Absent for FTS hits: the FTS tables do not carry project columns. */
+  project_key?: string;
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   role: string;
@@ -196,6 +202,9 @@ export interface FtsSearchResult {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Absent for FTS hits: the FTS tables do not carry project columns. */
+  project_key?: string;
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   metadata_json: string;
@@ -208,6 +217,9 @@ export interface L0FtsSearchResult {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Absent for FTS hits: the FTS tables do not carry project columns. */
+  project_key?: string;
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   role: string;
@@ -492,6 +504,8 @@ export class VectorStore implements IMemoryStore {
         session_id TEXT DEFAULT 'default',
         team_id TEXT DEFAULT 'default',
         task_id TEXT DEFAULT '',
+        project_key TEXT DEFAULT '',
+        project_hash TEXT DEFAULT '',
         user_id TEXT NOT NULL DEFAULT 'default',
         agent_id TEXT NOT NULL DEFAULT 'default',
         version INTEGER NOT NULL DEFAULT 0,
@@ -510,6 +524,8 @@ export class VectorStore implements IMemoryStore {
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN task_id TEXT DEFAULT ''"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN project_key TEXT DEFAULT ''"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN project_hash TEXT DEFAULT ''"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN version INTEGER NOT NULL DEFAULT 0"); } catch { /* exists */ }
     this.db.prepare("UPDATE l1_records SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l1_records SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
@@ -529,6 +545,7 @@ export class VectorStore implements IMemoryStore {
     // Composite index: session_key exact match + updated_time range scan (for pipeline cursor queries)
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_sessionkey_updated ON l1_records(session_key, updated_time)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_task_updated ON l1_records(task_id, updated_time)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_project_hash ON l1_records(project_hash)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_team_agent_updated ON l1_records(team_id, agent_id, updated_time)");
     // Isolation indexes (three-dim tenancy)
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l1_user_agent_session ON l1_records(user_id, agent_id, session_id)");
@@ -557,8 +574,8 @@ export class VectorStore implements IMemoryStore {
         record_id, content, type, priority, scene_name, session_key, session_id,
         team_id, task_id, version, timestamp_str, timestamp_start, timestamp_end,
         created_time, updated_time, metadata_json,
-        user_id, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, agent_id, project_key, project_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         content=excluded.content,
         type=excluded.type,
@@ -573,7 +590,9 @@ export class VectorStore implements IMemoryStore {
         updated_time=excluded.updated_time,
         metadata_json=excluded.metadata_json,
         user_id=excluded.user_id,
-        agent_id=excluded.agent_id
+        agent_id=excluded.agent_id,
+        project_key=excluded.project_key,
+        project_hash=excluded.project_hash
     `);
 
     if (this.dimensions > 0) {
@@ -584,6 +603,7 @@ export class VectorStore implements IMemoryStore {
 
     this.stmtGetMeta = this.db.prepare(`
       SELECT content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
+             project_key, project_hash,
              version, timestamp_str, timestamp_start, timestamp_end, metadata_json
       FROM l1_records WHERE record_id = ?
     `);
@@ -610,6 +630,8 @@ export class VectorStore implements IMemoryStore {
         session_id TEXT DEFAULT 'default',
         team_id TEXT DEFAULT 'default',
         task_id TEXT DEFAULT '',
+        project_key TEXT DEFAULT '',
+        project_hash TEXT DEFAULT '',
         user_id TEXT NOT NULL DEFAULT 'default',
         agent_id TEXT NOT NULL DEFAULT 'default',
         role TEXT NOT NULL DEFAULT '',
@@ -629,6 +651,8 @@ export class VectorStore implements IMemoryStore {
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'default'"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN task_id TEXT DEFAULT ''"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN project_key TEXT DEFAULT ''"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN project_hash TEXT DEFAULT ''"); } catch { /* exists */ }
     this.db.prepare("UPDATE l0_conversations SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l0_conversations SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l0_conversations SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL").run(DEFAULT_ISOLATION_ID);
@@ -651,6 +675,7 @@ export class VectorStore implements IMemoryStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_session ON l0_conversations(session_key)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_session_id ON l0_conversations(session_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_task ON l0_conversations(task_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_project_hash ON l0_conversations(project_hash)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_team_agent ON l0_conversations(team_id, agent_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_recorded ON l0_conversations(recorded_at)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_l0_timestamp ON l0_conversations(timestamp)");
@@ -675,8 +700,8 @@ export class VectorStore implements IMemoryStore {
     this.stmtL0UpsertMeta = this.db.prepare(`
       INSERT INTO l0_conversations (
         record_id, session_key, session_id, team_id, task_id, role, message_text, recorded_at, timestamp,
-        user_id, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, agent_id, project_key, project_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         message_text=excluded.message_text,
         recorded_at=excluded.recorded_at,
@@ -684,7 +709,9 @@ export class VectorStore implements IMemoryStore {
         team_id=excluded.team_id,
         task_id=excluded.task_id,
         user_id=excluded.user_id,
-        agent_id=excluded.agent_id
+        agent_id=excluded.agent_id,
+        project_key=excluded.project_key,
+        project_hash=excluded.project_hash
     `);
 
     if (this.dimensions > 0) {
@@ -694,7 +721,7 @@ export class VectorStore implements IMemoryStore {
     this.stmtL0DeleteMeta = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?");
 
     this.stmtL0GetMeta = this.db.prepare(`
-      SELECT session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations WHERE record_id = ?
     `);
 
@@ -720,7 +747,7 @@ export class VectorStore implements IMemoryStore {
     // time) because L1 cursor uses recorded_at semantics. ISO 8601 string
     // comparison preserves time order.
     this.stmtL0QueryAll = this.db.prepare(`
-      SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations
       WHERE session_key = ?
       ORDER BY recorded_at ASC
@@ -728,7 +755,7 @@ export class VectorStore implements IMemoryStore {
     `);
 
     this.stmtL0QueryAfter = this.db.prepare(`
-      SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations
       WHERE session_key = ? AND recorded_at > ?
       ORDER BY recorded_at ASC
@@ -1055,7 +1082,7 @@ export class VectorStore implements IMemoryStore {
     // user_id / agent_id surfaced in every L1 read so callers (router /
     // candidate-pool / l1-reader) can enforce isolation downstream.
     const l1QueryCols = `record_id, content, type, priority, scene_name, session_key, session_id,
-      team_id, task_id, user_id, agent_id, version,
+      team_id, task_id, project_key, project_hash, user_id, agent_id, version,
       timestamp_str, timestamp_start, timestamp_end,
       created_time, updated_time, metadata_json`;
 
@@ -1261,6 +1288,8 @@ export class VectorStore implements IMemoryStore {
           JSON.stringify(record.metadata),
           (record as MemoryRecord & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
           (record as MemoryRecord & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
+          record.projectKey || "",
+          record.projectHash || "",
         );
 
         if (!skipVec) {
@@ -1383,6 +1412,8 @@ export class VectorStore implements IMemoryStore {
               session_id: string;
               team_id: string;
               task_id: string;
+              project_key?: string;
+              project_hash?: string;
               user_id: string;
               agent_id: string;
               version: number;
@@ -1422,6 +1453,8 @@ export class VectorStore implements IMemoryStore {
           session_id: meta.session_id,
           team_id: meta.team_id ?? "",
           task_id: meta.task_id ?? "",
+          project_key: meta.project_key ?? "",
+          project_hash: meta.project_hash ?? "",
           user_id: meta.user_id ?? "",
           agent_id: meta.agent_id ?? "",
           metadata_json: meta.metadata_json,
@@ -1769,6 +1802,8 @@ export class VectorStore implements IMemoryStore {
           record.timestamp,
           (record as L0Record & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
           (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
+          record.projectKey || "",
+          record.projectHash || "",
         );
 
         if (!skipVec) {
@@ -1925,6 +1960,8 @@ export class VectorStore implements IMemoryStore {
               session_id: string;
               team_id: string;
               task_id: string;
+              project_key?: string;
+              project_hash?: string;
               user_id: string;
               agent_id: string;
               role: string;
@@ -1954,6 +1991,8 @@ export class VectorStore implements IMemoryStore {
           session_id: meta.session_id,
           team_id: meta.team_id ?? "",
           task_id: meta.task_id ?? "",
+          project_key: meta.project_key ?? "",
+          project_hash: meta.project_hash ?? "",
           user_id: meta.user_id ?? "",
           agent_id: meta.agent_id ?? "",
           role: meta.role,
@@ -2295,6 +2334,8 @@ export class VectorStore implements IMemoryStore {
         session_id: (r.session_id as string) || "",
         team_id: (r.team_id as string) || "",
         task_id: (r.task_id as string) || "",
+        project_key: (r.project_key as string) || "",
+        project_hash: (r.project_hash as string) || "",
         user_id: (r.user_id as string) || "",
         agent_id: (r.agent_id as string) || "",
         role: r.role as string,
@@ -2321,7 +2362,7 @@ export class VectorStore implements IMemoryStore {
     sessionKey: string,
     afterRecordedAtMs?: number,
     limit = 50,
-  ): Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> {
+  ): Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; projectKey?: string; projectHash?: string }> }> {
     if (this.degraded) {
       this.logger?.warn(`${TAG} [L0-query-grouped] SKIPPED (degraded mode)`);
       return [];
@@ -2336,7 +2377,7 @@ export class VectorStore implements IMemoryStore {
         taskId?: string;
         userId: string;
         agentId: string;
-        messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }>;
+        messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; projectKey?: string; projectHash?: string }>;
       }>();
       for (const row of rows) {
         const sid = row.session_id || "";
@@ -2356,11 +2397,14 @@ export class VectorStore implements IMemoryStore {
           content: row.message_text,
           timestamp: row.timestamp,
           recordedAtMs: row.recorded_at ? Date.parse(row.recorded_at) || 0 : 0,
+          // Project stays on the message: it must not split a group.
+          projectKey: row.project_key || undefined,
+          projectHash: row.project_hash || undefined,
         });
       }
 
       // Convert to array, sorted by earliest message timestamp
-      const groups: Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number }> }> = [];
+      const groups: Array<{ sessionId: string; teamId?: string; taskId?: string; userId: string; agentId: string; messages: Array<{ id: string; role: string; content: string; timestamp: number; recordedAtMs: number; projectKey?: string; projectHash?: string }> }> = [];
       for (const group of groupMap.values()) {
         if (group.messages.length > 0) {
           groups.push(group);
@@ -2479,7 +2523,7 @@ export class VectorStore implements IMemoryStore {
       const total = countRow?.cnt ?? 0;
 
       // Fetch page
-      const dataSql = `SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id, role, message_text, recorded_at, timestamp FROM l0_conversations ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+      const dataSql = `SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, role, message_text, recorded_at, timestamp FROM l0_conversations ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
       const rows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as L0QueryRow[];
 
       return { rows, total };
@@ -2543,7 +2587,7 @@ export class VectorStore implements IMemoryStore {
 
       // Fetch page — must include user_id / agent_id so callers can enforce
       // isolation in downstream filters / Coordinator candidate pool.
-      const dataSql = `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json FROM l1_records ${where} ORDER BY updated_time DESC LIMIT ? OFFSET ?`;
+      const dataSql = `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json FROM l1_records ${where} ORDER BY updated_time DESC LIMIT ? OFFSET ?`;
       const rows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as L1RecordRow[];
 
       return { rows, total };

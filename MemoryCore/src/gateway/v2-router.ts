@@ -306,7 +306,7 @@ export interface V2RouterDeps {
    */
   v3StrictIsolation?: boolean;
   /** Resolved isolation context for the current request (set by dispatch). */
-  requestIsolation?: { teamId?: string; userId: string; agentId: string; sessionId: string; taskId?: string };
+  requestIsolation?: { teamId?: string; userId: string; agentId: string; sessionId: string; taskId?: string; projectKey?: string; projectHash?: string };
   /** When isolation could not be resolved AND legacy_compat_mode is off, the missing fields. */
   requestIsolationMissing?: string[];
 }
@@ -729,6 +729,8 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
       sessionKey: session_id,
       sessionId: session_id,
       taskId: iso?.taskId,
+      projectKey: iso?.projectKey,
+      projectHash: iso?.projectHash,
       // Tenancy isolation: resolveIsolation() defaults missing fields to the default bucket.
       teamId: iso?.teamId,
       userId: iso?.userId,
@@ -791,6 +793,8 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
             sessionKey: record.sessionKey,
             sessionId: record.sessionId,
             taskId: record.taskId,
+            projectKey: record.projectKey,
+            projectHash: record.projectHash,
             teamId: record.teamId,
             userId: record.userId,
             agentId: record.agentId,

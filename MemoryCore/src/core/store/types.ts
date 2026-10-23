@@ -69,6 +69,10 @@ export interface L1SearchResult {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Project label for this row. Empty or absent means no project. */
+  project_key?: string;
+  /** First 16 hex chars of sha256(project_key). Empty or absent means no project. */
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   metadata_json: string;
@@ -91,6 +95,10 @@ export interface L1FtsResult {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Project label for this row. Empty or absent means no project. */
+  project_key?: string;
+  /** First 16 hex chars of sha256(project_key). Empty or absent means no project. */
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   metadata_json: string;
@@ -122,6 +130,10 @@ export interface L1RecordRow {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Project label for this row. Empty or absent means no project. */
+  project_key?: string;
+  /** First 16 hex chars of sha256(project_key). Empty or absent means no project. */
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   version: number;
@@ -154,6 +166,12 @@ export interface L0Record {
   userId?: string;
   agentId?: string;
   taskId?: string;
+  /**
+   * Project this message belongs to. Both fields are set together or not at
+   * all; empty means no project. Used later to group L1 memories per project.
+   */
+  projectKey?: string;
+  projectHash?: string;
   role: string;
   messageText: string;
   recordedAt: string;
@@ -168,6 +186,10 @@ export interface L0SearchResult {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Project label for this row. Empty or absent means no project. */
+  project_key?: string;
+  /** First 16 hex chars of sha256(project_key). Empty or absent means no project. */
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   role: string;
@@ -185,6 +207,10 @@ export interface L0FtsResult {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Project label for this row. Empty or absent means no project. */
+  project_key?: string;
+  /** First 16 hex chars of sha256(project_key). Empty or absent means no project. */
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   role: string;
@@ -202,6 +228,10 @@ export interface L0QueryRow {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Project label for this row. Empty or absent means no project. */
+  project_key?: string;
+  /** First 16 hex chars of sha256(project_key). Empty or absent means no project. */
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   role: string;
@@ -224,6 +254,12 @@ export interface L0SessionGroup {
     timestamp: number;
     /** Epoch ms when this message was recorded into L0 (used by L1 cursor). */
     recordedAtMs: number;
+    /**
+     * Project of this message. It is kept per message, not per group, so the
+     * group key (and with it L1 batching) does not change.
+     */
+    projectKey?: string;
+    projectHash?: string;
   }>;
 }
 

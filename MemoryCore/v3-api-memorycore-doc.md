@@ -117,6 +117,7 @@ v3 接口按鉴权方式分四层（均需 `Authorization: Bearer <KERNEL_AUTH_T
 | session_id | string | 是 | 业务会话 ID |
 | messages | object[] | 是 | 1–100 条，`{ role: "user"\|"assistant", content: 1–8192 字, timestamp?, recorded_at? }` |
 | team_id / agent_id / user_id / task_id | string | 否* | 隔离字段（*v3 强制 team+agent+user，缺省回落 default 桶） |
+| project_key / project_hash | string | 否 | 项目标签（也可用 Header `x-tdai-project-key` / `x-tdai-project-hash`，body 优先）。`project_key` 1–512 字符；`project_hash` 为 `^[0-9a-f]{16}$`（sha256(project_key) 前 16 位十六进制，不做校验）。两者必须同时提供且合法，否则忽略并按「无项目」存储，不报错。写入 L0，并在 L1 抽取时仅当来源消息全部属于同一项目才传递给 L1 |
 
 **响应** `data`
 

@@ -325,3 +325,102 @@ describe("writeMemory - retries a failed delete of the replaced records", () => 
     expect(warnings.some((w) => w.includes("delete failed") && w.includes("[c1] remain beside m1"))).toBe(true);
   });
 });
+
+
+describe("writeMemory - project propagation", () => {
+  const PROJECT_A = { projectKey: "git:github.com/acme/app", projectHash: "0123456789abcdef" };
+  const PROJECT_B = { projectKey: "git:github.com/acme/other", projectHash: "fedcba9876543210" };
+
+  /** queryL1Records returns snake_case rows; the mock casts them like the other tests. */
+  function mkStoreWithRows(rows: Array<Record<string, unknown>>) {
+    return mkVectorStore(rows as unknown as MemoryRecord[]);
+  }
+
+  it("writes the project of a new memory to the vector store and to JSONL", async () => {
+    const vs = mkVectorStore();
+    const storage = mkStorage();
+
+    const record = await writeMemory({
+      memory: { ...mkMemory(), ...PROJECT_A },
+      decision: { record_id: "m1", action: "store", target_ids: [] } satisfies DedupDecision,
+      baseDir: "/tmp",
+      sessionKey: "s1",
+      vectorStore: vs,
+      storage,
+    });
+
+    expect(record).toMatchObject(PROJECT_A);
+    expect(vs.upserted[0]?.record).toMatchObject(PROJECT_A);
+    expect(JSON.parse(storage.appended[0]!.content)).toMatchObject(PROJECT_A);
+  });
+
+  it("keeps a memory without project free of project keys", async () => {
+    const vs = mkVectorStore();
+    const storage = mkStorage();
+
+    const record = await writeMemory({
+      memory: mkMemory(),
+      decision: { record_id: "m2", action: "store", target_ids: [] } satisfies DedupDecision,
+      baseDir: "/tmp",
+      sessionKey: "s1",
+      vectorStore: vs,
+      storage,
+    });
+
+    expect(record?.projectKey).toBeUndefined();
+    expect(record?.projectHash).toBeUndefined();
+    expect(JSON.parse(storage.appended[0]!.content)).not.toHaveProperty("projectKey");
+  });
+
+  it("keeps the project of the existing record when a merge has no project of its own", async () => {
+    const vs = mkStoreWithRows([
+      { record_id: "old-1", version: 2, project_key: PROJECT_A.projectKey, project_hash: PROJECT_A.projectHash },
+    ]);
+
+    const record = await writeMemory({
+      memory: mkMemory(),
+      decision: { record_id: "m3", action: "merge", target_ids: ["old-1"], merged_content: "merged" } satisfies DedupDecision,
+      baseDir: "/tmp",
+      sessionKey: "s1",
+      vectorStore: vs,
+      storage: mkStorage(),
+    });
+
+    expect(record).toMatchObject({ ...PROJECT_A, version: 3 });
+  });
+
+  it("takes the project of the new sources when a merge has one", async () => {
+    const vs = mkStoreWithRows([
+      { record_id: "old-1", version: 1, project_key: PROJECT_A.projectKey, project_hash: PROJECT_A.projectHash },
+    ]);
+
+    const record = await writeMemory({
+      memory: { ...mkMemory(), ...PROJECT_B },
+      decision: { record_id: "m4", action: "update", target_ids: ["old-1"], merged_content: "updated" } satisfies DedupDecision,
+      baseDir: "/tmp",
+      sessionKey: "s1",
+      vectorStore: vs,
+      storage: mkStorage(),
+    });
+
+    expect(record).toMatchObject(PROJECT_B);
+  });
+
+  it("leaves the project empty when merged records disagree and the new memory has none", async () => {
+    const vs = mkStoreWithRows([
+      { record_id: "old-1", version: 1, project_key: PROJECT_A.projectKey, project_hash: PROJECT_A.projectHash },
+      { record_id: "old-2", version: 1, project_key: PROJECT_B.projectKey, project_hash: PROJECT_B.projectHash },
+    ]);
+
+    const record = await writeMemory({
+      memory: mkMemory(),
+      decision: { record_id: "m5", action: "merge", target_ids: ["old-1", "old-2"], merged_content: "merged" } satisfies DedupDecision,
+      baseDir: "/tmp",
+      sessionKey: "s1",
+      vectorStore: vs,
+      storage: mkStorage(),
+    });
+
+    expect(record?.projectHash).toBeUndefined();
+  });
+});

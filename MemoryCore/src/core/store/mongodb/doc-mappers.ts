@@ -41,6 +41,9 @@ export interface L0Doc {
   session_id: string;
   team_id: string;
   task_id: string;
+  /** Absent on documents written before the project fields existed. */
+  project_key?: string;
+  project_hash?: string;
   user_id: string;
   agent_id: string;
   role: string;
@@ -58,6 +61,8 @@ export function l0RecordToDoc(record: L0Record): L0Doc {
     session_id: record.sessionId || DEFAULT_ISOLATION_ID,
     team_id: record.teamId ?? "",
     task_id: record.taskId ?? "",
+    project_key: record.projectKey ?? "",
+    project_hash: record.projectHash ?? "",
     user_id: record.userId || DEFAULT_ISOLATION_ID,
     agent_id: record.agentId || DEFAULT_ISOLATION_ID,
     role: record.role,
@@ -76,6 +81,8 @@ export function docToL0QueryRow(doc: L0Doc): L0QueryRow {
     session_id: doc.session_id,
     team_id: doc.team_id ?? "",
     task_id: doc.task_id ?? "",
+    project_key: doc.project_key ?? "",
+    project_hash: doc.project_hash ?? "",
     user_id: doc.user_id ?? "",
     agent_id: doc.agent_id ?? "",
     role: doc.role,
@@ -108,6 +115,9 @@ export interface L1Doc {
   user_id: string;
   agent_id: string;
   task_id: string;
+  /** Absent on documents written before the project fields existed. */
+  project_key?: string;
+  project_hash?: string;
   session_key: string;
   session_id: string;
   version: number;
@@ -137,6 +147,8 @@ export function l1RecordToDoc(record: MemoryRecord): L1Doc {
     user_id: record.userId ?? "",
     agent_id: record.agentId ?? "",
     task_id: record.taskId ?? "",
+    project_key: record.projectKey ?? "",
+    project_hash: record.projectHash ?? "",
     session_key: record.sessionKey,
     session_id: record.sessionId,
     version: record.version ?? 0,
@@ -161,6 +173,8 @@ export function docToL1RecordRow(doc: L1Doc): L1RecordRow {
     session_id: doc.session_id ?? "",
     team_id: doc.team_id ?? "",
     task_id: doc.task_id ?? "",
+    project_key: doc.project_key ?? "",
+    project_hash: doc.project_hash ?? "",
     user_id: doc.user_id ?? "",
     agent_id: doc.agent_id ?? "",
     version: doc.version ?? 0,
@@ -190,6 +204,8 @@ export function docToL1SearchResult(doc: L1Doc, score: number): L1SearchResult {
     session_id: row.session_id,
     team_id: row.team_id,
     task_id: row.task_id,
+    project_key: row.project_key,
+    project_hash: row.project_hash,
     user_id: row.user_id,
     agent_id: row.agent_id,
     metadata_json: row.metadata_json,

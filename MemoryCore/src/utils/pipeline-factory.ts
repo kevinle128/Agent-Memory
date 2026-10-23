@@ -552,6 +552,8 @@ export function createL1Runner(opts: {
               userId: g.userId,
               agentId: g.agentId,
               recordedAtMs: m.recordedAtMs,
+              projectKey: m.projectKey,
+              projectHash: m.projectHash,
             });
           }
         }
@@ -583,6 +585,8 @@ export function createL1Runner(opts: {
               userId: g.userId ?? "",
               agentId: g.agentId ?? "",
               recordedAtMs: m.recordedAtMs,
+              projectKey: m.projectKey,
+              projectHash: m.projectHash,
             });
           }
         }
@@ -717,7 +721,14 @@ export function createL1Runner(opts: {
           };
           groupMap.set(groupKey, g);
         }
-        g.messages.push({ id: m.id, role: m.role, content: m.content, timestamp: m.timestamp });
+        g.messages.push({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp,
+          projectKey: m.projectKey,
+          projectHash: m.projectHash,
+        });
         g.lastMs = Math.max(g.lastMs, m.recordedAtMs);
       }
       const groups: L1Group[] = Array.from(groupMap.values());

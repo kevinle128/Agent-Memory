@@ -15,6 +15,7 @@
 import type { ConversationMessage } from "../conversation/l0-recorder.js";
 import { formatExtractionPrompt, getExtractMemoriesSystemPrompt, type MemoryPromptMode } from "../prompts/l1-extraction.js";
 import { batchDedup } from "./l1-dedup.js";
+import { resolveMemoryProject } from "./l1-project.js";
 import { writeMemory, generateMemoryId, isL1PersistenceError } from "./l1-writer.js";
 import { buildDedupScopeFilter } from "../store/isolation.js";
 import type { ExtractedMemory, MemoryRecord, MemoryType, DedupDecision } from "./l1-writer.js";
@@ -244,13 +245,23 @@ export async function extractL1Memories(params: {
         logger?.warn?.(`${TAG} Skipping memory with invalid type "${mem.type}"`);
         continue;
       }
+      const sourceMessageIds = Array.isArray(mem.source_message_ids) ? mem.source_message_ids : [];
+      // The LLM may cite background messages too, so look sources up in both.
+      const project = resolveMemoryProject(
+        sourceMessageIds,
+        [...backgroundMessages, ...newMessages],
+        newMessages,
+      );
       allExtracted.push({
         content: mem.content,
         type: memType,
         priority: typeof mem.priority === "number" ? mem.priority : 50,
-        source_message_ids: Array.isArray(mem.source_message_ids) ? mem.source_message_ids : [],
+        source_message_ids: sourceMessageIds,
         metadata: mem.metadata ?? {},
         scene_name: scene.scene_name,
+        // Empty project stays absent.
+        projectKey: project.projectKey || undefined,
+        projectHash: project.projectHash || undefined,
       });
     }
   }

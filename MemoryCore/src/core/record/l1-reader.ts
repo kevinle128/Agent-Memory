@@ -86,6 +86,8 @@ function rowToMemoryRecord(row: L1RecordRow): MemoryRecord {
     sessionKey: row.session_key,
     sessionId: row.session_id,
     taskId: row.task_id,
+    projectKey: row.project_key || undefined,
+    projectHash: row.project_hash || undefined,
     teamId: row.team_id,
     userId: row.user_id,
     agentId: row.agent_id,

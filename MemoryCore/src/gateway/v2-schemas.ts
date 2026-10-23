@@ -354,6 +354,29 @@ export const isolationFieldsSchema = z.object({
 }).passthrough();
 export type IsolationFields = z.infer<typeof isolationFieldsSchema>;
 
+/** Upper bound for a project key. Keys are labels such as a git remote or a local path. */
+export const PROJECT_KEY_MAX_LENGTH = 512;
+const PROJECT_HASH_PATTERN = /^[0-9a-f]{16}$/;
+
+/**
+ * Validate the optional project pair sent by the proxy.
+ *
+ * The pair is all-or-nothing: a key without a valid hash (or the reverse)
+ * would make later grouping by hash unreliable, so both are dropped. The
+ * request itself must still succeed, because a project is only a label and
+ * not part of the tenancy identity. The hash is not recomputed from the key;
+ * the sender owns that contract.
+ */
+function resolveProjectFields(
+  rawKey: unknown,
+  rawHash: unknown,
+): { projectKey?: string; projectHash?: string } {
+  if (typeof rawKey !== "string" || typeof rawHash !== "string") return {};
+  if (rawKey.length < 1 || rawKey.length > PROJECT_KEY_MAX_LENGTH) return {};
+  if (!PROJECT_HASH_PATTERN.test(rawHash)) return {};
+  return { projectKey: rawKey, projectHash: rawHash };
+}
+
 /**
  * Pull the three-dim isolation triple from the parsed body or from request
  * headers. Body wins (consistent with how `session_id` is currently sourced).
@@ -365,7 +388,7 @@ export function resolveIsolation(
   body: Record<string, unknown> | undefined,
   headers: Record<string, string | string[] | undefined>,
   opts: { legacyCompatMode?: boolean; legacyPlaceholder?: string } = {},
-): { ok: true; ctx: { userId: string; agentId: string; sessionId: string; taskId?: string } } {
+): { ok: true; ctx: { userId: string; agentId: string; sessionId: string; taskId?: string; projectKey?: string; projectHash?: string } } {
   const headerStr = (k: string): string | undefined => {
     const raw = headers[k] ?? headers[k.toLowerCase()];
     if (Array.isArray(raw)) return raw[0];
@@ -382,13 +405,19 @@ export function resolveIsolation(
     (body?.task_id as string | undefined)
     ?? headerStr("x-tdai-task-id")
     ?? undefined;
+  // The pair comes from one source only: a key from the body and a hash from a
+  // header could describe two different projects.
+  const bodyHasProject = body?.project_key !== undefined || body?.project_hash !== undefined;
+  const project = bodyHasProject
+    ? resolveProjectFields(body?.project_key, body?.project_hash)
+    : resolveProjectFields(headerStr("x-tdai-project-key"), headerStr("x-tdai-project-hash"));
   const missing: string[] = [];
   if (!userId) missing.push("user_id");
   if (!agentId) missing.push("agent_id");
   if (!sessionId) missing.push("session_id");
 
   const ph = opts.legacyCompatMode ? (opts.legacyPlaceholder ?? DEFAULT_ISOLATION_ID) : DEFAULT_ISOLATION_ID;
-  const ctx = { ...(teamId ? { teamId } : {}), userId: userId || ph, agentId: agentId || ph, sessionId: sessionId || ph, ...(taskId ? { taskId } : {}) };
+  const ctx = { ...(teamId ? { teamId } : {}), userId: userId || ph, agentId: agentId || ph, sessionId: sessionId || ph, ...(taskId ? { taskId } : {}), ...project };
   return { ok: true, ctx };
 }
 

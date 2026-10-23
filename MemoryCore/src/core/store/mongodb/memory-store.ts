@@ -535,6 +535,9 @@ export class MongoMemoryStore implements IMemoryStore {
         content: row.message_text,
         timestamp: row.timestamp,
         recordedAtMs: row.recorded_at ? Date.parse(row.recorded_at) || 0 : 0,
+        // Project stays on the message: it must not split a group.
+        projectKey: row.project_key || undefined,
+        projectHash: row.project_hash || undefined,
       });
     }
     const groups: L0SessionGroup[] = [];

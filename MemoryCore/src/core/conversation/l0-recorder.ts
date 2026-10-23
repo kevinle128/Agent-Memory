@@ -31,6 +31,13 @@ export interface ConversationMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number; // epoch ms
+  /**
+   * Project of the L0 row this message was read from. Both fields are set
+   * together or not at all. They stay on the message, never on the session
+   * group key, so project does not split L1 batches.
+   */
+  projectKey?: string;
+  projectHash?: string;
 }
 
 /**
@@ -398,6 +405,11 @@ export async function readConversationRecords(
             role: parsed.role as "user" | "assistant",
             content: parsed.content as string,
             timestamp: typeof parsed.timestamp === "number" ? parsed.timestamp : Date.now(),
+            // Accept the pair only when both are non-empty strings, as on the write path.
+            ...(typeof parsed.projectKey === "string" && parsed.projectKey
+              && typeof parsed.projectHash === "string" && parsed.projectHash
+              ? { projectKey: parsed.projectKey, projectHash: parsed.projectHash }
+              : {}),
           };
           records.push({
             sessionKey: (parsed.sessionKey as string) || sessionKey,

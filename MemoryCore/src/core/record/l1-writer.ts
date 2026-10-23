@@ -23,6 +23,7 @@ import type { EmbeddingService } from "../store/embedding.js";
 import type { StorageAdapter } from "../storage/adapter.js";
 import { StoragePaths } from "../storage/types.js";
 import type { Logger } from "../types.js";
+import { resolveUnanimousProject, type ResolvedProject } from "./l1-project.js";
 
 // ============================
 // Types
@@ -83,6 +84,12 @@ export interface MemoryRecord {
   /** Optional task dimension for L0/L1 filtering. */
   taskId?: string;
   /**
+   * Project of the source messages. Set only when all sources agree; empty or
+   * absent means no project. Not part of the tenancy identity.
+   */
+  projectKey?: string;
+  projectHash?: string;
+  /**
    * Three-dim tenancy isolation (new in this branch).
    *
    * `userId` / `agentId` are mandatory for new writes once gateway-level
@@ -110,6 +117,9 @@ export interface ExtractedMemory {
   metadata: EpisodicMetadata | Record<string, never>;
   /** Scene name this memory was extracted in */
   scene_name: string;
+  /** Project resolved from the source messages. Empty or absent means no project. */
+  projectKey?: string;
+  projectHash?: string;
 }
 
 export type DedupAction = "store" | "update" | "merge" | "skip";
@@ -210,11 +220,17 @@ export async function writeMemory(params: {
   const now = new Date().toISOString();
 
   let nextVersion = 0;
+  // Project of the records this write replaces. It is used only when the new
+  // memory has no project of its own, so a merge never erases a known project.
+  let existingProject: ResolvedProject = { projectKey: "", projectHash: "" };
   if ((decision.action === "update" || decision.action === "merge") && decision.target_ids.length > 0 && vectorStore) {
     try {
       const existing = await vectorStore.queryL1Records({ recordIds: decision.target_ids });
       const maxVersion = existing.reduce((max, row) => Math.max(max, row.version ?? 0), 0);
       nextVersion = maxVersion + 1;
+      existingProject = resolveUnanimousProject(
+        existing.map((row) => ({ projectKey: row.project_key, projectHash: row.project_hash })),
+      );
     } catch (err) {
       logger?.warn?.(`${TAG} Failed to read existing memory version, defaulting to v0: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -239,6 +255,9 @@ export async function writeMemory(params: {
     finalTimestamps = [now];
   }
 
+  const ownProject = resolveUnanimousProject([{ projectKey: memory.projectKey, projectHash: memory.projectHash }]);
+  const project = ownProject.projectHash ? ownProject : existingProject;
+
   const record: MemoryRecord = {
     id: decision.record_id || generateMemoryId(),
     content: finalContent,
@@ -254,6 +273,9 @@ export async function writeMemory(params: {
     sessionKey,
     sessionId: sessionId || DEFAULT_ISOLATION_ID,
     taskId,
+    // Empty project stays absent so JSONL lines of project-less memories keep their old shape.
+    projectKey: project.projectKey || undefined,
+    projectHash: project.projectHash || undefined,
     teamId,
     // Tenancy isolation — propagated end-to-end so SQLite / TCVDB upsert
     // can persist the row's owner. Empty strings preserve pre-isolation
