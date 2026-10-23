@@ -10,7 +10,7 @@ function account(partial: Partial<SubscriptionAccountEntity> = {}): Subscription
     account_id: "sacc-1", group_id: "g", provider: "codex", display_name: "a", account_label: "",
     enabled: true, status: "active", access_token: "x", refresh_token: "y",
     token_expires_at: NOW + 60 * MIN, provider_account_id: "p", usage: { windows: [] },
-    usage_updated_at: null, exhausted_until: null, usage_fail_count: 0, refresh_fail_count: 0,
+    reset_credits: null, usage_updated_at: null, exhausted_until: null, usage_fail_count: 0, refresh_fail_count: 0,
     last_error: null, active_sessions: 0, version: 1, created_at: "", updated_at: "",
     ...partial,
   };

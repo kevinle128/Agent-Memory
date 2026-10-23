@@ -3,7 +3,7 @@ import type * as http from "node:http";
 import { SqliteMetadataStore } from "./sqlite-adapter.js";
 import { MetadataService, type SubscriptionAccountChange } from "../service/metadata-service.js";
 import { SubscriptionProviderError } from "../../subscription-pool/providers/types.js";
-import { fakeAdapter, tokens } from "../../subscription-pool/test-support.js";
+import { fakeAdapter, tokens, usageReading } from "../../subscription-pool/test-support.js";
 import { handleV3MetaRoute } from "../router/v3-meta-router.js";
 import type { SupportedAgent } from "../types.js";
 
@@ -184,9 +184,9 @@ describe("subscription pool provider calls", () => {
   }
 
   it("adds a claude account from a code#state paste and hides the tokens", async () => {
-    adapter.fetchUsage.mockResolvedValue([{
+    adapter.fetchUsage.mockResolvedValue(usageReading([{
       name: "five_hour", model_scope: null, used_pct: 40, resets_at: null, observed_at: 1, source: "usage_api",
-    }]);
+    }]));
     const started = svc.startSubscriptionOAuth("claude");
     const account = await svc.completeSubscriptionOAuth({
       provider: "claude",
@@ -288,12 +288,94 @@ describe("subscription pool provider calls", () => {
   it("checks usage now and returns the account without tokens", async () => {
     await svc.enableSubscriptionPool("codex", AGENTS);
     const { account } = await login();
-    adapter.fetchUsage.mockResolvedValueOnce([{ name: "primary_window", model_scope: null, used_pct: 12, resets_at: null, observed_at: 1, source: "usage_api" }]);
+    adapter.fetchUsage.mockResolvedValueOnce(usageReading([{ name: "primary_window", model_scope: null, used_pct: 12, resets_at: null, observed_at: 1, source: "usage_api" }]));
 
     const checked = await svc.checkSubscriptionAccountUsage(String(account.account_id));
 
     expect(checked).toMatchObject({ account_id: account.account_id, usage: { windows: [expect.objectContaining({ used_pct: 12 })] } });
     expect(JSON.stringify(checked)).not.toContain("access-new");
+  });
+
+  describe("redeem reset credit", () => {
+    const credits = {
+      available: 1, usable_now: 1, note: null, observed_at: 1,
+      credits: [{ id: "credit-1", label: "Full reset", remaining: 1, total: null, expires_at: 2, usable_now: true, unavailable_reason: null }],
+    };
+
+    it("redeems once, then reads usage again and returns the updated account", async () => {
+      await svc.enableSubscriptionPool("codex", AGENTS);
+      const { account } = await login();
+      adapter.fetchUsage.mockClear();
+      adapter.fetchUsage.mockResolvedValueOnce(usageReading([], credits));
+
+      const result = await svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345");
+
+      expect(adapter.redeemResetCredit).toHaveBeenCalledTimes(1);
+      expect(adapter.redeemResetCredit).toHaveBeenCalledWith("access-new", "acct-9", { creditId: "credit-1", requestId: "request-12345" });
+      expect(adapter.fetchUsage).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ outcome: "reset", reset_applied: true, message: null });
+      expect(result.account).toMatchObject({ account_id: account.account_id, reset_credits: credits });
+      expect(JSON.stringify(result)).not.toMatch(/access-new|refresh-new/);
+    });
+
+    it("refreshes a token that expires within a minute before the call, with no deadlock", async () => {
+      await svc.enableSubscriptionPool("codex", AGENTS);
+      const { account } = await login();
+      await store.updateSubscriptionAccount(String(account.account_id), { token_expires_at: Date.now() + 10_000 });
+      adapter.refresh.mockResolvedValueOnce(tokens({ accessToken: "access-fresh", expiresAt: Date.now() + 3_600_000 }));
+
+      const result = await Promise.race([
+        svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345"),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("redeem deadlocked")), 2_000)),
+      ]);
+
+      expect(adapter.refresh).toHaveBeenCalledTimes(1);
+      expect(adapter.redeemResetCredit).toHaveBeenCalledWith("access-fresh", "acct-9", expect.anything());
+      expect(result.reset_applied).toBe(true);
+    });
+
+    it("does not refresh a token that is valid for more than a minute", async () => {
+      await svc.enableSubscriptionPool("codex", AGENTS);
+      const { account } = await login();
+      await svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345");
+      expect(adapter.refresh).not.toHaveBeenCalled();
+    });
+
+    it("reports an outcome that did not reset as information, not an error", async () => {
+      await svc.enableSubscriptionPool("codex", AGENTS);
+      const { account } = await login();
+      adapter.redeemResetCredit.mockResolvedValueOnce({ outcome: "nothing_to_reset", resetApplied: false, message: null });
+      const result = await svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345");
+      expect(result).toMatchObject({ outcome: "nothing_to_reset", reset_applied: false });
+    });
+
+    it("fails with a safe message when the provider rejects the redeem", async () => {
+      await svc.enableSubscriptionPool("codex", AGENTS);
+      const { account } = await login();
+      adapter.redeemResetCredit.mockRejectedValueOnce(new SubscriptionProviderError("credit not found", false, 404));
+      await expect(svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345"))
+        .rejects.toMatchObject({ code: "RESET_CREDIT_REDEEM_FAILED", message: expect.stringContaining("credit not found") });
+
+      adapter.redeemResetCredit.mockRejectedValueOnce(new Error("socket error with access-new"));
+      const error = await svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345").catch((e: unknown) => e) as Error;
+      expect(error).toMatchObject({ code: "RESET_CREDIT_REDEEM_FAILED" });
+      expect(error.message).not.toContain("access-new");
+    });
+
+    it("fails without calling the provider when the token refresh fails", async () => {
+      await svc.enableSubscriptionPool("codex", AGENTS);
+      const { account } = await login();
+      await store.updateSubscriptionAccount(String(account.account_id), { token_expires_at: Date.now() + 1_000 });
+      adapter.refresh.mockRejectedValueOnce(new SubscriptionProviderError("invalid_grant", true, 400));
+      await expect(svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345"))
+        .rejects.toMatchObject({ code: "RESET_CREDIT_REDEEM_FAILED" });
+      expect(adapter.redeemResetCredit).not.toHaveBeenCalled();
+    });
+
+    it("rejects an unknown account", async () => {
+      await expect(svc.redeemSubscriptionResetCredit("sacc-missing", "credit-1", "request-12345"))
+        .rejects.toMatchObject({ code: "account_not_found" });
+    });
   });
 
   it("checks usage of every account", async () => {
@@ -424,6 +506,7 @@ describe("subscription pool routes", () => {
     ["account/update", { account_id: "test-account", enabled: false }],
     ["account/delete", { account_id: "test-account" }],
     ["account/check-usage", { account_id: "test-account" }],
+    ["account/redeem-reset-credit", { account_id: "test-account", credit_id: "credit-1", request_id: "request-12345" }],
     ["check-all", {}],
   ])("rejects member mutation %s", async (action, body) => {
     store.createUser({ username: "member", auth_provider: "local", external_id: "member", default_key_value: "member-key", user_type: "normal" });

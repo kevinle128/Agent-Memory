@@ -1,4 +1,4 @@
-import type { SubscriptionProvider, SubscriptionQuotaWindow } from "../../metadata/types.js";
+import type { SubscriptionProvider, SubscriptionQuotaWindow, SubscriptionResetCredits } from "../../metadata/types.js";
 
 export interface ExchangedSubscriptionTokens {
   accessToken: string;
@@ -27,11 +27,36 @@ export class SubscriptionProviderError extends Error {
   }
 }
 
+/** What one usage check reads. `resetCredits` is null when the provider gave no usable reading. */
+export interface SubscriptionUsageReading {
+  windows: SubscriptionQuotaWindow[];
+  resetCredits: SubscriptionResetCredits | null;
+}
+
+export interface RedeemResetCreditInput {
+  creditId: string;
+  /** Made once per admin click. The provider uses it to ignore a repeat of the same click. */
+  requestId: string;
+}
+
+export interface RedeemResetCreditResult {
+  /** Provider result code, such as `reset`, `already_used` or `nothing_to_reset`. */
+  outcome: string;
+  /** True only when the provider cleared the usage limits. */
+  resetApplied: boolean;
+  message: string | null;
+}
+
 export interface SubscriptionProviderAdapter {
   readonly provider: SubscriptionProvider;
   exchangeCode(input: SubscriptionCodeExchangeInput): Promise<ExchangedSubscriptionTokens>;
   refresh(refreshToken: string): Promise<ExchangedSubscriptionTokens>;
-  fetchUsage(accessToken: string, providerAccountId: string): Promise<SubscriptionQuotaWindow[]>;
+  fetchUsage(accessToken: string, providerAccountId: string): Promise<SubscriptionUsageReading>;
+  redeemResetCredit(
+    accessToken: string,
+    providerAccountId: string,
+    input: RedeemResetCreditInput,
+  ): Promise<RedeemResetCreditResult>;
 }
 
 export type SubscriptionFetch = (url: string, init?: RequestInit) => Promise<Response>;
@@ -48,6 +73,22 @@ export function parseResetTime(value: unknown, now = Date.now()): number | null 
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+/** Longest provider text kept in a result message. */
+const MAX_MESSAGE_LENGTH = 300;
+
+export function shortMessage(text: string): string | null {
+  const trimmed = text.trim();
+  return trimmed ? trimmed.slice(0, MAX_MESSAGE_LENGTH) : null;
+}
+
+/** Orders credits by expiry, soonest first, and puts credits without an expiry last. */
+export function byExpiry<T extends { expires_at: number | null }>(a: T, b: T): number {
+  if (a.expires_at === b.expires_at) return 0;
+  if (a.expires_at === null) return 1;
+  if (b.expires_at === null) return -1;
+  return a.expires_at - b.expires_at;
 }
 
 /** Error codes that mean the refresh token is gone and the account needs a new login. */

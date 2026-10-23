@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as http from "node:http";
-import { createPoolFixture, fakeAdapter, POOL_AGENTS } from "./test-support.js";
+import { createPoolFixture, fakeAdapter, POOL_AGENTS, usageReading } from "./test-support.js";
 import { handleInternalMetaRoute } from "../metadata/router/internal-meta-router.js";
 
 afterEach(() => { vi.useRealTimers(); });
@@ -12,7 +12,7 @@ describe("internal retry Check now", () => {
       const account = await fx.addAccount();
       let release!: () => void;
       const gate = new Promise<void>((resolve) => { release = resolve; });
-      const adapter = fakeAdapter({ fetchUsage: async () => { await gate; return [{ name: "weekly", model_scope: null, used_pct: 100, resets_at: Date.now() + 60_000, observed_at: Date.now(), source: "usage_api" }]; } });
+      const adapter = fakeAdapter({ fetchUsage: async () => { await gate; return usageReading([{ name: "weekly", model_scope: null, used_pct: 100, resets_at: Date.now() + 60_000, observed_at: Date.now(), source: "usage_api" }]); } });
       fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
       const first = fx.svc.checkSubscriptionAccountUsageInternal(account.account_id);
       const second = fx.svc.checkSubscriptionAccountUsageInternal(account.account_id);
@@ -34,7 +34,7 @@ describe("internal retry Check now", () => {
     const fx = await createPoolFixture();
     try {
       const account = await fx.addAccount();
-      const adapter = fakeAdapter({ fetchUsage: async () => [] });
+      const adapter = fakeAdapter({ fetchUsage: async () => usageReading([]) });
       fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
       let status = 0; let result: unknown;
       const handled = await handleInternalMetaRoute(

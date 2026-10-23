@@ -1,8 +1,8 @@
 import { vi } from "vitest";
 import { SqliteMetadataStore } from "../metadata/store/sqlite-adapter.js";
 import { MetadataService } from "../metadata/service/metadata-service.js";
-import type { SubscriptionAccountEntity, SupportedAgent, UpsertSubscriptionAccountInput } from "../metadata/types.js";
-import type { ExchangedSubscriptionTokens, SubscriptionProviderAdapter } from "./providers/types.js";
+import type { SubscriptionAccountEntity, SubscriptionQuotaWindow, SubscriptionResetCredits, SupportedAgent, UpsertSubscriptionAccountInput } from "../metadata/types.js";
+import type { ExchangedSubscriptionTokens, SubscriptionProviderAdapter, SubscriptionUsageReading } from "./providers/types.js";
 
 export const POOL_AGENTS: SupportedAgent[] = [
   { agent_source: "claude-code", protocol: "anthropic", display_name: "Claude Code" },
@@ -56,12 +56,23 @@ export function tokens(partial: Partial<ExchangedSubscriptionTokens> = {}): Exch
   };
 }
 
+/** A usage reading of windows, with no reset credit reading unless `resetCredits` is given. */
+export function usageReading(
+  windows: SubscriptionQuotaWindow[] = [],
+  resetCredits: SubscriptionResetCredits | null = null,
+): SubscriptionUsageReading {
+  return { windows, resetCredits };
+}
+
 /** Codex adapter whose methods are mocks; `partial` gives their first implementation. */
 export function fakeAdapter(partial: Partial<Omit<SubscriptionProviderAdapter, "provider">> = {}) {
   return {
     provider: "codex" as const,
     exchangeCode: vi.fn<SubscriptionProviderAdapter["exchangeCode"]>(partial.exchangeCode ?? (async () => tokens())),
     refresh: vi.fn<SubscriptionProviderAdapter["refresh"]>(partial.refresh ?? (async () => tokens())),
-    fetchUsage: vi.fn<SubscriptionProviderAdapter["fetchUsage"]>(partial.fetchUsage ?? (async () => [])),
+    fetchUsage: vi.fn<SubscriptionProviderAdapter["fetchUsage"]>(partial.fetchUsage ?? (async () => usageReading())),
+    redeemResetCredit: vi.fn<SubscriptionProviderAdapter["redeemResetCredit"]>(
+      partial.redeemResetCredit ?? (async () => ({ outcome: "reset", resetApplied: true, message: null })),
+    ),
   } satisfies SubscriptionProviderAdapter;
 }

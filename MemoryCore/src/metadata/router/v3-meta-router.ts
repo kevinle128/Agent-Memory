@@ -483,6 +483,10 @@ const routeTable: Record<string, Handler> = {
     s.assertCanManageUsers(c);
     return s.checkSubscriptionAccountUsage(d.account_id);
   }),
+  [`${V3_PREFIX}/subscription-pool/account/redeem-reset-credit`]: bind(S.subscriptionPoolAccountRedeemResetCreditSchema, async (d, c, s) => {
+    s.assertCanManageUsers(c);
+    return s.redeemSubscriptionResetCredit(d.account_id, d.credit_id, d.request_id);
+  }),
   [`${V3_PREFIX}/subscription-pool/check-all`]: bind(S.subscriptionPoolCheckAllSchema, async (_d, c, s) => {
     s.assertCanManageUsers(c);
     return s.checkAllSubscriptionAccountUsage();

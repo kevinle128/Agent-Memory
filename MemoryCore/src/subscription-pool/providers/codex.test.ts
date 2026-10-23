@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createCodexAdapter, parseCodexUsage } from "./codex.js";
+import { createCodexAdapter, parseCodexResetCredits, parseCodexUsage } from "./codex.js";
 import { SubscriptionProviderError, type SubscriptionFetch } from "./types.js";
 
 function fakeJwt(payload: Record<string, unknown>): string {
@@ -11,6 +12,9 @@ const ID_TOKEN = fakeJwt({
   email: "pool-1@example.com",
   "https://api.openai.com/auth": { chatgpt_account_id: "acct-123", chatgpt_plan_type: "pro" },
 });
+
+const USAGE_FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/codex-usage-prolite.json", import.meta.url), "utf8"));
+const CREDITS_FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/codex-reset-credits.json", import.meta.url), "utf8"));
 
 interface Captured { url: string; init?: RequestInit }
 
@@ -40,6 +44,23 @@ describe("parseCodexUsage", () => {
       { name: "secondary_window", model_scope: null, used_pct: 7, resets_at: now + 3_600_000, observed_at: now, source: "usage_api" },
       { name: "bengalfox", model_scope: "gpt-5-codex", used_pct: 90, resets_at: 1_800_001_000_000, observed_at: now, source: "usage_api" },
     ]);
+  });
+
+  it("names a weekly-only window by its length, not by its position", () => {
+    const now = 1_793_000_000_000;
+    const prolite = JSON.parse(readFileSync(new URL("./fixtures/codex-usage-prolite.json", import.meta.url), "utf8"));
+    expect(parseCodexUsage(prolite, now)).toEqual([
+      { name: "secondary_window", model_scope: null, used_pct: 14, resets_at: 1_793_083_080_000, observed_at: now, source: "usage_api" },
+    ]);
+  });
+
+  it("keeps position names when lengths are missing or equal", () => {
+    const window = (used: number, seconds?: number) => ({ used_percent: used, limit_window_seconds: seconds, reset_at: null });
+    const names = (rate: unknown) => parseCodexUsage({ rate_limit: rate }, 1).map((item) => item.name);
+    expect(names({ primary_window: window(1), secondary_window: window(2) })).toEqual(["primary_window", "secondary_window"]);
+    expect(names({ primary_window: window(1, 604800), secondary_window: window(2, 604800) })).toEqual(["primary_window", "secondary_window"]);
+    expect(names({ primary_window: window(1, 18000) })).toEqual(["primary_window"]);
+    expect(names({ primary_window: window(1, 172800) })).toEqual(["primary_window"]);
   });
 
   it("skips null windows", () => {
@@ -102,13 +123,75 @@ describe("codex adapter", () => {
     const calls: Captured[] = [];
     const adapter = createCodexAdapter(fetchReturning(200, { rate_limit: { primary_window: { used_percent: 5, reset_at: 1_800_000_000 } } }, calls));
 
-    const windows = await adapter.fetchUsage("access-1", "acct-123");
+    const reading = await adapter.fetchUsage("access-1", "acct-123");
 
     expect(calls[0].url).toBe("https://chatgpt.com/backend-api/wham/usage");
     const headers = calls[0].init?.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer access-1");
     expect(headers["chatgpt-account-id"]).toBe("acct-123");
-    expect(windows).toHaveLength(1);
+    expect(reading.windows).toHaveLength(1);
+  });
+
+  it("reads reset credits from the credits endpoint after the usage call", async () => {
+    const calls: Captured[] = [];
+    const adapter = createCodexAdapter(async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify(url.endsWith("/wham/usage") ? USAGE_FIXTURE : CREDITS_FIXTURE), { status: 200 });
+    });
+
+    const reading = await adapter.fetchUsage("access-1", "acct-123");
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://chatgpt.com/backend-api/wham/usage",
+      "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits",
+    ]);
+    const headers = calls[1].init?.headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer access-1");
+    expect(headers["chatgpt-account-id"]).toBe("acct-123");
+    expect(reading.windows).toHaveLength(1);
+    expect(reading.resetCredits).toMatchObject({ available: 3, usable_now: 0, note: null });
+  });
+
+  it("keeps the usage reading when the credits call fails", async () => {
+    const failing = createCodexAdapter(async (url) => (
+      url.endsWith("/wham/usage")
+        ? new Response(JSON.stringify(USAGE_FIXTURE), { status: 200 })
+        : new Response("down", { status: 500 })
+    ));
+    const throwing = createCodexAdapter(async (url) => {
+      if (!url.endsWith("/wham/usage")) throw new Error("network down");
+      return new Response(JSON.stringify(USAGE_FIXTURE), { status: 200 });
+    });
+    for (const adapter of [failing, throwing]) {
+      const reading = await adapter.fetchUsage("access-1", "acct-123");
+      expect(reading.windows).toHaveLength(1);
+      expect(reading.resetCredits).toBeNull();
+    }
+  });
+
+  it("redeems a credit with a JSON body and reports the outcome", async () => {
+    const calls: Captured[] = [];
+    const adapter = createCodexAdapter(fetchReturning(200, { code: "reset", windows_reset: ["primary"] }, calls));
+
+    const result = await adapter.redeemResetCredit("access-1", "acct-123", { creditId: "credit-1", requestId: "request-1" });
+
+    expect(calls[0].url).toBe("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume");
+    expect(calls[0].init?.method).toBe("POST");
+    const headers = calls[0].init?.headers as Record<string, string>;
+    expect(headers.authorization).toBe("Bearer access-1");
+    expect(headers["chatgpt-account-id"]).toBe("acct-123");
+    expect(headers["content-type"]).toBe("application/json");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ redeem_request_id: "request-1", credit_id: "credit-1" });
+    expect(result).toEqual({ outcome: "reset", resetApplied: true, message: null });
+  });
+
+  it("does not count other outcomes as a reset, and fails on a provider error", async () => {
+    const none = await createCodexAdapter(fetchReturning(200, { code: "nothing_to_reset" }))
+      .redeemResetCredit("a", "b", { creditId: "c", requestId: "r" });
+    expect(none).toMatchObject({ outcome: "nothing_to_reset", resetApplied: false });
+    const error = await createCodexAdapter(fetchReturning(403, { error: { message: "no" } }))
+      .redeemResetCredit("a", "b", { creditId: "c", requestId: "r" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SubscriptionProviderError);
   });
 
   it("does not put a token into a provider error message", async () => {
@@ -137,5 +220,47 @@ describe("codex adapter", () => {
       ],
     }, 1);
     expect(windows).toEqual([expect.objectContaining({ name: "nested", used_pct: 55 })]);
+  });
+});
+
+describe("parseCodexResetCredits", () => {
+  const now = 1_793_000_000_000;
+
+  it("lists available credits by expiry and marks them unusable when no limit applies", () => {
+    const credits = parseCodexResetCredits(CREDITS_FIXTURE, 0, now);
+    expect(credits?.available).toBe(3);
+    expect(credits?.usable_now).toBe(0);
+    expect(credits?.observed_at).toBe(now);
+    expect(credits?.credits.map((credit) => credit.expires_at)).toEqual([
+      Date.parse("2026-10-22T18:47:23.536914Z"),
+      Date.parse("2026-10-29T18:37:36.265852Z"),
+      Date.parse("2026-11-06T22:55:00.186289Z"),
+    ]);
+    expect(credits?.credits[0]).toMatchObject({
+      id: "RateLimitResetCredit_42d4ee458b4481918c1d2779d413f6d6",
+      label: "Full reset",
+      remaining: 1,
+      total: null,
+      usable_now: false,
+      unavailable_reason: "not_applicable",
+    });
+  });
+
+  it("marks credits usable when a limit applies, and unknown when the count is missing", () => {
+    expect(parseCodexResetCredits(CREDITS_FIXTURE, 2, now)?.credits.every((credit) => credit.usable_now === true)).toBe(true);
+    const unknown = parseCodexResetCredits(CREDITS_FIXTURE, null, now);
+    expect(unknown?.usable_now).toBeNull();
+    expect(unknown?.credits[0]?.usable_now).toBeNull();
+  });
+
+  it("skips credits that are not available and gives null for an unknown shape", () => {
+    const body = { credits: [
+      { id: "used", status: "redeemed", expires_at: "2026-10-30T00:00:00Z" },
+      { id: "plan", status: "available", is_supported_by_plan: false, expires_at: null },
+    ] };
+    const credits = parseCodexResetCredits(body, 1, now);
+    expect(credits?.credits).toEqual([expect.objectContaining({ id: "plan", usable_now: false, unavailable_reason: "not_supported_by_plan", expires_at: null })]);
+    expect(parseCodexResetCredits({ nope: true }, 1, now)).toBeNull();
+    expect(parseCodexResetCredits(null, 1, now)).toBeNull();
   });
 });

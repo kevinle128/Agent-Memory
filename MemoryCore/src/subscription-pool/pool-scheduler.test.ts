@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubscriptionQuotaWindow } from "../metadata/types.js";
 import { SubscriptionPoolScheduler } from "./pool-scheduler.js";
-import { createPoolFixture, fakeAdapter, tokens, type PoolFixture } from "./test-support.js";
+import { createPoolFixture, fakeAdapter, tokens, usageReading, type PoolFixture } from "./test-support.js";
 
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
@@ -57,7 +57,7 @@ describe("SubscriptionPoolScheduler", () => {
     await setup();
     const account = await fx.addAccount({ token_expires_at: T0 + 8 * 24 * HOUR });
     await fx.store.updateSubscriptionAccount(account.account_id, { status: "exhausted", exhausted_until: T0 + 20 * MIN });
-    adapter.fetchUsage.mockResolvedValueOnce([win(100, T0 + 20 * MIN)]).mockResolvedValue([win(10, T0 + 5 * HOUR)]);
+    adapter.fetchUsage.mockResolvedValueOnce(usageReading([win(100, T0 + 20 * MIN)])).mockResolvedValue(usageReading([win(10, T0 + 5 * HOUR)]));
 
     await register();
     expect(adapter.fetchUsage).toHaveBeenCalledTimes(1);
@@ -73,10 +73,10 @@ describe("SubscriptionPoolScheduler", () => {
   it("automatically exhausts an active account at startup and releases it after both full windows reset", async () => {
     await setup();
     const account = await fx.addAccount({ token_expires_at: T0 + 8 * 24 * HOUR });
-    adapter.fetchUsage.mockResolvedValueOnce([
+    adapter.fetchUsage.mockResolvedValueOnce(usageReading([
       win(100, T0 + 20 * MIN),
       { ...win(100, T0 + HOUR), name: "secondary_window" },
-    ]).mockImplementation(async () => [win(10, Date.now() + HOUR)]);
+    ])).mockImplementation(async () => usageReading([win(10, Date.now() + HOUR)]));
 
     await register();
     expect(await fx.store.getSubscriptionAccount(account.account_id)).toMatchObject({ status: "exhausted", exhausted_until: T0 + HOUR });
@@ -223,7 +223,7 @@ describe("SubscriptionPoolScheduler", () => {
   it("does not loop on reset checks when the usage API omits a window held by a 429", async () => {
     await setup();
     const account = await fx.addAccount({ token_expires_at: T0 + 8 * 24 * HOUR });
-    adapter.fetchUsage.mockImplementation(async () => [win(10, T0 + 5 * HOUR)]);
+    adapter.fetchUsage.mockImplementation(async () => usageReading([win(10, T0 + 5 * HOUR)]));
     await register();
     await fx.svc.reportSubscriptionAccount(account.account_id, {
       windows: [{ ...win(50, T0 + 5 * HOUR), name: "primary", source: "header" }],

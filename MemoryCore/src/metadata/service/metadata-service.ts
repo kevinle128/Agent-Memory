@@ -113,7 +113,7 @@ import {
 } from "../subscription-pool/authorize-url.js";
 import { applyQuotaReport, type SubscriptionQuotaReport } from "../subscription-pool/quota-report.js";
 import { subscriptionAdapterFor, SUPPORTED_SUBSCRIPTION_PROVIDERS } from "../../subscription-pool/providers/index.js";
-import type { SubscriptionProviderAdapter } from "../../subscription-pool/providers/types.js";
+import { SubscriptionProviderError, type SubscriptionProviderAdapter } from "../../subscription-pool/providers/types.js";
 import {
   nextRetryDelayMs,
   refreshAccountTokens,
@@ -2318,6 +2318,7 @@ export class MetadataService {
       token_expires_at: account.token_expires_at,
       provider_account_id: account.provider_account_id,
       usage: account.usage,
+      reset_credits: account.reset_credits,
       usage_updated_at: account.usage_updated_at,
       exhausted_until: account.exhausted_until,
       usage_fail_count: account.usage_fail_count,
@@ -2650,6 +2651,59 @@ export class MetadataService {
     } catch (e) {
       throw this.translateSubscriptionConflict(e);
     }
+  }
+
+  /**
+   * Redeems one reset credit of an account, then reads usage again so the account row shows the
+   * new credit count and windows. The token refresh and the usage check take the account lock
+   * themselves, and the lock is not reentrant, so the provider call runs with no lock held.
+   * It writes no account state. `requestId` comes from the caller once per click, so a retry of
+   * the same click cannot spend a second credit.
+   */
+  async redeemSubscriptionResetCredit(accountId: string, creditId: string, requestId: string): Promise<{
+    outcome: string;
+    reset_applied: boolean;
+    message: string | null;
+    account: Record<string, unknown>;
+  }> {
+    const current = await this.requireSubscriptionAccount(accountId);
+    const adapter = this.subscriptionAdapter(current.provider);
+    let refreshed: RefreshResult;
+    try {
+      refreshed = await this.runSubscriptionTokenRefresh(accountId, { ifExpiresWithinMs: 60_000 });
+    } catch (e) {
+      throw this.translateSubscriptionConflict(e);
+    }
+    if (refreshed.failed) {
+      throw new MetadataError("RESET_CREDIT_REDEEM_FAILED", refreshed.account.status === "auth_error"
+        ? "the account needs a new login"
+        : "token refresh failed; try again later");
+    }
+
+    const account = await this.requireSubscriptionAccount(accountId);
+    let result: Awaited<ReturnType<SubscriptionProviderAdapter["redeemResetCredit"]>>;
+    try {
+      result = await adapter.redeemResetCredit(account.access_token, account.provider_account_id, { creditId, requestId });
+    } catch (e) {
+      // Provider messages never hold the token; any other error text may, so it is not passed on.
+      throw new MetadataError(
+        "RESET_CREDIT_REDEEM_FAILED",
+        e instanceof SubscriptionProviderError ? `provider rejected the redeem: ${e.message}` : "the redeem call failed",
+      );
+    }
+
+    let checked: UsageCheckResult;
+    try {
+      checked = await this.runSubscriptionUsageCheck(accountId);
+    } catch (e) {
+      throw this.translateSubscriptionConflict(e);
+    }
+    return {
+      outcome: result.outcome,
+      reset_applied: result.resetApplied,
+      message: result.message,
+      account: this.toPublicSubscriptionAccount(checked.account),
+    };
   }
 
   async checkAllSubscriptionAccountUsage(): Promise<{ checked: number; failed: number }> {

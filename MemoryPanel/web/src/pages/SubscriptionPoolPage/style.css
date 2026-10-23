@@ -54,6 +54,13 @@
   flex-wrap: wrap;
 }
 
+/* Tea 2.8 keeps its scroll arrows in a narrow flex container even with disableTabScrolling,
+ * and the arrows cover the tab labels. The two provider tabs never scroll, so hide them. */
+._memory-pool-header .tea-tabs__backward,
+._memory-pool-header .tea-tabs__forward {
+  display: none !important;
+}
+
 ._memory-pool-switch {
   margin-left: auto;
   display: flex;
@@ -167,4 +174,22 @@
   height: 14px;
   background: var(--tea-color-text-primary, #000);
   transform: translateX(-1px);
+}
+
+._memory-pool-credit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+._memory-pool-credit:last-child {
+  border-bottom: 0;
+}
+
+._memory-pool-credit-confirm {
+  flex-basis: 100%;
 }

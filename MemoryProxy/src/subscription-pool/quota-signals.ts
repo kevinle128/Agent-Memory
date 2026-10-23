@@ -6,10 +6,23 @@
 
 import type { PoolQuotaWindow } from "./types.js";
 
-/** Header prefixes of the two windows. The doubled "primary" in the secondary names is real. */
+/**
+ * Header names of the two windows, by position. The doubled "primary" in the secondary names is
+ * real; the plain secondary names are accepted as a fallback.
+ */
 const WINDOW_HEADERS = [
-  { name: "primary_window", used: "x-codex-primary-used-percent", reset: "x-codex-primary-reset-at" },
-  { name: "secondary_window", used: "x-codex-secondary-primary-used-percent", reset: "x-codex-secondary-primary-reset-at" },
+  {
+    position: "primary_window",
+    used: ["x-codex-primary-used-percent"],
+    reset: ["x-codex-primary-reset-at"],
+    minutes: ["x-codex-primary-window-minutes"],
+  },
+  {
+    position: "secondary_window",
+    used: ["x-codex-secondary-primary-used-percent", "x-codex-secondary-used-percent"],
+    reset: ["x-codex-secondary-primary-reset-at", "x-codex-secondary-reset-at"],
+    minutes: ["x-codex-secondary-window-minutes", "x-codex-secondary-primary-window-minutes"],
+  },
 ] as const;
 
 function finiteNumber(raw: string | null): number | null {
@@ -18,22 +31,48 @@ function finiteNumber(raw: string | null): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-export function parseCodexQuotaHeaders(headers: Headers, now: number): PoolQuotaWindow[] {
-  const windows: PoolQuotaWindow[] = [];
-  for (const spec of WINDOW_HEADERS) {
-    const used = finiteNumber(headers.get(spec.used));
-    if (used === null) continue;
-    const resetSec = finiteNumber(headers.get(spec.reset));
-    windows.push({
-      name: spec.name,
-      model_scope: null,
-      used_pct: Math.min(100, Math.max(0, used)),
-      resets_at: resetSec === null ? null : resetSec * 1000,
-      observed_at: now,
-      source: "header",
-    });
+function firstNumber(headers: Headers, names: readonly string[]): number | null {
+  for (const name of names) {
+    const value = finiteNumber(headers.get(name));
+    if (value !== null) return value;
   }
-  return windows;
+  return null;
+}
+
+/**
+ * Name of a window by its length: about 5 hours is "primary_window", about 7 days is
+ * "secondary_window". Null when the length is missing or between the two.
+ */
+function windowNameByLength(minutes: number | null): "primary_window" | "secondary_window" | null {
+  if (minutes === null || minutes <= 0) return null;
+  if (minutes <= 24 * 60) return "primary_window";
+  if (minutes >= 6 * 24 * 60) return "secondary_window";
+  return null;
+}
+
+export function parseCodexQuotaHeaders(headers: Headers, now: number): PoolQuotaWindow[] {
+  const readings = WINDOW_HEADERS.flatMap((spec) => {
+    const used = firstNumber(headers, spec.used);
+    if (used === null) return [];
+    return [{
+      position: spec.position,
+      used,
+      resetSec: firstNumber(headers, spec.reset),
+      lengthName: windowNameByLength(firstNumber(headers, spec.minutes)),
+    }];
+  });
+  // Same rule as the usage API reading in Core, so both readings use the same name and merge.
+  // A weekly-only plan sends its weekly window in the primary headers.
+  const useLength = readings.every((reading) => reading.lengthName !== null)
+    && new Set(readings.map((reading) => reading.lengthName)).size === readings.length;
+  return readings.map((reading) => ({
+    name: useLength ? reading.lengthName! : reading.position,
+    model_scope: null,
+    used_pct: Math.min(100, Math.max(0, reading.used)),
+    resets_at: reading.resetSec === null ? null : reading.resetSec * 1000,
+    observed_at: now,
+    source: "header" as const,
+  }));
 }
 
 export interface CodexLimitInfo {

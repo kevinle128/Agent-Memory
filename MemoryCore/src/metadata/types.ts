@@ -836,6 +836,36 @@ export interface SubscriptionAccountUsage {
   windows: SubscriptionQuotaWindow[];
 }
 
+/** One usage-limit reset credit of a subscription account, as the provider reported it. */
+export interface SubscriptionResetCredit {
+  /** Claude grant id or Codex credit id. The redeem call sends it back. */
+  id: string;
+  /** Claude grant label or Codex title. */
+  label: string | null;
+  /** Claude `resets_left`. Codex: 1 per available credit. */
+  remaining: number;
+  /** Claude `resets_total`. Null for Codex. */
+  total: number | null;
+  /** Epoch milliseconds (Claude `ends_at`, Codex `expires_at`). */
+  expires_at: number | null;
+  /** Claude `usable_now`. Codex: derived from plan support and the applicable count. */
+  usable_now: boolean | null;
+  unavailable_reason: string | null;
+}
+
+export interface SubscriptionResetCredits {
+  /** Sum of `remaining`. */
+  available: number;
+  /** Claude: grants that are usable now. Codex: the applicable available count. Null when unknown. */
+  usable_now: number | null;
+  /** Provider reason why there is no credit, such as Claude `no_grant`. Null otherwise. */
+  note: string | null;
+  /** Epoch milliseconds. */
+  observed_at: number;
+  /** Only credits with `remaining > 0`, soonest expiry first, no expiry last. */
+  credits: SubscriptionResetCredit[];
+}
+
 export interface SubscriptionAccountEntity {
   /** `sacc-<random>`. */
   account_id: string;
@@ -855,6 +885,11 @@ export interface SubscriptionAccountEntity {
   /** Identity on the provider side. Unique inside the group. */
   provider_account_id: string;
   usage: SubscriptionAccountUsage;
+  /**
+   * Reset credits from the last usage check. Kept apart from `usage` so a quota report from the
+   * proxy, which rewrites `usage`, never drops them. Null when never read or the provider gave none.
+   */
+  reset_credits: SubscriptionResetCredits | null;
   /** Epoch milliseconds of the last usage change. */
   usage_updated_at: number | null;
   /** Epoch milliseconds. The account counts as Exhausted while `now < exhausted_until`. */
@@ -927,6 +962,7 @@ export interface UpdateSubscriptionAccountPatch {
   refresh_token?: string;
   token_expires_at?: number | null;
   usage?: SubscriptionAccountUsage;
+  reset_credits?: SubscriptionResetCredits | null;
   usage_updated_at?: number | null;
   exhausted_until?: number | null;
   usage_fail_count?: number;

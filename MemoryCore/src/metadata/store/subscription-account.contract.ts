@@ -7,6 +7,7 @@ import type { IMetadataStore } from "./interface.js";
 import {
   SubscriptionAccountWriteConflictError,
   type SubscriptionAccountUsage,
+  type SubscriptionResetCredits,
   type UpsertSubscriptionAccountInput,
 } from "../types.js";
 
@@ -89,6 +90,7 @@ export function runSubscriptionAccountContract(
         token_expires_at: 1_900_000_000_000,
         provider_account_id: "provider-acct-1",
         usage: { windows: [] },
+        reset_credits: null,
         usage_updated_at: null,
         exhausted_until: null,
         usage_fail_count: 0,
@@ -240,6 +242,35 @@ export function runSubscriptionAccountContract(
       expect(cleared.token_expires_at).toBeNull();
       expect(cleared.usage).toEqual(usage);
       expect(cleared.version).toBe(updated.version + 1);
+    });
+
+    it("stores, keeps and clears reset credits", async () => {
+      const { account } = await store.upsertSubscriptionAccountByProviderId(accountInput(groupId));
+      const resetCredits: SubscriptionResetCredits = {
+        available: 1,
+        usable_now: 1,
+        note: null,
+        observed_at: 1_700_000_000_000,
+        credits: [{
+          id: "grant-1",
+          label: "launch reset",
+          remaining: 1,
+          total: 1,
+          expires_at: 1_800_000_000_000,
+          usable_now: true,
+          unavailable_reason: null,
+        }],
+      };
+      const stored = await store.updateSubscriptionAccount(account.account_id, { reset_credits: resetCredits });
+      expect(stored.reset_credits).toEqual(resetCredits);
+
+      // A patch without the field, such as a usage report, keeps the credits.
+      const kept = await store.updateSubscriptionAccount(account.account_id, { usage: { windows: [] } });
+      expect(kept.reset_credits).toEqual(resetCredits);
+      expect((await store.getSubscriptionAccount(account.account_id))?.reset_credits).toEqual(resetCredits);
+
+      const cleared = await store.updateSubscriptionAccount(account.account_id, { reset_credits: null });
+      expect(cleared.reset_credits).toBeNull();
     });
 
     it("throws version_mismatch when the expected version is stale", async () => {

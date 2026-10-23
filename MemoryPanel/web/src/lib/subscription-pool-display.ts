@@ -121,6 +121,26 @@ export function groupWindows(windows: PoolWindow[]): {
   return { primary, secondary, extra };
 }
 
+/**
+ * Which optional window columns the account table shows. A plan without a 5-hour window
+ * (for example Codex `prolite`) or without per-model limits leaves those columns empty for every
+ * row, so they are hidden. A column comes back as soon as one account has such a window.
+ * The weekly column always shows, because it is the main limit of every plan.
+ */
+export function windowColumns(accounts: Array<{ usage: { windows: PoolWindow[] } }>): {
+  primary: boolean;
+  models: boolean;
+} {
+  let primary = false;
+  let models = false;
+  for (const account of accounts) {
+    const grouped = groupWindows(account.usage.windows);
+    if (grouped.primary) primary = true;
+    if (grouped.extra.length > 0) models = true;
+  }
+  return { primary, models };
+}
+
 export interface TimeFormatOptions {
   /** IANA time zone. Defaults to the browser time zone. */
   timeZone?: string;
@@ -214,4 +234,103 @@ export function oauthCompleteInput(raw: string): { redirect_url: string } | { co
   const value = raw.trim();
   if (!value) return null;
   return /^https?:\/\//i.test(value) ? { redirect_url: value } : { code: value };
+}
+
+/** One reset credit as Core returns it. Times are epoch milliseconds. */
+export interface PoolResetCredit {
+  id: string;
+  label: string | null;
+  remaining: number;
+  total: number | null;
+  expires_at: number | null;
+  usable_now: boolean | null;
+  unavailable_reason: string | null;
+}
+
+export interface PoolResetCredits {
+  available: number;
+  usable_now: number | null;
+  note: string | null;
+  observed_at: number;
+  credits: PoolResetCredit[];
+}
+
+/** A credit that ends within this time shows in the warning color. */
+export const CREDIT_EXPIRING_SOON_MS = 24 * 60 * 60 * 1000;
+
+export type RedeemOutcomeKind = 'success' | 'info' | 'already' | 'error';
+
+/**
+ * Groups the provider outcome of a redeem call.
+ * "reset" spent a credit. "nothing_to_reset" and "not_limited" spent nothing.
+ * "already_redeemed" and "already_used" mean an earlier call did the work.
+ * Any other value is an error.
+ */
+export function classifyRedeemOutcome(outcome: string): RedeemOutcomeKind {
+  switch (outcome) {
+    case 'reset':
+      return 'success';
+    case 'nothing_to_reset':
+    case 'not_limited':
+      return 'info';
+    case 'already_redeemed':
+    case 'already_used':
+      return 'already';
+    default:
+      return 'error';
+  }
+}
+
+/** True when the credit ends in the future but within 24 hours. */
+export function isExpiringSoon(expiresAt: number | null, now: number): boolean {
+  if (expiresAt === null) return false;
+  const left = expiresAt - now;
+  return left > 0 && left <= CREDIT_EXPIRING_SOON_MS;
+}
+
+/** The credit that ends first among credits that are left and have not ended. Null when none. */
+export function nearestExpiringCredit(credits: PoolResetCredit[], now: number): PoolResetCredit | null {
+  let best: PoolResetCredit | null = null;
+  for (const credit of credits) {
+    if (credit.remaining <= 0 || credit.expires_at === null || credit.expires_at <= now) continue;
+    if (!best || credit.expires_at < (best.expires_at as number)) best = credit;
+  }
+  return best;
+}
+
+/** "10-24 08:30" in local time. */
+export function formatDateTime(ms: number, fmt: TimeFormatOptions = {}): string {
+  return new Intl.DateTimeFormat(fmt.locale, {
+    timeZone: fmt.timeZone,
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(ms);
+}
+
+export interface CreditExpiryView {
+  /** Absolute end time in local time. Null when the provider gave no time. */
+  at: string | null;
+  /** Time left. Null when there is no time or the credit has ended. */
+  remaining: string | null;
+  expired: boolean;
+  /** Ends within 24 hours. */
+  soon: boolean;
+}
+
+export function describeCreditExpiry(
+  expiresAt: number | null,
+  now: number,
+  fmt: TimeFormatOptions = {},
+): CreditExpiryView {
+  if (expiresAt === null) return { at: null, remaining: null, expired: false, soon: false };
+  const expired = expiresAt <= now;
+  return {
+    at: formatDateTime(expiresAt, fmt),
+    remaining: expired ? null : formatRemaining(expiresAt, now),
+    expired,
+    soon: isExpiringSoon(expiresAt, now),
+  };
 }
