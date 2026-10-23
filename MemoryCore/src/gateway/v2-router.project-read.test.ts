@@ -143,13 +143,13 @@ describe("project_hash on the L2 and L3 read routes (file backend)", () => {
       const res = await handleScenarioLs({ project_hash: "1111111111111111" }, auth, "r", deps);
 
       expect(res.code).toBe(0);
-      expect(res.data).toEqual({ entries: [], total: 0 });
+      expect(res.data).toEqual({ entries: [], total: 0, project_hash: "1111111111111111" });
     });
 
     it("keeps hiding project paths named by path_prefix, with or without project_hash", async () => {
       for (const body of [{ path_prefix: `projects/${A}/` }, { path_prefix: "projects/", project_hash: A }]) {
         const res = await handleScenarioLs(body, auth, "r", deps);
-        expect(res.data).toEqual({ entries: [], total: 0 });
+        expect(res.data).toMatchObject({ entries: [], total: 0 });
       }
     });
 
@@ -242,6 +242,34 @@ describe("project_hash on the L2 and L3 read routes (file backend)", () => {
       expect((await handleScenarioCount({ project_hash: "nope" }, auth, "r", deps)).code).toBe(400);
     });
   });
+
+  describe("project_hash echo", () => {
+    const echoed = (res: { data?: unknown }) => (res.data as { project_hash?: string }).project_hash;
+
+    it("returns the requested hash in every read answer, also for empty answers", async () => {
+      expect(echoed(await handleCoreRead({ project_hash: A }, auth, "r", deps))).toBe(A);
+      expect(echoed(await handleCoreRead({ project_hash: "1111111111111111" }, auth, "r", deps))).toBe("1111111111111111");
+      expect(echoed(await handleScenarioLs({ project_hash: A }, auth, "r", deps))).toBe(A);
+      expect(echoed(await handleScenarioLs({ project_hash: A, path_prefix: "projects/" }, auth, "r", deps))).toBe(A);
+      expect(echoed(await handleScenarioRead({ path: "work.md", project_hash: A }, auth, "r", deps))).toBe(A);
+      expect(echoed(await handleScenarioRead({ path: "missing.md", project_hash: A }, auth, "r", deps))).toBe(A);
+      expect(echoed(await handleScenarioRead({ path: "projects/x.md", project_hash: A }, auth, "r", deps))).toBe(A);
+      expect(echoed(await handleScenarioCount({ project_hash: A }, auth, "r", deps))).toBe(A);
+    });
+
+    it("leaves the answers without the field when the request has no hash", async () => {
+      for (const res of [
+        await handleCoreRead({}, auth, "r", deps),
+        await handleScenarioLs({}, auth, "r", deps),
+        await handleScenarioRead({ path: "root-habits.md" }, auth, "r", deps),
+        await handleScenarioRead({ path: "missing.md" }, auth, "r", deps),
+        await handleScenarioCount({}, auth, "r", deps),
+      ]) {
+        expect(res.code).toBe(0);
+        expect(res.data).not.toHaveProperty("project_hash");
+      }
+    });
+  });
 });
 
 describe("project_hash on the L2 and L3 read routes (row backend)", () => {
@@ -288,7 +316,7 @@ describe("project_hash on the L2 and L3 read routes (row backend)", () => {
     const ls = await handleScenarioLs({ project_hash: A, path_prefix: "." }, auth, "r", deps);
     const entries = (ls.data as { entries: Array<{ path: string }> }).entries;
     expect(entries.map((e) => e.path).sort()).toEqual(["more.md", "work.md"]);
-    expect((await handleScenarioCount({ project_hash: A, path_prefix: "./" }, auth, "r", deps)).data).toEqual({ total: 2 });
+    expect((await handleScenarioCount({ project_hash: A, path_prefix: "./" }, auth, "r", deps)).data).toEqual({ total: 2, project_hash: A });
     const read = await handleScenarioRead({ path: "./work.md", project_hash: A }, auth, "r", deps);
     expect(read.data).toMatchObject({ version: rowA.version });
     expect((await handleScenarioRead({ path: ".", project_hash: A }, auth, "r", deps)).code).toBe(400);
@@ -301,8 +329,8 @@ describe("project_hash on the L2 and L3 read routes (row backend)", () => {
     const countA = await handleScenarioCount({ project_hash: A }, auth, "r", deps);
     const countAPrefix = await handleScenarioCount({ project_hash: A, path_prefix: "w" }, auth, "r", deps);
     const countRoot = await handleScenarioCount({}, auth, "r", deps);
-    expect(countA.data).toEqual({ total: 2 });
-    expect(countAPrefix.data).toEqual({ total: 1 });
+    expect(countA.data).toEqual({ total: 2, project_hash: A });
+    expect(countAPrefix.data).toEqual({ total: 1, project_hash: A });
     expect(countRoot.data).toEqual({ total: 1 });
   });
 

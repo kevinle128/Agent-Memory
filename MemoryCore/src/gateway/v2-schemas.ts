@@ -115,6 +115,8 @@ export type ConversationAddRequest = z.infer<typeof conversationAddRequestSchema
 
 export interface CountData {
   total: number;
+  /** Echo of the requested `project_hash`; present only when the request had one. */
+  project_hash?: string;
 }
 
 export const conversationCountRequestSchema = z.object({
@@ -233,10 +235,14 @@ export interface ScenarioEntry extends Omit<GeneratedScenarioEntry, "version"> {
 export interface ScenarioListData {
   entries: ScenarioEntry[];
   total: number;
+  /** Echo of the requested `project_hash`; present only when the request had one. */
+  project_hash?: string;
 }
 
 export interface ScenarioFile extends Omit<GeneratedScenarioFile, "version"> {
   version?: number;
+  /** Echo of the requested `project_hash`; present only when the request had one. */
+  project_hash?: string;
   team_id?: string;
   agent_id?: string;
 }
@@ -249,6 +255,8 @@ export interface ScenarioWriteData extends Omit<GeneratedScenarioWriteData, "ver
 
 export interface CoreFile extends Omit<GeneratedCoreFile, "version"> {
   version?: number;
+  /** Echo of the requested `project_hash`; present only when the request had one. */
+  project_hash?: string;
   team_id?: string;
   agent_id?: string;
 }
