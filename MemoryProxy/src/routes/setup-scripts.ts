@@ -1,5 +1,5 @@
 /**
- * `GET /setup/hooks.sh` and `GET /setup/hook.sh` — serve the client hook scripts.
+ * `GET /setup/hooks.sh`, `GET /setup/hook.sh` and `GET /setup/pi-extension.ts` — serve the client hook files.
  *
  *   curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --base-url <ANTHROPIC_BASE_URL>
  *
@@ -17,6 +17,7 @@ import type { Context } from "hono";
 const SCRIPTS: Record<string, string> = {
   "hooks.sh": "install.sh",
   "hook.sh": "hook.sh",
+  "pi-extension.ts": "pi-extension.ts",
 };
 
 function scriptPath(file: string): string {
@@ -30,7 +31,7 @@ export function createSetupScriptHandler(name: keyof typeof SCRIPTS | string) {
     try {
       const body = await readFile(scriptPath(file), "utf-8");
       return c.body(body, 200, {
-        "content-type": "text/x-shellscript; charset=utf-8",
+        "content-type": name === "pi-extension.ts" ? "text/plain; charset=utf-8" : "text/x-shellscript; charset=utf-8",
         "cache-control": "no-store",
       });
     } catch {

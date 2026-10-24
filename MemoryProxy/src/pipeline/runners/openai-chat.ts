@@ -631,8 +631,8 @@ export async function runOpenaiChatPipeline(
   }
 
   // ── Session key: prefer conversation header, fallback to agent profile ───────────
-  const { resolveConversationId } = await import("../../session/session-key.js");
-  const conversationId = resolveConversationId(c);
+  const { resolveConversationId, resolvePiSessionId } = await import("../../session/session-key.js");
+  const conversationId = resolveConversationId(c) ?? (agentSource === "pi" ? resolvePiSessionId(c) : null);
   const sessionKey = conversationId ?? resolveSessionKey(config, lcHeaders, c.req.path, body, keyId);
 
   // ── Auth verification (user_key → user_id) ──────────────────────────────────────

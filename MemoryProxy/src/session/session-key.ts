@@ -40,6 +40,17 @@ export function resolveConversationId(c: Context): string | null {
   return id && id.length > 0 ? id : null;
 }
 
+/**
+ * Session id that pi sends when `compat.sendSessionAffinityHeaders` is on.
+ * It equals the id the pi extension reports in the hook, so the proxy session
+ * key joins the hook report. Only call this for pi: other clients may use
+ * these header names with a different meaning.
+ */
+export function resolvePiSessionId(c: Context): string | null {
+  const id = c.req.header("session_id") ?? c.req.header("x-session-affinity") ?? null;
+  return id && id.length > 0 ? id : null;
+}
+
 /** Check whether the messages look like a fresh conversation (at most 1 user message, no assistant/tool). */
 export function isFreshConversation(
   messages: Array<{ role?: string }>,

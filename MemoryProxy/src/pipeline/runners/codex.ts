@@ -77,6 +77,7 @@ import {
 } from "../../langfuse.js";
 import { TdaiClient, buildTdaiClientForRequest } from "../../tdai/client.js";
 import { deriveTdaiIdentity } from "../../tdai/identity.js";
+import { withSessionProject } from "../../project-scope/session-workspace.js";
 import {
   ResponsesAssembler,
   buildSessionTurnContext,
@@ -747,6 +748,12 @@ export async function runCodexPipeline(
     }
   }
 
+  // Project of the session, from the workspace the client hook reported. It is
+  // empty when the hook did not report; a missing project means "no project".
+  const sessionProject = await withSessionProject<SessionProjectFields>(
+    {}, config, { spaceId, userId: userId || "anonymous", agentSource, sessionId: sessionKey },
+  ) ?? {};
+
   // ── 9. Asset injection (every turn, no caching) ────────────────────────────
   // Only inject when session is initialized and not bypassed.
   //
@@ -810,7 +817,14 @@ export async function runCodexPipeline(
         turnSeq: lf.turnSeq,
         requestPath: c.req.path,
         // 合成 body 只抽取 system 文本，消息级注入（selected skill）无处落地。
-        custom: { session: sessionInfo, userKey: callerUserKey ?? undefined, assetCapabilities, messageInjection: false },
+        custom: {
+          session: sessionInfo,
+          userKey: callerUserKey ?? undefined,
+          assetCapabilities,
+          messageInjection: false,
+          projectHash: sessionProject.projectHash,
+          projectName: sessionProject.projectName,
+        },
       });
 
       // Extract injected content from the synthetic body's system message.
@@ -851,6 +865,7 @@ export async function runCodexPipeline(
     userId,
     callerUserKey,
     assetCapabilities,
+    sessionProject,
   });
 
   // ── 10b. Skill selection (proxy 选择 → 客户端加载) ──────────────────────────
@@ -909,6 +924,12 @@ export interface CodexArchiveCtx {
   assetCapabilities?: import("../../injection/types.js").AssetCapabilityFlags;
 }
 
+interface SessionProjectFields {
+  projectKey?: string;
+  projectHash?: string;
+  projectName?: string;
+}
+
 function buildArchiveCtx(args: {
   config: ProxyConfig;
   sessionInfo: Record<string, unknown> | null | undefined;
@@ -920,6 +941,7 @@ function buildArchiveCtx(args: {
   userId: string;
   callerUserKey: string | null;
   assetCapabilities?: import("../../injection/types.js").AssetCapabilityFlags;
+  sessionProject?: SessionProjectFields;
 }): CodexArchiveCtx | null {
   const { sessionInfo, injectionSkipped } = args;
   if (injectionSkipped || !sessionInfo) return null;
@@ -927,12 +949,16 @@ function buildArchiveCtx(args: {
   const tdaiClient = args.assetCapabilities?.chat_memory === false
     ? null
     : createCodexTdaiClient(args.config, args.spaceId);
-  const tdaiIdentity = deriveTdaiIdentity({
+  const baseIdentity = deriveTdaiIdentity({
     sessionInfo,
     userId: args.userId || null,
     sessionKey: args.sessionKey,
     userKey: args.callerUserKey,
   });
+  // The project goes into the identity so the L0 write and the skill round carry it.
+  const tdaiIdentity = baseIdentity && args.sessionProject?.projectKey && args.sessionProject.projectHash
+    ? { ...baseIdentity, ...args.sessionProject }
+    : baseIdentity;
   const tdaiUserMessage = extractLatestCodexUserMessage(args.input);
 
   return {
@@ -993,6 +1019,23 @@ async function triggerCodexArchiveHooks(
     toolCallCountOverride: toolUseCount,
     logPrefix: "[codex-tdai-l0]",
   });
+}
+
+/**
+ * Whether an upstream 2xx response is a Server-Sent Events stream.
+ *
+ * The ChatGPT Codex backend sends its SSE stream without a content-type
+ * header. Without this fallback such a stream is read as JSON: the client gets
+ * it only after the whole reply, and usage, billing and the L0 and skill
+ * archive are all skipped. An empty content type is therefore an SSE stream
+ * when the request asked for one (`stream: true`); a JSON content type is never
+ * one. A request without a `stream` field, such as /responses/compact, keeps
+ * the JSON path so that it is still billed.
+ */
+export function isEventStreamResponse(contentType: string, requestedStream: boolean): boolean {
+  const type = contentType.toLowerCase();
+  if (type.includes("text/event-stream")) return true;
+  return requestedStream && type.trim() === "";
 }
 
 // ── Forward helper ───────────────────────────────────────────────────────────
@@ -1270,7 +1313,7 @@ async function forwardToUpstream(
   // 上游请求 id —— 跨系统追溯用：客户端拿到的 x-request-id → 我方 usage_logs → 上游日志。
   const upstreamRequestId = upstreamResp.headers.get("x-request-id") ?? "";
   const contentType = upstreamResp.headers.get("content-type") ?? "";
-  if (!contentType.includes("text/event-stream")) {
+  if (!isEventStreamResponse(contentType, body.stream === true)) {
     const responseText = await upstreamResp.text();
     let usage: Record<string, unknown> | undefined;
     let toolCalls: UpstreamToolCall[] = [];

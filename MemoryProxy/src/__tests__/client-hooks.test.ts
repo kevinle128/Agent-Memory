@@ -236,13 +236,13 @@ describe("hook.sh", () => {
 
     it("sends null git fields for a directory outside a git repository", async () => {
       const env = connEnv({ AGENT_MEMORY_JSON_TOOL: tool });
-      const r = await runHook({ session_id: "s2", cwd: work, hook_event_name: "SessionStart" }, env, "codex");
+      const r = await runHook({ session_id: "s2", cwd: work, hook_event_name: "SessionStart" }, env, "other-client");
       expect(r.code).toBe(0);
       const body = JSON.parse(proxy.requests[0].body) as Record<string, unknown>;
       expect(body.git_toplevel).toBeNull();
       expect(body.git_remote).toBeNull();
       expect(body.cwd).toBe(work);
-      expect(body.client).toBe("codex");
+      expect(body.client).toBe("other-client");
     });
 
     it("escapes quotes and backslashes in the working directory", async () => {

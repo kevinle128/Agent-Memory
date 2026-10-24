@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
 # Agent-Memory client hook.
 #
-# Claude Code runs this script on the SessionStart and UserPromptSubmit events.
-# It sends the working directory and git identity of the session to the
+# Claude Code and Codex run this script on the SessionStart and UserPromptSubmit
+# events. It sends the working directory and git identity of the session to the
 # Agent-Memory proxy. The proxy uses them to find the project of the session.
 #
-# Usage: ~/.agent-memory/hook.sh [client]     (client defaults to claude-code)
+# Usage: ~/.agent-memory/hook.sh [client]     (client: claude-code (default) or codex)
+#
+# Connection settings:
+#   claude-code: ANTHROPIC_BASE_URL and token, from the environment or
+#                ~/.claude/settings.json.
+#   codex:       the active model provider in $CODEX_HOME/config.toml
+#                (default ~/.codex): the model_provider of the active profile, else
+#                the top-level one. Its base_url must be an Agent-Memory Codex
+#                route (".../codex/<space>"; a trailing /v1 or /cost-guard is
+#                dropped). The user key is found in the order the proxy uses:
+#                x-tdai-user-key in http_headers (also as a subtable), then the
+#                env var named in env_http_headers, then experimental_bearer_token,
+#                then the env var named by env_key.
 #
 # Rules for this script:
-#   - It MUST NOT write to stdout. Claude Code adds hook stdout to the model
-#     context.
+#   - It MUST NOT write to stdout. Claude Code and Codex add hook stdout to the
+#     model context.
 #   - It always exits 0, so a failure here never blocks the session.
 #   - Exception: when AGENT_MEMORY_HOOK_STRICT=1, it writes one error line to
 #     stderr and exits 1 if the report cannot be sent. The installer uses this.
@@ -26,6 +38,7 @@ HOME_DIR="${HOME:-}"
 AM_DIR="$HOME_DIR/.agent-memory"
 DEVICE_FILE="$AM_DIR/device.json"
 SETTINGS_FILE="$HOME_DIR/.claude/settings.json"
+CODEX_CONFIG="${CODEX_HOME:-$HOME_DIR/.codex}/config.toml"
 
 # Report an error. In strict mode this exits 1. Otherwise it exits 0 silently.
 die() {
@@ -164,6 +177,101 @@ process.stdout.write(JSON.stringify(o));'
 }
 
 # ---------------------------------------------------------------------------
+# Codex connection settings. Keep this block the same as the one in install.sh.
+# ---------------------------------------------------------------------------
+
+# Print the name of the active model provider: the model_provider of the
+# profile named by the top-level "profile" key, else the top-level
+# model_provider. TOML single quotes become double quotes first.
+codex_provider_name() {
+  local profile name=""
+  [ -f "$CODEX_CONFIG" ] || return 0
+  profile=$(awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*profile[[:space:]]*=/ { print; exit }' "$CODEX_CONFIG" \
+    | tr "'" '"' | sed -nE 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/p')
+  if [ -n "$profile" ]; then
+    name=$(awk -v p="$profile" '
+      /^[[:space:]]*\[/ {
+        h = $0
+        gsub(/[[:space:]]/, "", h)
+        sub(/#.*/, "", h)
+        ins = (h == "[profiles." p "]" || h == "[profiles.\"" p "\"]")
+        next
+      }
+      ins && /^[[:space:]]*model_provider[[:space:]]*=/ { print; exit }' "$CODEX_CONFIG" \
+      | tr "'" '"' | sed -nE 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/p')
+  fi
+  if [ -z "$name" ]; then
+    name=$(awk '/^[[:space:]]*\[/ { exit } /^[[:space:]]*model_provider[[:space:]]*=/ { print; exit }' "$CODEX_CONFIG" \
+      | tr "'" '"' | sed -nE 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/p')
+  fi
+  printf '%s' "$name"
+}
+
+# Print the lines of the active provider table and of its http_headers and
+# env_http_headers subtables. Each line has a tag: "M|" for the provider table,
+# "H|" for http_headers and "E|" for env_http_headers.
+codex_provider_lines() {
+  local name
+  name=$(codex_provider_name)
+  [ -n "$name" ] || return 0
+  awk -v p="$name" '
+    /^[[:space:]]*\[/ {
+      h = $0
+      gsub(/[[:space:]]/, "", h)
+      sub(/#.*/, "", h)
+      m1 = "[model_providers." p
+      m2 = "[model_providers.\"" p "\""
+      tag = ""
+      if (h == m1 "]" || h == m2 "]") tag = "M"
+      else if (h == m1 ".http_headers]" || h == m2 ".http_headers]") tag = "H"
+      else if (h == m1 ".env_http_headers]" || h == m2 ".env_http_headers]") tag = "E"
+      next
+    }
+    tag != "" { print tag "|" $0 }' "$CODEX_CONFIG" | tr "'" '"'
+}
+
+# Print "<base_url>" on line 1, "<header-name>" on line 2 and "<token>" on line 3.
+# The header name is "authorization" or "x-tdai-user-key". The order is the
+# one the proxy uses to find the user key (extractApiKeyFromContext): the
+# x-tdai-user-key header first (a literal value, then an environment variable
+# named in env_http_headers), then the bearer token (experimental_bearer_token,
+# then the env var named by env_key). Print nothing when the active provider
+# has no base_url or no token.
+codex_connection() {
+  local section base token header var key_re
+  section=$(codex_provider_lines)
+  [ -n "$section" ] || return 0
+  base=$(printf '%s\n' "$section" | sed -nE 's/^M\|[[:space:]]*base_url[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' | head -n 1)
+  [ -n "$base" ] || return 0
+  key_re='"?x-tdai-user-key"?[[:space:]]*=[[:space:]]*"([^"]*)"'
+  header="x-tdai-user-key"
+  token=$(printf '%s\n' "$section" | sed -nE "s/^H\\|[[:space:]]*$key_re.*/\\1/p" | head -n 1)
+  [ -n "$token" ] || token=$(printf '%s\n' "$section" | sed -nE "s/^M\\|[[:space:]]*http_headers[[:space:]]*=.*$key_re.*/\\1/p" | head -n 1)
+  if [ -z "$token" ]; then
+    var=$(printf '%s\n' "$section" | sed -nE "s/^E\\|[[:space:]]*$key_re.*/\\1/p" | head -n 1)
+    [ -n "$var" ] || var=$(printf '%s\n' "$section" | sed -nE "s/^M\\|[[:space:]]*env_http_headers[[:space:]]*=.*$key_re.*/\\1/p" | head -n 1)
+    [ -z "$var" ] || token=$(printenv "$var")
+  fi
+  if [ -z "$token" ]; then
+    header="authorization"
+    token=$(printf '%s\n' "$section" | sed -nE 's/^M\|[[:space:]]*experimental_bearer_token[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' | head -n 1)
+  fi
+  if [ -z "$token" ]; then
+    var=$(printf '%s\n' "$section" | sed -nE 's/^M\|[[:space:]]*env_key[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' | head -n 1)
+    [ -z "$var" ] || token=$(printenv "$var")
+  fi
+  [ -n "$token" ] || return 0
+  printf '%s\n%s\n%s\n' "$base" "$header" "$token"
+}
+
+# Print the Agent-Memory Codex route of a model provider base URL, which is
+# <proxy>/codex/<space>. A trailing /v1 and the /cost-guard marker are not part
+# of it. Print nothing when the URL is not a Codex route.
+codex_route() {
+  printf '%s' "$1" | sed -E 's#/cost-guard(/|$)#\1#g' | sed -nE 's#^(https?://[^?]*/codex/[^/?]+).*#\1#p'
+}
+
+# ---------------------------------------------------------------------------
 # Device id. Keep this block the same as the one in install.sh.
 # ---------------------------------------------------------------------------
 
@@ -219,6 +327,7 @@ ensure_device_id() {
 
 main() {
   local input="" base token session cwd event device top remote name url body code
+  local auth_header="authorization" conn
 
   detect_json_tool
 
@@ -230,15 +339,27 @@ main() {
   cwd=$(printf '%s' "$input" | json_get '["cwd"]')
   event=$(printf '%s' "$input" | json_get '["hook_event_name"]')
 
-  # Connection settings: the environment first, then settings.json.
-  base="${ANTHROPIC_BASE_URL:-}"
-  token="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
-  if [ -f "$SETTINGS_FILE" ]; then
-    [ -n "$base" ] || base=$(json_get '["env","ANTHROPIC_BASE_URL"]' < "$SETTINGS_FILE")
-    [ -n "$token" ] || token=$(json_get '["env","ANTHROPIC_AUTH_TOKEN"]' < "$SETTINGS_FILE")
-    [ -n "$token" ] || token=$(json_get '["env","ANTHROPIC_API_KEY"]' < "$SETTINGS_FILE")
+  if [ "$CLIENT" = "codex" ]; then
+    # Connection settings: the active model provider in the Codex config. The
+    # token goes only to a Codex route of the proxy, never to another provider.
+    conn=$(codex_connection)
+    base=$(printf '%s\n' "$conn" | sed -n 1p)
+    auth_header=$(printf '%s\n' "$conn" | sed -n 2p)
+    token=$(printf '%s\n' "$conn" | sed -n 3p)
+    base=$(codex_route "$base")
+    [ -n "$base" ] || die "the active Codex provider is not an Agent-Memory route"
+    [ -n "$token" ] || die "no token found in $CODEX_CONFIG"
+  else
+    # Connection settings: the environment first, then settings.json.
+    base="${ANTHROPIC_BASE_URL:-}"
+    token="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
+    if [ -f "$SETTINGS_FILE" ]; then
+      [ -n "$base" ] || base=$(json_get '["env","ANTHROPIC_BASE_URL"]' < "$SETTINGS_FILE")
+      [ -n "$token" ] || token=$(json_get '["env","ANTHROPIC_AUTH_TOKEN"]' < "$SETTINGS_FILE")
+      [ -n "$token" ] || token=$(json_get '["env","ANTHROPIC_API_KEY"]' < "$SETTINGS_FILE")
+    fi
+    [ -n "$base" ] && [ -n "$token" ] || die "no ANTHROPIC_BASE_URL or token found"
   fi
-  [ -n "$base" ] && [ -n "$token" ] || die "no ANTHROPIC_BASE_URL or token found"
   [ -n "$session" ] || die "no session_id on stdin"
 
   device=$(ensure_device_id)
@@ -275,7 +396,12 @@ main() {
   command -v curl >/dev/null 2>&1 || die "curl not found"
   url="${base%/}/v3/hook/report"
   # The token goes to curl on stdin, so it does not show in the process list.
-  code=$(printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' \
+  if [ "$auth_header" = "x-tdai-user-key" ]; then
+    auth_header="x-tdai-user-key: %s"
+  else
+    auth_header="Authorization: Bearer %s"
+  fi
+  code=$(printf "header = \"$auth_header\"\nheader = \"Content-Type: application/json\"\n" \
       "$(printf '%s' "$token" | tr -d '\r\n' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')" \
     | curl -s -o /dev/null -w '%{http_code}' --connect-timeout 1 --max-time 2 \
         -K - -X POST --data-binary "$body" "$url")

@@ -170,6 +170,9 @@ export function createApp(config: ProxyConfig): Hono {
   app.get("/setup/hook.sh", (c) =>
     import("./routes/setup-scripts.js").then(({ createSetupScriptHandler }) => createSetupScriptHandler("hook.sh")(c)),
   );
+  app.get("/setup/pi-extension.ts", (c) =>
+    import("./routes/setup-scripts.js").then(({ createSetupScriptHandler }) => createSetupScriptHandler("pi-extension.ts")(c)),
+  );
   app.post("/:agent/:spaceId/v3/hook/report", (c) =>
     import("./routes/hook-report.js").then(({ createHookReportHandler }) => createHookReportHandler(config)(c)),
   );
