@@ -41,6 +41,11 @@ import {
 } from '@/components/asset/AssetListPanel';
 import { UserBadge } from '@/components/asset/UserBadge';
 import SkillDetailPane from './SkillDetailPane';
+import { UserNameProvider } from './UserName';
+import { NewSkillDialog } from './NewSkillDialog';
+import { ProposalsView } from './ProposalsView';
+import { SkillFilterBar } from './SkillFilterBar';
+import { OriginBadge, PendingBadge, ScopeBadge } from './SkillBadges';
 import ImportSkillDialog from './ImportSkillDialog';
 import ForkSkillDialog from './ForkSkillDialog';
 import { TAB_I18N_KEY, useSkillsPanel, type Tab } from '../hooks/useSkillsPanel';
@@ -79,8 +84,20 @@ export default function SkillsPanel({
     exportLoading,
     visibilityMap,
     skills,
-    // cache
-    skillsWithCache,
+    // scope, filters and proposals
+    view,
+    setView,
+    filter,
+    setFilter,
+    showNew,
+    setShowNew,
+    visibleSkills,
+    knownProjects,
+    proposals,
+    proposalsLoading,
+    pendingCounts,
+    pendingTotal,
+    showProjectUi,
     // handlers
     refresh,
     handleDelete,
@@ -90,6 +107,7 @@ export default function SkillsPanel({
   } = store;
 
   return (
+    <UserNameProvider>
     <div className="_memory-skills-body">
       {/* 固定资产的 Agent 选择器与 Code 页 "Agent 资产" 选项栏保持相同呈现。 */}
       <AssetPageHeader
@@ -159,7 +177,6 @@ export default function SkillsPanel({
               );
             })()}
             <Button
-              type="primary"
               onClick={() => setShowImport(true)}
               disabled={teamAgents.length === 0}
               tooltip={teamAgents.length === 0 ? t('skills.import.tooltip.noAgent') : undefined}
@@ -167,11 +184,41 @@ export default function SkillsPanel({
             >
               {t('skills.import')}
             </Button>
+            <Button
+              type="primary"
+              onClick={() => setShowNew(true)}
+              disabled={teamAgents.length === 0}
+              tooltip={teamAgents.length === 0 ? t('skills.import.tooltip.noAgent') : undefined}
+            >
+              {t('skillScope.new.button')}
+            </Button>
           </>
         }
       />
 
-      {/* === 团队资产 / 固定资产 Tab === */}
+      <SkillFilterBar
+        filter={filter}
+        onChange={setFilter}
+        projects={knownProjects}
+        showProjectFilters={showProjectUi}
+        pendingTotal={pendingTotal}
+        onOpenProposals={() => setView('proposals')}
+      />
+
+      {view === 'proposals' ? (
+        <ProposalsView
+          teamId={activeTeamId ?? ''}
+          userId={myUserId}
+          proposals={proposals}
+          loading={proposalsLoading}
+          onBack={() => setView('skills')}
+          onChanged={() => void refresh()}
+          onOpenSkill={(id) => {
+            setSelectedSkillId(id);
+            setView('skills');
+          }}
+        />
+      ) : (
       <AssetSplitLayout
         storageKey="skills:assetSplitWidth"
         sidebar={
@@ -187,9 +234,9 @@ export default function SkillsPanel({
                 )}
               </>
             }
-            count={t('skills.count', { count: skillsWithCache.length })}
+            count={t('skills.count', { count: visibleSkills.length })}
             loading={loading}
-            items={skillsWithCache}
+            items={visibleSkills}
             selectedId={selectedSkillId}
             getItemId={(s) => s.skill_id}
             onSelect={(s) => setSelectedSkillId(s.skill_id)}
@@ -220,6 +267,7 @@ export default function SkillsPanel({
                       </Tooltip>
                     )}
                     <AssetItemName title={s.name}>{s.name}</AssetItemName>
+                    <PendingBadge count={pendingCounts[s.skill_id] ?? 0} />
                     {canManage && (
                       <Button
                         type="text"
@@ -246,6 +294,11 @@ export default function SkillsPanel({
 
                   {/* 第 2 行：资产真实 id，等宽灰色（与 ChatMemory 页同构） */}
                   <AssetItemId>{s.skill_id}</AssetItemId>
+
+                  <div className="_memory-skill-item-tags">
+                    <ScopeBadge skill={s} hideProject={!showProjectUi} />
+                    <OriginBadge origin={s.origin} />
+                  </div>
 
                   <AssetItemBadges>
                     {s.owner_user_id && (
@@ -292,10 +345,14 @@ export default function SkillsPanel({
             userId={myUserId}
             // 编辑权限与删除一致：仅 skill 的 owner（owner_user_id === 当前用户）可编辑
             canEdit={!!myUserId && selectedSkill?.owner_user_id === myUserId}
+            showProjectUi={showProjectUi}
+            pendingCount={selectedSkillId ? (pendingCounts[selectedSkillId] ?? 0) : 0}
+            onOpenProposals={() => setView('proposals')}
             onChanged={() => void refresh()}
           />
         }
       />
+      )}
 
       {/* Modals (only for team/fixed tabs) */}
       {showImport && (
@@ -315,6 +372,21 @@ export default function SkillsPanel({
             // + 绑定为 owner agent 的 fixed-asset（visibility 默认 private）。
             // 前端不再需要额外调 localStorage 存"我的资产"—— 数据源已经是真后端。
             setShowImport(false);
+            void refresh();
+          }}
+        />
+      )}
+      {showNew && (
+        <NewSkillDialog
+          teamId={activeTeamId ?? ''}
+          userId={myUserId}
+          agents={teamAgents}
+          defaultAgentId={tab === 'fixed' ? selectedAgent : undefined}
+          projects={knownProjects}
+          showProjectOption={showProjectUi}
+          onClose={() => setShowNew(false)}
+          onCreated={() => {
+            setShowNew(false);
             void refresh();
           }}
         />
@@ -343,5 +415,6 @@ export default function SkillsPanel({
           );
         })()}
     </div>
+    </UserNameProvider>
   );
 }

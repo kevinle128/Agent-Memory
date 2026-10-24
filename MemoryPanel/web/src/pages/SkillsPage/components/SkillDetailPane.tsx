@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { Button, Card, Copy, Input, Modal, Table, Text } from 'tea-component';
+import { Button, Card, Copy, Input, Modal, Text } from 'tea-component';
 import { MarkdownView } from '@/components/MarkdownView';
 import { tea } from '@/lib/tea-bridge';
 import {
@@ -23,82 +23,20 @@ import {
   updateSkill,
   writeSkillFiles,
   removeSkillFiles,
-  listSkillVersions,
   type SkillDetail,
-  type SkillSummary,
   type ReadFileResult,
 } from '@/lib/api/skill-api';
+import { useSkillVersions } from '../hooks/useSkillVersions';
+import { scopeOf } from '../lib/skill-scope';
+import { OriginBadge, ScopeBadge } from './SkillBadges';
+import { FileTreeView, buildFileTree } from './SkillFileTree';
+import { PromoteDialog } from './PromoteDialog';
+import { RollbackDialog } from './RollbackDialog';
+import { VersionDetailView } from './VersionDetailView';
+import { VersionHistorySection } from './VersionHistorySection';
+import { VersionTimelineScreen } from './VersionTimelineScreen';
 import '../styles/skill-detail.css';
-
-interface FileTreeNode {
-  name: string;
-  fullPath: string | null; // null for directories
-  children: FileTreeNode[];
-}
-
-/**
- * Build a tree from an array of "scripts/foo.sh" / "templates/x/y.txt" paths.
- * Sorts directories before files at each level for stable layout.
- */
-function buildFileTree(paths: string[]): FileTreeNode[] {
-  const root: FileTreeNode = { name: '', fullPath: null, children: [] };
-  for (const p of paths) {
-    const parts = p.split('/').filter(Boolean);
-    let cursor = root;
-    for (let i = 0; i < parts.length; i++) {
-      const isLeaf = i === parts.length - 1;
-      const segName = parts[i];
-      let child = cursor.children.find((c) => c.name === segName);
-      if (!child) {
-        child = {
-          name: segName,
-          fullPath: isLeaf ? p : null,
-          children: [],
-        };
-        cursor.children.push(child);
-      }
-      cursor = child;
-    }
-  }
-  // Sort: dirs first, then files; alphabetical within each group.
-  const sortRec = (node: FileTreeNode): void => {
-    node.children.sort((a, b) => {
-      const aDir = a.fullPath === null;
-      const bDir = b.fullPath === null;
-      if (aDir !== bDir) return aDir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    node.children.forEach(sortRec);
-  };
-  sortRec(root);
-  return root.children;
-}
-
-function FileTreeView(props: { nodes: FileTreeNode[]; onPick: (path: string) => void }) {
-  // 缩进靠嵌套 ul 的固定 padding（见 css），不在 li 上写动态内联 style。
-  return (
-    <ul className="_memory-skill-filetree">
-      {props.nodes.map((n) => (
-        <li key={n.name}>
-          {n.fullPath ? (
-            <button
-              type="button"
-              onClick={() => props.onPick(n.fullPath!)}
-              className="_memory-skill-file-btn"
-            >
-              {n.name}
-            </button>
-          ) : (
-            <>
-              <div className="_memory-skill-dir">{n.name}/</div>
-              <FileTreeView nodes={n.children} onPick={props.onPick} />
-            </>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
+import '../styles/skill-scope.css';
 
 export default function SkillDetailPane(props: {
   /** 当前选中的 skill_id —— 权威选中标识，直接来自 selectedSkillId（独立 state），
@@ -114,6 +52,11 @@ export default function SkillDetailPane(props: {
   canEdit?: boolean;
   /** 编辑成功后回调父组件刷新列表（版本/时间变化） */
   onChanged?: () => void;
+  /** Pending proposals for this skill (global skills only). */
+  pendingCount?: number;
+  /** False in chat prompt mode: no project badge and no Promote. */
+  showProjectUi?: boolean;
+  onOpenProposals?: () => void;
 }) {
   const { t } = useTranslation();
   const [view, setView] = useState<SkillDetail | null>(null);
@@ -139,15 +82,12 @@ export default function SkillDetailPane(props: {
   const [newFileContent, setNewFileContent] = useState('');
   const [newFileSaving, setNewFileSaving] = useState(false);
 
-  // 版本历史
-  const [showVersions, setShowVersions] = useState(false);
-  const [versions, setVersions] = useState<SkillSummary[] | null>(null);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  const [versionView, setVersionView] = useState<SkillDetail | null>(null);
-  const [versionViewLoading, setVersionViewLoading] = useState(false);
-  // 历史版本查看 Modal 内的文件预览
-  const [versionFile, setVersionFile] = useState<ReadFileResult | null>(null);
-  const [versionFileLoading, setVersionFileLoading] = useState(false);
+  // Screens inside the pane: the skill, its version timeline, or one version.
+  type PaneMode = { kind: 'detail' } | { kind: 'history' } | { kind: 'version'; version: number };
+  const [mode, setMode] = useState<PaneMode>({ kind: 'detail' });
+  const [versionsReload, setVersionsReload] = useState(0);
+  const [rollbackTarget, setRollbackTarget] = useState<number | null>(null);
+  const [showPromote, setShowPromote] = useState(false);
 
   const stickyRef = useRef<{ id: string; name: string } | null>(null);
   if (props.skillId && props.skillName) {
@@ -176,10 +116,9 @@ export default function SkillDetailPane(props: {
     // 切换 skill 时重置所有编辑/版本态，避免残留上一条的草稿
     setView(null);
     setEditingBody(false);
-    setVersions(null);
-    setShowVersions(false);
-    setVersionView(null);
-    setVersionFile(null);
+    setMode({ kind: 'detail' });
+    setRollbackTarget(null);
+    setShowPromote(false);
     setFilePreview(null);
     loadDetail();
   }, [loadDetail]);
@@ -205,6 +144,15 @@ export default function SkillDetailPane(props: {
   }, [currentView, props.teamId, props.userId]);
 
   const editable = canEdit && !!writeCtx;
+
+  const effectiveTeamId = props.teamId || currentView?.team_id;
+  const {
+    versions,
+    loading: versionsLoading,
+    error: versionsError,
+  } = useSkillVersions(currentView ? skillId : undefined, effectiveTeamId, versionsReload);
+  const isProjectSkill = !!currentView && scopeOf(currentView) === 'project';
+  const showProjectUi = props.showProjectUi !== false;
 
   // 写成功后：重新拉详情拿最新 version，并通知父组件刷新列表
   const reload = useCallback(() => {
@@ -345,85 +293,90 @@ export default function SkillDetailPane(props: {
     }
   }
 
-  // ── 版本历史 ──
-  async function loadVersions() {
-    if (!currentView) return;
-    setVersionsLoading(true);
-    try {
-      const res = await listSkillVersions({
-        skill_id: currentView.skill_id,
-        team_id: props.teamId || currentView.team_id,
-      });
-      setVersions(res.items);
-    } catch (err) {
-      tea.notify.error(err);
-      setVersions([]);
-    } finally {
-      setVersionsLoading(false);
-    }
-  }
-
-  async function viewVersion(version: number) {
-    if (!currentView) return;
-    setVersionViewLoading(true);
-    try {
-      const v = await getSkill({
-        skill_id: currentView.skill_id,
-        team_id: props.teamId || currentView.team_id,
-        version,
-        include_content: true,
-        include_manifest: true,
-      });
-      setVersionView(v);
-    } catch (err) {
-      tea.notify.error(err);
-    } finally {
-      setVersionViewLoading(false);
-    }
-  }
-
-  // 历史版本查看 Modal 内的文件预览（只读，按 version 读取历史文件内容）
-  async function viewVersionFile(path: string) {
-    if (!versionView) return;
-    setVersionFileLoading(true);
-    setVersionFile({
-      path,
-      content: '',
-      encoding: 'utf-8',
-      size_bytes: 0,
-      mime_type: 'text/plain',
-      version: versionView.version,
-    });
-    try {
-      const f = await readSkillFile({
-        skill_id: versionView.skill_id,
-        path,
-        version: versionView.version,
-        encoding: 'utf-8',
-      });
-      setVersionFile(f);
-    } catch (err) {
-      setVersionFile({
-        path,
-        content: t('skills.detail.readFailed', {
-          msg: err instanceof Error ? err.message : String(err),
-        }),
-        encoding: 'utf-8',
-        size_bytes: 0,
-        mime_type: 'text/plain',
-        version: versionView.version,
-      });
-    } finally {
-      setVersionFileLoading(false);
-    }
-  }
-
   if (!skillName) {
     return (
       <Card className="_memory-skill-detail-card">
         <Card.Body className="_memory-skill-detail-empty">
           <Text theme="weak">{t('skills.detail.empty')}</Text>
         </Card.Body>
+      </Card>
+    );
+  }
+
+  const rollbackDialog =
+    rollbackTarget !== null && currentView && writeCtx ? (
+      <RollbackDialog
+        skillId={currentView.skill_id}
+        teamId={writeCtx.team_id}
+        userId={writeCtx.user_id}
+        agentId={writeCtx.agent_id}
+        currentVersion={currentView.version}
+        targetVersion={rollbackTarget}
+        versions={versions}
+        onClose={() => setRollbackTarget(null)}
+        onDone={(head) => {
+          tea.notify.success(
+            t('skillScope.rollback.done', { version: head.version, target: rollbackTarget }),
+          );
+          setRollbackTarget(null);
+          setMode({ kind: 'detail' });
+          setVersionsReload((n) => n + 1);
+          reload();
+        }}
+      />
+    ) : null;
+
+  const promoteDialog =
+    showPromote && currentView && writeCtx ? (
+      <PromoteDialog
+        skill={currentView}
+        teamId={writeCtx.team_id}
+        userId={writeCtx.user_id}
+        agentId={writeCtx.agent_id}
+        onClose={() => setShowPromote(false)}
+        onDone={(head) => {
+          tea.notify.success(t('skillScope.promote.done', { version: head.version }));
+          setShowPromote(false);
+          setVersionsReload((n) => n + 1);
+          reload();
+        }}
+      />
+    ) : null;
+
+  if (currentView && effectiveTeamId && mode.kind !== 'detail') {
+    return (
+      <Card className="_memory-skill-detail-card">
+        <Card.Body className="_memory-skill-detail-body">
+          <div className="_memory-skill-detail-scroll">
+            {mode.kind === 'history' ? (
+              <VersionTimelineScreen
+                skillId={currentView.skill_id}
+                skillName={currentView.name}
+                teamId={effectiveTeamId}
+                versions={versions}
+                currentVersion={currentView.version}
+                canRollback={editable}
+                onBack={() => setMode({ kind: 'detail' })}
+                onOpenVersion={(v) => setMode({ kind: 'version', version: v })}
+                onSetVersion={(v) => setRollbackTarget(v)}
+              />
+            ) : (
+              <VersionDetailView
+                skillId={currentView.skill_id}
+                skillName={currentView.name}
+                teamId={effectiveTeamId}
+                version={mode.version}
+                versions={versions}
+                currentVersion={currentView.version}
+                canRollback={editable}
+                onBack={() => setMode({ kind: 'history' })}
+                onSetVersion={(v) => setRollbackTarget(v)}
+              />
+            )}
+          </div>
+        </Card.Body>
+        {rollbackDialog}
+        {promoteDialog}
       </Card>
     );
   }
@@ -452,6 +405,26 @@ export default function SkillDetailPane(props: {
                   {currentView.description}
                 </Text>
               )}
+              {currentView && (
+                <div className="_memory-skill-detail-tags">
+                  <ScopeBadge skill={currentView} hideProject={!showProjectUi} />
+                  <OriginBadge origin={currentView.origin} />
+                  <span className="_memory-skill-vtag">
+                    v{currentView.version} {t('skillScope.version.current').toLowerCase()}
+                  </span>
+                  <Text theme="weak">
+                    {isProjectSkill
+                      ? t('skillScope.detail.autoApplied')
+                      : t('skillScope.detail.needsApproval')}
+                  </Text>
+                  {!!props.pendingCount && (
+                    <button type="button" className="_memory-skill-pending-link" onClick={props.onOpenProposals}>
+                      {'● '}
+                      {t('skillScope.pending.badge', { count: props.pendingCount })} ›
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
             {currentView && (
               <div className="_memory-skill-detail-actions">
@@ -463,14 +436,19 @@ export default function SkillDetailPane(props: {
                 {editable && (
                   <Button onClick={() => setShowNewFile(true)}>{t('skills.detail.addFile')}</Button>
                 )}
-                <Button
-                  onClick={() => {
-                    setShowVersions(true);
-                    if (versions === null) void loadVersions();
-                  }}
-                >
-                  {t('skills.detail.versions')}
+                <Button onClick={() => setMode({ kind: 'history' })}>
+                  {t('skills.detail.versions')} ({versions.length || currentView.version})
                 </Button>
+                {isProjectSkill && showProjectUi && (
+                  <Button
+                    disabled={!editable}
+                    tooltip={editable ? undefined : t('skillScope.promote.noPermission')}
+                    onClick={() => setShowPromote(true)}
+                    data-action="promote-to-global"
+                  >
+                    {t('skillScope.promote.button')}
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -550,6 +528,17 @@ export default function SkillDetailPane(props: {
                   <MarkdownView>{extractBody(currentView.content)}</MarkdownView>
                 )}
               </div>
+
+              <VersionHistorySection
+                versions={versions}
+                currentVersion={currentView.version}
+                loading={versionsLoading}
+                error={versionsError}
+                canRollback={editable}
+                onSetVersion={(v) => setRollbackTarget(v)}
+                onOpenVersion={(v) => setMode({ kind: 'version', version: v })}
+                onOpenAll={() => setMode({ kind: 'history' })}
+              />
             </>
           )}
         </div>
@@ -680,135 +669,9 @@ export default function SkillDetailPane(props: {
         </Modal>
       )}
 
-      {/* 版本历史列表 Modal */}
-      {showVersions && currentView && (
-        <Modal
-          visible
-          caption={t('skills.detail.versions')}
-          size="l"
-          onClose={() => setShowVersions(false)}
-        >
-          <Modal.Body>
-            {versionsLoading ? (
-              <Text theme="weak" parent="div">
-                {t('skills.detail.loading')}
-              </Text>
-            ) : !versions || versions.length === 0 ? (
-              <Text theme="weak" parent="div">
-                {t('skills.detail.versionsEmpty')}
-              </Text>
-            ) : (
-              <Table
-                records={versions}
-                recordKey="version"
-                columns={[
-                  {
-                    key: 'version',
-                    header: t('skills.detail.versionColVersion'),
-                    width: 140,
-                    render: (v) => (
-                      <span className="_memory-skill-version-label">
-                        v{v.version}
-                        {v.version === currentView.version && (
-                          <span className="_memory-skill-version-current">
-                            （{t('skills.detail.versionCurrent')}）
-                          </span>
-                        )}
-                      </span>
-                    ),
-                  },
-                  {
-                    key: 'updated_at_ms',
-                    header: t('skills.detail.versionColTime'),
-                    render: (v) => new Date(v.updated_at_ms).toLocaleString(),
-                  },
-                  {
-                    key: 'actions',
-                    header: t('skills.detail.versionColActions'),
-                    width: 100,
-                    render: (v) => (
-                      <Button type="link" onClick={() => viewVersion(v.version)}>
-                        {t('skills.detail.versionView')}
-                      </Button>
-                    ),
-                  },
-                ]}
-              />
-            )}
-          </Modal.Body>
-        </Modal>
-      )}
 
-      {/* 历史版本查看 Modal（只读：正文 + 附属资源） */}
-      {(versionView || versionViewLoading) && (
-        <Modal
-          visible
-          caption={
-            versionView
-              ? t('skills.detail.versionCaption', { version: versionView.version })
-              : t('skills.detail.loading')
-          }
-          size="xl"
-          onClose={() => {
-            setVersionView(null);
-            setVersionFile(null);
-          }}
-        >
-          <Modal.Body>
-            {versionViewLoading ? (
-              <Text theme="weak" parent="div">
-                {t('skills.detail.loading')}
-              </Text>
-            ) : versionView ? (
-              <>
-                <MarkdownView>{extractBody(versionView.content)}</MarkdownView>
-                {/* 该历史版本的附属资源（只读） */}
-                <div className="_memory-skill-detail-section _memory-skill-version-files">
-                  <Text theme="label" parent="div" className="_memory-skill-detail-section-title">
-                    {t('skills.detail.files', { count: versionView.manifest?.length ?? 0 })}
-                  </Text>
-                  {!versionView.manifest || versionView.manifest.length === 0 ? (
-                    <Text theme="weak" parent="div">
-                      {t('skills.detail.noFiles')}
-                    </Text>
-                  ) : (
-                    <div className="_memory-skill-files-box">
-                      <FileTreeView
-                        nodes={buildFileTree(versionView.manifest.map((e) => e.path))}
-                        onPick={viewVersionFile}
-                      />
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : null}
-          </Modal.Body>
-        </Modal>
-      )}
-
-      {/* 历史版本文件预览 Modal（只读） */}
-      {(versionFile || versionFileLoading) && (
-        <Modal
-          visible
-          caption={versionFile?.path ?? t('skills.detail.loading')}
-          size="xl"
-          onClose={() => setVersionFile(null)}
-        >
-          <Modal.Body>
-            {versionFileLoading ? (
-              <Text theme="weak" parent="div">
-                {t('skills.detail.loading')}
-              </Text>
-            ) : versionFile?.encoding === 'base64' ? (
-              <Text theme="weak" parent="div">
-                {t('skills.detail.binaryFile', { size: versionFile.size_bytes })}
-              </Text>
-            ) : versionFile ? (
-              <pre className="_memory-skill-file-content">{versionFile.content}</pre>
-            ) : null}
-          </Modal.Body>
-        </Modal>
-      )}
+      {rollbackDialog}
+      {promoteDialog}
     </Card>
   );
 }

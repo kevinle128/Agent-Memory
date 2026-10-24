@@ -1,5 +1,5 @@
 /**
- * 内核 /v3/skill/* 数据面 action 列表（14 条，全部 POST）。
+ * 内核 /v3/skill/* 数据面 action 列表（全部 POST）。
  *
  * 对接文档：tdai-memory-openclaw-plugin/docs/skill-api-for-frontend.md
  *
@@ -11,7 +11,7 @@
  */
 
 /** 读操作（可选 agent_id）；此处仅用于文档标注，透传不区分。 */
-export const SKILL_LIST_ACTIONS = new Set(['list', 'search', 'versions']);
+export const SKILL_LIST_ACTIONS = new Set(['list', 'search', 'versions', 'versions/diff', 'proposals/list']);
 
 export const SKILL_ACTIONS = [
   'create',
@@ -22,6 +22,13 @@ export const SKILL_ACTIONS = [
   'list',
   'search',
   'versions',
+  'versions/diff',
+  'rollback',
+  'promote',
+  'settings',
+  'proposals/list',
+  'proposals/approve',
+  'proposals/reject',
   'files/write',
   'files/remove',
   'files/read',

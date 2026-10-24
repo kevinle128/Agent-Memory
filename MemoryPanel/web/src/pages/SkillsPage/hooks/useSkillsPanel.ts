@@ -10,8 +10,19 @@ import {
   getSkill,
   deleteSkillV3,
   exportSkill,
+  listSkillProposals,
+  type SkillProposal,
   type SkillSummary,
 } from '@/lib/api/skill-api';
+import { useShowProjectUi } from './useShowProjectUi';
+import {
+  EMPTY_FILTER,
+  collectProjects,
+  countPending,
+  filterSkills,
+  pendingBySkill,
+  type SkillFilter,
+} from '../lib/skill-scope';
 import { getPanelSession } from '@/lib/panelSession';
 import { useTeams } from '@/services';
 import { useSkillDetailCache } from '@/services/use-skill-detail-cache';
@@ -23,6 +34,27 @@ export const TAB_I18N_KEY: Record<Tab, string> = {
   team: 'skills.scope.team',
   fixed: 'skills.scope.fixed',
 };
+
+/** Which screen the Skills page shows: the list with detail, or the pending proposals. */
+export type SkillsView = 'skills' | 'proposals';
+
+/** Fields that decide scope, project and origin; copied from the team-wide list onto each row. */
+const SCOPE_KEYS = ['scope', 'project_key', 'project_hash', 'project_name', 'origin'] as const;
+
+/** Every active skill of the team in a few calls. The Hub sends no project view, so rows are not hidden. */
+async function listTeamSkills(teamId: string): Promise<SkillSummary[]> {
+  const items: SkillSummary[] = [];
+  for (;;) {
+    const page = await listSkills({
+      team_id: teamId,
+      filters: { status: ['active'] },
+      pagination: { limit: 1000, offset: items.length },
+    });
+    items.push(...page.items);
+    if (page.items.length === 0 || items.length >= page.total) break;
+  }
+  return items;
+}
 
 export function useSkillsPanel() {
   const { t } = useTranslation();
@@ -83,7 +115,17 @@ export function useSkillsPanel() {
   }, [activeTeamId, myUserId]);
 
   const [loading, setLoading] = useState(false);
+  const [view, setView] = useState<SkillsView>('skills');
+  const [filter, setFilter] = useState<SkillFilter>(EMPTY_FILTER);
+  const [showNew, setShowNew] = useState(false);
+  // Team-wide scope info and pending proposals. Both are best effort: a failure
+  // leaves the list usable and only hides badges and the pending count.
+  const [teamSkills, setTeamSkills] = useState<SkillSummary[]>([]);
+  const [proposals, setProposals] = useState<SkillProposal[]>([]);
+  const [proposalsLoading, setProposalsLoading] = useState(false);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
+  const selectedSkillIdRef = useRef<string | null>(null);
+  selectedSkillIdRef.current = selectedSkillId;
   const [showImport, setShowImport] = useState(false);
   const [showFork, setShowFork] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -100,6 +142,7 @@ export function useSkillsPanel() {
     applyCachedDetail,
     preload: preloadSkillDetail,
     cacheVersion,
+    reset: resetSkillDetailCache,
   } = useSkillDetailCache(activeTeamId);
 
   // 对 skills 列表应用缓存：已拉过的 skill 更新为真实 version / owner_agent_id。
@@ -107,6 +150,46 @@ export function useSkillsPanel() {
     () => skills.map((s) => applyCachedDetail(s)),
     [skills, cacheVersion],
   );
+
+  // Overlay scope fields from the team-wide list: the team tab rows come from asset
+  // records that carry none of them.
+  const scopedSkills = useMemo(() => {
+    const byId = new Map(teamSkills.map((x) => [x.skill_id, x]));
+    return skillsWithCache.map((row) => {
+      const full = byId.get(row.skill_id);
+      if (!full) return row;
+      const merged: SkillSummary = { ...row };
+      for (const k of SCOPE_KEYS) {
+        if (merged[k] === undefined && full[k] !== undefined) {
+          (merged as unknown as Record<string, unknown>)[k] = full[k];
+        }
+      }
+      return merged;
+    });
+  }, [skillsWithCache, teamSkills]);
+
+  const visibleSkills = useMemo(() => filterSkills(scopedSkills, filter), [scopedSkills, filter]);
+  const knownProjects = useMemo(() => collectProjects(teamSkills), [teamSkills]);
+  const pendingCounts = useMemo(() => pendingBySkill(proposals), [proposals]);
+  const pendingTotal = useMemo(() => countPending(proposals), [proposals]);
+  // Chat prompt mode has no projects. The default is to show project UI.
+  const showProjectUi = useShowProjectUi();
+
+  const loadTeamMeta = useCallback(async () => {
+    if (!activeTeamId) {
+      setTeamSkills([]);
+      setProposals([]);
+      return;
+    }
+    setProposalsLoading(true);
+    const [skillsRes, proposalsRes] = await Promise.allSettled([
+      listTeamSkills(activeTeamId),
+      listSkillProposals({ team_id: activeTeamId, status: ['pending', 'stale'] }),
+    ]);
+    setTeamSkills(skillsRes.status === 'fulfilled' ? skillsRes.value : []);
+    setProposals(proposalsRes.status === 'fulfilled' ? proposalsRes.value.items : []);
+    setProposalsLoading(false);
+  }, [activeTeamId]);
 
   // 选中某条 skill 时按需预拉其数据面详情（幂等，已缓存则跳过）。
   // 不做列表级批量预取：有多少 skill 就发多少次 getSkill() 太浪费，
@@ -133,6 +216,10 @@ export function useSkillsPanel() {
       setVisibilityMap({});
       return;
     }
+    void loadTeamMeta();
+    // A write may have created a version: forget cached versions, then reload the open skill.
+    resetSkillDetailCache();
+    if (selectedSkillIdRef.current) void preloadSkillDetail(selectedSkillIdRef.current);
     const seq = ++refreshSeqRef.current;
     const teamChanged = prevTeamIdRef.current !== activeTeamId;
     prevTeamIdRef.current = activeTeamId;
@@ -244,7 +331,7 @@ export function useSkillsPanel() {
     } finally {
       if (seq === refreshSeqRef.current) setLoading(false);
     }
-  }, [tab, selectedAgent, activeTeamId, myUserId]);
+  }, [tab, selectedAgent, activeTeamId, myUserId, loadTeamMeta, resetSkillDetailCache, preloadSkillDetail]);
 
   // 同步 selectedAgent 到 teamAgents：
   //   - 切换 team 后，老 selectedAgent 可能已不在新 team 内，需要重置；
@@ -437,8 +524,22 @@ export function useSkillsPanel() {
     deleteLoading,
     exportLoading,
     visibilityMap,
+    // scope, filters and proposals
+    view,
+    setView,
+    filter,
+    setFilter,
+    showNew,
+    setShowNew,
+    visibleSkills,
+    knownProjects,
+    proposals,
+    proposalsLoading,
+    pendingCounts,
+    pendingTotal,
+    showProjectUi,
     // cache
-    skillsWithCache,
+    skillsWithCache: scopedSkills,
     preloadSkillDetail,
     applyCachedDetail,
     cacheVersion,

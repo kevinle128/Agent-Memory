@@ -74,5 +74,14 @@ export function useSkillDetailCache(teamId: string | null | undefined) {
     return { ...skill, version: cached.version, owner_agent_id: cached.owner_agent_id };
   }, []);
 
-  return { getFromCache, preload, applyCachedDetail, cacheRef, cacheVersion };
+  /**
+   * Drop every cached detail. Call it before a reload after a write: a write creates a
+   * version, so a cached version number is stale and would hide the real one in the list.
+   */
+  const reset = useCallback(() => {
+    cacheRef.current.clear();
+    setCacheVersion((n) => n + 1);
+  }, []);
+
+  return { getFromCache, preload, applyCachedDetail, cacheRef, cacheVersion, reset };
 }

@@ -52,7 +52,28 @@ export interface SkillSummary {
   created_at_ms: number;
   updated_at_ms: number;
   metadata?: Record<string, unknown>;
+  /** Where the skill lives. Rows written before scoping read as global. */
+  scope?: SkillScope;
+  project_key?: string;
+  project_hash?: string;
+  project_name?: string;
+  origin?: SkillOrigin;
+  source_session_id?: string;
+  /** Why this version exists. Null on rows written before audit fields. */
+  change_source?: SkillChangeSource | null;
+  change_reason?: string;
+  change_summary?: string[];
+  /** Empty string when no person approved the version. */
+  approved_by?: string;
+  /** 0 when there is no approval time. */
+  approved_at_ms?: number;
+  base_version?: number;
+  proposal_id?: string;
 }
+
+export type SkillScope = 'global' | 'project';
+export type SkillOrigin = 'extracted' | 'manual' | 'template';
+export type SkillChangeSource = 'extracted' | 'manual' | 'rollback' | 'promotion' | 'template';
 
 /** get 接口返回，包含完整内容 */
 export interface SkillDetail extends SkillSummary {
@@ -147,6 +168,10 @@ export function createSkill(params: {
   content: string;
   resources?: SkillResourcePayload[];
   metadata?: Record<string, unknown>;
+  scope?: SkillScope;
+  project_key?: string;
+  project_hash?: string;
+  project_name?: string;
 }): Promise<SkillSummary> {
   return skillCall('create', params as unknown as Record<string, unknown>);
 }
@@ -446,3 +471,130 @@ export function exportSkill(params: ExportSkillParams, signal?: AbortSignal): Pr
 // `/v3/skill/extract/result` 已下线。SkillCoreSink 会在 worker
 // drain 后直接把 skill 写入表，提取结果通过 `/v3/skill/list` 拿到（不再有独立
 // 的 result 查询接口）。前端拿到 extract 的 task_id 即视为"任务已受理"。
+
+
+// ========================= Version audit, rollback, proposals =========================
+
+export interface DiffLine {
+  type: 'added' | 'removed' | 'unchanged';
+  text: string;
+  old_line?: number;
+  new_line?: number;
+}
+
+export interface SkillDiff {
+  skill_id: string;
+  from_version: number;
+  to_version: number;
+  lines: DiffLine[];
+  added: number;
+  removed: number;
+  unchanged: number;
+  /** True when a large change block is returned as one removed block plus one added block. */
+  approximate: boolean;
+}
+
+export function diffSkillVersions(params: {
+  user_id?: string;
+  team_id?: string;
+  skill_id: string;
+  from_version: number;
+  to_version: number;
+}): Promise<SkillDiff> {
+  return skillCall('versions/diff', {
+    user_id: params.user_id ?? '',
+    team_id: params.team_id ?? '',
+    skill_id: params.skill_id,
+    from_version: params.from_version,
+    to_version: params.to_version,
+  });
+}
+
+/** Creates a new head version with the content of `target_version`. `reason` is required. */
+export function rollbackSkill(params: {
+  user_id: string;
+  team_id: string;
+  agent_id?: string;
+  skill_id: string;
+  target_version: number;
+  reason: string;
+  expected_version?: number;
+}): Promise<SkillSummary> {
+  return skillCall('rollback', params as unknown as Record<string, unknown>);
+}
+
+export type ProposalStatus = 'pending' | 'approved' | 'rejected' | 'stale' | 'expired';
+
+export interface SkillProposal {
+  proposal_id: string;
+  team_id: string;
+  owner_agent_id: string;
+  skill_id: string;
+  skill_name: string;
+  base_version: number;
+  proposed_content: string;
+  proposed_description?: string;
+  proposed_files?: { write?: unknown[]; remove?: string[] };
+  change_reason: string;
+  change_summary: string[];
+  source_session_id?: string;
+  created_by: string;
+  status: ProposalStatus;
+  created_at_ms: number;
+  decided_at_ms?: number;
+  decided_by?: string;
+  result_version?: number;
+}
+
+export function listSkillProposals(params: {
+  team_id: string;
+  user_id?: string;
+  skill_id?: string;
+  status?: ProposalStatus[];
+  pagination?: { limit?: number; offset?: number };
+}): Promise<{ items: SkillProposal[]; total: number }> {
+  return skillCall('proposals/list', {
+    user_id: params.user_id ?? '',
+    team_id: params.team_id,
+    skill_id: params.skill_id,
+    status: params.status,
+    pagination: params.pagination ?? { limit: 200, offset: 0 },
+  });
+}
+
+export function approveSkillProposal(params: {
+  team_id: string;
+  user_id: string;
+  proposal_id: string;
+  agent_id?: string;
+}): Promise<{ applied: boolean; proposal: SkillProposal; skill: SkillSummary }> {
+  return skillCall('proposals/approve', params as unknown as Record<string, unknown>);
+}
+
+export function rejectSkillProposal(params: {
+  team_id: string;
+  user_id: string;
+  proposal_id: string;
+  agent_id?: string;
+}): Promise<{ proposal: SkillProposal }> {
+  return skillCall('proposals/reject', params as unknown as Record<string, unknown>);
+}
+
+/** Makes a project skill global: same content, a new head version with change source "promotion". */
+export function promoteSkill(params: {
+  user_id: string;
+  team_id: string;
+  agent_id?: string;
+  skill_id: string;
+  reason?: string;
+  expected_version?: number;
+}): Promise<SkillSummary> {
+  return skillCall('promote', params as unknown as Record<string, unknown>);
+}
+
+export type SkillPromptMode = 'code' | 'chat';
+
+/** Instance settings the Hub needs to render skills. `chat` mode has no projects. */
+export function getSkillSettings(): Promise<{ prompt_mode: SkillPromptMode }> {
+  return skillCall('settings', {});
+}

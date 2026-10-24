@@ -1,0 +1,370 @@
+/* Scoped skills: badges, filter bar, version cards, diff, screens. */
+
+/* ---- badges ---- */
+._memory-skill-badge {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 20px;
+  border: 1px solid transparent;
+}
+._memory-skill-badge--global {
+  color: #0052d9;
+  background: #e6efff;
+  border-color: #b7d0ff;
+}
+._memory-skill-badge--project {
+  color: #00873c;
+  background: #e8f7ee;
+  border-color: #aee3c4;
+}
+._memory-skill-origin {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+._memory-skill-origin-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+._memory-skill-origin--extracted { color: #7a4dd8; }
+._memory-skill-origin--manual { color: #0052d9; }
+._memory-skill-origin--template { color: #a37700; }
+._memory-skill-item-tags,
+._memory-skill-detail-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+._memory-skill-pending-badge {
+  margin-left: auto;
+  font-size: 12px;
+  color: #d46b08;
+  white-space: nowrap;
+}
+._memory-skill-pending-link {
+  border: 1px solid #ffd591;
+  background: #fff7e6;
+  color: #d46b08;
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ---- filter bar ---- */
+._memory-skill-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 0 4px;
+}
+._memory-skill-filter-label {
+  color: #888;
+  font-size: 12px;
+}
+
+/* ---- sections and screens ---- */
+._memory-skill-section {
+  margin-top: 16px;
+}
+._memory-skill-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+._memory-skill-section-note {
+  color: #888;
+  font-size: 12px;
+}
+._memory-skill-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+._memory-skill-screen-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+._memory-skill-screen-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 16px;
+  font-weight: 600;
+}
+._memory-skill-screen-actions {
+  display: flex;
+  gap: 8px;
+}
+._memory-skill-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #0052d9;
+  cursor: pointer;
+  font-size: 12px;
+}
+._memory-skill-inline-error {
+  margin-top: 8px;
+}
+._memory-skill-field {
+  margin-bottom: 12px;
+}
+
+/* ---- version card ---- */
+._memory-skill-vcard {
+  border: 1px solid #e5e5e5;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: #fff;
+}
+._memory-skill-vcard--current {
+  background: #f0f6ff;
+  border-color: #b7d0ff;
+}
+._memory-skill-vcard--rollback {
+  border-left: 3px solid #fa8c16;
+}
+._memory-skill-vcard--stale {
+  border-color: #ffd591;
+  background: #fffaf0;
+}
+._memory-skill-vcard-top,
+._memory-skill-vcard-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+._memory-skill-vcard-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+._memory-skill-vcard-topright {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+._memory-skill-vcard-time,
+._memory-skill-vcard-meta {
+  color: #666;
+  font-size: 12px;
+}
+._memory-skill-vcard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 6px;
+}
+._memory-skill-vcard-reason {
+  margin-top: 6px;
+  font-size: 13px;
+}
+._memory-skill-vcard-label {
+  color: #888;
+}
+._memory-skill-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+._memory-skill-vcard-bottom {
+  margin-top: 8px;
+  min-height: 20px;
+}
+._memory-skill-vtag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 20px;
+  background: #e6efff;
+  color: #0052d9;
+}
+._memory-skill-source {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 20px;
+  background: #f0f0f0;
+  color: #555;
+}
+._memory-skill-source--rollback { background: #fff1e0; color: #c15b00; }
+._memory-skill-source--extracted { background: #f1eafc; color: #7a4dd8; }
+._memory-skill-stale {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 20px;
+  background: #fff1e0;
+  color: #c15b00;
+  border: 1px solid #ffd591;
+}
+._memory-skill-improvements ul,
+._memory-skill-lost ul,
+._memory-skill-between ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+._memory-skill-auto {
+  color: #888;
+  margin-right: 2px;
+}
+
+/* ---- timeline screen ---- */
+._memory-skill-timeline-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 2fr) 3fr;
+  gap: 16px;
+  align-items: start;
+}
+._memory-skill-comparepanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+}
+._memory-skill-compare-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+._memory-skill-between {
+  background: #f7f7f7;
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+._memory-skill-compare-pick {
+  font-size: 12px;
+  color: #666;
+}
+
+/* ---- diff ---- */
+._memory-skill-diff {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  border: 1px solid #e5e5e5;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+._memory-skill-diff-row {
+  display: flex;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+._memory-skill-diff-row--added { background: #e6f7ec; }
+._memory-skill-diff-row--removed { background: #fdecec; }
+._memory-skill-diff-row--empty { background: #fafafa; }
+._memory-skill-diff-no {
+  flex: 0 0 38px;
+  padding: 0 6px;
+  text-align: right;
+  color: #999;
+  background: rgba(0, 0, 0, 0.03);
+  user-select: none;
+}
+._memory-skill-diff-mark {
+  flex: 0 0 16px;
+  text-align: center;
+}
+._memory-skill-diff-text {
+  flex: 1;
+  padding: 0 6px;
+}
+._memory-skill-diff-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+._memory-skill-diff-collapsed {
+  padding: 2px 10px;
+  color: #0052d9;
+  background: #eef4ff;
+}
+._memory-skill-diff-note,
+._memory-skill-diff-empty {
+  padding: 6px 10px;
+  color: #888;
+  font-family: inherit;
+}
+._memory-skill-diff-stat--add { color: #00873c; }
+._memory-skill-diff-stat--del { color: #d93026; }
+
+/* ---- promote dialog ---- */
+._memory-skill-promote-flow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+._memory-skill-promote-box {
+  flex: 1;
+  padding: 8px 12px;
+  background: #f7f7f7;
+  border-radius: 4px;
+}
+._memory-skill-promote-label {
+  color: #888;
+  font-size: 12px;
+}
+._memory-skill-promote-warning {
+  margin: 0 0 12px;
+  padding: 10px 12px 10px 28px;
+  background: #fff4e8;
+  border: 1px solid #ffd8b0;
+  border-radius: 4px;
+}
+
+/* ---- Skills page: the detail grows with its content and the page scrolls ----
+   The generic split layout fixes its height and scrolls inside the detail pane, which
+   clips a long version history. Here the detail is in the page flow; the list stays in
+   view while the page scrolls. */
+._asset-split:has(._memory-skill-detail-card) {
+  height: auto;
+  align-items: start;
+}
+._asset-split:has(._memory-skill-detail-card) > ._asset-split-detail {
+  height: auto;
+  overflow: visible;
+}
+._asset-split:has(._memory-skill-detail-card) > ._asset-split-sidebar {
+  position: sticky;
+  top: 0;
+  height: auto;
+  max-height: calc(100vh - 120px);
+}
+._asset-split:has(._memory-skill-detail-card) ._memory-skill-detail-card {
+  height: auto;
+}
+._asset-split:has(._memory-skill-detail-card) ._memory-skill-detail-card > .tea-card__body,
+._asset-split:has(._memory-skill-detail-card) ._memory-skill-detail-body,
+._asset-split:has(._memory-skill-detail-card) ._memory-skill-detail-body > .tea-card__content {
+  overflow: visible;
+}
+._asset-split:has(._memory-skill-detail-card) ._memory-skill-detail-scroll {
+  overflow-y: visible;
+}
+/* The head stays visible while the content scrolls. */
+._asset-split:has(._memory-skill-detail-card) ._memory-skill-detail-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--tea-color-bg-primary-default, #fff);
+}
