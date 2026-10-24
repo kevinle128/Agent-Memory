@@ -38,13 +38,13 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
    - thay đổi do chính người dùng làm (sửa tay, rollback, chuyển thành toàn cục): `apply`, người duyệt là người đó;
    - chế độ `chat`: `apply` (giữ kiểu cũ).
    Muốn đổi quy tắc sau này chỉ cần thêm hoặc sửa một policy, không đụng nơi khác.
-3. **Lịch sử chỉ thêm, không sửa (append-only audit log).** Mỗi phiên bản ghi: `change_source` (`extracted`, `manual`, `rollback`, `promotion`, `template`), `change_reason`, `approved_by`, `approved_at`, `base_version`, `proposal_id`. Rollback tạo một phiên bản mới chép nội dung của phiên bản cũ, không xóa gì, nên lịch sử luôn đầy đủ.
+3. **Lịch sử chỉ thêm, không sửa (append-only audit log).** Mỗi phiên bản ghi: `change_source` (`extracted`, `manual`, `rollback`, `promotion`, `template`), `change_reason`, `change_summary` (tóm tắt cải tiến so với phiên bản trước: thêm gì, sửa gì, bỏ gì, 2-5 ý), `approved_by`, `approved_at`, `base_version`, `proposal_id`. Tóm tắt được tạo lúc sửa và lưu cùng phiên bản, không tính lại mỗi lần xem: bộ trích xuất bắt buộc ghi (thiếu thì thay đổi bị từ chối); sửa tay thì người dùng nhập, hoặc hệ thống tạo và đánh dấu là tự tạo; rollback và chuyển thành toàn cục dùng câu cố định (ví dụ "Khôi phục nội dung v2"). Đề xuất chờ duyệt cũng mang tóm tắt này để người duyệt biết thay đổi đem lại gì. Rollback tạo một phiên bản mới chép nội dung của phiên bản cũ, không xóa gì, nên lịch sử luôn đầy đủ.
 4. **Đề xuất có vòng đời rõ ràng (state machine).** Bảng `skill_change_proposals`: `pending` → `approved` | `rejected` | `stale` | `expired`. Đề xuất ghi `base_version`; lúc duyệt, nếu phiên bản hiện tại đã khác `base_version` thì chuyển `stale` và không áp dụng (khóa lạc quan, tránh ghi đè thay đổi mới hơn). Chỉ chuyển trạng thái qua service, có kiểm tra chuyển hợp lệ.
 5. **Lưu trữ qua repository có sẵn.** Thêm cột và bảng qua lớp store hiện có (sqlite, mongo, tcvdb) theo mẫu DDL chạy lại an toàn; domain service không biết backend.
 6. **Proxy và Panel chỉ là lớp hiển thị (ports and adapters).** Core sở hữu quy tắc và trạng thái. Proxy hỏi người dùng bằng `AskUserQuestion` rồi gọi API duyệt hoặc từ chối của Core. Panel hiện cùng danh sách đề xuất, lịch sử, nút rollback và gọi cùng API. Không lớp hiển thị nào tự quyết định.
 7. **Hiển thị đề xuất trong session (proxy).** Dùng lại bộ dựng form và bộ đọc câu trả lời hiện có, thêm một "câu hỏi" mới chứ không viết lại form:
    - chỉ ở request `main` của Claude Code có tool `AskUserQuestion`, không ở fork, subagent, request phụ, và không khi đang ở form khác (khởi tạo session);
-   - mỗi lần hỏi một đề xuất, có lý do và tóm tắt thay đổi; lựa chọn: "Duyệt", "Từ chối", "Để sau";
+   - mỗi lần hỏi một đề xuất, có lý do và tóm tắt cải tiến; lựa chọn: "Duyệt", "Từ chối", "Để sau";
    - "Để sau" giữ `pending` và không hỏi lại trong cùng session; giới hạn số lần hỏi để không làm phiền;
    - người duyệt là user của session (lấy từ xác thực, không lấy từ nội dung request);
    - sau khi trả lời, chuyển tiếp prompt gốc của người dùng như cơ chế hiện có.
@@ -72,7 +72,7 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 - `SkillCore.create/update` kiểm tra ràng buộc trên. `ensureSkillAsset` không còn ghi cứng `source_type: "extracted"`.
 - Trùng tên giữa hai phạm vi: trả mã lỗi riêng để bộ trích xuất đặt tên có tiền tố dự án.
 - Test: ràng buộc, migration trên dữ liệu cũ, trùng tên.
-- `SkillChangeService` và `ChangeApprovalPolicy` (xem "Kiến trúc"): chuyển mọi đường ghi skill hiện có (bộ trích xuất qua `skill-tools.ts`, API create/update/files của Hub và Panel, nhập session) về một cửa này. Thêm cột lịch sử cho mỗi phiên bản: `change_source`, `change_reason`, `approved_by`, `approved_at`, `base_version`, `proposal_id`.
+- `SkillChangeService` và `ChangeApprovalPolicy` (xem "Kiến trúc"): chuyển mọi đường ghi skill hiện có (bộ trích xuất qua `skill-tools.ts`, API create/update/files của Hub và Panel, nhập session) về một cửa này. Thêm cột lịch sử cho mỗi phiên bản: `change_source`, `change_reason`, `change_summary`, `approved_by`, `approved_at`, `base_version`, `proposal_id`.
 - Bảng `skill_change_proposals` với vòng đời `pending` → `approved` | `rejected` | `stale` | `expired`.
 - API Core: `POST /v3/skill/rollback` (tạo phiên bản mới từ phiên bản cũ), `POST /v3/skill/proposals/list`, `.../approve`, `.../reject`. `/v3/skill/versions` trả thêm các cột lịch sử.
 - Test: policy theo từng trường hợp; đề xuất bị `stale` khi phiên bản đổi; rollback giữ đủ lịch sử; không đường ghi nào bỏ qua service (test kiến trúc: tìm lời gọi `appendVersion` ngoài service).
@@ -116,7 +116,7 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 - Hộp thoại tạo skill có lựa chọn phạm vi (toàn cục hoặc chọn một dự án). Nhập session phải chọn dự án.
 - Thao tác "Chuyển thành toàn cục" cho skill trích xuất: đổi thành `scope = global`, `origin = manual`, có xác nhận.
 - Ở chế độ `chat`, giao diện không hiện phần dự án.
-- Lịch sử phiên bản: thêm cột lý do sửa, nguồn sửa, người duyệt, thời điểm; đánh dấu phiên bản hiện tại; nút "Rollback về phiên bản này" (có xác nhận); xem khác biệt giữa hai phiên bản.
+- Lịch sử phiên bản: tóm tắt cải tiến của từng phiên bản (và của phiên bản hiện tại ở đầu trang), lý do sửa, nguồn sửa, người duyệt, thời điểm; đánh dấu phiên bản hiện tại; nút "Rollback về phiên bản này" (có xác nhận); xem khác biệt giữa hai phiên bản.
 - Danh sách đề xuất chờ duyệt của skill toàn cục, có Duyệt và Từ chối (cho client không có `AskUserQuestion`).
 - Test: component và API.
 
