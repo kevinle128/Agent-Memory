@@ -731,10 +731,9 @@ function detailCard(s, compact){
     const metaLine='<div class="tl-meta"><span><b>Changed by</b> '+(v.by==='extractor'?'extractor · session <span class="mono">'+v.session+'</span>':esc(v.by))+'</span><span><b>Approved by</b> '+(v.approver==='system'?'system (auto-applied)':esc(v.approver))+'</span></div>';
     if (isCur) return '<div class="whatsnew"><div class="whatsnew-h"><span class="ver-tag">v'+v.v+' · Current</span>'+sourceTag(v.source)+(v.source==='rollback'?'<span class="tl-restored" style="margin:0">↺ restored from v'+v.from+'</span>':'')+'<span class="muted">'+v.date+'</span></div>'+
       metaLine+sumList(v.summary)+'<div class="sum-foot"><span class="sum-by" style="margin:0">'+sumByText(v)+' · stored with v'+v.v+'</span><button class="link" style="margin-left:auto" data-act="vd:'+v.v+'">View details &amp; diff &rsaquo;</button></div></div>';
-    return '<div class="vcard'+(v.source==='rollback'?' rb':'')+'"><div class="tl-h"><span class="ver-tag">v'+v.v+'</span>'+sourceTag(v.source)+(v.source==='rollback'?'<span class="tl-restored" style="margin:0">↺ restored from v'+v.from+'</span>':'')+'<span class="tl-date">'+v.date+'</span></div>'+
+    return '<div class="vcard'+(v.source==='rollback'?' rb':'')+'"><div class="tl-h"><span class="ver-tag">v'+v.v+'</span>'+sourceTag(v.source)+(v.source==='rollback'?'<span class="tl-restored" style="margin:0">↺ restored from v'+v.from+'</span>':'')+'<span class="tl-date">'+v.date+'</span><button class="btn sm" style="margin-left:auto" data-act="rollback:'+v.v+'">Set skill to this version</button></div>'+
       metaLine+'<div class="td-sum" id="sum-'+v.v+'">'+sumList(v.summary,true)+'</div>'+
-      '<div class="sum-foot">'+(v.summary.length>2?'<button class="expand" data-act="expand:'+v.v+'">Show all ('+v.summary.length+')</button>':'')+'<span class="sum-by" style="margin:0">'+sumByText(v)+'</span></div>'+
-      '<div class="tl-acts"><button class="link" data-act="vd:'+v.v+'">View details &amp; diff</button><button class="btn sm" data-act="rollback:'+v.v+'">Set skill to this version</button></div></div>';
+      '<div class="sum-foot">'+(v.summary.length>2?'<button class="expand" data-act="expand:'+v.v+'">Show all ('+v.summary.length+')</button>':'')+'<span class="sum-by" style="margin:0">'+sumByText(v)+'</span><button class="link" style="margin-left:auto" data-act="vd:'+v.v+'">View details &amp; diff &rsaquo;</button></div></div>';
   };
   const stack='<div class="sec"><div class="sec-head"><span class="sec-title" style="font-size:13px;color:var(--tea-color-text-primary)">Version history ('+vs.length+')</span><span class="muted" style="font-size:11px">Newest first · Asia/Saigon · <button class="link" data-go="history">Compare versions &rsaquo;</button></span></div><div class="vstack">'+vs.map(card).join('')+'</div></div>';
   return '<div class="card sd">'+head+'<div class="sd-scroll">'+body+stack+'</div></div>';
@@ -808,13 +807,12 @@ function scrHistory(){
     const isCur=v.v===cur, picked=v.v===from||v.v===to;
     return '<li class="tl-item'+(isCur?' cur':'')+(v.source==='rollback'?' rb':'')+(picked?' picked':'')+'"><span class="tl-dot"></span><div class="tl-card">'+
       '<div class="tl-h"><span class="ver-tag">v'+v.v+'</span>'+(isCur?'<span class="tag tag-cur">Current</span>':'')+sourceTag(v.source)+'<span class="tl-date">'+v.date+'</span>'+
-        '<label class="tl-pick"><input type="checkbox" data-act="hpick:'+v.v+'" '+(picked?'checked':'')+'> Compare</label></div>'+
+        (isCur?'':'<button class="btn sm" style="margin-left:auto" data-act="rollback:'+v.v+'">Set skill to this version</button>')+
+        '</div>'+
       (v.source==='rollback'?'<div class="tl-restored">↺ Restored from v'+v.from+'</div>':'')+
       '<div class="tl-meta"><span><b>Changed by</b> '+(v.by==='extractor'?'extractor · session <span class="mono">'+v.session+'</span>':esc(v.by))+'</span><span><b>Approved by</b> '+(v.approver==='system'?'system (auto-applied)':esc(v.approver))+'</span></div>'+
       '<div class="tl-reason"><span class="muted">Reason:</span> '+esc(v.reason)+'</div>'+
-      sumList(v.summary)+'<div class="sum-by">'+sumByText(v)+'</div>'+
-      '<div class="tl-acts"><button class="link" data-act="vd:'+v.v+'">View details</button>'+
-        (isCur?'<span class="muted" style="font-size:12px">This is the current version</span>':'<button class="btn sm" data-act="rollback:'+v.v+'">Set skill to this version</button>')+'</div>'+
+      sumList(v.summary)+'<div class="sum-foot"><label class="tl-pick" style="margin-left:0"><input type="checkbox" data-act="hpick:'+v.v+'" '+(picked?'checked':'')+'> Compare</label><span class="sum-by" style="margin:0 0 0 10px">'+sumByText(v)+'</span><button class="link" style="margin-left:auto" data-act="vd:'+v.v+'">View details &amp; diff &rsaquo;</button></div>'+
     '</div></li>';}).join('');
   return '<nav class="crumbs"><a data-go="list">Skills</a>/<a data-go="detail">'+esc(s.name)+'</a>/<span>Version history</span></nav>'+
   '<section class="card card-pad"><div class="vd-head"><div><div class="vd-title"><span class="mono">'+esc(s.name)+'</span><span class="ver-tag">v'+cur+' current</span>'+scopeBadge(s)+originChip(s.origin)+'</div>'+
