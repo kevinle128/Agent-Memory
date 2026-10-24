@@ -20,13 +20,80 @@ import { isSubagentRequest } from "../session-trace/subagent.js";
 // 保留 re-export，避免下游（含单测）import 路径变化引发一次性大改。
 export { extractUserQueryText };
 
-export function extractLatestUserMessage(messages: unknown[]): TdaiMessage | null {
+/**
+ * Paseo delivers a message from another agent (a delegated task or a
+ * notification) as user text wrapped in `<paseo-system ...>`. Another agent
+ * wrote it, not the human, so it must not become a user row in L0. Other uses
+ * of the user text (recall query, trace input) keep it: for the worker it is
+ * the task.
+ */
+const AGENT_OPEN = "<paseo-system";
+const AGENT_CLOSE = "</paseo-system>";
+
+/**
+ * Remove every complete agent message block. A block runs from its opening
+ * tag to the last closing tag before the next opening tag, so a closing tag
+ * quoted inside the task does not end the block early. An unclosed block is
+ * kept. One pass over the text, no regular expression backtracking.
+ */
+export function stripAgentMessages(text: string): string {
+  if (!text.includes(AGENT_OPEN)) return text;
+  let out = "";
+  let pos = 0;
+  // Next closing tag at or after the current block. It only moves forward,
+  // and -1 means there is no closing tag left, so the scan stays linear.
+  let nextClose = text.indexOf(AGENT_CLOSE);
+  let open = text.indexOf(AGENT_OPEN);
+  while (open !== -1) {
+    const next = text.indexOf(AGENT_OPEN, open + AGENT_OPEN.length);
+    const segmentEnd = next === -1 ? text.length : next;
+    while (nextClose !== -1 && nextClose < open) nextClose = text.indexOf(AGENT_CLOSE, nextClose + 1);
+    // Last closing tag inside this segment.
+    let close = -1;
+    while (nextClose !== -1 && nextClose + AGENT_CLOSE.length <= segmentEnd) {
+      close = nextClose;
+      nextClose = text.indexOf(AGENT_CLOSE, nextClose + AGENT_CLOSE.length);
+    }
+    if (close !== -1) {
+      out += text.slice(pos, open);
+      pos = close + AGENT_CLOSE.length;
+    }
+    open = next;
+  }
+  return out + text.slice(pos);
+}
+
+/** `stripAgentMessages` on string content or on each text block. */
+export function stripAgentMessagesFromContent(content: unknown): unknown {
+  if (typeof content === "string") return stripAgentMessages(content);
+  if (!Array.isArray(content)) return content;
+  return content.map((part) => {
+    const p = part as { type?: unknown; text?: unknown } | null;
+    return p && p.type === "text" && typeof p.text === "string" ? { ...p, text: stripAgentMessages(p.text) } : part;
+  });
+}
+
+function hasAgentMessage(text: string): boolean {
+  return stripAgentMessages(text) !== text;
+}
+
+/**
+ * @param opts.forL0 Drop agent messages (see `stripAgentMessages`). A latest
+ *   user message that holds only an agent message then gives null: walking
+ *   back would write an older human message a second time.
+ */
+export function extractLatestUserMessage(
+  messages: unknown[],
+  opts: { forL0?: boolean } = {},
+): TdaiMessage | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i] as Record<string, unknown>;
     if (msg?.role !== "user") continue;
+    const raw = extractContentText(msg.content);
     // 只取真实 user_query，避免把 harness 上下文写进 L0
-    const content = extractUserQueryText(extractContentText(msg.content));
+    const content = extractUserQueryText(opts.forL0 ? stripAgentMessages(raw) : raw);
     if (content.trim()) return { role: "user", content };
+    if (opts.forL0 && hasAgentMessage(raw)) return null;
   }
   return null;
 }
@@ -56,7 +123,7 @@ export function extractCurrentTurnUserMessage(messages: unknown[]): TdaiMessage 
     const msg = messages[i] as Record<string, unknown>;
     if (msg?.role === "assistant") return null;
     if (msg?.role !== "user") continue;
-    const content = extractUserQueryText(humanContentText(msg.content));
+    const content = extractUserQueryText(stripAgentMessages(humanContentText(msg.content)));
     return content.trim() ? { role: "user", content } : null;
   }
   return null;

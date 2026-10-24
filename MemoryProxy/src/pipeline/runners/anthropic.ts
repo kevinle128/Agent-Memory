@@ -972,7 +972,7 @@ export async function runAnthropicPipeline(
       );
   const l0Capture = resolveL0Capture({
     agentSource, headers: lcHeaders, body, messages, messageFormat: "anthropic", sessionJustRegistered,
-    fallbackUserMessage: extractLatestUserMessage(messages),
+    fallbackUserMessage: extractLatestUserMessage(messages, { forL0: true }),
   });
   const tdaiUserMessage = l0Capture.userMessage;
 

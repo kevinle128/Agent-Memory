@@ -85,7 +85,7 @@ import { handleSystemUserPassthrough } from "../../systemUserPassthrough.js";
 import { requireWecomIdentity } from "../../wecom-identity-form.js";
 import { TdaiClient, buildTdaiClientForRequest } from "../../tdai/client.js";
 import { deriveTdaiIdentity } from "../../tdai/identity.js";
-import { extractLatestUserMessage, recordTdaiTurn, resolveL0Capture, type L0Capture } from "../../tdai/recorder.js";
+import { extractLatestUserMessage, recordTdaiTurn, resolveL0Capture, stripAgentMessagesFromContent, type L0Capture } from "../../tdai/recorder.js";
 import { opencodeAdapter } from "../../agent-adapters/opencode.js";
 import { trackWrite, withL0Retry } from "../../tdai/pending-writes.js";
 import type { TdaiIdentity, TdaiMessage } from "../../tdai/types.js";
@@ -998,11 +998,16 @@ export async function runOpenaiChatPipeline(
         ? (opencodeAdapter.extractUserText(lastInboundMessage.content) ?? "")
         : "")
     : null;
+  // The L0 row leaves out messages from other agents (see stripAgentMessages);
+  // the injection query above keeps them.
+  const opencodeL0Query = agentSource === "opencode" && lastInboundMessage?.role === "user" && !isAuxiliary
+    ? (opencodeAdapter.extractUserText(stripAgentMessagesFromContent(lastInboundMessage.content)) ?? "")
+    : "";
   const l0Capture = resolveL0Capture({
     agentSource, headers: lcHeaders, body, messages, messageFormat: "openai",
     fallbackUserMessage: agentSource === "opencode"
-      ? (opencodeUserQuery ? { role: "user", content: opencodeUserQuery } : null)
-      : extractLatestUserMessage(messages),
+      ? (opencodeL0Query ? { role: "user", content: opencodeL0Query } : null)
+      : extractLatestUserMessage(messages, { forL0: true }),
   });
   const tdaiUserMessage: TdaiMessage | null = l0Capture.userMessage;
 

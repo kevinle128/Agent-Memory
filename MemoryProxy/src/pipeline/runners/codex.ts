@@ -77,6 +77,7 @@ import {
 } from "../../langfuse.js";
 import { TdaiClient, buildTdaiClientForRequest } from "../../tdai/client.js";
 import { deriveTdaiIdentity } from "../../tdai/identity.js";
+import { stripAgentMessages } from "../../tdai/recorder.js";
 import { withSessionProject } from "../../project-scope/session-workspace.js";
 import {
   ResponsesAssembler,
@@ -131,7 +132,8 @@ const createCodexTdaiClient = buildTdaiClientForRequest;
 function extractLatestCodexUserMessage(input: unknown): TdaiMessage | null {
   if (!Array.isArray(input)) return null;
   const text = codexAdapter.extractUserText(input) ?? "";
-  const trimmed = text.trim();
+  // Only for the L0 row: a Paseo message from another agent is not human text.
+  const trimmed = stripAgentMessages(text).trim();
   if (!trimmed) return null;
   return { role: "user", content: trimmed };
 }
