@@ -116,7 +116,7 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 - Hộp thoại tạo skill có lựa chọn phạm vi (toàn cục hoặc chọn một dự án). Nhập session phải chọn dự án.
 - Thao tác "Chuyển thành toàn cục" cho skill trích xuất: đổi thành `scope = global`, `origin = manual`, có xác nhận.
 - Ở chế độ `chat`, giao diện không hiện phần dự án.
-- Lịch sử phiên bản: tóm tắt cải tiến của từng phiên bản (và của phiên bản hiện tại ở đầu trang), lý do sửa, nguồn sửa, người duyệt, thời điểm; đánh dấu phiên bản hiện tại; nút "Rollback về phiên bản này" (có xác nhận); xem khác biệt giữa hai phiên bản.
+- Lịch sử phiên bản: tóm tắt cải tiến của từng phiên bản (và của phiên bản hiện tại ở đầu trang), lý do sửa, nguồn sửa, người duyệt, thời điểm; đánh dấu phiên bản hiện tại; bấm vào một phiên bản mới mở trang chi tiết: lý do, người duyệt, tóm tắt cải tiến, khác biệt với phiên bản trước (dòng thêm và dòng bỏ được tô màu, có thể chọn phiên bản khác để so), và nút "Rollback về phiên bản này" (có xác nhận). Danh sách lịch sử không hiện khác biệt.
 - Danh sách đề xuất chờ duyệt của skill toàn cục, có Duyệt và Từ chối (cho client không có `AskUserQuestion`).
 - Test: component và API.
 
