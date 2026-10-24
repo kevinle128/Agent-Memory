@@ -12,6 +12,8 @@ import {
   handleProposalApprove,
   handleProposalReject,
   handleProposalsList,
+  handlePromote,
+  handleSettings,
   handleRollback,
   handleUpdate,
   handleVersions,
@@ -314,5 +316,36 @@ describe("proposals", () => {
     const id = await propose(g.skill_id);
     const res = await handleProposalApprove({ team_id: IDS.team_id, user_id: "u", agent_id: "agent-x", proposal_id: id }, auth, "r", deps());
     expect(res.code).toBe(40301);
+  });
+});
+
+describe("promote and settings", () => {
+  it("makes a project skill global with the same content, and the extractor can then only propose", async () => {
+    h = createSkillHarness({ mode: "code" });
+    const created = await handleCreate(
+      { ...IDS, name: "proj-steps", content: skillMd("proj-steps"), scope: "project", project_hash: PROJECT_A, project_key: "git:x/y", project_name: "x/y" },
+      auth, "r", deps(),
+    );
+    expect(created.code).toBe(0);
+    const id = (created.data as { skill_id: string }).skill_id;
+    const res = await handlePromote({ ...IDS, skill_id: id, reason: "Useful everywhere" }, auth, "r", deps());
+    expect(res.code).toBe(0);
+    expect(res.data).toMatchObject({ version: 2, scope: "global", origin: "manual", change_source: "promotion", change_reason: "Useful everywhere" });
+    const proposed = await handleUpdate(
+      { ...IDS, skill_id: id, expected_version: 2, content: skillMd("proj-steps", "Changed."), ...EXTRACTED }, auth, "r", deps(),
+    );
+    expect((proposed.data as { applied: boolean }).applied).toBe(false);
+  });
+
+  it("refuses a skill that is already global", async () => {
+    h = createSkillHarness({ mode: "code" });
+    const g = await createGlobal();
+    expect((await handlePromote({ ...IDS, skill_id: g.skill_id }, auth, "r", deps())).code).not.toBe(0);
+  });
+
+  it("reports the prompt mode", async () => {
+    h = createSkillHarness({ mode: "code" });
+    const res = await handleSettings({}, auth, "r", deps({ getPromptMode: () => "code" }));
+    expect(res.data).toEqual({ prompt_mode: "code" });
   });
 });

@@ -575,6 +575,20 @@ sessions/<source>/<team-id>/<user-id>/<session-id>/subagents/<subagent-id>/<star
 
 **错误**：`40001`(缺 reason / 目标是当前版本)、`40401`、`40901`(`expected_version` 过期)、`4291`。
 
+### POST /v3/skill/promote
+
+把项目 skill 变为全局 skill（内容不变，新建一个版本：`scope=global`、`origin=manual`、`change_source=promotion`）。之后抽取器对它的修改只会生成待审批提案。
+
+**请求体**：`skill_id`、`reason?`(≤1000)、`expected_version?` + id 字段（`user_id` 记为审批人）。
+
+**响应** `data`：`SkillSummary`（新 head）。
+
+**错误**：`40001`(已是全局)、`40401`、`40901`。
+
+### POST /v3/skill/settings
+
+Hub 渲染 skill 所需的实例设置。**响应** `data`：`{ prompt_mode: "code" | "chat" }`（`chat` 模式没有项目概念）。
+
 ### POST /v3/skill/proposals/list
 
 待审批提案列表（新到旧）。

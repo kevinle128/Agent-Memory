@@ -181,6 +181,14 @@ export interface RollbackInput extends IdFields {
   expected_version?: number;
 }
 
+export interface PromoteInput extends IdFields {
+  skill_id: string;
+  /** Why the skill becomes global. Optional; a fixed text is used when absent. */
+  reason?: string;
+  /** When set, the head must still be this version. */
+  expected_version?: number;
+}
+
 export interface DiffVersionsInput extends IdFields {
   skill_id: string;
   from_version: number;
@@ -565,6 +573,23 @@ export class SkillCore {
         reason,
         restore_from: target,
       }));
+    } catch (e) {
+      toCoreError(e);
+    }
+  }
+
+  /**
+   * Make a project skill global. A person does this from the Hub; the content
+   * stays the same and a new version records the change. After this the
+   * extractor can only propose changes to the skill.
+   */
+  async promote(input: PromoteInput): Promise<Skill> {
+    const head = await this.requireHead(input.skill_id, input.team_id);
+    if (input.agent_id) assertOwnerWrap(head, input.agent_id, input.team_id);
+    if (typeof input.expected_version === "number") assertVersionFreshWrap(head, input.expected_version);
+    try {
+      const reason = input.reason?.trim();
+      return this.settle(await this.changes.promote(head, this.ctxOf(input, head), reason || undefined));
     } catch (e) {
       toCoreError(e);
     }

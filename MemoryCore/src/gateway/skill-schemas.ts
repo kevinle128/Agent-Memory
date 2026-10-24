@@ -269,6 +269,14 @@ export const rollbackRequestSchema = z.object({
   expected_version: z.number().int().min(1).optional(),
 }).superRefine(refineAgentNeedsTeam);
 
+/** `POST /v3/skill/promote` — make a project skill global. */
+export const promoteRequestSchema = z.object({
+  ...idFieldsShape,
+  skill_id: z.string().min(1),
+  reason: z.string().trim().max(1000).optional(),
+  expected_version: z.number().int().min(1).optional(),
+}).superRefine(refineAgentNeedsTeam);
+
 /** `POST /v3/skill/versions/diff` — line diff between any two versions. */
 export const versionsDiffRequestSchema = z.object({
   ...idFieldsShape,
