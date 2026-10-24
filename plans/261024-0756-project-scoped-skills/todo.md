@@ -39,3 +39,11 @@
   - Trạng thái cuối: 18 skill, đều `global/template`; 18 asset.
   - Kiểm chứng trên production (log proxy và Langfuse): phiên ngoài git không có khối dự án, không có skill; phiên trong repo có khối dự án gắn nhãn `kevinle128/agent-memory`, không có skill (agent chính chưa có skill dự án). Không phiên nào thấy skill của dự án khác.
   - Ghi nhận: `source_type` của asset template vẫn là `extracted` (Hub đọc `origin` của skill nên giao diện đúng).
+- Giai đoạn 6 (hook cho Codex và pi): commit `bbe8c227`, đã deploy proxy production (bản `bbe8c22`). Core không đổi, không đụng dữ liệu.
+  - `install.sh --client codex`: thêm khối hook và khối trust (hash lấy từ `codex app-server`) vào `config.toml`, đặt trước bảng đầu tiên. Installer từ chối sửa một khối đã khác bản sao đã lưu, nên không xóa bảng do Codex thêm sau.
+  - `install.sh --client pi`: cài extension và bật `compat.sendSessionAffinityHeaders` trong `models.json`. Proxy chỉ đọc header session id của pi khi agent là `pi`.
+  - E2E tìm ra một lỗi có từ trước, đã sửa: backend ChatGPT gửi stream SSE không có `content-type`, nên proxy đọc như JSON và bỏ qua usage, tính phí, ghi L0 và skill cho mọi phiên Codex.
+  - Test: Proxy 571/571, tsc sạch. E2E local (`MemoryProxy/scripts/qa/codex-pi-e2e.sh`, Codex 0.164 và pi 0.80.1 thật): 4/4. E2E Claude Code chạy lại: 2/2 và 7/7. Kịch bản `codex mcp add` rồi cài lại và gỡ cài: bảng `mcp_servers.foo` vẫn còn.
+  - Review độc lập: một lỗi nặng ở installer (mất bảng Codex thêm sau), đã sửa và kiểm chứng bằng Codex thật; các điểm còn lại đã sửa.
+  - Kiểm chứng production với một phiên Codex thật trong repo: hook báo `vtc/3q-chess/3q-game-api`, skill injector chạy với `project=ad58481031f5b554`, lượt skill được ghi, 2 dòng L0 có `project_name` đúng.
+  - Ghi nhận: nếu người dùng tự trust lại hook qua `/hooks`, installer sẽ từ chối và yêu cầu xóa khối bằng tay. Chưa kiểm tra session id của subagent Codex, resume và fork. pi trên production chưa có phiên thật để thử.
