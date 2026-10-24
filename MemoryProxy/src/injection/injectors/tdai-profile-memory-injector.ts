@@ -2,7 +2,7 @@ import type { AgentContext, AnchorTarget, CacheStrategy, ContextBlock, Injection
 import { HOOK_PRIORITY } from "../types.js";
 import { TdaiClient } from "../../tdai/client.js";
 import type { ProfileScopeMode, TdaiMemoryConfig } from "../../tdai/types.js";
-import { getProjectHash, getTdaiIdentity } from "../../tdai/identity.js";
+import { getProjectHash, getProjectName, getTdaiIdentity } from "../../tdai/identity.js";
 import { resolveProfileScopeMode } from "../../tdai/profile-scope-mode.js";
 import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
@@ -116,7 +116,7 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
           ? Promise.all(ctxs.map((c) => loadAgentProfile(client, c, { withL2: true, projectHash })))
           : Promise.resolve([] as AgentProfileBundle[]),
       ]);
-      return renderScopedBlocks(this.id, l3Groups, projectHash, projectGroups);
+      return renderScopedBlocks(this.id, l3Groups, projectHash, projectGroups, getProjectName(ctx.metadata.custom));
     }
 
     // 对每个 agent 独立拉 L3 + L2 索引（不读 L2 全文）
@@ -413,6 +413,7 @@ function renderScopedBlocks(
   globalGroups: AgentProfileBundle[],
   projectHash: string | undefined,
   projectGroups: AgentProfileBundle[],
+  projectName?: string,
 ): ContextBlock[] {
   const withProject = projectGroups.filter((g) => g.l3 || g.l2Entries.length > 0);
   if (!projectHash || withProject.length === 0) {
@@ -420,7 +421,8 @@ function renderScopedBlocks(
   }
 
   const allowed = globalGroups.filter((g) => g.l3 && hasUserGlobalMarker(g.l3.content));
-  const label = projectHash.slice(0, 8);
+  // The name is validated upstream (one line, no angle brackets). The hash prefix is the fallback.
+  const label = projectName ?? projectHash.slice(0, 8);
   const lines: string[] = [
     "<tdai_profile_memory>",
     "以下是 TDAI 为当前 agent 维护的长期记忆，分为两类：" +

@@ -134,7 +134,7 @@ export function createHookReportHandler(config: ProxyConfig) {
     }
     console.log(
       `${TAG} session=${report.sessionId} agent=${agentSource} event=${report.hookEvent} ` +
-      `project=${project.projectLabel ?? "none"} hash=${project.projectHash ?? "none"}`,
+      `project=${project.projectLabel ?? "none"} name=${project.projectName ?? "none"} hash=${project.projectHash ?? "none"}`,
     );
 
     refreshDevice(config, spaceId, auth.apiKey, userId, report);

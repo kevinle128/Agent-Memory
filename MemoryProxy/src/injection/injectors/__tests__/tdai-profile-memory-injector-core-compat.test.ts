@@ -14,7 +14,7 @@ const config: TdaiMemoryConfig = {
   profileScopeMode: "scoped",
 };
 
-function context(projectHash?: string): AgentContext {
+function context(projectHash?: string, projectName?: string): AgentContext {
   return {
     messages: [], tools: [], requestParams: {},
     metadata: {
@@ -22,6 +22,7 @@ function context(projectHash?: string): AgentContext {
       custom: {
         session: { session_id: "s1", team_id: "team1", user_id: "u1", agent_id: "agt-1", space_id: "default" },
         ...(projectHash ? { projectHash } : {}),
+        ...(projectName ? { projectName } : {}),
       },
     },
   } as unknown as AgentContext;
@@ -66,6 +67,24 @@ describe("scoped injection against Core versions", () => {
     expect(out).toContain("\n<project_memory ");
     expect(out).toContain("PROJECT PERSONA");
     expect(out).toContain("- `work.md`");
+  });
+
+  it("labels the project block with the project name when it is known", async () => {
+    stubCore(true);
+
+    const out = textOf(await new TdaiProfileMemoryInjector(config).execute(context(HASH, "vtc/3q-chess/3q-game-api")));
+
+    expect(out).toContain('<project_memory project="vtc/3q-chess/3q-game-api">');
+    expect(out).toContain("当前项目 vtc/3q-chess/3q-game-api，");
+  });
+
+  it("labels the project block with the hash prefix when the name is missing or unsafe", async () => {
+    stubCore(true);
+
+    for (const name of [undefined, "a<b>", "line\nbreak"]) {
+      const out = textOf(await new TdaiProfileMemoryInjector(config).execute(context(HASH, name)));
+      expect(out).toContain('<project_memory project="aaaaaaaa">');
+    }
   });
 
   it("renders the deny output and warns once when Core ignores project_hash", async () => {

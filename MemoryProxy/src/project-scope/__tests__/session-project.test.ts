@@ -53,6 +53,16 @@ describe("withSessionProject", () => {
     });
   });
 
+  it("adds the project name when the report has one", async () => {
+    await store.put(key, workspace({ projectName: "x/demo" }));
+    expect(await withSessionProject(identity, {}, key)).toMatchObject({ projectHash: "0123456789abcdef", projectName: "x/demo" });
+  });
+
+  it("omits the project name for a report stored before the field existed", async () => {
+    await store.put(key, workspace());
+    expect(await withSessionProject(identity, {}, key)).not.toHaveProperty("projectName");
+  });
+
   it("keeps the identity unchanged when the hook has not reported", async () => {
     expect(await withSessionProject(identity, {}, key)).toBe(identity);
   });
@@ -110,10 +120,20 @@ describe("TdaiClient.addConversation project fields", () => {
     expect(cap.bodies[0]).toMatchObject({ project_key: "git:h/x/demo", project_hash: "0123456789abcdef" });
   });
 
+  it("sends project_name with the project fields only when the identity has one", async () => {
+    const cap = captureBody();
+    const withProject = { ...identity, projectKey: "git:h/x/demo", projectHash: "0123456789abcdef" };
+    await client().addConversation({ ...withProject, projectName: "x/demo" }, [{ role: "user", content: "hi" }]);
+    await client().addConversation(withProject, [{ role: "user", content: "hi" }]);
+    expect(cap.bodies[0]).toMatchObject({ project_name: "x/demo" });
+    expect(cap.bodies[1]).not.toHaveProperty("project_name");
+  });
+
   it("sends no project fields when the identity has no project", async () => {
     const cap = captureBody();
     await client().addConversation(identity, [{ role: "user", content: "hi" }]);
     expect(cap.bodies[0]).not.toHaveProperty("project_key");
     expect(cap.bodies[0]).not.toHaveProperty("project_hash");
+    expect(cap.bodies[0]).not.toHaveProperty("project_name");
   });
 });

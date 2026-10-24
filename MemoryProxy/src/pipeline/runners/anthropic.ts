@@ -995,6 +995,7 @@ export async function runAnthropicPipeline(
       assetCapabilities,
       callerUserKey: callerUserKey ?? undefined,
       projectHash: tdaiIdentity?.projectHash,
+      projectName: tdaiIdentity?.projectName,
       readOnly: requestKind === "fork",
       // 权威 turnSeq (与 mem-command / lf 构造共用) — 让
       // LangfuseInjectionObserver 创建的 injection span 挂在

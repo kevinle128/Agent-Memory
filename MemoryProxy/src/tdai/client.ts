@@ -167,7 +167,11 @@ export class TdaiClient {
           session_id: identity.sessionId,
           task_id: identity.taskId,
           ...(identity.projectKey && identity.projectHash
-            ? { project_key: identity.projectKey, project_hash: identity.projectHash }
+            ? {
+                project_key: identity.projectKey,
+                project_hash: identity.projectHash,
+                ...(identity.projectName ? { project_name: identity.projectName } : {}),
+              }
             : {}),
           messages: batch,
         },

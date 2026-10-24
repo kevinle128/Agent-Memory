@@ -58,3 +58,23 @@ export function getProjectHash(custom: Record<string, unknown> | undefined): str
 function pickString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
+
+const PROJECT_NAME_MAX = 200;
+// eslint-disable-next-line no-control-regex -- control chars are the point of the check
+// C0/C1 controls, Unicode line separators, bidi overrides, and angle brackets
+// can break the prompt line or the tag, so they are rejected.
+export const PROJECT_NAME_BAD_RE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069<>]/;
+
+/**
+ * Project name of the request, as the runner put it into `custom.projectName`.
+ * The name is rendered into the prompt, so it must be one short line with no
+ * control characters and no angle brackets that could close or open a tag.
+ * Returns undefined for anything else.
+ */
+export function getProjectName(custom: Record<string, unknown> | undefined): string | undefined {
+  const value = custom?.projectName;
+  if (typeof value !== "string") return undefined;
+  const name = value.trim();
+  if (!name || name.length > PROJECT_NAME_MAX || PROJECT_NAME_BAD_RE.test(name)) return undefined;
+  return name;
+}

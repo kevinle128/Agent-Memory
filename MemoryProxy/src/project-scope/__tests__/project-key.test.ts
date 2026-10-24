@@ -59,6 +59,44 @@ describe("buildProjectIdentity", () => {
       projectKey: null,
       projectHash: null,
       projectLabel: null,
+      projectName: null,
     });
+  });
+
+  it.each([
+    ["https://github.com/kevinle128/paseo", "kevinle128/paseo"],
+    ["git@github.com:kevinle128/paseo.git", "kevinle128/paseo"],
+    ["ssh://git@github.com:22/kevinle128/paseo.git", "kevinle128/paseo"],
+    ["https://git.oceanlabs.dev/vtc/3q-chess/3q-game-api", "vtc/3q-chess/3q-game-api"],
+    ["https://GitLab.Example.com/Team/Sub/Demo-Repo.git", "team/sub/demo-repo"],
+  ])("names the project from the remote path without the host: %s", (gitRemote, expected) => {
+    expect(buildProjectIdentity({ gitRemote, gitToplevel: "/x/other", deviceId: "d1" }).projectName).toBe(expected);
+  });
+
+  it("names the project after the toplevel folder when there is no remote", () => {
+    const id = buildProjectIdentity({ gitRemote: null, gitToplevel: "/Users/dale/src/scratch/", deviceId: "d1" });
+    expect(id.projectName).toBe("scratch");
+    expect(id.projectName).toBe(id.projectLabel);
+  });
+
+  it("drops a query string or fragment from the name but not from the key", () => {
+    const id = buildProjectIdentity({ gitRemote: "https://h.example/a/b?token=x#frag", gitToplevel: null, deviceId: "d1" });
+    expect(id.projectName).toBe("a/b");
+    expect(id.projectKey).toBe("git:h.example/a/b?token=x#frag");
+  });
+
+  it.each(["/x/a<b>", "/x/a\u2028b", "/x/a\u202eb", "/x/a\u0085b"])(
+    "gives no name for a folder name with unsafe characters: %s",
+    (gitToplevel) => {
+      const id = buildProjectIdentity({ gitRemote: null, gitToplevel: JSON.parse(`"${gitToplevel}"`), deviceId: "d1" });
+      expect(id.projectName).toBeNull();
+      expect(id.projectHash).not.toBeNull();
+    },
+  );
+
+  it("keeps the key and hash unchanged by the name", () => {
+    const id = buildProjectIdentity({ gitRemote: "git@github.com:kevinle128/paseo.git", gitToplevel: null, deviceId: "d1" });
+    expect(id.projectKey).toBe("git:github.com/kevinle128/paseo");
+    expect(id.projectHash).toBe(projectHash("git:github.com/kevinle128/paseo"));
   });
 });

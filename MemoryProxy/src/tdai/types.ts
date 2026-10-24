@@ -49,6 +49,8 @@ export interface TdaiIdentity {
   projectKey?: string;
   /** First 16 hex chars of sha256(projectKey). Present only with projectKey. */
   projectHash?: string;
+  /** Readable project name (remote path without host). Display only; present only with projectKey. */
+  projectName?: string;
   /**
    * 请求发起者 user_key（原始 `sk-mem-...`）。用于 tdai `/v3/meta/*` 路由的
    * Layer 3 用户鉴权（`x-tdai-user-key` header）—— ACL 校验路径必须。

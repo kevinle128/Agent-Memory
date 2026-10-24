@@ -24,6 +24,8 @@ export interface SessionWorkspace {
   projectKey: string | null;
   projectHash: string | null;
   projectLabel: string | null;
+  /** Absent in records stored before the field existed. */
+  projectName?: string | null;
   hookEvent: string;
   hookVersion: string;
   /** ISO-8601 time when the proxy received the report. */
@@ -79,7 +81,7 @@ export async function getSessionWorkspaceStore(config: {
  * project, or the lookup fails: a missing project means "no project", never a
  * guess.
  */
-export async function withSessionProject<T extends { projectKey?: string; projectHash?: string }>(
+export async function withSessionProject<T extends { projectKey?: string; projectHash?: string; projectName?: string }>(
   identity: T | null,
   config: { storage?: import("../types.js").ProxyConfig["storage"] },
   key: SessionWorkspaceKey,
@@ -89,7 +91,12 @@ export async function withSessionProject<T extends { projectKey?: string; projec
     const store = await getSessionWorkspaceStore(config);
     const ws = await store.get(key);
     if (!ws?.projectKey || !ws.projectHash) return identity;
-    return { ...identity, projectKey: ws.projectKey, projectHash: ws.projectHash };
+    return {
+      ...identity,
+      projectKey: ws.projectKey,
+      projectHash: ws.projectHash,
+      ...(ws.projectName ? { projectName: ws.projectName } : {}),
+    };
   } catch (err) {
     console.warn(
       `[session-workspace] project lookup failed session=${key.sessionId}:`,

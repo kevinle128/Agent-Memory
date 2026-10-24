@@ -37,6 +37,8 @@ export interface InjectionRunnerInput {
    * profile injector add project memory and key its cache by project.
    */
   projectHash?: string;
+  /** Readable name of the same project; used only as a label in the prompt. */
+  projectName?: string;
   /** anthropic 独有: fork 请求 readOnly=true 不触发 self-heal */
   readOnly?: boolean;
   /**
@@ -98,6 +100,7 @@ export async function stageInjectionRunner(
             assetCapabilities: input.assetCapabilities,
             userKey: input.callerUserKey || undefined,
             projectHash: input.projectHash || undefined,
+            projectName: input.projectName || undefined,
           }
         : undefined,
       readOnly: input.readOnly,
