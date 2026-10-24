@@ -4,8 +4,9 @@
  *
  *   - The caller supplies `doFetch(auth)` that performs the real upstream call with the headers
  *     of `auth`. All status handling happens before any byte goes to the client, so a retry is safe.
- *   - 429: retry the same account after 1/2/4/8 seconds, then Check now. Only confirmed full
- *     applicable quota permits switching; otherwise keep retrying within 30 seconds total.
+ *   - 429: retry the same account after 1/2/4/8 seconds, then Check now. Check now runs at once
+ *     when Retry-After forbids every retry within the budget. Only confirmed full applicable
+ *     quota permits switching; otherwise keep retrying within 30 seconds total.
  *   - 401: the token is refreshed through Core (`held_expires_at` makes concurrent 401s one
  *     provider refresh) and the request is retried once. If the refresh fails, the account is
  *     skipped and the request moves to another account.
@@ -31,7 +32,7 @@ import { buildPoolExhaustedResponse, buildPoolUnavailableResponse } from "./exha
 import { parseClaudeQuotaHeaders, parseCodexQuotaHeaders } from "./quota-signals.js";
 import { reportAccount } from "./reporter.js";
 import { recordPoolUpstreamError, sanitizeErrorText } from "./upstream-error.js";
-import { POOL_RETRY_BUDGET_MS, POOL_RETRY_MAX_WAIT_MS, PoolRetryDeadline, withinRetryDeadline, waitForPoolRetry, notePoolRetryAfter, originalRateLimitResponse, sharedPoolUsageCheck, readPoolErrorBody } from "./retry.js";
+import { POOL_RETRY_BUDGET_MS, POOL_RETRY_MAX_WAIT_MS, PoolRetryDeadline, withinRetryDeadline, waitForPoolRetry, notePoolRetryAfter, poolRetryBlockedUntil, originalRateLimitResponse, sharedPoolUsageCheck, readPoolErrorBody } from "./retry.js";
 import { earliestReset, selectAccount, type Selection } from "./selector.js";
 import type { PoolAccount, PoolSnapshot } from "./types.js";
 
@@ -268,6 +269,15 @@ class PoolRequestImpl implements PoolRequest {
       this.onLimitReached(account, body, response.headers);
       notePoolRetryAfter(key, response.headers);
       while (Date.now() < deadline) {
+        // Check now after four retries, or at once when Retry-After forbids every retry in
+        // this request's budget: waiting could never reach the check, so the session would
+        // stay on an account whose quota is gone.
+        const blocked = poolRetryBlockedUntil(key, deadline);
+        if (!checked && (retries >= 4 || blocked)) {
+          checked = true;
+          console.info(`${TAG} Check now ${blocked ? "because Retry-After exceeds the request budget" : "after retries"} account_id=${account.account_id}`);
+          if (await this.checkNow(account, key, deadline)) return { response: originalError(), quotaConfirmed: true };
+        }
         const delay = Math.min(1000 * 2 ** retries, POOL_RETRY_MAX_WAIT_MS);
         await waitForPoolRetry(key, delay, deadline, this.input.signal);
         console.info(`${TAG} retry account_id=${account.account_id} attempt=${retries + 1} remaining_ms=${Math.max(0, deadline - Date.now())}`);
@@ -278,39 +288,38 @@ class PoolRequestImpl implements PoolRequest {
         this.onLimitReached(account, body, response.headers);
         notePoolRetryAfter(key, response.headers);
         retries++;
-        if (retries >= 4 && !checked) {
-          checked = true;
-          console.info(`${TAG} Check now after retries account_id=${account.account_id}`);
-          try {
-            const result = await withinRetryDeadline(() => sharedPoolUsageCheck(key, () => callPoolCore<{
-              failed: boolean; account: Pick<PoolAccount, "usage" | "status" | "exhausted_until"> & { usage_updated_at?: number | null };
-            }>(coreConfig(this.input.config), this.input.spaceId, "check-usage", { account_id: account.account_id })), deadline, this.input.signal);
-            if (result.failed === false && Array.isArray(result.account?.usage?.windows)) {
-              observeAccountWindows(this.input.spaceId, account.account_id, result.account.usage.windows);
-              const full = result.account.usage.windows.some((window) => (
-                (!window.model_scope || window.model_scope === this.model)
-                && window.source === "usage_api"
-                && typeof result.account.usage_updated_at === "number"
-                && window.observed_at >= result.account.usage_updated_at
-                && window.used_pct >= 100 && (window.resets_at === null || window.resets_at > this.now())
-              ));
-              if (full) {
-                console.info(`${TAG} Check now confirmed full quota account_id=${account.account_id}; switching allowed`);
-                // Fetch the checked state before selecting another account; never fabricate 100%.
-                await withinRetryDeadline(() => this.snapshot(true), deadline, this.input.signal);
-                return { response: originalError(), quotaConfirmed: true };
-              }
-            }
-          } catch (error) {
-            if (error instanceof PoolRetryDeadline || this.input.signal?.aborted) throw error;
-            console.warn(`${TAG} Check now unavailable account_id=${account.account_id}; retaining session account`);
-          }
-        }
       }
     } catch (error) {
       if (!(error instanceof PoolRetryDeadline)) throw error;
     }
     return { response: originalError(), quotaConfirmed: false };
+  }
+
+  /** True only when Core's usage API reports a full applicable window, fresh from this check. */
+  private async checkNow(account: PoolAccount, key: string, deadline: number): Promise<boolean> {
+    try {
+      const result = await withinRetryDeadline(() => sharedPoolUsageCheck(key, () => callPoolCore<{
+        failed: boolean; account: Pick<PoolAccount, "usage" | "status" | "exhausted_until"> & { usage_updated_at?: number | null };
+      }>(coreConfig(this.input.config), this.input.spaceId, "check-usage", { account_id: account.account_id })), deadline, this.input.signal);
+      if (result.failed !== false || !Array.isArray(result.account?.usage?.windows)) return false;
+      observeAccountWindows(this.input.spaceId, account.account_id, result.account.usage.windows);
+      const full = result.account.usage.windows.some((window) => (
+        (!window.model_scope || window.model_scope === this.model)
+        && window.source === "usage_api"
+        && typeof result.account.usage_updated_at === "number"
+        && window.observed_at >= result.account.usage_updated_at
+        && window.used_pct >= 100 && (window.resets_at === null || window.resets_at > this.now())
+      ));
+      if (!full) return false;
+      console.info(`${TAG} Check now confirmed full quota account_id=${account.account_id}; switching allowed`);
+      // Fetch the checked state before selecting another account; never fabricate 100%.
+      await withinRetryDeadline(() => this.snapshot(true), deadline, this.input.signal);
+      return true;
+    } catch (error) {
+      if (error instanceof PoolRetryDeadline || this.input.signal?.aborted) throw error;
+      console.warn(`${TAG} Check now unavailable account_id=${account.account_id}; retaining session account`);
+      return false;
+    }
   }
 
   private async snapshot(forceRefresh = false): Promise<PoolSnapshot> {

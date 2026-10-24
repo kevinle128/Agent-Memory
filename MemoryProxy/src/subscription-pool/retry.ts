@@ -100,6 +100,11 @@ export async function waitForPoolRetry(key: string, delayMs: number, deadline: n
   }
 }
 
+/** True when the shared Retry-After of this account forbids any retry before `deadline`. */
+export function poolRetryBlockedUntil(key: string, deadline: number): boolean {
+  return scheduleFor(key).notBefore >= deadline;
+}
+
 export function notePoolRetryAfter(key: string, headers: Headers): void {
   const state = scheduleFor(key);
   state.notBefore = Math.max(state.notBefore, retryAfterAt(headers) ?? 0);

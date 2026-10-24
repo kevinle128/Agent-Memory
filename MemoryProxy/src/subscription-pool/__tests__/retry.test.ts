@@ -114,13 +114,31 @@ describe("session-preserving 429 retries", () => {
     expect(firstTimes.slice(1).some((time) => secondTimes.slice(1).includes(time))).toBe(false);
   });
 
-  it("honors a long Retry-After without switching or issuing an early retry", async () => {
+  it("honors a long Retry-After without an early retry, and keeps the account when Check now is not full", async () => {
     const send = vi.fn(async () => limited({ "retry-after": "60" }));
-    const pending = request().send(send);
+    const req = request();
+    const pending = req.send(send);
     await vi.advanceTimersByTimeAsync(30_000);
     const response = await pending;
-    expect(send).toHaveBeenCalledTimes(1); expect(check).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1); expect(check).toHaveBeenCalledTimes(1); expect(req.accountId).toBe("a");
     expect(response.headers.get("retry-after")).toBe("30"); expect(await response.text()).toBe(ERROR_BODY);
+  });
+
+  it("runs Check now at once and switches when Retry-After exceeds the budget and quota is full", async () => {
+    check.mockImplementation(async () => {
+      accounts[0] = { ...accounts[0], usage: { windows: [quotaWindow(100)] } };
+      return { failed: false, account: { ...accounts[0], usage_updated_at: Date.now() } };
+    });
+    const req = request();
+    const ids: string[] = []; const times: number[] = [];
+    const pending = req.send(async (auth) => {
+      const id = auth.kind === "account" ? auth.accountId : "client"; ids.push(id); times.push(Date.now() - START);
+      return id === "a" ? limited({ "retry-after": "7242" }) : new Response("account-b");
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await (await pending).text()).toBe("account-b");
+    expect(ids).toEqual(["a", "b"]); expect(times).toEqual([0, 0]); expect(req.accountId).toBe("b");
+    expect(check).toHaveBeenCalledTimes(1);
   });
 
   it("does not make a new request wait behind another request's longer backoff", async () => {
