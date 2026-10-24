@@ -161,6 +161,7 @@ export async function stageArchive(input: ArchiveStageInput): Promise<void> {
       protocol,
       assetCapabilities,
       toolCallCountOverride: input.toolCallCountOverride,
+      projectIdentity: tdaiIdentity,
     });
   } else {
     logExtractionSkipped(config, "skill", sessionKey);

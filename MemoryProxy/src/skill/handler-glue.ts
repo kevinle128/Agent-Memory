@@ -68,6 +68,26 @@ export interface TriggerInput {
   assetCapabilities?: AssetCapabilityFlags;
   /** Optional override (e.g. SSE accumulators contain the truth in streaming mode). */
   toolCallCountOverride?: number;
+  /**
+   * Project of the session, as reported by the client hook (the TDAI identity
+   * built by `withSessionProject`). Absent or incomplete means "no project".
+   */
+  projectIdentity?: { projectKey?: string; projectHash?: string; projectName?: string } | null;
+}
+
+/**
+ * Project fields for a Core request. The key and the hash go together: a
+ * half pair would make grouping by hash unreliable, so it is dropped.
+ */
+export function projectFieldsOf(
+  identity: TriggerInput["projectIdentity"],
+): { project_key?: string; project_hash?: string; project_name?: string } {
+  if (!identity?.projectKey || !identity.projectHash) return {};
+  return {
+    project_key: identity.projectKey,
+    project_hash: identity.projectHash,
+    ...(identity.projectName ? { project_name: identity.projectName } : {}),
+  };
 }
 
 export async function triggerSkillExtractIfReady(input: TriggerInput): Promise<void> {
@@ -134,6 +154,7 @@ export async function triggerSkillExtractIfReady(input: TriggerInput): Promise<v
           team_id: teamId,
           agent_id: agentId,
           task_id: sessionInfo.task_id as string | undefined,
+          ...projectFieldsOf(input.projectIdentity),
           messages: turnMessages,
         },
         // core Shark 走 x-tdai-service-id = 真实内核实例 ID

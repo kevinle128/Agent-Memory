@@ -1631,6 +1631,7 @@ export async function runAnthropicPipeline(
       assistantMessage,
       protocol: "anthropic",
       assetCapabilities,
+      projectIdentity: tdaiIdentity,
     });
   } else if (bufferSkill) {
     logExtractionSkipped(config, "skill", sessionKey);
@@ -2032,6 +2033,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
           protocol: "anthropic",
           assetCapabilities: ctx.assetCapabilities,
           toolCallCountOverride: toolUseCount,
+          projectIdentity: ctx.tdaiIdentity,
         });
       } else if (bufferSkill) {
         logExtractionSkipped(ctx.config, "skill", ctx.sessionKeyForSkill);

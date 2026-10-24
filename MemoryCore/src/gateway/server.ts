@@ -33,6 +33,7 @@ import { SessionFilter } from "../utils/session-filter.js";
 import { WorkerPermitPool } from "../services/worker-permit-pool.js";
 import { createExtractorAdapter, SkillExtractor as SkillExtractorClass } from "../core/skill/skill-extractor.js";
 import type { SkillCore as SkillCoreType } from "../core/skill/skill-core.js";
+import { SkillCoreError } from "../core/skill/skill-errors.js";
 import type {
   HealthResponse,
   RecallRequest,
@@ -1120,6 +1121,7 @@ export class TdaiGateway {
         getSkillCore: () => this.core.getSkillCore(),
         getSkillExtractor: () => this.core.getSkillExtractor(),
         getResolvedSkillConfig: () => this.core.getResolvedSkillConfig(),
+        getPromptMode: () => this.config.memory.promptMode,
         quotaManager: this.quotaManager ?? undefined,
         logger: this.logger,
         // Standalone 模式下 SkillCore 由 TdaiCore 全局构造（不带 onSkillCreated 钩子），
@@ -2500,6 +2502,9 @@ export class TdaiGateway {
       brpopBlockMs: skillCfg.worker.brpopBlockMs,
       extractLockTtlMs: skillCfg.worker.extractLockTtlMs,
       extractLockRenewIntervalMs: skillCfg.worker.extractLockRenewIntervalMs,
+      // `code` mode: a task is extracted only when it has exactly one project.
+      getPromptMode: () => gateway.config.memory.promptMode,
+      lookupProjectLabels: (instanceId, query) => gateway.lookupL0ProjectLabels(instanceId, query),
       resolveBuffer: async (instanceId: string): Promise<SkillBufferStorage> => {
         const storage = await gateway.resolveStorageForInstance(instanceId);
         // SkillBufferStorage 是每次 new 的 (轻量), 但 storage adapter 是缓存的
@@ -2644,6 +2649,55 @@ export class TdaiGateway {
     return wired;
   }
 
+  /** Memory store of one instance, from the pool (service) or the core (standalone). */
+  private async resolveMemoryStoreForInstance(instanceId: string): Promise<IMemoryStore | undefined> {
+    if (this.storePool && this.configProvider) {
+      const { vdbConfig, mongoConfig } = await this.resolveStoreBackendConfigs(instanceId);
+      const pooled = await this.storePool.getStore(instanceId, vdbConfig, mongoConfig);
+      return pooled.store;
+    }
+    return this.core.getVectorStore();
+  }
+
+  /**
+   * Project labels of the L0 rows of one session in a time window. The skill
+   * worker uses them to place a task that was buffered before project labels
+   * existed. A store without paginated L0 queries gives no label, so the task
+   * is dropped as "no project" and never guessed.
+   */
+  private async lookupL0ProjectLabels(
+    instanceId: string,
+    query: { task: { session_id: string; team_id: string; agent_id: string }; startMs: number; endMs: number },
+  ): Promise<Array<{ projectKey: string; projectHash: string; projectName: string }>> {
+    const store = await this.resolveMemoryStoreForInstance(instanceId);
+    if (!store?.queryL0Paginated) return [];
+    const PAGE = 1000;
+    const MAX_PAGES = 10;
+    const labels: Array<{ projectKey: string; projectHash: string; projectName: string }> = [];
+    let total = 0;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const res = await store.queryL0Paginated({
+        sessionId: query.task.session_id,
+        teamId: query.task.team_id,
+        agentId: query.task.agent_id,
+        timeStartMs: query.startMs,
+        timeEndMs: query.endMs,
+        limit: PAGE,
+        offset: page * PAGE,
+      });
+      total = res.total;
+      for (const r of res.rows) {
+        labels.push({ projectKey: r.project_key ?? "", projectHash: r.project_hash ?? "", projectName: r.project_name ?? "" });
+      }
+      if (res.rows.length < PAGE || labels.length >= total) break;
+    }
+    // Rows that were not read have an unknown project. An unknown label counts
+    // as "no project", and the unanimity rule then treats the task as mixed, so
+    // a long session is never placed from its newest rows only.
+    if (labels.length < total) labels.push({ projectKey: "", projectHash: "", projectName: "" });
+    return labels;
+  }
+
   /**
    * 解析某实例的「内容侧」句柄（memory store + storage），用于清空 chat_memory
    * 内容。两种模式都走各自既有的解析路径，保证与 /v2 数据面读写命中同一份数据：
@@ -2656,16 +2710,7 @@ export class TdaiGateway {
   private async resolveMemoryContentTargets(
     instanceId: string,
   ): Promise<{ store: IMemoryStore; storage: StorageAdapter }> {
-    let store: IMemoryStore | undefined;
-
-    if (this.storePool && this.configProvider) {
-      const { vdbConfig, mongoConfig } = await this.resolveStoreBackendConfigs(instanceId);
-      const pooled = await this.storePool.getStore(instanceId, vdbConfig, mongoConfig);
-      store = pooled.store;
-    } else {
-      store = this.core.getVectorStore();
-    }
-
+    const store = await this.resolveMemoryStoreForInstance(instanceId);
     if (!store) {
       throw new Error(`memory store unavailable for instance ${instanceId}, cannot clear chat memory content`);
     }

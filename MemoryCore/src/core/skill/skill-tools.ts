@@ -19,6 +19,7 @@
 import { tool, jsonSchema } from "ai";
 import { SkillApprovalRequiredError, SkillCoreError, type SkillCore } from "./skill-core.js";
 import type { ChangePlacement } from "./skill-change-service.js";
+import { isVisibleToProject, listVisibleSkills, searchVisibleSkills } from "./skill-project-view.js";
 
 export type ExtractedAction =
   | "create"
@@ -73,6 +74,15 @@ interface ChangeNote {
   change_summary?: string[];
 }
 
+/**
+ * Last path segment of a project name, as a skill name part: lowercase ASCII
+ * letters, digits and hyphens. `vtc/3q-chess/3q-game-api` gives `3q-game-api`.
+ */
+export function shortRepoName(projectName: string | undefined): string {
+  const last = (projectName ?? "").split("/").filter(Boolean).pop() ?? "";
+  return last.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 function jsonError(e: unknown): string {
   if (e instanceof SkillCoreError) {
     return JSON.stringify({ error: e.code, message: e.message });
@@ -106,6 +116,29 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
   // Write 路径：带 task_id 落审计列 (记 skill 首次落库时的对话上下文)。
   const readIds = { user_id, team_id, agent_id };
   const writeIds = { user_id, team_id, agent_id, task_id };
+  // With a project the model sees global skills and skills of that project only.
+  const projectHash = opts.project?.project_hash || undefined;
+  /** Refuse a skill of another project, for reads and for writes. */
+  const assertVisible = async (skill_id: string): Promise<void> => {
+    if (!projectHash) return;
+    const head = await core.get({ ...readIds, skill_id });
+    if (!isVisibleToProject(head, projectHash)) {
+      throw new SkillCoreError("SKILL_NOT_FOUND", "skill belongs to another project");
+    }
+  };
+  /** The name is used in another scope or project: ask for a project-prefixed name. */
+  const nameConflictJson = (e: unknown, name: string): string | undefined => {
+    if (!(e instanceof SkillCoreError) || e.code !== "SKILL_NAME_SCOPE_CONFLICT") return undefined;
+    const repo = shortRepoName(opts.project?.project_name);
+    const example = repo ? `"${repo}-${name}"` : "a name that starts with the short repository name";
+    return JSON.stringify({
+      error: e.code,
+      message:
+        `The name "${name}" is used by a skill of another scope or project. ` +
+        `Call skill_create again with a project-prefixed name, for example ${example}. ` +
+        "The frontmatter `name` must change to the same value.",
+    });
+  };
 
   return {
     skill_list: tool({
@@ -131,13 +164,17 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
       execute: async ({ query, top_k }) => {
         try {
           if (query && query.trim()) {
-            const hits = await core.search({ ...readIds, query, top_k });
+            const hits = projectHash
+              ? await searchVisibleSkills(core, readIds, projectHash, query, top_k ?? 10)
+              : await core.search({ ...readIds, query, top_k });
             return JSON.stringify(hits.map((h) => ({
               skill_id: h.skill.skill_id, name: h.skill.name, description: h.skill.description,
               version: h.skill.version, score: h.score,
             })));
           }
-          const r = await core.list({ ...readIds, pagination: { limit: top_k ?? 50, offset: 0 } });
+          const r = projectHash
+            ? await listVisibleSkills(core, readIds, projectHash, top_k ?? 50)
+            : await core.list({ ...readIds, pagination: { limit: top_k ?? 50, offset: 0 } });
           return JSON.stringify(r.items.map((s) => ({
             skill_id: s.skill_id, name: s.name, description: s.description, version: s.version,
           })));
@@ -157,6 +194,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
       }),
       execute: async ({ skill_id, version }) => {
         try {
+          await assertVisible(skill_id);
           const r = await core.get({ ...readIds, skill_id, version });
           return JSON.stringify({
             skill_id: r.skill_id, version: r.version, name: r.name, description: r.description,
@@ -187,7 +225,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
           auditSink.push({ action: "create", name, skill_id: r.skill_id, version: r.version, description: r.description });
           logger?.info(`[skill-tools] created ${r.skill_id}`);
           return JSON.stringify({ ok: true, skill_id: r.skill_id, version: r.version });
-        } catch (e) { return jsonError(e); }
+        } catch (e) { return nameConflictJson(e, name) ?? jsonError(e); }
       },
     }),
 
@@ -205,6 +243,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
       }),
       execute: async ({ skill_id, content, expected_version, ...n }) => {
         try {
+          await assertVisible(skill_id);
           const r = await core.update({ ...writeIds, skill_id, content, expected_version, ...note(n) });
           auditSink.push({ action: "update", name: r.name, skill_id, version: r.version });
           return JSON.stringify({ ok: true, version: r.version });
@@ -231,6 +270,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
       }),
       execute: async ({ skill_id, old_string, new_string, replace_all, expected_version, ...n }) => {
         try {
+          await assertVisible(skill_id);
           const r = await core.patch({ ...writeIds, skill_id, old_string, new_string, replace_all, expected_version, ...note(n) });
           auditSink.push({ action: "patch", name: r.name, skill_id, version: r.version });
           return JSON.stringify({ ok: true, version: r.version });
@@ -260,6 +300,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
       }),
       execute: async ({ skill_id, path, content, encoding, mime_type, is_executable, expected_version, ...n }) => {
         try {
+          await assertVisible(skill_id);
           const r = await core.writeFiles({
             ...writeIds, skill_id, expected_version, ...note(n),
             files: [{ path, content, encoding: encoding ?? "utf-8", mime_type, is_executable }],

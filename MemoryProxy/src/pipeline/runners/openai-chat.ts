@@ -1617,6 +1617,7 @@ export async function runOpenaiChatPipeline(
       assistantMessage,
       protocol: "openai",
       assetCapabilities,
+      projectIdentity: tdaiIdentity,
     });
   } else if (!isAuxiliary && !_dshHeadless) {
     logExtractionSkipped(config, "skill", sessionKey);
@@ -2006,6 +2007,7 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
         protocol: "openai",
         assetCapabilities: ctx.assetCapabilities,
         toolCallCountOverride: toolCallAccumulators.size,
+        projectIdentity: ctx.tdaiIdentity,
       });
     } else if (!ctx.isAuxiliary && !ctx.isDshHeadless) {
       logExtractionSkipped(ctx.config, "skill", ctx.sessionKeyForSkill);

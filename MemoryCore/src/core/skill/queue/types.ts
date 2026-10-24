@@ -78,6 +78,12 @@ export interface ISkillExtractor {
      * 'strict' 走 SKILL_REVIEW_PROMPT_STRICT (v1 严格 gate),用于冷启动/批量导入。
      */
     mode?: 'default' | 'strict';
+    /**
+     * The one project of the conversation, verified by the worker. Set only in
+     * `code` mode. The extractor then creates project skills and sees only the
+     * global skills and the skills of this project.
+     */
+    project?: { project_key: string; project_hash: string; project_name: string };
   }): Promise<{ candidates: ExtractedCandidate[] }>;
 }
 

@@ -71,6 +71,13 @@ export interface AddConversationInput {
   task_id?: string;
   messages: CompressibleMessage[];
   /**
+   * Validated project of the session, from the client hook. Absent means the
+   * round has no project. Stored on every message of the round, and a change
+   * of project closes the buffer first, so one archived task never mixes
+   * projects.
+   */
+  project?: BufferProject;
+  /**
    * 抽取模式;仅当上游 handler 收到 body.strict_mode:true 时传 'strict'。
    * 归档段透传给 SkillTriggerService.archive({mode}) → SkillTaskEntry.mode
    * → Worker → SkillExtractor.extract({mode:'strict'}) → 使用 STRICT prompt。
@@ -84,6 +91,14 @@ export interface AddConversationInput {
   perfRequestId?: string;
 }
 
+/** Project label stored on buffered messages. */
+export interface BufferProject {
+  projectKey: string;
+  projectHash: string;
+  /** Empty when the name is unknown. */
+  projectName: string;
+}
+
 export interface AddConversationResult {
   /** 语义状态：ok=正常追加 / archived=触发了归档。 */
   status: "ok" | "archived";
@@ -92,7 +107,7 @@ export interface AddConversationResult {
     archived_at_ms: number;
     archive_key: string;
     /** normal 达阈值触发 / compressed 必触发 / oversize 兜底后触发 */
-    reason: "tool_calls" | "bytes" | "compressed" | "oversize";
+    reason: "tool_calls" | "bytes" | "compressed" | "oversize" | "project_changed";
   };
 }
 
@@ -163,14 +178,57 @@ export class SkillConversationAddHandler {
 
     // ② 计算 raw_bytes
     const rawBytes = totalMessagesBytes(input.messages);
+    const stampedMessages = stampProject(input.messages, input.project);
 
     // ③ 分路径：读现状 + 走共享 helper 做压缩 + 兜底
     const useCompress = rawBytes >= this.thresholds.requestCompressThresholdBytes;
     const t0Buf = Date.now();
-    const [current, meta] = await Promise.all([
+    let [current, meta] = await Promise.all([
       this.buffer.readCurrent(sess),
       this.buffer.readMeta(sess),
     ]);
+
+    // A round of another project closes the buffered rounds first. The closed
+    // buffer becomes its own task, so a task never mixes projects.
+    const roundProjectHash = input.project?.projectHash ?? "";
+    let flushed: NonNullable<AddConversationResult["archived"]> | undefined;
+    if (current.messages.length > 0 && bufferProjectHash(current.messages) !== roundProjectHash) {
+      const t0Flush = Date.now();
+      await waitUntilAfter(meta.last_archived_at_ms);
+      const flushRes = await this.trigger.archive({
+        session: sess,
+        bufferAtTrigger: { messages: current.messages },
+        perfRequestId: rid,
+      });
+      const nowMs = this.now();
+      meta = {
+        session_id: sess.session_id,
+        space_id: sess.space_id,
+        user_id: sess.user_id,
+        team_id: sess.team_id,
+        agent_id: sess.agent_id,
+        tool_call_count: 0,
+        byte_count: 0,
+        last_appended_at_ms: nowMs,
+        last_archived_at_ms: flushRes.archivedAtMs,
+      };
+      current = { messages: [] };
+      await Promise.all([
+        this.buffer.writeCurrent(sess, current),
+        this.buffer.writeMeta(sess, meta),
+      ]);
+      flushed = {
+        task_id: flushRes.taskId,
+        archived_at_ms: flushRes.archivedAtMs,
+        archive_key: flushRes.archiveKey,
+        reason: "project_changed",
+      };
+      obsLogger.info("skill.add_handler.flush_project_change", {
+        req_id: rid, session_id: input.session_id, instance_id: input.instance_id,
+        dur_ms: Date.now() - t0Flush,
+        task_id: flushRes.taskId,
+      });
+    }
     obsLogger.info("skill.add_handler.read_buffer", {
       req_id: rid, session_id: input.session_id, instance_id: input.instance_id,
       dur_ms: Date.now() - t0Buf,
@@ -187,7 +245,7 @@ export class SkillConversationAddHandler {
     const t0Prep = Date.now();
     const prepared = prepareArchivePayload(
       current.messages as OversizeMessage[],
-      input.messages,
+      stampedMessages,
       {
         compress: this.compressOptions,
         oversize: this.oversizeOptions,
@@ -216,7 +274,9 @@ export class SkillConversationAddHandler {
     const hitBytes = nextBytes >= this.thresholds.bytesThreshold;
     const shouldArchive = useCompress || hitTool || hitBytes;
 
-    let result: AddConversationResult = { status: "ok" };
+    let result: AddConversationResult = flushed
+      ? { status: "archived", archived: flushed }
+      : { status: "ok" };
 
     if (shouldArchive) {
       // 归档段
@@ -227,6 +287,8 @@ export class SkillConversationAddHandler {
           : hitTool
             ? "tool_calls"
             : "bytes";
+
+      await waitUntilAfter(meta.last_archived_at_ms);
 
       const t0Arch = Date.now();
       const archiveRes = await this.trigger.archive({
@@ -366,6 +428,51 @@ export class SkillConversationAddHandler {
       }
     }
   }
+}
+
+/**
+ * Mark every message of a round with the project of the session. A round
+ * without a project gets an empty hash, so a message buffered before this
+ * field existed (hash absent) stays distinguishable from a round that is known
+ * to have no project.
+ */
+export function stampProject(
+  msgs: CompressibleMessage[],
+  project: BufferProject | undefined,
+): CompressibleMessage[] {
+  return msgs.map((m) => ({
+    ...m,
+    project_hash: project?.projectHash ?? "",
+    ...(project ? { project_key: project.projectKey } : {}),
+    ...(project?.projectName ? { project_name: project.projectName } : {}),
+  }));
+}
+
+/**
+ * The archive key holds the archive time in milliseconds. Two archives of one
+ * session in the same millisecond would share a key, and the second would
+ * overwrite the first. A project change can cause two archives in a row, so
+ * wait until the clock is past the previous archive time.
+ */
+/**
+ * Wait until the clock passes the previous archive time, so two archives of one
+ * session never share a millisecond (the archive key uses it). The wait is
+ * capped: a time written by a replica with a fast clock must not stall the
+ * request; past the cap the archive goes on.
+ */
+const MAX_ARCHIVE_TIME_WAIT_MS = 50;
+async function waitUntilAfter(previousArchiveMs: number | undefined): Promise<void> {
+  const deadline = Date.now() + MAX_ARCHIVE_TIME_WAIT_MS;
+  while (previousArchiveMs !== undefined && Date.now() <= previousArchiveMs && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
+/** Project hash of a buffer: the hash of its last message, empty when it has none. */
+function bufferProjectHash(msgs: ReadonlyArray<Record<string, unknown>>): string {
+  const last = msgs[msgs.length - 1];
+  const hash = last?.project_hash;
+  return typeof hash === "string" ? hash : "";
 }
 
 function totalMessagesBytes(msgs: CompressibleMessage[]): number {

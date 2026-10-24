@@ -199,6 +199,7 @@ export async function stageMemCommandIntercept(
         assistantMessage: assistantMsg,
         protocol: protocol === "responses" ? "responses" : (protocol as "openai" | "anthropic"),
         assetCapabilities,
+        projectIdentity: tdaiIdentityForMem,
       });
     } catch (err: unknown) {
       console.warn("[mem-command] skill extract trigger error:", err instanceof Error ? err.message : String(err));

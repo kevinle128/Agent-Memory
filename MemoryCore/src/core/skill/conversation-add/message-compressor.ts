@@ -29,6 +29,14 @@ export interface CompressibleMessage {
   tool_name?: string;
   tool_call_id?: string;
   timestamp?: number;
+  /**
+   * Project the session reported for the round that carried this message.
+   * `project_hash` is an empty string for a round without a project, and
+   * absent only on messages buffered before the field existed.
+   */
+  project_key?: string;
+  project_hash?: string;
+  project_name?: string;
   metadata?: Record<string, unknown>;
 }
 

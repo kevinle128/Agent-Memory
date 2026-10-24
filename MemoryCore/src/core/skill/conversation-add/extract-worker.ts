@@ -31,6 +31,15 @@ import type {
   ExtractorLogger,
   ISkillExtractor,
 } from "../queue/types.js";
+import type { MemoryPromptMode } from "../../../config.js";
+import {
+  classifyProjectLabels,
+  resolveBufferedProject,
+  type ProjectLabel,
+  type PlacedTaskProject,
+  type TaskProject,
+} from "./task-project.js";
+import { metricProducer } from "../../report/kafka-metric-producer.js";
 import { runInRootContext } from "../../report/otel-context.js";
 import { obsLogger } from "../../report/obs-logger.js";
 import { trace } from "../../report/trace.js";
@@ -47,6 +56,22 @@ export interface SkillCandidatesSink {
     workerId: string;
   }): Promise<void>;
 }
+
+/** Why a task was dropped by the project gate. */
+export type ProjectDropReason = "no_project" | "mixed_project";
+
+/**
+ * Read the project labels of the L0 rows of one session inside a time window.
+ * Used only for tasks buffered before the buffer carried project labels.
+ */
+export type TaskProjectLabelLookup = (query: {
+  task: SkillTaskEntry;
+  startMs: number;
+  endMs: number;
+}) => Promise<ProjectLabel[]>;
+
+/** Window before the archive time in which L0 rows count for an unlabeled task. */
+export const DEFAULT_PROJECT_LOOKUP_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export interface SkillConversationExtractWorkerOptions {
   workerId: string;
@@ -82,6 +107,20 @@ export interface SkillConversationExtractWorkerOptions {
   tasksPerRound?: number;
   /** 时间源，测试注入。 */
   now?: () => number;
+
+  /**
+   * Prompt mode of the instance, read for each task. In `code` mode a task is
+   * extracted only when all its rounds belong to one project. Absent means
+   * `chat`: no gate, the earlier behavior.
+   */
+  getPromptMode?: () => MemoryPromptMode;
+  /**
+   * Finds the project labels of an unlabeled task in L0. Absent means such a
+   * task cannot be placed in a project, so the gate drops it.
+   */
+  lookupProjectLabels?: TaskProjectLabelLookup;
+  /** Length of the L0 window for `lookupProjectLabels`. Default 24 hours. */
+  projectLookupWindowMs?: number;
 
   // ── 失败处理（transient / permanent 分级 + DLQ） ────────────────────────
   //
@@ -350,6 +389,7 @@ export class SkillConversationExtractWorker {
         // ④ 读 archive
         let candidates: ExtractedCandidate[] | null = null;
         let isGhost = false;
+        let projectDrop: ProjectDropReason | undefined;
         try {
           this.logger.info(
             `[skill-conv-worker] processing task_id=${head.task_id} archive_key=${head.archive_key}`,
@@ -376,52 +416,88 @@ export class SkillConversationExtractWorker {
               role: String(m.role ?? "user"),
               content: String(m.content ?? ""),
             }));
-            this.logger.info(
-              `[skill-conv-worker] extract start task_id=${head.task_id} messages=${conversation.length}`,
-            );
-            const t0Ext = Date.now();
-            const result = await this.opts.extractor.extract({
-              task_id: head.task_id,
-              team_id: head.team_id,
-              user_id: head.user_id,
-              agent_id: head.agent_id,
-              // Langfuse trace 绑定字段：不透传的话 skill.extract 的 trace
-              // sessionId=null / instanceId=unknown，页面按 session 过滤就找不到。
-              session_id: head.session_id,
-              space_id: head.space_id,
-              conversation,
-              // direct-trigger (`/v3/skill/extract`) 独占字段透传；conversation/add 归档
-              // 的 task 不带这两个字段, undefined 不影响 extractor (走默认)。
-              reason: head.reason,
-              options: head.max_iterations != null
-                ? { max_iterations: head.max_iterations }
-                : undefined,
-              // strict_mode 透传:老 task (未升级前入队) mode 字段不存在,undefined 透
-              // 给 extractor 恒走 SKILL_REVIEW_PROMPT (v2 宽松) — 零回归; 冷启动写入的
-              // task mode='strict' 才切到 SKILL_REVIEW_PROMPT_STRICT (v1 严格 gate)。
-              mode: head.mode,
-            });
-            candidates = result.candidates ?? [];
-            obsLogger.info("skill.worker.extractor", {
-              worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
-              dur_ms: Date.now() - t0Ext,
-              candidates: candidates.length,
-              msg_count: conversation.length,
-            });
-            this.logger.info(
-              `[skill-conv-worker] extract done task_id=${head.task_id} candidates=${candidates.length}`,
-            );
-            const t0Sink = Date.now();
-            await this.opts.sink.applyCandidates({
-              task: head,
-              candidates,
-              workerId: this.opts.workerId,
-            });
-            obsLogger.info("skill.worker.apply_candidates", {
-              worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
-              dur_ms: Date.now() - t0Sink,
-              candidates: candidates.length,
-            });
+            // In code mode only a task with exactly one project is extracted.
+            let project: TaskProject | undefined;
+            if ((this.opts.getPromptMode?.() ?? "chat") === "code") {
+              const gate = await this.resolveTaskProject(head, archive.messages ?? []);
+              if (gate.kind === "project") {
+                project = gate.project;
+              } else {
+                projectDrop = gate.kind === "mixed" ? "mixed_project" : "no_project";
+              }
+            }
+            if (projectDrop) {
+              this.logger.info(
+                `[skill-conv-worker] project gate dropped task_id=${head.task_id} reason=${projectDrop}`,
+              );
+              obsLogger.info("skill.worker.project_gate_drop", {
+                worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
+                reason: projectDrop,
+              });
+              try {
+                metricProducer.send({
+                  metric: `skill.extract.dropped_${projectDrop}`,
+                  instanceId: head.team_id,
+                  value: 1,
+                });
+              } catch { /* noop */ }
+            } else {
+              this.logger.info(
+                `[skill-conv-worker] extract start task_id=${head.task_id} messages=${conversation.length}`,
+              );
+              const t0Ext = Date.now();
+              const result = await this.opts.extractor.extract({
+                task_id: head.task_id,
+                team_id: head.team_id,
+                user_id: head.user_id,
+                agent_id: head.agent_id,
+                // Langfuse trace 绑定字段：不透传的话 skill.extract 的 trace
+                // sessionId=null / instanceId=unknown，页面按 session 过滤就找不到。
+                session_id: head.session_id,
+                space_id: head.space_id,
+                conversation,
+                // direct-trigger (`/v3/skill/extract`) 独占字段透传；conversation/add 归档
+                // 的 task 不带这两个字段, undefined 不影响 extractor (走默认)。
+                reason: head.reason,
+                options: head.max_iterations != null
+                  ? { max_iterations: head.max_iterations }
+                  : undefined,
+                // strict_mode 透传:老 task (未升级前入队) mode 字段不存在,undefined 透
+                // 给 extractor 恒走 SKILL_REVIEW_PROMPT (v2 宽松) — 零回归; 冷启动写入的
+                // task mode='strict' 才切到 SKILL_REVIEW_PROMPT_STRICT (v1 严格 gate)。
+                mode: head.mode,
+                ...(project
+                  ? {
+                      project: {
+                        project_key: project.projectKey,
+                        project_hash: project.projectHash,
+                        project_name: project.projectName,
+                      },
+                    }
+                  : {}),
+              });
+              candidates = result.candidates ?? [];
+              obsLogger.info("skill.worker.extractor", {
+                worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
+                dur_ms: Date.now() - t0Ext,
+                candidates: candidates.length,
+                msg_count: conversation.length,
+              });
+              this.logger.info(
+                `[skill-conv-worker] extract done task_id=${head.task_id} candidates=${candidates.length}`,
+              );
+              const t0Sink = Date.now();
+              await this.opts.sink.applyCandidates({
+                task: head,
+                candidates,
+                workerId: this.opts.workerId,
+              });
+              obsLogger.info("skill.worker.apply_candidates", {
+                worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
+                dur_ms: Date.now() - t0Sink,
+                candidates: candidates.length,
+              });
+            }
           }
         } catch (err) {
           // 失败分级（对齐设计文档 §3.6 (7) P0 修复）：
@@ -501,7 +577,7 @@ export class SkillConversationExtractWorker {
             team_id: head.team_id,
             agent_id: head.agent_id,
             session_id: head.session_id,
-            outcome: isGhost ? "ghost" : "ok",
+            outcome: isGhost ? "ghost" : projectDrop ? `dropped_${projectDrop}` : "ok",
             candidates: candidates?.length ?? 0,
             dur_ms: Date.now() - t0Task,
             success: true,
@@ -510,12 +586,12 @@ export class SkillConversationExtractWorker {
 
         obsLogger.info("skill.worker.task_done", {
           worker_id: workerId, task_id: head.task_id, instance_id: instanceId,
-          outcome: isGhost ? "ghost" : "ok",
+          outcome: isGhost ? "ghost" : projectDrop ? `dropped_${projectDrop}` : "ok",
           candidates: candidates?.length ?? 0,
           dur_ms: Date.now() - t0Task,
         });
 
-        if (isGhost) dropped.push(head.task_id);
+        if (isGhost || projectDrop) dropped.push(head.task_id);
         else processedTaskIds.push(head.task_id);
       }
 
@@ -541,6 +617,28 @@ export class SkillConversationExtractWorker {
         );
       }
     }
+  }
+
+  /**
+   * Project of one task. The labels on the buffered messages decide. A task
+   * buffered before labels existed is placed from the L0 rows of its session in
+   * a window before the archive time. A lookup that throws makes the task
+   * retry. A store that reports no rows (also when it is degraded and returns
+   * an empty page) gives "no project", and the task is dropped: an unknown
+   * project must never be guessed.
+   */
+  private async resolveTaskProject(
+    task: SkillTaskEntry,
+    messages: ReadonlyArray<Record<string, unknown>>,
+  ): Promise<PlacedTaskProject> {
+    const own = resolveBufferedProject(messages);
+    if (own.kind !== "unlabeled") return own;
+    const lookup = this.opts.lookupProjectLabels;
+    if (!lookup) return { kind: "none" };
+    const endMs = task.archived_at_ms;
+    const startMs = endMs - (this.opts.projectLookupWindowMs ?? DEFAULT_PROJECT_LOOKUP_WINDOW_MS);
+    const labels = await lookup({ task, startMs, endMs });
+    return classifyProjectLabels(labels);
   }
 
   /**
@@ -654,7 +752,17 @@ export class SkillConversationExtractWorker {
  *
  * 完整分类矩阵见 docs/design/2026-07-21-memorycore-standalone-e2e.md §3.6 (7)。
  */
+/**
+ * The extractor could not be built (configuration, LLM credentials, store
+ * routing). This is a problem of the instance, not of the task, so it is
+ * always retried and never moves a task to the dead-letter queue.
+ */
+export class ExtractorUnavailableError extends Error {
+  override readonly name = "ExtractorUnavailableError";
+}
+
 export function classifyError(err: Error): "transient" | "permanent" {
+  if (err instanceof ExtractorUnavailableError) return "transient";
   const raw = `${err?.name ?? ""} ${err?.message ?? ""}`;
   const msg = raw.toLowerCase();
   // AbortError（LLM 请求被 signal cancel / timeout）视为 transient

@@ -32,7 +32,10 @@ import {
   SkillConversationExtractWorker,
   type SkillCandidatesSink,
   type SkillConversationExtractWorkerOptions,
+  type TaskProjectLabelLookup,
+  ExtractorUnavailableError,
 } from "./extract-worker.js";
+import type { MemoryPromptMode } from "../../../config.js";
 
 /**
  * 由 gateway 侧闭包捕获的 per-instance 资源解析函数。走进程级 cache,
@@ -66,6 +69,19 @@ export interface SkillWorkerPoolOptions extends SkillWorkerResolvers {
   permanentMaxRetries?: number;
   transientLogSampleEvery?: number;
   now?: () => number;
+
+  /** Prompt mode of the instance. `code` turns on the project gate in each worker. */
+  getPromptMode?: () => MemoryPromptMode;
+  /**
+   * Finds the project labels of an unlabeled task in the L0 rows of its
+   * instance. The pool binds the instance id of each agent.
+   */
+  lookupProjectLabels?: (
+    instanceId: string,
+    query: Parameters<TaskProjectLabelLookup>[0],
+  ) => ReturnType<TaskProjectLabelLookup>;
+  /** L0 window for `lookupProjectLabels`. */
+  projectLookupWindowMs?: number;
 
   /**
    * 2026-08-03 crash-recovery §4.4: 本 loop 处理某个 agent 失败后 (抢锁失败 /
@@ -359,11 +375,15 @@ export class SkillWorkerPool {
     workerId: string,
   ): Promise<{ lockContended?: boolean }> {
     const instanceId = agent.instance_id;
-    const [buffer, extractor, sink] = await Promise.all([
+    const [buffer, sink] = await Promise.all([
       this.opts.resolveBuffer(instanceId),
-      this.opts.resolveExtractor(instanceId),
       this.opts.resolveSink(instanceId),
     ]);
+    // The extractor is resolved only when a task reaches the LLM step. A task
+    // that the project gate drops never needs it, and a resolver failure then
+    // goes through the per-task retry rules instead of failing the whole agent
+    // loop again and again.
+    const extractor = lazyExtractor(() => this.opts.resolveExtractor(instanceId));
 
     const extractWorkerOpts: SkillConversationExtractWorkerOptions = {
       workerId,
@@ -384,6 +404,11 @@ export class SkillWorkerPool {
       permanentMaxRetries: this.opts.permanentMaxRetries,
       transientLogSampleEvery: this.opts.transientLogSampleEvery,
       now: this.opts.now,
+      getPromptMode: this.opts.getPromptMode,
+      lookupProjectLabels: this.opts.lookupProjectLabels
+        ? (query) => this.opts.lookupProjectLabels!(instanceId, query)
+        : undefined,
+      projectLookupWindowMs: this.opts.projectLookupWindowMs,
     };
     const oneShot = new SkillConversationExtractWorker(extractWorkerOpts);
     // 直接调 consumeAgent —— 走同一份 8 步流程 (extract-lock / renewTimer /
@@ -392,6 +417,20 @@ export class SkillWorkerPool {
     const result = await oneShot.consumeAgent(agent);
     return { lockContended: result.lockContended };
   }
+}
+
+/** An extractor that is built on its first use and kept for later calls. */
+function lazyExtractor(resolve: () => Promise<ISkillExtractor>): ISkillExtractor {
+  let pending: Promise<ISkillExtractor> | undefined;
+  return {
+    extract: async (input) => {
+      pending ??= resolve().catch((err: unknown) => {
+        pending = undefined;
+        throw new ExtractorUnavailableError(err instanceof Error ? err.message : String(err), { cause: err });
+      });
+      return (await pending).extract(input);
+    },
+  };
 }
 
 function sleep(ms: number): Promise<void> {

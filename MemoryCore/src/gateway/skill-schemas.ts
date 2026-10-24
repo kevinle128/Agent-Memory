@@ -12,6 +12,7 @@
  */
 
 import { z } from "zod";
+import { resolveProjectFields } from "./v2-schemas.js";
 
 // ═════════════════════════════════════════════════════════════════════
 //  公共片段
@@ -61,6 +62,41 @@ const placementShape = {
   project_hash: z.string().regex(/^[0-9a-f]{16}$/, "project_hash must be 16 lowercase hex characters").optional(),
   project_name: z.string().min(1).max(512).optional(),
 };
+
+/**
+ * Project the client hook reported for the session. The fields are read as
+ * plain strings and checked by `resolveRequestProject`, so a bad value drops
+ * the project of the round and does not fail the request (same rule as the
+ * L0 write).
+ */
+const projectReportShape = {
+  project_key: z.string().optional(),
+  project_hash: z.string().optional(),
+  project_name: z.string().optional(),
+};
+
+/** The validated project of a request: all three fields, or none. */
+export interface RequestProject {
+  projectKey: string;
+  projectHash: string;
+  /** Empty when the request carried no valid name. */
+  projectName: string;
+}
+
+/**
+ * Validate the reported project with the same helper as the L0 write: the key
+ * and the hash are all-or-nothing, the hash has 16 lowercase hex characters,
+ * and a bad name is dropped. Returns undefined for "no project".
+ */
+export function resolveRequestProject(input: {
+  project_key?: unknown;
+  project_hash?: unknown;
+  project_name?: unknown;
+}): RequestProject | undefined {
+  const r = resolveProjectFields(input.project_key, input.project_hash, input.project_name);
+  if (!r.projectKey || !r.projectHash) return undefined;
+  return { projectKey: r.projectKey, projectHash: r.projectHash, projectName: r.projectName ?? "" };
+}
 
 export const skillResourcePayloadSchema = z.object({
   path: z.string().min(1).max(512),
@@ -310,6 +346,7 @@ export const extractRequestSchema = z.object({
   session_id: z.string().min(1).optional()
     .refine((v) => !v || !v.includes("|"), { message: "session_id must not contain '|'" }),
   task_id: z.string().min(1).max(128).optional(),   // 业务 task_ref_id, 透传到 SkillTaskEntry
+  ...projectReportShape,
   messages: z.array(extractMessageSchema).min(1).max(500),
   reason: z.string().min(1).max(500).optional(),
   options: z.object({
@@ -343,6 +380,7 @@ export const conversationAddRequestSchema = z.object({
   team_id: z.string().min(1).refine((v) => !v.includes("|"), "team_id must not contain '|'"),
   agent_id: z.string().min(1).refine((v) => !v.includes("|"), "agent_id must not contain '|'"),
   task_id: z.string().min(1).max(128).optional(),
+  ...projectReportShape,
   messages: z.array(conversationMessageSchema).min(1).max(500),
   /**
    * 冷启动/批量导入场景 (agents/asset-import.ts) 显式传 true 触发严格 gate 抽取

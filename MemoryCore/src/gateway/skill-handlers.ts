@@ -45,6 +45,7 @@ import {
   filesReadRequestSchema,
   listingRequestSchema,
   extractRequestSchema,
+  resolveRequestProject,
   exportRequestSchema,
   conversationAddRequestSchema,
   forceArchiveRequestSchema,
@@ -62,6 +63,8 @@ import type { Skill, ResolvedSkillConfig } from "../core/skill/types.js";
 import { DEFAULT_COMPRESS_OPTIONS } from "../core/skill/conversation-add/message-compressor.js";
 import { DEFAULT_OVERSIZE_OPTIONS } from "../core/skill/conversation-add/oversize-strategy.js";
 import { prepareArchivePayload } from "../core/skill/conversation-add/prepare-archive.js";
+import { stampProject } from "../core/skill/conversation-add/add-handler.js";
+import type { MemoryPromptMode } from "../config.js";
 import type { CompressibleMessage } from "../core/skill/conversation-add/message-compressor.js";
 import { trace } from "../core/report/trace.js";
 import { metricProducer } from "../core/report/kafka-metric-producer.js";
@@ -85,6 +88,11 @@ export interface SkillRouterDeps {
   getSkillExtractor?: () => SkillExtractor | undefined;
   /** Optional. 已解析的 skill 配置；handleListing 用 searchTopK 限制注入条目数。 */
   getResolvedSkillConfig?: () => ResolvedSkillConfig | undefined;
+  /**
+   * Prompt mode of the instance. In `code` mode a session import must name a
+   * project. Absent means `chat`, which keeps the earlier behavior.
+   */
+  getPromptMode?: () => MemoryPromptMode;
   logger: Logger;
   /**
    * Service mode: resolve per-instance SkillCore (TcvdbSkillStore + COS).
@@ -1267,6 +1275,14 @@ export async function handleExtract(body: unknown, auth: V2AuthContext, requestI
   }
   const input = parsed.data;
 
+  // An import in `code` mode needs a project: extraction refuses a task without
+  // exactly one project, so accepting the import would only drop it later.
+  const project = resolveRequestProject(input);
+  if (!project && deps.getPromptMode?.() === "code") {
+    obsLogger.warn("skill.handleExtract.done", { req_id: requestId, code: 40001, dur_ms: Date.now() - t0, reason: "project_required" });
+    return errorEnvelope(40001, "project_key and project_hash are required to extract skills in code mode", requestId);
+  }
+
   if (!deps.resolveConversationAdd) {
     obsLogger.warn("skill.handleExtract.done", { req_id: requestId, code: 50301, dur_ms: Date.now() - t0, reason: "not_wired" });
     return errorEnvelope(50301, "skill extract not wired (resolveConversationAdd missing)", requestId);
@@ -1308,12 +1324,15 @@ export async function handleExtract(body: unknown, auth: V2AuthContext, requestI
   const chunkMax = oversizeOpts.chunkMaxBytes ?? DEFAULT_OVERSIZE_OPTIONS.chunkMaxBytes;
 
   const t0Prep = Date.now();
-  const incoming: CompressibleMessage[] = input.messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-    tool_name: m.tool_name,
-    tool_call_id: m.tool_call_id,
-  }));
+  const incoming: CompressibleMessage[] = stampProject(
+    input.messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      tool_name: m.tool_name,
+      tool_call_id: m.tool_call_id,
+    })),
+    project,
+  );
 
   // 先算原始字节, 只有超过 chunkMax 时才走压缩 + 兜底
   const rawBytes = incoming.reduce(
@@ -1466,6 +1485,14 @@ export async function handleConversationAdd(
     return errorEnvelope(404, "Skill conversation-add module not enabled for this instance", requestId);
   }
 
+  // A strict-mode import exists only to create skills. In `code` mode a task
+  // without a project is dropped by the extraction gate, so refuse the import
+  // now instead of answering "ok" and creating nothing.
+  if (input.strict_mode === true && deps.getPromptMode?.() === "code" && !resolveRequestProject(input)) {
+    obsLogger.warn("skill.handleConversationAdd.done", { req_id: requestId, code: 40001, dur_ms: Date.now() - t0, reason: "project_required" });
+    return errorEnvelope(40001, "project_key and project_hash are required to import skills in code mode", requestId);
+  }
+
   // space_id 优先取 body, 缺省回落到 auth.serviceId (跟 handleExtract 同一处理).
   // 两个值在设计上就该相等；不等则告警。
   const spaceId = input.space_id ?? auth.serviceId;
@@ -1486,6 +1513,7 @@ export async function handleConversationAdd(
       team_id: input.team_id,
       agent_id: input.agent_id,
       task_id: input.task_id,
+      project: resolveRequestProject(input),
       // schema 保证 role 合法, tool_name/tool_call_id 由 handler 内校验
       messages: input.messages.map((m) => ({
         role: m.role,

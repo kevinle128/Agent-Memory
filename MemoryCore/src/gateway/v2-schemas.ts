@@ -446,7 +446,7 @@ const PROJECT_NAME_FORBIDDEN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u
  * together with a valid pair, and a bad name is dropped without failing the
  * request, so an older or newer proxy keeps working.
  */
-function resolveProjectFields(
+export function resolveProjectFields(
   rawKey: unknown,
   rawHash: unknown,
   rawName?: unknown,

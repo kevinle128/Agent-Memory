@@ -120,9 +120,20 @@ export function applyOversizeStrategy(
     .replace("{n}", String(omittedMessageCount))
     .replace("{bytes}", String(omittedBytes));
 
+  // The placeholder stands for omitted messages of the same buffer, so it keeps
+  // the project of the first kept message. Without it the buffer would look
+  // like a mix of project and no project.
+  const first = headMsgs[0];
   const placeholder: OversizeMessage = {
     role: "system",
     content: placeholderContent,
+    ...(first && "project_hash" in first
+      ? {
+          project_hash: first.project_hash,
+          ...("project_key" in first ? { project_key: first.project_key } : {}),
+          ...("project_name" in first ? { project_name: first.project_name } : {}),
+        }
+      : {}),
     metadata: {
       omitted_message_count: omittedMessageCount,
       omitted_bytes: omittedBytes,

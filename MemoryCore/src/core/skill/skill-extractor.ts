@@ -13,6 +13,7 @@
 import type { ExtractMessage } from "./types.js";
 import type { SkillCore } from "./skill-core.js";
 import { createSkillTools, type ExtractedSkillCandidate } from "./skill-tools.js";
+import { listVisibleSkills, searchVisibleSkills } from "./skill-project-view.js";
 import type {
   ISkillExtractor,
   ConversationMessage,
@@ -105,6 +106,13 @@ export interface ExtractInput {
    * 抽取不传即可,行为跟历史版本一致。
    */
   mode?: 'default' | 'strict';
+  /**
+   * The one project of the conversation, verified by the caller. When set, new
+   * skills are created as skills of this project, and the extractor sees the
+   * global skills and the skills of this project only. The model cannot change
+   * it. Absent keeps the earlier behavior (`chat` mode).
+   */
+  project?: { project_key: string; project_hash: string; project_name: string };
 }
 
 export interface ExtractResult {
@@ -177,12 +185,10 @@ export class SkillExtractor {
     if (this.prefixSkillsLimit > 0) {
       let recentPage: Awaited<ReturnType<typeof this.core.list>> | null = null;
       try {
-        recentPage = await this.core.list({
-          user_id: input.user_id,
-          team_id: input.team_id,
-          agent_id: input.agent_id,
-          pagination: { limit: this.prefixSkillsLimit },
-        });
+        const readIds = { user_id: input.user_id, team_id: input.team_id, agent_id: input.agent_id };
+        recentPage = input.project
+          ? await listVisibleSkills(this.core, readIds, input.project.project_hash, this.prefixSkillsLimit)
+          : await this.core.list({ ...readIds, pagination: { limit: this.prefixSkillsLimit } });
       } catch (e) {
         // list 挂 → 后续分支也没数据可用, 直接进 none 分支。
         this.logger?.warn(`${TAG} prefix list failed: ${(e as Error).message}`);
@@ -264,6 +270,7 @@ export class SkillExtractor {
       agent_id: input.agent_id,
       task_id: input.task_id,
       source_session_id: input.session_id,
+      ...(input.project ? { project: input.project } : {}),
       auditSink,
       logger: this.logger,
     });
@@ -379,13 +386,10 @@ export class SkillExtractor {
 
     let hits: Awaited<ReturnType<typeof this.core.search>>;
     try {
-      hits = await this.core.search({
-        user_id: input.user_id,
-        team_id: input.team_id,
-        agent_id: input.agent_id,
-        query,
-        top_k: this.prefixSkillsLimit,
-      });
+      const readIds = { user_id: input.user_id, team_id: input.team_id, agent_id: input.agent_id };
+      hits = input.project
+        ? await searchVisibleSkills(this.core, readIds, input.project.project_hash, query, this.prefixSkillsLimit)
+        : await this.core.search({ ...readIds, query, top_k: this.prefixSkillsLimit });
     } catch (e) {
       this.logger?.warn(`${TAG} relevant search failed for query='${query}': ${(e as Error).message}`);
       return null;
@@ -649,6 +653,7 @@ export function createExtractorAdapter(
         // 缺任一环节冷启动的 strict_mode 就会被丢弃退回 default v2 prompt。
         // 本行是 adff8768 遗漏的一环 (adapter 显式 map 字段, 未覆盖 mode)。
         mode: (input as { mode?: 'default' | 'strict' }).mode,
+        project: input.project,
       });
       return { candidates: toLegacyCandidates(r.candidates) };
     },

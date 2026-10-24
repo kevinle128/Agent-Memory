@@ -111,6 +111,7 @@ Capture only what a future session would genuinely reuse as an executable capabi
 Do NOT capture:
 
 - one-off task narratives;
+- instructions that apply to a single task only, including a task brief that a lead or an agent hands to another agent. Examples: scope limits (read-only, do not edit files, do not commit, do not push), the list of files that may or may not change this time, output format or length limits, report file paths, status line format, acceptance checklist and test-count baseline of one task. Save such content only when it is stated as a lasting rule (\"always\", \"from now on\", a repository or team convention) or when the facts show it is a practice the project repeats;
 - summaries of this session;
 - environment-specific failures;
 - transient errors that resolved;

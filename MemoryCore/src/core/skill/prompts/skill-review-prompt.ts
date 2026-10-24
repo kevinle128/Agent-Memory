@@ -112,6 +112,7 @@ Do NOT capture:
 - secrets, credentials, access tokens, private keys, one-time passwords;
 - a bare log dump or one-shot error string with no diagnosis path attached;
 - purely transient state that resolved on its own and has no repeatable procedure (e.g. "the deploy on 2026-08-01 failed due to a network glitch that fixed itself");
+- instructions that apply to a single task only, including a task brief that a lead or an agent hands to another agent. Examples: scope limits (read-only, do not edit files, do not commit, do not push), the list of files that may or may not change this time, output format or length limits, report file paths, status line format, acceptance checklist and test-count baseline of one task. Save such content only when it is stated as a lasting rule (\"always\", \"from now on\", a repository or team convention) or when the facts show it is a practice the project repeats;
 - exact duplicates of what an existing skill already covers (patch instead).
 
 Everything else is fair game. **When in doubt whether a candidate is "reusable enough", default to capturing it.** An unused skill is cheap; a missed skill costs the next session real work. You can always patch or delete later.

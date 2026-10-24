@@ -133,6 +133,14 @@ export interface ExtractAsyncResult {
 export interface ConversationAddInput extends IdFields {
   session_id: string;
   space_id?: string;
+  /**
+   * Project the client hook reported for this session. Present only when the
+   * session has one; Core groups buffered rounds by it. All three come from the
+   * session workspace, never from model output.
+   */
+  project_key?: string;
+  project_hash?: string;
+  project_name?: string;
   messages: ConversationTurnMessage[];
 }
 

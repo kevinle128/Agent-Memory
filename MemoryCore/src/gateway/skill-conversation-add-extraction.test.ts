@@ -51,3 +51,28 @@ describe("handleConversationAdd with skill extraction off", () => {
     expect(d.handle).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("handleConversationAdd strict import in code mode", () => {
+  const strict = { ...body, strict_mode: true };
+  const withMode = (mode: "code" | "chat") => Object.assign(deps(true), { getPromptMode: () => mode });
+
+  it("refuses an import without a project, so it does not answer ok and create nothing", async () => {
+    const d = withMode("code");
+    const res = await handleConversationAdd(strict, auth, "req-5", d);
+    expect(res.code).toBe(40001);
+    expect(d.handle).not.toHaveBeenCalled();
+  });
+
+  it("accepts an import with a project", async () => {
+    const d = withMode("code");
+    const res = await handleConversationAdd(
+      { ...strict, project_key: "git:h/a/b", project_hash: "aaaaaaaaaaaaaaaa" }, auth, "req-6", d);
+    expect(res.code).toBe(0);
+    expect(d.handle).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps normal rounds and chat mode unchanged", async () => {
+    expect((await handleConversationAdd(body, auth, "req-7", withMode("code"))).code).toBe(0);
+    expect((await handleConversationAdd(strict, auth, "req-8", withMode("chat"))).code).toBe(0);
+  });
+});
