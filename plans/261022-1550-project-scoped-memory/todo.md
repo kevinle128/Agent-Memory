@@ -9,7 +9,7 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - [x] Giai đoạn 4: Hạ tầng báo cáo của hook (endpoint, bảng đăng ký máy, `hook.sh`, `install.sh`)
 - [~] Giai đoạn 5: Gắn dự án khi ghi memory (L0/L1 `project_key`, L2/L3 theo dự án)
 - [ ] Giai đoạn 6: Đọc theo dự án (chế độ `scoped`)
-- [ ] Giai đoạn 7: Bắt buộc cài hook với Claude Code
+- [x] Giai đoạn 7: Bắt buộc cài hook với Claude Code
 - [ ] Giai đoạn 8: Các client khác
 
 ## Nhật ký
@@ -156,4 +156,10 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - Review độc lập cho hai thay đổi trên: không có lỗi nặng; đã sửa đường OpenCode, phản hồi 200 không phải JSON, race khôi phục key đã thu hồi, quét tuyến tính, tài liệu `staleOnErrorMs`.
 - Deploy proxy production `46ad5ba`.
 - Dọn tin Paseo cũ (bạn chọn A, đã xem danh sách): sao lưu `~/backups/agent-memory-core-data-20261024-101037-before-paseo-cleanup.tgz` kèm bản chụp sqlite nhất quán (`quick_check ok`, L0 4.611, L1 612). Xóa qua API Core, lô 10, kiểm tra sức khỏe sau mỗi lô: 102 dòng L0 (chỉ chứa tin Paseo; 43 của dự án `4ca24d03`, 59 của `ebc7f934`) và 6 bản ghi L1 chỉ sinh từ chúng; 12 lệnh, chậm nhất 312 ms. JSONL ngày 23 bỏ 102 dòng L0 và 45 bản ghi L1 (6 trên cộng 39 chỉ còn trong JSONL). Giữ: 10 bản ghi L1 có nguồn lẫn, và 2 dòng L0 có thẻ nhưng là nội dung thật. Kiểm tra: không còn id nào, JSONL đọc được hết, Core healthy, proxy không có 401.
-- Chờ quyết định: Giai đoạn 7-8 (bắt buộc cài hook).
+- Giai đoạn 7 (bạn chọn A: không chặn `-p`, SDK, CI): commit `62de9e08`, deploy proxy production `62de9e0`.
+  - Gate chỉ áp cho session Claude Code tương tác trên `/claude-code/<space>/v1/messages` chưa có báo cáo hook. Nhận diện tương tác: có công cụ `AskUserQuestion` và stream. Bằng chứng ghi lại: `claude -p` gửi 21 công cụ, không có `AskUserQuestion`; phiên tương tác gửi 24, có. Agent SDK 0.2.117 có `AskUserQuestion` nhưng User-Agent là `sdk-ts`, nên mọi entrypoint `sdk*` đều được cho qua.
+  - Sau 2 câu trả lời form không đọc được hoặc lỗi, gate ngừng hỏi trong hội thoại đó (chống lặp khi không có người). Lượt giả của gate luôn được xóa trước khi chuyển lên model, kể cả khi tắt gate.
+  - Review độc lập hai vòng: vòng 1 có 1 lỗi nghiêm trọng (SDK bị chặn và có thể lặp) và 2 lỗi cao (URL kiểu cũ bị khóa; lượt giả bị gửi lên model); đã sửa hết. Vòng 2: an toàn để deploy.
+  - Test: Proxy 655/655, tsc sạch. E2E `MemoryProxy/scripts/qa/hook-gate-e2e.sh` với Claude Code thật: local 12/12 (chạy hai lần), production 12/12. Các e2e khác: 2/2, 6/6, 7/7. Log production sau deploy: 0 lỗi.
+  - Lưu ý: Claude Code mặc định chạy chế độ auto, và bộ kiểm tra của chế độ này có thể chặn lệnh cài `curl | bash`. Khi đó gate in lệnh để người dùng tự chạy (gõ `!` trước lệnh), rồi session tiếp tục. Tắt gate: `hookGate.enabled: false`.
+- Còn lại: Giai đoạn 8 (client khác), cần bạn quyết định.
