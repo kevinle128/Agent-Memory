@@ -62,6 +62,8 @@ import { resolveAgentStrategy } from "../strategies/agent/index.js";
 import { enforceRateLimit, isRateLimitExceededError } from "../../rate-limit/guard.js";
 import { resolveModelId } from "../../pricing.js";
 import { codexAdapter } from "../../agent-adapters/codex.js";
+import { runCodexHookGate, stripCodexGateTurns } from "../../session/codex/hook-gate.js";
+import { resolveProxyOrigin } from "../../session/hook-gate-core.js";
 import {
   DEFAULT_GATE_PREFIX,
   buildFormResponse as buildCodexFormResponse,
@@ -148,21 +150,9 @@ export interface CodexSessionState {
 
 // ── Aux detection (exported for unit tests) ──────────────────────────────────
 
-/** Aux endpoint path suffixes — hardcoded in codex-rs/core/src/client.rs. */
-const CODEX_AUX_PATH_SUFFIXES = new Set([
-  "/responses/compact",
-  "/memories/trace_summarize",
-  "/realtime/calls",
-]);
-
-/** Known aux thread_source values. */
-const CODEX_AUX_THREAD_SOURCES = new Set([
-  "memory_consolidation",
-  "system",
-]);
-
 /**
- * Classify a codex request as main or auxiliary.
+ * Classify a codex request as main or auxiliary. The rules live in the codex
+ * adapter, so the runner and the adapter cannot disagree.
  * Exported for unit tests.
  */
 export function classifyCodexRequest(
@@ -170,20 +160,7 @@ export function classifyCodexRequest(
   path: string,
   headers: Record<string, string>,
 ): "main" | "auxiliary" {
-  // Signal 1: aux endpoint path suffix
-  for (const suffix of CODEX_AUX_PATH_SUFFIXES) {
-    if (path.endsWith(suffix)) return "auxiliary";
-  }
-
-  // Signal 2: x-openai-memgen-request header
-  if (headers["x-openai-memgen-request"] === "true") return "auxiliary";
-
-  // Signal 3: body.client_metadata.thread_source whitelist
-  const meta = body.client_metadata as { thread_source?: string } | undefined;
-  const ts = meta?.thread_source;
-  if (typeof ts === "string" && CODEX_AUX_THREAD_SOURCES.has(ts)) return "auxiliary";
-
-  return "main";
+  return codexAdapter.classifyRequest(body, path, headers) === "auxiliary" ? "auxiliary" : "main";
 }
 
 // ── Session ID extraction (exported for unit tests) ──────────────────────────
@@ -432,7 +409,8 @@ export async function runCodexPipeline(
   if (isAuxiliary) {
     pipe.info("CODEX_AUX", `auxiliary request → passthrough (path=${path})`);
     // aux 不上报 langfuse（跟 CC/CB 对齐——sidequery/fork 类 aux 不算真对话轮）
-    return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null);
+    // A compaction request carries the whole history, so it must not carry the hook gate items.
+    return forwardToUpstream(c, config, stripCodexGateTurns(body), traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null);
   }
 
   // ── 6. Session ID extraction ───────────────────────────────────────────────
@@ -440,6 +418,28 @@ export async function runCodexPipeline(
   const sessionKey = sessionId ?? `${keyId}:${traceId}`;
   const agentSource = "codex";
   const isStream = body.stream !== false;
+
+  // ── 6a. Hook gate (before anything stores or forwards the turn) ────────────
+  // An interactive Codex session without a hook report gets an install tool call
+  // instead of a model answer. A gated turn returns here, so it writes no L0,
+  // buffers no skill and bills no upstream call. On a pass, the body has the
+  // synthetic gate items removed, and the turn counters below read that body.
+  {
+    const gate = await runCodexHookGate({
+      config, path, headers, body, sessionId,
+      // The key of the hook report route: the verified id, else "anonymous".
+      spaceId: spaceId || extractSpaceIdFromPath(path) || "", userId: userId || "anonymous", modelId,
+      origin: resolveProxyOrigin(headers, c.req.url),
+    });
+    if (gate.action === "respond") {
+      console.log(`[hook-gate] session=${sessionId} agent=codex answered locally: ${gate.reason}`);
+      return gate.response;
+    }
+    if (gate.body !== body) {
+      body = gate.body as typeof body;
+      console.log(`[hook-gate] session=${sessionId} agent=codex removed synthetic items: ${gate.reason}`);
+    }
+  }
   const sessionTurnSeed = createSessionTurnSeed(config, {
     agent: agentSource,
     path,

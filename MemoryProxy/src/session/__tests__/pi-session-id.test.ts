@@ -32,3 +32,39 @@ describe("resolvePiSessionId", () => {
     expect(r.conv).toBeNull();
   });
 });
+
+describe("resolvePiSessionId: oh-my-pi", () => {
+  const OMP_ID = "01a16eab-0b03-708d-8d4f-4bba152cad8e";
+
+  async function probeBody(headers: Record<string, string>, body: Record<string, unknown>) {
+    let out: string | null = "unset";
+    const app = new Hono();
+    app.post("/", (c) => {
+      out = resolvePiSessionId(c, body);
+      return c.body(null, 204);
+    });
+    await app.request("/", { method: "POST", headers });
+    return out;
+  }
+
+  it("reads prompt_cache_key for an omp request", async () => {
+    expect(await probeBody({ "user-agent": "omp/18.6.3" }, { prompt_cache_key: OMP_ID })).toBe(OMP_ID);
+  });
+
+  it("prefers a session header", async () => {
+    expect(await probeBody({ "user-agent": "omp/18.6.3", session_id: "hdr" }, { prompt_cache_key: OMP_ID })).toBe("hdr");
+  });
+
+  it("ignores prompt_cache_key for plain pi", async () => {
+    expect(await probeBody({ "user-agent": "OpenAI/JS 6.26.0" }, { prompt_cache_key: OMP_ID })).toBeNull();
+  });
+
+  it("ignores a prompt_cache_key that cannot go into a shell command", async () => {
+    expect(await probeBody({ "user-agent": "omp/18.6.3" }, { prompt_cache_key: "a; rm -rf ~" })).toBeNull();
+    expect(await probeBody({ "user-agent": "omp/18.6.3" }, { prompt_cache_key: 42 })).toBeNull();
+  });
+
+  it("does nothing without a body", async () => {
+    expect(await probe({ "user-agent": "omp/18.6.3" })).toMatchObject({ pi: null });
+  });
+});

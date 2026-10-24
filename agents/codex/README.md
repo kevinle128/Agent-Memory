@@ -123,9 +123,9 @@ Codex 使用 **三信号** 辅助请求判定：
 |------|----------|
 | 路径后缀 | `/compact`, `/memories/trace_summarize`, `/realtime/calls` |
 | Header | `x-openai-memgen-request: true` |
-| Body | `body.client_metadata.thread_source` ≠ `"main"` |
+| thread_source | `body.client_metadata.thread_source`，或 `x-codex-turn-metadata` 头（JSON）里的 `thread_source`，取值 `memory_consolidation`、`system`、`thread_title` |
 
-三者命中任一 → 判为 auxiliary → 跳过注入/归档。
+三者命中任一 → 判为 auxiliary → 跳过注入/归档。`thread_title` 是 Codex TUI 为会话生成标题的请求（没有 shell 工具，工具列表里只有 `apply_patch`），它的 `thread_source` 只出现在 `x-codex-turn-metadata` 头里。
 
 ---
 
@@ -191,6 +191,21 @@ curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client codex --base-url 
 ```
 
 `setup-proxy.sh` 选择 codex 时会自动安装。安装位置、key 读取顺序、trust 与卸载规则见 `agents/claude-code/README.md` §11.4。
+
+### 9.1.1 强制安装（hook 门禁）
+
+交互式 Codex（TUI）所在机器没有 hook 上报时，proxy 在第一个模型请求前返回一个 shell 工具调用，执行 `curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client codex --session <session_id>`，不转发上游：
+
+- 工具调用带 `sandbox_permissions: "require_escalated"` 与说明（`justification`），所以 Codex TUI 弹出批准框（`Would you like to run the following command?`）；同意后命令在沙箱外运行。`prefix_rule` 不设置
+- 调用形态跟随请求提供的工具：有 `exec_command` 函数（多数模型）→ `function_call`；`gpt-6-*` 系列没有 `tools[]`，工具在 `additional_tools` 输入项里，只有自定义工具 `exec` → 返回 `custom_tool_call`，内容是 `await tools.exec_command({...})` 的 JavaScript
+- 命令结果回来后 proxy 再查一次上报（最多等约 3 秒）：已有上报则去掉合成项，继续回答原来的问题；命令被拒绝（批准框里选 No / Esc、`approval policy is Never` 等）或仍无上报，返回带手动安装命令的文本
+- 只拦截 `originator` 为 `codex-tui`、`x-codex-turn-metadata` 的 `thread_source` 为 `user`、且请求提供 shell 工具的 `/codex/<space>/responses`、`/codex/<space>/v1/responses`。`codex exec`、app-server、SDK、标题请求（`thread_source: thread_title`，不提供 shell 工具）、子 agent 请求、`cost-guard`/`analyse` 路由（没有对应的 `/v3/hook/report` 路径）、`/responses/compact` 等原样放行
+- 子 agent（multi_agent 的 `spawn_agent`）实测（Codex 0.164）：`originator: codex-tui`，`session-id` 与父线程相同，`thread_source: subagent`，`x-openai-subagent: collab_spawn`，`x-codex-parent-thread-id: <父 session id>`。因为只拦截 `thread_source: user`，并且带这两个 header 之一的请求也放行，子 agent 不会收到安装调用
+- 合成项的 `call_id` 前缀是 `call_codex_hook_gate_`，文本回复的 item id 前缀是 `msg_codex_hook_gate_`。每个请求（包括关闭门禁、`codex exec`、compact）都会先去掉这些项，以及紧跟在合成结果后面的 `<turn_aborted>` 消息，所以 resume、fork 不会把它们发给模型
+- 同一会话里 2 次安装失败后放行（fail open）。已有上报（含无项目上报）即视为已安装。门禁不保存自己的状态，状态就是对话历史：`/responses/compact` 之后历史里不再有合成项，已经放行的会话下一条消息会再被拦截一次（最多再失败 2 次后放行）
+- 被拦截的请求不转发上游、不写 L0、不计费
+- 回滚：`hookGate.enabled: false`（同时关闭 Claude Code 与 omp 的门禁）
+- 验证：`MemoryProxy/scripts/qa/codex-omp-hook-gate-e2e.sh`
 
 ## 10. 常见问题
 

@@ -4,9 +4,22 @@
  * Pi sends OpenAI Chat Completions with plain-string user content and no
  * cache_control markers / fork-sidequery concept — every request is main.
  * Verified via a real Pi subprocess spike (2026-08-21).
+ *
+ * oh-my-pi (a fork, same route) sends the user content as an array of text
+ * parts. The first part is a `<system-reminder>` block with the date and the
+ * working directory, and the typed prompt follows. Those reminder parts are not
+ * user text, so they are dropped.
  */
 import { defaultAdapter } from "./default.js";
 import type { AgentAdapter } from "./types.js";
+
+/** A text part that holds only a `<system-reminder>` block. */
+function isSystemReminder(part: unknown): boolean {
+  const text = (part as { type?: unknown; text?: unknown } | null)?.text;
+  if (typeof text !== "string") return false;
+  const trimmed = text.trim();
+  return trimmed.startsWith("<system-reminder>") && trimmed.endsWith("</system-reminder>");
+}
 
 export const piAdapter: AgentAdapter = {
   agentKind: "pi",
@@ -15,6 +28,10 @@ export const piAdapter: AgentAdapter = {
   },
   extractUserText(content) {
     if (typeof content === "string") return content.length > 0 ? content : null;
+    if (Array.isArray(content)) {
+      const typed = content.filter((part) => !isSystemReminder(part));
+      return defaultAdapter.extractUserText(typed);
+    }
     return defaultAdapter.extractUserText(content);
   },
 };

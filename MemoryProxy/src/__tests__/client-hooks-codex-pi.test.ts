@@ -597,6 +597,188 @@ describe.each(JSON_TOOLS)("install.sh --client pi with the %s JSON tool", (tool)
   });
 });
 
+// ── install.sh --client omp ──────────────────────────────────────────────────
+
+const ompDir = () => path.join(home, ".omp", "agent");
+const ompRoute = () => `${origin}/pi/default/v1`;
+const ompModelsPath = (file = "models.yml") => path.join(ompDir(), file);
+const OMP_KEY = "sk-mem-omp-secret-key";
+
+function ompYaml(provider: string, extra = ""): string {
+  return [
+    "providers:",
+    "  am-proxy:",
+    `    baseUrl: ${ompRoute()}`,
+    `    apiKey: ${provider}`,
+    "    api: openai-completions",
+    ...(extra ? [extra] : []),
+    "    models:",
+    "      - id: m1",
+    "  other:",
+    "    baseUrl: https://api.example.com/v1",
+    "    apiKey: OTHER_KEY",
+    "",
+  ].join("\n");
+}
+
+function writeOmpModels(content: string, file = "models.yml"): void {
+  fs.mkdirSync(ompDir(), { recursive: true });
+  fs.writeFileSync(ompModelsPath(file), content);
+}
+
+const readOmpModels = (file = "models.yml") => fs.readFileSync(ompModelsPath(file), "utf8");
+const FLAG = "    compat:\n      supportsPromptCacheKey: true\n";
+
+describe("install.sh --client omp", () => {
+  it("stops with an instruction when there is no models file and no --base-url", async () => {
+    const r = await runInstaller(["--client", "omp"], baseEnv());
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("models.yml");
+    expect(r.stderr).toContain("supportsPromptCacheKey");
+    expect(fs.existsSync(path.join(ompDir(), "extensions", "agent-memory.ts"))).toBe(false);
+  });
+
+  it("installs the extension and explains when the models file is missing but --base-url is given", async () => {
+    const r = await runInstaller(["--client", "omp", "--base-url", ompRoute()], baseEnv());
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain("models.yml does not exist");
+    expect(fs.readFileSync(path.join(ompDir(), "extensions", "agent-memory.ts"), "utf8")).toBe(fs.readFileSync(PI_EXTENSION, "utf8"));
+  });
+
+  it("leaves a file without a proxy provider alone and says so", async () => {
+    const doc = "providers:\n  other:\n    baseUrl: https://api.example.com/v1\n    apiKey: X\n";
+    writeOmpModels(doc);
+    const r = await runInstaller(["--client", "omp", "--base-url", origin], baseEnv());
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain("no provider");
+    expect(readOmpModels()).toBe(doc);
+    expect(backups(ompDir(), "models.yml")).toHaveLength(0);
+  });
+
+  it("sets the flag on the proxy provider only, with one backup, and installs the extension", async () => {
+    const before = ompYaml("AM_KEY");
+    writeOmpModels(before);
+    const r = await runInstaller(["--client", "omp"], baseEnv());
+    expect(r.code).toBe(0);
+    const text = readOmpModels();
+    expect(text.split("supportsPromptCacheKey")).toHaveLength(2);
+    expect(text.replace(FLAG, "")).toBe(before);
+    expect(text).toContain(FLAG);
+    expect(backups(ompDir(), "models.yml")).toHaveLength(1);
+    expect(fs.existsSync(path.join(ompDir(), "extensions", "agent-memory.ts"))).toBe(true);
+  });
+
+  it("flips a flag that is false and adds the key to an existing compat block", async () => {
+    writeOmpModels(ompYaml("K", "    compat:\n      supportsStore: false\n      supportsPromptCacheKey: false # old"));
+    await runInstaller(["--client", "omp"], baseEnv());
+    expect(readOmpModels()).toContain("      supportsPromptCacheKey: true\n");
+    expect(readOmpModels()).not.toContain("false # old");
+    writeOmpModels(ompYaml("K", "    compat:\n      supportsStore: false"));
+    await runInstaller(["--client", "omp"], baseEnv());
+    expect(readOmpModels()).toContain("    compat:\n      supportsPromptCacheKey: true\n      supportsStore: false");
+  });
+
+  it("does not rewrite the file or make a backup when the flag is already set", async () => {
+    const doc = ompYaml("K", "    compat:\n      supportsPromptCacheKey: true # keep");
+    writeOmpModels(doc);
+    const r = await runInstaller(["--client", "omp"], baseEnv());
+    expect(r.code).toBe(0);
+    expect(readOmpModels()).toBe(doc);
+    expect(backups(ompDir(), "models.yml")).toHaveLength(0);
+  });
+
+  it("makes no second backup and changes nothing on a second run", async () => {
+    writeOmpModels(ompYaml("K"));
+    await runInstaller(["--client", "omp"], baseEnv());
+    const first = readOmpModels();
+    const r = await runInstaller(["--client", "omp"], baseEnv());
+    expect(r.code).toBe(0);
+    expect(readOmpModels()).toBe(first);
+    expect(backups(ompDir(), "models.yml")).toHaveLength(1);
+  });
+
+  it("keeps a file with trailing blank lines byte for byte when nothing changes", async () => {
+    const doc = ompYaml("K", "    compat:\n      supportsPromptCacheKey: true") + "\n\n\n";
+    writeOmpModels(doc);
+    await runInstaller(["--client", "omp"], baseEnv());
+    expect(readOmpModels()).toBe(doc);
+    expect(backups(ompDir(), "models.yml")).toHaveLength(0);
+  });
+
+  it("does not edit an inline compat value and tells the user", async () => {
+    const doc = ompYaml("K", "    compat: { supportsStore: false }");
+    writeOmpModels(doc);
+    const r = await runInstaller(["--client", "omp"], baseEnv());
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain("not in block style");
+    expect(readOmpModels()).toBe(doc);
+  });
+
+  it("reads models.yaml when models.yml does not exist", async () => {
+    writeOmpModels(ompYaml("K"), "models.yaml");
+    const r = await runInstaller(["--client", "omp"], baseEnv());
+    expect(r.code).toBe(0);
+    expect(readOmpModels("models.yaml")).toContain("supportsPromptCacheKey: true");
+  });
+
+  it("refuses a file with CRLF line endings and leaves it alone", async () => {
+    const doc = ompYaml("K").replaceAll("\n", "\r\n");
+    writeOmpModels(doc);
+    const r = await runInstaller(["--client", "omp"], baseEnv());
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("CRLF");
+    expect(readOmpModels()).toBe(doc);
+  });
+
+  it("honors PI_CODING_AGENT_DIR", async () => {
+    const dir = mkTmp("am-ompdir-");
+    fs.writeFileSync(path.join(dir, "models.yml"), ompYaml("K"));
+    const r = await runInstaller(["--client", "omp"], baseEnv({ PI_CODING_AGENT_DIR: dir }));
+    expect(r.code).toBe(0);
+    expect(fs.existsSync(path.join(dir, "extensions", "agent-memory.ts"))).toBe(true);
+  });
+
+  const sessionReports = () => requests.filter((q) => q.url.endsWith("/v3/hook/report"));
+
+  it("--session reports through the pi route with an apiKey that is an environment variable, and never prints the key", async () => {
+    writeOmpModels(ompYaml("AM_E2E_KEY"));
+    const r = await runInstaller(["--client", "omp", "--session", "01a16eab-0b03-708d-8d4f-4bba152cad8e"], baseEnv({ AM_E2E_KEY: OMP_KEY }));
+    expect(r.code).toBe(0);
+    const reports = sessionReports();
+    expect(reports).toHaveLength(1);
+    expect(reports[0].url).toBe("/pi/default/v3/hook/report");
+    expect(reports[0].headers.authorization).toBe(`Bearer ${OMP_KEY}`);
+    expect(JSON.parse(reports[0].body)).toMatchObject({ session_id: "01a16eab-0b03-708d-8d4f-4bba152cad8e", client: "omp", hook_event: "Install" });
+    expect(r.stdout + r.stderr).not.toContain(OMP_KEY);
+  });
+
+  it("--session reports with a literal apiKey, and never prints the key", async () => {
+    writeOmpModels(ompYaml(OMP_KEY));
+    const r = await runInstaller(["--client", "omp", "--session", "sid-1"], baseEnv());
+    expect(r.code).toBe(0);
+    expect(sessionReports()[0].headers.authorization).toBe(`Bearer ${OMP_KEY}`);
+    expect(r.stdout + r.stderr).not.toContain(OMP_KEY);
+  });
+
+  it("--session refuses an apiKey that is a command and sends no report", async () => {
+    writeOmpModels(ompYaml('"!op read op://dev/key"'));
+    const r = await runInstaller(["--client", "omp", "--session", "sid-1"], baseEnv());
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("command");
+    expect(sessionReports()).toHaveLength(0);
+  });
+
+  it("--uninstall removes the extension and leaves the models file alone", async () => {
+    writeOmpModels(ompYaml("K"));
+    await runInstaller(["--client", "omp"], baseEnv());
+    const before = readOmpModels();
+    const r = await runInstaller(["--client", "omp", "--uninstall"], baseEnv());
+    expect(r.code).toBe(0);
+    expect(fs.existsSync(path.join(ompDir(), "extensions", "agent-memory.ts"))).toBe(false);
+    expect(readOmpModels()).toBe(before);
+  });
+});
+
 describe("pi extension", () => {
   type Handler = (event: unknown, ctx: unknown) => Promise<void> | void;
   const handlers = new Map<string, Handler>();

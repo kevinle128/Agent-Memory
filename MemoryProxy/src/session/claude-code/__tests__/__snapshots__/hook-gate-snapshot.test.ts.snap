@@ -1,0 +1,259 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Claude Code gate wire output > exit chosen 1`] = `
+"respond:exited
+200 text/event-stream
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_hook_gate_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"[Agent-Memory hook gate] The Agent-Memory project hook is not installed on this machine, so this session does not send requests to the model. Install the hook with the command below, in a terminal or here by typing ! before it. When the proxy has the report, send your prompt again: this session continues.\\n\\n    curl -fsSL http://127.0.0.1:8096/setup/hooks.sh | bash -s -- --client claude-code --session 11111111-2222-3333-4444-555555555555"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;
+
+exports[`Claude Code gate wire output > form 1`] = `
+"respond:form
+200 text/event-stream
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_synthetic_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_cc_hook_gate_form_1792800000000","name":"AskUserQuestion","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"questions\\":[{\\"question\\":\\"Agent-Memory needs a small hook on this machine to know which project this session belongs to. Install it now? Claude Code asks you to approve one shell command. Custom text is not supported.\\",\\"header\\":\\"Hook\\",\\"options\\":[{\\"label\\":\\"Install now\\",\\"description\\":\\"Run the installer in this session, then answer your prompt\\"},{\\"label\\":\\"Exit\\",\\"description\\":\\"Stop here. This session gets no model answer until the hook is installed\\"}],\\"multiSelect\\":false}]}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;
+
+exports[`Claude Code gate wire output > form retry 1`] = `
+"respond:form-retry
+200 text/event-stream
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_synthetic_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_cc_hook_gate_form_1792800000000","name":"AskUserQuestion","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"questions\\":[{\\"question\\":\\"Could not read the answer. Agent-Memory needs a small hook on this machine to know which project this session belongs to. Install it now? Claude Code asks you to approve one shell command. Custom text is not supported.\\",\\"header\\":\\"Hook\\",\\"options\\":[{\\"label\\":\\"Install now\\",\\"description\\":\\"Run the installer in this session, then answer your prompt\\"},{\\"label\\":\\"Exit\\",\\"description\\":\\"Stop here. This session gets no model answer until the hook is installed\\"}],\\"multiSelect\\":false}]}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;
+
+exports[`Claude Code gate wire output > install call 1`] = `
+"respond:install-requested
+200 text/event-stream
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_synthetic_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_cc_hook_gate_install_1792800000000","name":"Bash","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"command\\":\\"curl -fsSL http://127.0.0.1:8096/setup/hooks.sh | bash -s -- --client claude-code --session 11111111-2222-3333-4444-555555555555\\",\\"description\\":\\"Install the Agent-Memory project hook\\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;
+
+exports[`Claude Code gate wire output > install command 1`] = `"curl -fsSL http://127.0.0.1:8096/setup/hooks.sh | bash -s -- --client claude-code --session 11111111-2222-3333-4444-555555555555"`;
+
+exports[`Claude Code gate wire output > install failed 1`] = `
+"respond:install-failed
+200 text/event-stream
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_hook_gate_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"[Agent-Memory hook gate] The installer did not finish: the proxy has no hook report for this session yet. The command may have been blocked (for example by auto mode) or it failed (the installer needs curl and one of jq, python3 or node). Run the command yourself, either in a terminal or here by typing ! before it, then send your prompt again.\\n\\n    curl -fsSL http://127.0.0.1:8096/setup/hooks.sh | bash -s -- --client claude-code --session 11111111-2222-3333-4444-555555555555"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;
+
+exports[`Claude Code gate wire output > no Bash tool 1`] = `
+"respond:no-bash
+200 text/event-stream
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_hook_gate_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"[Agent-Memory hook gate] The Agent-Memory project hook is not installed on this machine, and this session cannot run the installer for you. Run the command in a terminal, then send your prompt again.\\n\\n    curl -fsSL http://127.0.0.1:8096/setup/hooks.sh | bash -s -- --client claude-code --session 11111111-2222-3333-4444-555555555555"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;
+
+exports[`Claude Code gate wire output > retry limit 1`] = `"pass:retry-limit"`;
+
+exports[`Claude Code gate wire output > stripped body 1`] = `"{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]},{"role":"user","content":[{"type":"text","text":"next"}]}]}"`;
+
+exports[`Claude Code gate wire output > unknown origin 1`] = `
+"respond:no-bash
+200 text/event-stream
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_hook_gate_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"[Agent-Memory hook gate] The Agent-Memory project hook is not installed on this machine, and this session cannot run the installer for you. Run the command in a terminal, then send your prompt again.\\n\\nAsk your Agent-Memory administrator for the installer command."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;

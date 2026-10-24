@@ -717,8 +717,9 @@ export interface TraceArchiveConfig {
 
 export interface HookGateConfig {
   /**
-   * Ask interactive Claude Code sessions to install the project hook before the
-   * first model request. Default true. When false the proxy never gates a request.
+   * Ask interactive Claude Code, Codex and oh-my-pi sessions to install the project
+   * hook before the first model request. Default true. When false the proxy never
+   * gates a request, for any of the three clients.
    */
   enabled: boolean;
   /**

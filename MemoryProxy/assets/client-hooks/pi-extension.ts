@@ -1,4 +1,5 @@
-// Agent-Memory extension for pi. Installed as ~/.pi/agent/extensions/agent-memory.ts.
+// Agent-Memory extension for pi and oh-my-pi. Installed as ~/.pi/agent/extensions/agent-memory.ts
+// (pi) or ~/.omp/agent/extensions/agent-memory.ts (omp).
 //
 // It sends the working directory and git identity of the session to the
 // Agent-Memory proxy, like the hook.sh script does for Claude Code and Codex.

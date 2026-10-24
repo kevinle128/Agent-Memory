@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- \
-#     [--base-url URL] [--client claude-code|codex|pi] [--session SID] [--uninstall]
+#     [--base-url URL] [--client claude-code|codex|pi|omp] [--session SID] [--uninstall]
 #
 # Install, claude-code (default):
 #   1. Download <proxy-origin>/setup/hook.sh to ~/.agent-memory/hook.sh.
@@ -28,10 +28,21 @@
 #   $PI_CODING_AGENT_DIR/extensions/agent-memory.ts (default ~/.pi/agent). Set
 #   compat.sendSessionAffinityHeaders = true on every provider of models.json whose
 #   baseUrl is an Agent-Memory pi route, so pi sends its session id to the proxy.
+# Install, omp (oh-my-pi):
+#   Download <proxy-origin>/setup/pi-extension.ts to
+#   $PI_CODING_AGENT_DIR/extensions/agent-memory.ts (default ~/.omp/agent), the
+#   directory that omp scans. Set compat.supportsPromptCacheKey: true on every
+#   provider of models.yml (or models.yaml) whose baseUrl is an Agent-Memory pi
+#   route, so omp sends its session id to the proxy as prompt_cache_key. A backup of
+#   the file is made first. The provider block is edited as text, because no YAML
+#   tool is needed otherwise. A block that cannot be edited safely (an inline
+#   compat value) is left as is, with a note. With --session SID: send one report
+#   with this session id, using the apiKey of that provider (an environment
+#   variable name, or the key itself).
 # Uninstall:
 #   Remove only our hook entries (and hook.sh when no other client uses it, or the
-#   pi extension). Keep device.json. For pi, the compat flag stays: it may have
-#   been set before and is harmless.
+#   pi or omp extension). Keep device.json. For pi and omp, the compat flag stays:
+#   it may have been set before and is harmless.
 #
 # The script is safe to run again: it never adds a second entry.
 # Test override: AGENT_MEMORY_JSON_TOOL=jq|python3|node forces one JSON tool.
@@ -44,6 +55,8 @@ CODEX_CONFIG="$CODEX_DIR/config.toml"
 PI_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 PI_EXTENSION_FILE="$PI_DIR/extensions/agent-memory.ts"
 PI_MODELS_FILE="$PI_DIR/models.json"
+OMP_DIR="${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}"
+OMP_EXTENSION_FILE="$OMP_DIR/extensions/agent-memory.ts"
 AM_DIR="$HOME/.agent-memory"
 HOOK_FILE="$AM_DIR/hook.sh"
 DEVICE_FILE="$AM_DIR/device.json"
@@ -982,12 +995,182 @@ pi_install() {
 }
 
 # ---------------------------------------------------------------------------
+# omp: models.yml
+# ---------------------------------------------------------------------------
+
+# The models file of omp: models.yml, else models.yaml. Print nothing when
+# neither exists.
+omp_models_file() {
+  local f
+  for f in "$OMP_DIR/models.yml" "$OMP_DIR/models.yaml"; do
+    if [ -f "$f" ]; then
+      printf '%s' "$f"
+      return
+    fi
+  done
+}
+
+# Read a models.yml on stdin. $1 is "info" or "edit".
+#
+# A provider is a key under the top-level "providers:" whose baseUrl is an
+# Agent-Memory pi route (.../pi/<space>/v1). The file is read as text: block
+# style with spaces, as omp writes it.
+#   info: print the baseUrl on line 1 and the apiKey on line 2 of the first
+#         provider that matches.
+#   edit: print the document with compat.supportsPromptCacheKey set to true in
+#         every provider that matches. The compat of a model is not touched.
+#         Print nothing when nothing is to change. Exit 3 when a
+#         matching provider has a compat value that cannot be edited as text.
+omp_models_edit() {
+  awk -v mode="$1" -v sq="\047" '
+    function indent_of(s) { match(s, /^ */); return RLENGTH }
+    function blank(s) { return s ~ /^[ \t]*(#.*)?$/ }
+    function value_of(s,   v) {
+      v = s
+      sub(/^[^:]*:[ \t]*/, "", v)
+      if (v ~ /^"/) { sub(/^"/, "", v); sub(/".*$/, "", v) }
+      else if (substr(v, 1, 1) == sq) { v = substr(v, 2); sub(sq ".*$", "", v) }
+      else { sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v) }
+      return v
+    }
+    function key_of(s,   k) {
+      k = s
+      sub(/^ +/, "", k)
+      sub(/:.*$/, "", k)
+      return k
+    }
+    { line[NR] = $0 }
+    END {
+      ps = 0
+      for (i = 1; i <= NR; i++) if (line[i] ~ /^providers:[ \t]*(#.*)?$/) { ps = i; break }
+      if (ps == 0) {
+        if (mode == "info") exit 1
+        for (i = 1; i <= NR; i++) print line[i]
+        exit 0
+      }
+      # Provider keys sit at the indent of the first content line after "providers:".
+      pind = -1
+      for (i = ps + 1; i <= NR; i++) {
+        if (blank(line[i])) continue
+        if (indent_of(line[i]) == 0) break
+        pind = indent_of(line[i]); break
+      }
+      for (i = 1; i <= NR; i++) { out[i] = line[i]; ins[i] = "" }
+      status = 0
+      changed = 0
+      i = ps + 1
+      while (pind > 0 && i <= NR) {
+        if (!blank(line[i]) && indent_of(line[i]) == 0) break
+        if (blank(line[i]) || indent_of(line[i]) != pind || line[i] ~ /^ *-/) { i++; continue }
+        bs = i
+        be = i
+        for (j = i + 1; j <= NR; j++) {
+          if (blank(line[j])) continue
+          if (indent_of(line[j]) <= pind) break
+          be = j
+        }
+        # Fields of the provider sit at the indent of its first content line.
+        fi = -1
+        for (j = bs + 1; j <= be; j++) {
+          if (blank(line[j])) continue
+          fi = indent_of(line[j]); break
+        }
+        base = ""; apikey = ""; bl = 0; cl = 0
+        for (j = bs + 1; j <= be && fi > 0; j++) {
+          if (blank(line[j]) || indent_of(line[j]) != fi || line[j] ~ /^ *-/) continue
+          k = key_of(line[j])
+          if (k == "baseUrl") { base = value_of(line[j]); bl = j }
+          else if (k == "apiKey") apikey = value_of(line[j])
+          else if (k == "compat") cl = j
+        }
+        if (base ~ /^https?:\/\/.+\/pi\/[^\/]+\/v1\/?$/) {
+          if (mode == "info") { print base; print apikey; exit 0 }
+          pad = sprintf("%" fi "s", "")
+          if (cl == 0) {
+            ins[bl] = pad "compat:\n" pad "  supportsPromptCacheKey: true"
+            changed = 1
+          } else {
+            rest = line[cl]
+            sub(/^[^:]*:[ \t]*/, "", rest)
+            sub(/[ \t]*#.*$/, "", rest)
+            if (rest != "") { status = 3 }
+            else {
+              ci = -1; found = 0
+              for (j = cl + 1; j <= be; j++) {
+                if (blank(line[j])) continue
+                if (indent_of(line[j]) <= fi) break
+                if (ci < 0) ci = indent_of(line[j])
+                if (indent_of(line[j]) == ci && key_of(line[j]) == "supportsPromptCacheKey") {
+                  found = 1
+                  if (value_of(line[j]) != "true") {
+                    out[j] = sprintf("%" ci "s", "") "supportsPromptCacheKey: true"
+                    changed = 1
+                  }
+                }
+              }
+              if (!found) {
+                if (ci < 0) ci = fi + 2
+                ins[cl] = sprintf("%" ci "s", "") "supportsPromptCacheKey: true"
+                changed = 1
+              }
+            }
+          }
+        }
+        i = be + 1
+      }
+      if (mode == "info") exit 1
+      # Print nothing when no line changes, so that the file is left byte for byte as it is.
+      if (changed) for (i = 1; i <= NR; i++) { print out[i]; if (ins[i] != "") print ins[i] }
+      exit status
+    }'
+}
+
+# Stop when the models file has CRLF line endings: the text edit reads LF only.
+omp_check_lf() {
+  if grep -q "$(printf '\r')" "$1"; then
+    fail "$1 has Windows (CRLF) line endings. Convert it to LF line endings, then run this command again."
+  fi
+}
+
+# Print the baseUrl and the apiKey of the first Agent-Memory pi provider in the
+# omp models file $1 (two lines). Print nothing when there is none.
+omp_provider_info() {
+  omp_models_edit info < "$1" || true
+}
+
+omp_install() {
+  local origin="$1" models new rc
+  fetch_file "$origin" "/setup/pi-extension.ts" "$OMP_EXTENSION_FILE" "//"
+  chmod 644 "$OMP_EXTENSION_FILE"
+  models=$(omp_models_file)
+  if [ -z "$models" ]; then
+    echo "Note: $OMP_DIR/models.yml does not exist. Add the proxy as an omp provider (baseUrl .../pi/<space>/v1, api openai-completions) with compat.supportsPromptCacheKey: true, then run this installer again." >&2
+    return
+  fi
+  omp_check_lf "$models"
+  rc=0
+  new=$(omp_models_edit edit < "$models") || rc=$?
+  if [ "$rc" != "0" ] && [ "$rc" != "3" ]; then
+    fail "cannot update $models. The file is not changed."
+  fi
+  if [ "$rc" = "3" ]; then
+    echo "Note: a compat value in $models is not in block style (for example compat: { ... }). Set compat.supportsPromptCacheKey: true there by hand. That provider is not changed." >&2
+  fi
+  if [ -n "$new" ]; then
+    printf '%s\n' "$new" | write_if_changed "$models" || true
+  fi
+  if [ -z "$(omp_provider_info "$models")" ]; then
+    echo "Note: no provider in $models has a baseUrl like .../pi/<space>/v1. omp sends no session id to the proxy until one exists." >&2
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 main() {
   local base="" client="claude-code" session="" uninstall=0
-  local origin device token
+  local origin device token models route key keyvar
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1000,8 +1183,8 @@ main() {
   done
 
   case "$client" in
-    claude-code | codex | pi) ;;
-    *) fail "unsupported client: $client (use claude-code, codex or pi)" ;;
+    claude-code | codex | pi | omp) ;;
+    *) fail "unsupported client: $client (use claude-code, codex, pi or omp)" ;;
   esac
   case "$HOME" in /*) ;; *) fail "HOME must be an absolute path" ;; esac
 
@@ -1021,6 +1204,7 @@ main() {
       claude-code) if [ "$SETTINGS_EXISTED" = "1" ]; then update_settings remove; fi ;;
       codex) codex_uninstall ;;
       pi) rm -f "$PI_EXTENSION_FILE" ;;
+      omp) rm -f "$OMP_EXTENSION_FILE" ;;
     esac
     remove_hook_file_if_unused
     echo "Agent-Memory hooks removed."
@@ -1039,6 +1223,11 @@ main() {
     base=$(grep -Eo '"baseUrl"[[:space:]]*:[[:space:]]*"https?://[^"]*/pi/[^"/]+/v1/?"' "$PI_MODELS_FILE" \
       | head -n 1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')
   fi
+  if [ -z "$base" ] && [ "$client" = "omp" ]; then
+    models=$(omp_models_file)
+    if [ -n "$models" ]; then omp_check_lf "$models"; base=$(omp_provider_info "$models" | sed -n 1p); fi
+    [ -n "$base" ] || fail "no proxy URL. Add the proxy as a provider in $OMP_DIR/models.yml (baseUrl .../pi/<space>/v1, api openai-completions, compat.supportsPromptCacheKey: true), or use --base-url."
+  fi
   [ -n "$base" ] || fail "no proxy URL. Use --base-url, or configure the client first (claude-code: ANTHROPIC_BASE_URL in env or $SETTINGS_FILE; codex: $CODEX_CONFIG; pi: $PI_MODELS_FILE)."
   origin=$(printf '%s' "$base" | sed -nE 's|^(https?://[^/?]+).*|\1|p')
   [ -n "$origin" ] || fail "the base URL must start with http:// or https:// (got: $base)"
@@ -1050,6 +1239,38 @@ main() {
     device=$(ensure_device_id)
     pi_install "$origin"
     echo "Agent-Memory pi extension installed (device $device)."
+    return
+  fi
+
+  if [ "$client" = "omp" ]; then
+    mkdir -p "$AM_DIR"
+    chmod 700 "$AM_DIR"
+    device=$(ensure_device_id)
+    omp_install "$origin"
+    echo "Agent-Memory omp extension installed (device $device)."
+    if [ -n "$session" ]; then
+      # A running omp does not load the new extension, so the installer sends the
+      # report of this session. The hook script sends it with the pi route and key.
+      models=$(omp_models_file)
+      [ -n "$models" ] || fail "no models file to read the proxy provider from (needed for --session)"
+      route=$(omp_provider_info "$models" | sed -n 1p | sed -E 's#/v1/?$##')
+      key=$(omp_provider_info "$models" | sed -n 2p)
+      [ -n "$route" ] || fail "no provider with a baseUrl like .../pi/<space>/v1 in $models (needed for --session)"
+      case "$key" in
+        '!'*) fail "the apiKey of the provider is a command (!...). Set it to the key or to the name of an environment variable, then run this command again." ;;
+      esac
+      # The apiKey is an environment variable name when that variable is set, else the key itself.
+      case "$key" in
+        '' | *[!A-Za-z0-9_]* | [0-9]*) ;;
+        *) keyvar=$(printenv "$key" || true); if [ -n "$keyvar" ]; then key="$keyvar"; fi ;;
+      esac
+      [ -n "$key" ] || fail "the provider in $models has no apiKey (needed for --session)"
+      fetch_file "$origin" "/setup/hook.sh" "$HOOK_FILE" "#!"
+      AM_SID="$session" AM_CWD="$PWD" session_json \
+        | AGENT_MEMORY_HOOK_STRICT=1 ANTHROPIC_BASE_URL="$route" ANTHROPIC_AUTH_TOKEN="$key" \
+            "$HOOK_FILE" omp \
+        || exit 1
+    fi
     return
   fi
 

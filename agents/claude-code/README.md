@@ -191,7 +191,7 @@ Proxy 只有知道会话属于哪个项目，才能注入项目记忆。Claude C
 `setup-proxy.sh` 选择 claude-code 或 codex 时会自动安装（失败只告警，不影响配置）。手动安装：
 
 ```bash
-curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- [--base-url URL] [--client claude-code|codex|pi] [--session SID] [--uninstall]
+curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- [--base-url URL] [--client claude-code|codex|pi|omp] [--session SID] [--uninstall]
 ```
 
 - `--base-url`：默认取环境变量 `ANTHROPIC_BASE_URL`，其次取 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL`；`<proxy-origin>` 是它的 `scheme://host[:port]` 部分
@@ -250,11 +250,11 @@ echo '{"session_id":"test","cwd":"'"$PWD"'","hook_event_name":"Manual"}' \
 - 被拦截的请求不转发上游、不写 L0、不计费
 - 安装命令里的 proxy 地址默认取 `x-forwarded-proto`/`x-forwarded-host`，其次 `Host`；反向代理改写了 Host 时，在配置里设置 `hookGate.publicOrigin: "https://proxy.example.com"`（scheme://host[:port]，无路径），它优先于请求头
 - 门禁是安装引导，不是安全控制：它 fail open。禁用 `AskUserQuestion`、使用 SDK、无头运行、上报查询失败、历史被压缩都会使请求放行或重新询问，不能用来强制合规
-- 回滚：proxy 配置 `hookGate.enabled: false`（默认 `true`），关闭后不拦截任何请求
+- 回滚：proxy 配置 `hookGate.enabled: false`（默认 `true`），关闭后不拦截任何请求（同一个开关也管 Codex 与 oh-my-pi，见 `agents/codex/README.md` §9.1.1 与本文 §11.5）
 
-### 11.4 Codex 与 pi
+### 11.4 Codex、pi 与 oh-my-pi
 
-同一个安装器也支持 Codex 与 pi，用 `--client` 选择。两者上报的内容和 Claude Code 相同，proxy 用上报的 session id 关联请求。
+同一个安装器也支持 Codex、pi 与 oh-my-pi（`omp`），用 `--client` 选择。两者上报的内容和 Claude Code 相同，proxy 用上报的 session id 关联请求。
 
 **Codex（`--client codex`）**
 
@@ -274,4 +274,41 @@ echo '{"session_id":"test","cwd":"'"$PWD"'","hook_event_name":"Manual"}' \
 - 卸载会删除 extension，保留 compat 设置（无害）
 - 需要支持 `compat.sendSessionAffinityHeaders` 的 pi 版本，且 API 类型为 `openai-completions`
 
-**验证**：`MemoryProxy/scripts/qa/codex-pi-e2e.sh` 在临时 HOME 中用真实的 codex 与 pi 检查上报、session 关联与 L0 的项目字段。
+**oh-my-pi（`--client omp`）**
+
+oh-my-pi 是 pi 的 fork，走同一条 `/pi/<space>/v1` 路由，同一个 extension 文件可以直接使用，但配置目录不同。
+
+- 把 extension 写入 `$PI_CODING_AGENT_DIR/extensions/agent-memory.ts`，默认 `~/.omp/agent`（omp 不扫描 `~/.pi`）
+- omp 对自定义 provider 不发 session 头，只有在 `~/.omp/agent/models.yml`（或 `models.yaml`）里该 provider 设置 `compat.supportsPromptCacheKey: true` 后，才在 body 里带 `prompt_cache_key`，值等于 extension 上报的 session id。安装器对所有 `baseUrl` 指向 `.../pi/<space>/v1` 的 provider 设置该开关：按文本编辑（不需要 YAML 工具），修改前备份，只改该 provider 层的 `compat`（不改 `models[].compat`），已设置则不改文件；`compat` 写成行内 `{ ... }` 时不改，提示手动设置。找不到指向 proxy 的 provider 时只打印要添加的内容，不猜测
+- proxy 只对 User-Agent 以 `omp/` 开头的 pi 路由请求读取 `prompt_cache_key` 作为 session id（要求字符集同 hook 上报路由，`[A-Za-z0-9._:-]{1,128}`）；普通 pi 仍只读 `session_id` / `x-session-affinity` 头
+- `--session SID`：运行中的 omp 不会加载刚装好的 extension，所以安装器自己用该 provider 的 `baseUrl` 与 `apiKey`（环境变量名，或 key 本身；`!命令` 形式不支持，会提示）上报一次，`client` 字段为 `omp`
+- 卸载会删除 extension，保留 compat 设置（无害）
+- provider 示例（`~/.omp/agent/models.yml`，新用户的模板必须带 `compat.supportsPromptCacheKey: true`，否则 proxy 收不到 session id，门禁不会生效）：
+
+  ```yaml
+  providers:
+    am-proxy:
+      baseUrl: https://<proxy-origin>/pi/<space>/v1
+      apiKey: AM_USER_KEY          # 环境变量名，或 key 本身
+      api: openai-completions
+      compat:
+        supportsPromptCacheKey: true
+      models:
+        - id: <model>
+  ```
+- `$PI_CODING_AGENT_DIR` 对 pi 与 omp 是同一个变量：为 pi 设置过它再运行 `--client omp`，extension 会写进那个目录；不设置时 omp 用 `~/.omp/agent`。`models.yml` 必须是 LF 换行，CRLF 会被拒绝并提示
+- `omp` 的用户文本是数组，第一段是 `<system-reminder>`（日期和工作目录）；pi adapter 提取用户文本时会跳过这类段落，所以 `mem:` 命令与 L0 只看用户键入的内容
+- 不支持 omp 的 `anthropic-messages` 模型：omp 会伪装成 Claude Code 的 User-Agent 与 header，proxy 会把它当作 Claude Code
+
+**验证**：`MemoryProxy/scripts/qa/codex-pi-e2e.sh` 在临时 HOME 中用真实的 codex 与 pi 检查上报、session 关联与 L0 的项目字段；`MemoryProxy/scripts/qa/codex-omp-hook-gate-e2e.sh` 用真实的 Codex TUI 与 omp 检查强制安装门禁。
+
+### 11.5 Codex 与 oh-my-pi 的 hook 门禁
+
+Codex TUI 与 omp 没有表单，门禁直接返回一个 shell 工具调用，执行 `curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client <codex|omp> --session <session_id>`。Codex 的细节见 `agents/codex/README.md` §9.1.1。
+
+- **omp**：只拦截 User-Agent 以 `omp/` 开头、`stream: true`、且请求同时提供 `ask`（只有交互模式有）与 `bash` 工具的 `/pi/<space>/v1/chat/completions`。`omp -p`、rpc、SDK 与普通 pi 原样放行。调用是 `bash`（参数 `command` 与必填的 `i`），omp 默认的 approval 模式（`yolo`）直接执行，不弹批准框；其他 approval 模式会弹出
+- **session id**：omp 的 `prompt_cache_key`（见 §11.4）。请求里没有可用的 session id 时不拦截，proxy 第一次在日志里警告，之后每个请求以 debug 级别记录一行。报告按路由段 `pi` 存取，所以查找用的 agent source 是 `pi`
+- 命令结果回来后，proxy 再查一次上报（最多等约 3 秒）：有则去掉合成对话并继续；命令被拒绝或仍无上报则返回带手动命令的文本（以 `[Agent-Memory hook gate]` 开头）。同一会话 2 次失败后放行（fail open）
+- 合成的 assistant 消息（`tool_calls` id 前缀 `call_omp_hook_gate_`）、对应的 `role: tool` 消息、以及以上述标记开头且没有 `tool_calls` 的文本回复，每次请求都会被去掉（包括关闭门禁时）。omp 没有消息 id，标记前缀是文本回复唯一的识别信号
+- 被拦截的请求不转发上游、不写 L0、不计费
+- 回滚：`hookGate.enabled: false`（同一个开关，三个客户端）

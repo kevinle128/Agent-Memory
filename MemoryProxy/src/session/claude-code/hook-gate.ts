@@ -65,8 +65,20 @@
  */
 
 import { isSubagentRequest } from "../../session-trace/subagent.js";
-import { getSessionWorkspaceStore, type SessionWorkspaceKey } from "../../project-scope/session-workspace.js";
-import type { ProxyConfig } from "../../types.js";
+import type { SessionWorkspaceKey } from "../../project-scope/session-workspace.js";
+import {
+  buildInstallCommand,
+  GATE_TEXT_MARKER,
+  lookupReport,
+  manualInstallText,
+  MAX_FAILED_ATTEMPTS,
+  resetHookGateCache,
+  resolveOrigin,
+  resolveProxyOrigin,
+  SESSION_ID_RE,
+  waitForReport,
+  type GateConfig,
+} from "../hook-gate-core.js";
 import { extractAnswerFromJson } from "./extractor.js";
 import {
   buildSyntheticAssistantSse,
@@ -75,14 +87,15 @@ import {
   type SyntheticBlock,
 } from "./form.js";
 
+// The pieces that the other clients share live in the core module. They stay
+// importable from here, where the Claude Code tests and callers use them.
+export { buildInstallCommand, GATE_TEXT_MARKER, resetHookGateCache, resolveProxyOrigin };
+
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 export const GATE_FORM_PREFIX = "toolu_cc_hook_gate_form_";
 export const GATE_INSTALL_PREFIX = "toolu_cc_hook_gate_install_";
 const GATE_PREFIX = "toolu_cc_hook_gate_";
-
-/** First characters of every synthetic text answer, so later requests can remove it from the history. */
-export const GATE_TEXT_MARKER = "[Agent-Memory hook gate]";
 
 export const INSTALL_LABEL = "Install now";
 export const EXIT_LABEL = "Exit";
@@ -90,24 +103,13 @@ export const EXIT_LABEL = "Exit";
 const FORM_TOOL = "AskUserQuestion";
 const BASH_TOOL = "Bash";
 const SESSION_HEADER = "x-claude-code-session-id";
-/** Unreadable form results (errors, free text) after which the gate stops asking. */
-const MAX_UNREADABLE_ANSWERS = 2;
 /** Route of the Claude Code messages API that has a hook report route beside it. */
 const GATED_PATH_RE = /^\/claude-code\/[^/]+\/v1\/messages\/?$/;
-const ORIGIN_RE = /^https?:\/\/(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
-/** How long a "report present" lookup is trusted. A missing report is never cached. */
-const INSTALLED_CACHE_MS = 60_000;
-const DEFAULT_WAIT_MS = 3000;
-const POLL_MS = 250;
-
-/** Same limits as the hook report route, so the id can go into a shell command. */
-const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
-const HOST_RE = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 export interface HookGateParams {
-  config: { hookGate?: Partial<NonNullable<ProxyConfig["hookGate"]>>; storage?: ProxyConfig["storage"] };
+  config: GateConfig;
   agentSource: string;
   /** True for a main-line request on a non-legacy route. */
   memoryTurn: boolean;
@@ -157,13 +159,13 @@ export async function runHookGate(params: HookGateParams): Promise<HookGateResul
   };
   const messages = Array.isArray(body.messages) ? (body.messages as unknown[]) : [];
 
-  const known = await lookupReport(params, key);
+  const known = await lookupReport(params.config, key);
   if (known === "installed") return pass("installed");
   if (known === "unavailable") return pass("lookup-failed");
 
-  const command = buildInstallCommand(resolveOrigin(params), sessionId);
+  const command = buildInstallCommand(resolveOrigin(params.config, params.origin), sessionId);
   const state = readGateState(messages);
-  if (state.unreadable >= MAX_UNREADABLE_ANSWERS) return pass("retry-limit");
+  if (state.unreadable >= MAX_FAILED_ATTEMPTS) return pass("retry-limit");
   const reply = (blocks: SyntheticBlock[], reason: string): HookGateResult => ({
     action: "respond",
     response: buildSyntheticAssistantSse(params.modelId, blocks, "msg_cc_hook_gate_"),
@@ -174,7 +176,7 @@ export async function runHookGate(params: HookGateParams): Promise<HookGateResul
   if (state.exited) return text(exitText(command), "exited");
 
   if (state.pending === "install") {
-    const waited = await waitForReport(params, key);
+    const waited = await waitForReport(params.config, key, params.waitMs);
     if (waited) return pass("installed-in-session");
     return text(installFailedText(command), "install-failed");
   }
@@ -224,49 +226,6 @@ function isSdkEntrypoint(userAgent: string | undefined): boolean {
 /** A streaming request that offers the form tool. See the file header for the evidence. */
 function isInteractive(body: Record<string, unknown>): boolean {
   return body.stream === true && offersTool(body, FORM_TOOL);
-}
-
-const installedCache = new Map<string, number>();
-/** Upper bound on cached answers, so entries of ended sessions cannot grow memory without limit. */
-const INSTALLED_CACHE_MAX = 10_000;
-
-/** Forget every cached "report present" answer (tests). */
-export function resetHookGateCache(): void {
-  installedCache.clear();
-}
-
-async function lookupReport(params: HookGateParams, key: SessionWorkspaceKey): Promise<"installed" | "missing" | "unavailable"> {
-  const cacheKey = `${key.spaceId}|${key.userId}|${key.agentSource}|${key.sessionId}`;
-  const now = Date.now();
-  const until = installedCache.get(cacheKey);
-  if (until !== undefined) {
-    if (until > now) return "installed";
-    installedCache.delete(cacheKey);
-  }
-  try {
-    const store = await getSessionWorkspaceStore(params.config);
-    // A report without a project (folder outside git) still counts as installed.
-    if (!(await store.get(key))) return "missing";
-    installedCache.set(cacheKey, now + INSTALLED_CACHE_MS);
-    if (installedCache.size > INSTALLED_CACHE_MAX) installedCache.delete(installedCache.keys().next().value as string);
-    return "installed";
-  } catch (err) {
-    console.warn(
-      `[hook-gate] report lookup failed session=${key.sessionId}:`,
-      err instanceof Error ? err.message : String(err),
-    );
-    return "unavailable";
-  }
-}
-
-async function waitForReport(params: HookGateParams, key: SessionWorkspaceKey): Promise<boolean> {
-  const deadline = Date.now() + (params.waitMs ?? DEFAULT_WAIT_MS);
-  for (;;) {
-    const found = await lookupReport(params, key);
-    if (found !== "missing") return true; // "unavailable" lets the request through, as at the first lookup
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-  }
 }
 
 // ── Conversation state ─────────────────────────────────────────────────────────
@@ -433,57 +392,6 @@ function installFailedText(command: string | null): string {
   );
 }
 
-function manualInstallText(command: string | null): string {
-  return (
-    "The Agent-Memory project hook is not installed on this machine, and this session cannot run the installer for you. " +
-    "Run the command in a terminal, then send your prompt again." +
-    (command ? commandBlock(command) : "\n\nAsk your Agent-Memory administrator for the installer command.")
-  );
-}
-
 function commandBlock(command: string | null): string {
   return command ? `\n\n    ${command}` : "";
-}
-
-// ── Install command ────────────────────────────────────────────────────────────
-
-let warnedBadOrigin = false;
-
-/** The configured public origin when it is valid, else the origin derived from the request. */
-function resolveOrigin(params: HookGateParams): string | null {
-  const configured = params.config.hookGate?.publicOrigin?.trim().replace(/\/+$/, "");
-  if (configured && ORIGIN_RE.test(configured)) return configured;
-  if (configured && !warnedBadOrigin) {
-    warnedBadOrigin = true;
-    console.warn("[hook-gate] hookGate.publicOrigin is not a valid http(s) origin; using the request origin");
-  }
-  return params.origin;
-}
-
-/**
- * Proxy origin as the client reached it, from the forwarded headers, else from
- * the request URL. Returns null when the value could carry shell syntax: the
- * origin goes into a command that the client runs.
- */
-export function resolveProxyOrigin(headers: Record<string, string>, requestUrl: string): string | null {
-  const first = (v: string | undefined) => v?.split(",")[0]?.trim() || undefined;
-  let proto = first(headers["x-forwarded-proto"]);
-  let host = first(headers["x-forwarded-host"]) ?? first(headers["host"]);
-  if (!proto || !host) {
-    try {
-      const u = new URL(requestUrl);
-      proto = proto ?? u.protocol.replace(/:$/, "");
-      host = host ?? u.host;
-    } catch {
-      return null;
-    }
-  }
-  if ((proto !== "http" && proto !== "https") || !HOST_RE.test(host)) return null;
-  return `${proto}://${host}`;
-}
-
-/** The installer command, or null when the origin or the session id is not safe to put in a shell command. */
-export function buildInstallCommand(origin: string | null, sessionId: string): string | null {
-  if (!origin || !SESSION_ID_RE.test(sessionId)) return null;
-  return `curl -fsSL ${origin}/setup/hooks.sh | bash -s -- --client claude-code --session ${sessionId}`;
 }

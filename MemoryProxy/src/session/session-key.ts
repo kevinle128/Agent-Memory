@@ -4,6 +4,7 @@
  * Shared between handler.ts and anthropicHandler.ts.
  */
 import type { Context } from "hono";
+import { SESSION_ID_RE } from "./session-id-pattern.js";
 
 /**
  * Extract conversation ID from request headers. Returns null if no valid ID found.
@@ -41,14 +42,23 @@ export function resolveConversationId(c: Context): string | null {
 }
 
 /**
- * Session id that pi sends when `compat.sendSessionAffinityHeaders` is on.
- * It equals the id the pi extension reports in the hook, so the proxy session
- * key joins the hook report. Only call this for pi: other clients may use
- * these header names with a different meaning.
+ * Session id of a pi request. It equals the id the pi extension reports in the
+ * hook, so the proxy session key joins the hook report. Only call this for pi:
+ * other clients may use these header names with a different meaning.
+ *
+ * pi sends the id in a header when `compat.sendSessionAffinityHeaders` is on.
+ * oh-my-pi (User-Agent `omp/<version>`) sends no session header to a custom
+ * provider. With `compat.supportsPromptCacheKey: true` it sends the same id in
+ * the body field `prompt_cache_key`, which is read when `body` is given.
  */
-export function resolvePiSessionId(c: Context): string | null {
+export function resolvePiSessionId(c: Context, body?: Record<string, unknown>): string | null {
   const id = c.req.header("session_id") ?? c.req.header("x-session-affinity") ?? null;
-  return id && id.length > 0 ? id : null;
+  if (id && id.length > 0) return id;
+  if (body && /^omp\//i.test(c.req.header("user-agent") ?? "")) {
+    const key = body.prompt_cache_key;
+    if (typeof key === "string" && SESSION_ID_RE.test(key)) return key;
+  }
+  return null;
 }
 
 /** Check whether the messages look like a fresh conversation (at most 1 user message, no assistant/tool). */

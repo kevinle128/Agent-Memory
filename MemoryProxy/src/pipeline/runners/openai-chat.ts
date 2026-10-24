@@ -632,7 +632,7 @@ export async function runOpenaiChatPipeline(
 
   // ── Session key: prefer conversation header, fallback to agent profile ───────────
   const { resolveConversationId, resolvePiSessionId } = await import("../../session/session-key.js");
-  const conversationId = resolveConversationId(c) ?? (agentSource === "pi" ? resolvePiSessionId(c) : null);
+  const conversationId = resolveConversationId(c) ?? (agentSource === "pi" ? resolvePiSessionId(c, body as Record<string, unknown>) : null);
   const sessionKey = conversationId ?? resolveSessionKey(config, lcHeaders, c.req.path, body, keyId);
 
   // ── Auth verification (user_key → user_id) ──────────────────────────────────────
@@ -642,6 +642,33 @@ export async function runOpenaiChatPipeline(
   const spaceId = earlySpaceId;
   let userId = stageResolveUserId({ c, config, earlyVerifyUserId: earlyVerify.userId, logTag: "handler" });
   if (userId) keyId = userId;
+
+  // ── Hook gate for oh-my-pi (before anything stores or forwards the turn) ──
+  // An interactive omp session without a hook report gets an install tool call
+  // instead of a model answer. A gated turn returns here, so it writes no L0,
+  // buffers no skill and bills no upstream call. On a pass, the body has the
+  // synthetic gate turns removed. Every pi request passes through here, so the
+  // synthetic turns are also removed when the gate is off or the client is pi.
+  if (agentSource === "pi") {
+    const { runOmpHookGate } = await import("../../session/pi/hook-gate.js");
+    const { resolveProxyOrigin } = await import("../../session/hook-gate-core.js");
+    const gate = await runOmpHookGate({
+      config, path: c.req.path, headers: lcHeaders, body: body as Record<string, unknown>,
+      sessionId: resolvePiSessionId(c, body as Record<string, unknown>),
+      // The key of the hook report route: the verified id, else "anonymous".
+      spaceId: spaceId || c.req.param("spaceId") || "", userId: earlyVerify.userId || "anonymous", modelId,
+      origin: resolveProxyOrigin(lcHeaders, c.req.url),
+    });
+    if (gate.action === "respond") {
+      console.log(`[hook-gate] session=${conversationId} agent=pi answered locally: ${gate.reason}`);
+      return gate.response;
+    }
+    if (gate.body !== body) {
+      body = gate.body as typeof body;
+      messages = Array.isArray(body.messages) ? body.messages : [];
+      console.log(`[hook-gate] session=${conversationId} agent=pi removed synthetic turns: ${gate.reason}`);
+    }
+  }
 
   // Activate Redis storage early — must run BEFORE session init.
   if (config.redis?.enabled) {
