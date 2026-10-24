@@ -10,7 +10,7 @@
   (node_modules/tea-component/dist/themes/default-light.css + default-pack.css)
   and the Panel overrides in MemoryPanel/web/src/index.css / tea-override.css.
   Navigate with the dark strip at the top or with URL hashes:
-    #list  #detail  #version:4  #dialogs  #proposals  #proposal:p1  #new  #cc
+    #list  #detail  #history  #history:rollback:2  #history:after  #version:4  #dialogs  #proposals  #proposal:p1  #new  #cc
 -->
 <style>
 :root{
@@ -70,10 +70,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .mock-strip .sp{flex:1}
 .mock-wrap{flex:1;min-height:0;min-width:0;display:flex;overflow:hidden}
 .app{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;overflow:hidden}
-.notes{flex:0 0 320px;background:var(--mock-note);border-left:1px solid var(--mock-note-border);display:flex;flex-direction:column;transition:flex-basis .2s}
-.notes.collapsed{flex-basis:36px}
+.notes{flex:0 0 320px;width:320px;min-width:0;overflow:hidden;background:var(--mock-note);border-left:1px solid var(--mock-note-border);display:flex;flex-direction:column;transition:flex-basis .2s}
+.notes.collapsed{flex-basis:36px;width:36px}
 .notes-head{display:flex;align-items:center;gap:8px;height:40px;padding:0 8px 0 14px;border-bottom:1px solid var(--mock-note-border);font-weight:600;font-size:13px;color:#5c4a00}
-.notes-head span{flex:1;white-space:nowrap;overflow:hidden}
+.notes-head span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .notes-toggle{border:0;background:transparent;width:24px;height:24px;color:#5c4a00;font-size:16px;line-height:1}
 .notes.collapsed .notes-head span,.notes.collapsed .notes-body{display:none}
 .notes.collapsed .notes-head{padding:0 6px;justify-content:center}
@@ -180,9 +180,9 @@ textarea.input{height:auto;padding:8px 10px;font-family:var(--font-mono);line-he
 .pending-dot{width:6px;height:6px;border-radius:50%;background:var(--tea-color-palette-orange-8)}
 
 /* ===== Split layout + AssetListPanel ===== */
-.split{display:grid;grid-template-columns:360px 6px minmax(0,1fr);flex:1;min-height:560px}
+.split{display:grid;grid-template-columns:minmax(260px,330px) 6px minmax(0,1fr);align-items:start}
 .resizer{display:flex;justify-content:center}.resizer i{width:2px;height:100%;background:var(--tea-color-border-primary-default);border-radius:2px}
-.alp{height:100%;padding:16px;border:1px solid var(--tea-color-border-primary-default);border-radius:6px;background:#fff;box-shadow:var(--tea-shadow-xs);display:flex;flex-direction:column;min-height:0}
+.alp{padding:16px;border:1px solid var(--tea-color-border-primary-default);border-radius:6px;background:#fff;box-shadow:var(--tea-shadow-xs);display:flex;flex-direction:column;min-height:0}
 .alp-head{display:flex;justify-content:space-between;align-items:center;min-height:28px;padding-bottom:8px;margin-bottom:4px;border-bottom:1px solid var(--tea-color-border-secondary-default)}
 .alp-title{font-size:13px;font-weight:600}.alp-count{font-size:12px;color:var(--tea-color-text-tertiary)}
 .alp-items{list-style:none;margin:0;padding:0;overflow-y:auto;flex:1}
@@ -202,15 +202,20 @@ textarea.input{height:auto;padding:8px 10px;font-family:var(--font-mono);line-he
 .pend-mini{font-size:11px;color:var(--tea-color-text-warning-default);font-weight:500}
 
 /* ===== Skill detail card ===== */
-.sd{height:100%;display:flex;flex-direction:column;min-height:0}
+.sd{display:flex;flex-direction:column}
 .sd-head{padding:16px 16px 12px;border-bottom:1px solid var(--tea-color-border-primary-default)}
-.sd-head-main{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.sd-head-main{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
 .sd-name{font-family:var(--font-mono);font-size:14px;font-weight:600;word-break:break-all}
 .sd-id{font-family:var(--font-mono);font-size:11px;color:var(--tea-color-text-tertiary);margin-top:3px}
 .sd-desc{margin-top:4px;font-size:12px;color:var(--tea-color-text-secondary)}
 .sd-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
 .sd-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-.sd-scroll{flex:1;overflow-y:auto;padding:16px}
+.sd-scroll{padding:16px}
+.vstack{display:flex;flex-direction:column;gap:8px}
+.vcard{border:1px solid var(--tea-color-border-primary-default);background:#fff;padding:10px 12px}
+.vcard.rb{border-left:3px solid #ffb37a}
+.vcard .td-sum .sum{margin-top:6px;font-size:12px}
+.whatsnew .tl-meta{margin-top:6px}
 .sec+.sec{margin-top:20px}
 .sec-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
 .sec-title{font-size:12px;font-weight:600;color:var(--tea-color-text-secondary)}
@@ -275,6 +280,43 @@ textarea.input{height:auto;padding:8px 10px;font-family:var(--font-mono);line-he
 .diff .side>div+div{border-left:1px solid var(--tea-color-border-primary-default)}
 .diff .empty td{background:repeating-linear-gradient(-45deg,#fafbfc,#fafbfc 4px,#f2f4f8 4px,#f2f4f8 8px)}
 
+/* ===== Version history timeline ===== */
+.hist-grid{display:grid;grid-template-columns:minmax(360px,440px) minmax(0,1fr);gap:16px;align-items:start}
+.hist-cmp{position:sticky;top:0}
+.tl{list-style:none;margin:0;padding:0}
+.tl-item{position:relative;padding:0 0 14px 28px}
+.tl-item::before{content:'';position:absolute;left:7px;top:12px;bottom:-12px;width:2px;background:var(--tea-color-border-primary-default)}
+.tl-item:last-child::before{display:none}
+.tl-dot{position:absolute;left:1px;top:12px;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid var(--tea-color-palette-bluegray-4)}
+.tl-item.cur .tl-dot{border-color:var(--tea-color-bg-brand-default);background:var(--tea-color-bg-brand-default);box-shadow:0 0 0 3px var(--tea-color-bg-brand-lighten-default)}
+.tl-item.rb .tl-dot{border-color:#c25a00}
+.tl-card{border:1px solid var(--tea-color-border-primary-default);background:#fff;padding:10px 12px}
+.tl-item.cur .tl-card{border-color:var(--tea-color-palette-blue-2);background:#f7faff}
+.tl-item.picked .tl-card{box-shadow:inset 3px 0 0 var(--tea-color-bg-brand-default)}
+.tl-h{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tl-date{font-size:12px;color:var(--tea-color-text-secondary)}
+.tl-pick{margin-left:auto;font-size:12px;display:flex;gap:4px;align-items:center;color:var(--tea-color-text-secondary);cursor:pointer}
+.tl-pick input{accent-color:var(--tea-color-bg-brand-default)}
+.tl-restored{margin-top:6px;font-size:12px;color:var(--tea-color-text-warning-default);font-weight:500}
+.tl-meta{font-size:12px;color:var(--tea-color-text-secondary);margin-top:6px;display:flex;gap:4px 14px;flex-wrap:wrap}
+.tl-meta b{font-weight:400;color:var(--tea-color-text-tertiary)}
+.tl-reason{font-size:12px;margin-top:4px}
+.tl-acts{display:flex;gap:12px;align-items:center;margin-top:8px}
+.tag-cur{background:var(--tea-color-bg-brand-default);color:#fff;border-color:var(--tea-color-bg-brand-default)}
+.btn.brand-outline{border-color:var(--tea-color-border-brand-default);color:var(--tea-color-text-brand-default)}
+.btn.brand-outline:hover{background:var(--tea-color-bg-brand-lighten-default)}
+.cmp-sum{border:1px solid var(--tea-color-border-secondary-default);background:var(--tea-color-bg-secondary-default);padding:10px 12px;margin-bottom:12px}
+.cmp-sum .rm-h{margin-top:8px}
+.cmp-sum .rm-h:first-of-type{margin-top:4px}
+.rm-h{display:flex;align-items:center;gap:6px;font-size:12px}
+.rm-h b{font-family:var(--font-mono)}
+.rm-list{border:1px solid #f9c9c9;background:#fffafa;padding:8px 12px;margin-bottom:12px}
+.rm-item+.rm-item{margin-top:8px;padding-top:8px;border-top:1px dashed #f3d3d3}
+.rm-list .sum{margin-top:2px;font-size:12px}
+.dlg-wide{width:780px}
+.dlg-scroll{max-height:calc(100vh - 260px);overflow-y:auto;padding-right:4px}
+.dlg-scroll .diff{max-height:240px;overflow-y:auto}
+
 /* ===== Proposals ===== */
 .prop{border:1px solid var(--tea-color-border-primary-default);background:#fff;padding:14px 16px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px 16px}
 .prop+.prop{margin-top:12px}
@@ -332,7 +374,7 @@ textarea.input{height:auto;padding:8px 10px;font-family:var(--font-mono);line-he
 .t-prompt{border:1px solid #3a3f48;border-radius:6px;padding:4px 10px;margin-top:10px;color:#8b93a1}
 .cc-switch{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--tea-color-text-secondary);flex-wrap:wrap}
 
-@media (max-width:1100px){.split{grid-template-columns:minmax(0,1fr)}.resizer{display:none}.alp{min-height:360px}}
+@media (max-width:1100px){.split{grid-template-columns:minmax(0,1fr)}.resizer{display:none}}
 @media (max-width:760px){.sider{display:none}.notes{position:absolute;right:0;top:40px;bottom:0;z-index:90}.prop{grid-template-columns:1fr}.prop-acts{flex-direction:row;flex-wrap:wrap}}
 </style>
 </head>
@@ -342,7 +384,8 @@ textarea.input{height:auto;padding:8px 10px;font-family:var(--font-mono);line-he
   <b>MOCKUP · Project-scoped skills</b>
   <button data-go="list">1 · Skills list</button>
   <button data-go="detail">2 · Detail &amp; history</button>
-  <button data-go="dialogs">3 · Rollback / Promote</button>
+  <button data-go="history">2b · Version history</button>
+  <button data-go="dialogs">3 · Promote to Global</button>
   <button data-go="proposals">4 · Pending proposals</button>
   <button data-go="new">5 · New Skill</button>
   <button data-go="cc">6 · Claude Code session</button>
@@ -401,6 +444,7 @@ const I = {
   warn:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c25a00" stroke-width="2"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>',
   ok:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0a9e4c" stroke-width="2.4"><path d="M5 12l5 5 9-10"/></svg>',
   person:'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>',
+  clock:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   close:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>',
 };
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -432,6 +476,8 @@ const PASEO_V4 = L([...FM('paseo-computer-use-gating',PASEO_DESC),
   '## Pass / fail','- Pass: the agent completes the goal without a manual click, in 15 minutes or less.','- Fail: any permission prompt, manual step, or timeout. Stop and record why.','',
   '## Notes','- If TCC permission is missing, stop and ask the user. Do not open System Settings automatically.']);
 
+const PASEO_V5 = PASEO_V4+'\n\n## Cleanup\n- Revoke temporary TCC grants after the spike.';
+const PASEO_V6 = PASEO_V5.replace('max 15 minutes','max 20 minutes').replace('in 15 minutes or less','in 20 minutes or less')+'\n\n## See also\n- docs/adr/0007-computer-use.md';
 const DFT_DESC = 'Find and fix flaky tests without hiding real failures.';
 const DFT_V2 = L([...FM('debug-flaky-tests',DFT_DESC),
   '# Debug flaky tests','','## Steps','1. Re-run the failing test alone 20 times.','2. If it fails at least once, mark it flaky.','3. Raise the global test timeout to 30s and re-run.','4. Find the shared state or timing cause and fix it.','',
@@ -452,8 +498,12 @@ const AD_PROP = L([...FM('api-docs',AD_DESC),'# API docs','','## Steps','1. List
 
 const S = (k,t) => ({k,t}); // k: add | chg | del | rst
 const SKILLS = [
-  {id:'skl-7Qm2pAseo41X', name:'paseo-computer-use-gating', desc:PASEO_DESC, scope:'project', project:'kevinle128/paseo', origin:'extracted', version:4, updated:'2026-10-23 16:42', owner:'admin',
+  {id:'skl-7Qm2pAseo41X', name:'paseo-computer-use-gating', desc:PASEO_DESC, scope:'project', project:'kevinle128/paseo', origin:'extracted', version:6, updated:'2026-10-24 08:05', owner:'admin',
    versions:[
+    {v:6, date:'2026-10-24 08:05', source:'manual', reason:'Spikes on the M1 runner need about 18 minutes.', approver:'admin', by:'admin', sumBy:'admin',
+     content:PASEO_V6, summary:[S('chg','Raised the spike time limit from 15 to 20 minutes'),S('add','Re-added the "See also" link to ADR 0007')]},
+    {v:5, date:'2026-10-24 06:58', source:'extracted', reason:'A spike left Screen Recording access on after the session ended.', approver:'system', session:'c4e19b27', by:'extractor', sumBy:'extractor',
+     content:PASEO_V5, summary:[S('add','Added a cleanup step to revoke temporary TCC grants after the spike')]},
     {v:4, date:'2026-10-23 16:42', source:'extracted', reason:'A session hit a TCC prompt mid-spike; a permission pre-check prevents it.', approver:'system', session:'a81c03fe', by:'extractor', sumBy:'extractor',
      content:PASEO_V4, summary:[S('add','Added a step to verify TCC permission before the spike (and a stop rule when it is missing)'),S('chg','Clarified the pass/fail criteria'),S('del','Removed outdated macOS 13 note')]},
     {v:3, date:'2026-10-21 10:15', source:'rollback', reason:'The v2 wording dropped the 15-minute limit from the pass rule.', approver:'admin', by:'admin', sumBy:'generated', from:1,
@@ -674,28 +724,20 @@ function detailCard(s, compact){
         (s.promotedFrom?'<span class="muted" style="font-size:11px">Promoted from project '+esc(s.promotedFrom)+' · extractor can only propose changes</span>':'')+
         (s.scope==='project'?'<span class="muted" style="font-size:11px">Extractor changes apply automatically</span>':'')+
       '</div></div>'+
-      '<div class="sd-actions"><button class="btn primary">Edit</button><button class="btn">Add file</button>'+promote+'</div></div></div>';
-  const whatsnew='<div class="sec"><div class="whatsnew"><div class="whatsnew-h">v'+cur.v+' · What\'s new '+sourceTag(cur.source)+'<span class="muted">'+cur.date+' · approved by '+(cur.approver==='system'?'system (auto-applied)':esc(cur.approver))+'</span>'+
-      '<button class="link" style="margin-left:auto" data-act="vd:'+cur.v+'">View details &amp; diff &rsaquo;</button></div>'+
-      sumList(cur.summary)+'<div class="sum-by">'+sumByText(cur)+' · stored with v'+cur.v+'</div></div></div>';
-  const body='<div class="sec"><div class="sec-head"><span class="sec-title">Body</span></div>'+md(cur.content)+'</div>';
-  const hist='<div class="sec" id="history"><div class="sec-head"><span class="sec-title">Version history ('+vs.length+')</span><span class="muted" style="font-size:11px">Click a row to see the diff · times in Asia/Saigon</span></div>'+
-    '<table class="tbl"><thead><tr><th style="width:96px">Version</th><th style="width:132px">Date (Asia/Saigon)</th><th style="width:104px">Source</th><th>Approved by</th><th style="width:150px">Actions</th></tr></thead>'+
-    vs.map(v=>{
-      const isCur=v.v===s.version;
-      return '<tbody class="vrow'+(isCur?' cur':'')+'" data-act="vd:'+v.v+'" tabindex="0">'+
-        '<tr><td><span class="v-label">v'+v.v+(isCur?'<span class="v-cur">(Current)</span>':'')+'</span></td>'+
-        '<td style="white-space:nowrap">'+v.date+'</td>'+
-        '<td>'+sourceTag(v.source)+(v.source==='rollback'?' <span class="muted" style="font-size:11px">from v'+v.from+'</span>':'')+'</td>'+
-        '<td>'+approverText(v)+'</td>'+
-        '<td><div class="acts"><button class="link" data-act="vd:'+v.v+'">View details</button>'+
-          (isCur?'<span class="muted" style="font-size:11px">Current version</span>':'<button class="link" data-act="rollback:'+v.v+'">Rollback to this version</button>')+
-        '</div></td></tr>'+
-        '<tr class="sumrow"><td colspan="5" class="td-sum" id="sum-'+v.v+'"><span class="sum-label">What\'s improved</span>'+sumList(v.summary,true)+
-          '<div class="sum-foot">'+(v.summary.length>2?'<button class="expand" data-act="expand:'+v.v+'">Show all ('+v.summary.length+')</button>':'')+'<span class="sum-by" style="margin:0">'+sumByText(v)+'</span></div></td></tr>'+
-      '</tbody>';}).join('')+
-    '</table></div>';
-  return '<div class="card sd">'+head+'<div class="sd-scroll">'+whatsnew+(compact?body:hist+body)+'</div></div>';
+      '<div class="sd-actions"><button class="btn primary">Edit</button><button class="btn brand-outline" data-go="history">'+I.clock+' Version history ('+vs.length+')</button><button class="btn">Add file</button>'+promote+'</div></div></div>';
+  const body='<div class="sec"><div class="sec-head"><span class="sec-title">Body (v'+cur.v+', current)</span></div>'+md(cur.content)+'</div>';
+  const card=v=>{
+    const isCur=v.v===s.version;
+    const metaLine='<div class="tl-meta"><span><b>Changed by</b> '+(v.by==='extractor'?'extractor · session <span class="mono">'+v.session+'</span>':esc(v.by))+'</span><span><b>Approved by</b> '+(v.approver==='system'?'system (auto-applied)':esc(v.approver))+'</span></div>';
+    if (isCur) return '<div class="whatsnew"><div class="whatsnew-h"><span class="ver-tag">v'+v.v+' · Current</span>'+sourceTag(v.source)+(v.source==='rollback'?'<span class="tl-restored" style="margin:0">↺ restored from v'+v.from+'</span>':'')+'<span class="muted">'+v.date+'</span></div>'+
+      metaLine+sumList(v.summary)+'<div class="sum-foot"><span class="sum-by" style="margin:0">'+sumByText(v)+' · stored with v'+v.v+'</span><button class="link" style="margin-left:auto" data-act="vd:'+v.v+'">View details &amp; diff &rsaquo;</button></div></div>';
+    return '<div class="vcard'+(v.source==='rollback'?' rb':'')+'"><div class="tl-h"><span class="ver-tag">v'+v.v+'</span>'+sourceTag(v.source)+(v.source==='rollback'?'<span class="tl-restored" style="margin:0">↺ restored from v'+v.from+'</span>':'')+'<span class="tl-date">'+v.date+'</span></div>'+
+      metaLine+'<div class="td-sum" id="sum-'+v.v+'">'+sumList(v.summary,true)+'</div>'+
+      '<div class="sum-foot">'+(v.summary.length>2?'<button class="expand" data-act="expand:'+v.v+'">Show all ('+v.summary.length+')</button>':'')+'<span class="sum-by" style="margin:0">'+sumByText(v)+'</span></div>'+
+      '<div class="tl-acts"><button class="link" data-act="vd:'+v.v+'">View details &amp; diff</button><button class="btn sm" data-act="rollback:'+v.v+'">Set skill to this version</button></div></div>';
+  };
+  const stack='<div class="sec"><div class="sec-head"><span class="sec-title" style="font-size:13px;color:var(--tea-color-text-primary)">Version history ('+vs.length+')</span><span class="muted" style="font-size:11px">Newest first · Asia/Saigon · <button class="link" data-go="history">Compare versions &rsaquo;</button></span></div><div class="vstack">'+vs.map(card).join('')+'</div></div>';
+  return '<div class="card sd">'+head+'<div class="sd-scroll">'+body+stack+'</div></div>';
 }
 function scrDetail(){
   const s=skillByName(st.selected);
@@ -716,7 +758,7 @@ function scrVersion(){
       '<dt>Approved by</dt><dd>'+approverText(v)+'</dd><dt>Time</dt><dd>'+v.date+' <span class="muted">(Asia/Saigon)</span></dd>'+
       (v.source==='rollback'?'<dt>Restored from</dt><dd>v'+v.from+'</dd>':'')+'</dl></div>'+
     '<div class="sd-actions"><button class="btn" data-go="detail">Back to history</button>'+
-      '<button class="btn primary" data-act="rollback:'+v.v+'" '+(isCur?'disabled title="This is the current version"':'')+'>Rollback to this version</button></div></div></section>'+
+      '<button class="btn primary" data-act="rollback:'+v.v+'" '+(isCur?'disabled title="This is the current version"':'')+'>Set skill to this version</button></div></div></section>'+
   '<section class="card card-pad"><div class="sec-head"><span class="sec-title">What\'s improved in v'+v.v+'</span><span class="muted" style="font-size:11px">'+sumByText(v)+' · stored with this version</span></div>'+sumList(v.summary)+'</section>'+
   '<section class="card card-pad"><div class="diff-bar"><span class="sec-title">Changes</span>'+
       '<span class="f-label">Compare</span><span class="mono" style="font-size:12px">v'+v.v+'</span><span class="muted">with</span>'+
@@ -729,17 +771,66 @@ function scrVersion(){
 }
 
 /* ---------- screen 3: dialogs ---------- */
-function rollbackDlg(target, tag){
-  const s=skillByName(st.selected), vs=versionsOf(s), t=vs.find(x=>x.v===target), next=s.version+1;
-  return '<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="rb-cap">'+(tag?'<span class="dlg-tag">Opened from “Rollback to this version”</span>':'')+
+function rollbackDlg(target){
+  const s=skillByName(st.selected), vs=versionsOf(s), cur=vs[0], t=vs.find(x=>x.v===target), next=s.version+1;
+  const removed=vs.filter(x=>x.v>target);
+  const range=target+1===s.version?'v'+s.version:'v'+(target+1)+'–v'+s.version;
+  const d=renderDiff(cur.content,t.content,'unified');
+  return '<div class="dlg dlg-wide" role="dialog" aria-modal="true" aria-labelledby="rb-cap">'+
     '<button class="dlg-x" data-act="close" aria-label="Close">'+I.close+'</button>'+
-    '<h3 class="dlg-cap" id="rb-cap">Rollback “'+esc(s.name)+'” to v'+target+'?</h3>'+
-    '<div class="dlg-body"><div class="ba"><div><small>Current</small>v'+s.version+' · '+SOURCE[vs[0].source]+'</div><span class="muted">→</span><div><small>New version</small>v'+next+' · Rollback</div></div>'+
-    '<div class="alert alert-info" style="margin-bottom:12px">'+I.info+'<span>Rollback creates a new version <b>v'+next+'</b> with the content of <b>v'+target+'</b>; history is kept. v'+(target+1)+'–v'+s.version+' stay in the version history.</span></div>'+
-    '<span class="label">Summary stored with v'+next+' (generated)</span>'+sumList([S('rst','Restored content of v'+target+' (rollback by admin)')])+
-    '<div class="field" style="margin-top:12px"><label class="label req" for="rb-reason">Reason</label><input class="input" id="rb-reason" value="Restore the testable pass/fail wording from v2"></div>'+
-    '<p class="muted" style="margin:0">Approved by: admin (you). The change applies now because you made it.</p></div>'+
-    '<div class="dlg-foot"><button class="btn primary" data-act="do-rollback:'+target+'">Rollback to v'+target+'</button><button class="btn" data-act="close">Cancel</button></div></div>';
+    '<h3 class="dlg-cap" id="rb-cap">Set skill “'+esc(s.name)+'” to v'+target+'?</h3>'+
+    '<div class="dlg-body dlg-scroll">'+
+    '<div class="ba"><div><small>Current</small>v'+s.version+' · '+SOURCE[cur.source]+' · '+cur.date+'</div><span class="muted">→</span><div><small>Target content</small>v'+target+' · '+SOURCE[t.source]+' · '+t.date+'</div></div>'+
+    '<span class="label" style="font-weight:600">Improvements that will be removed ('+range+')</span>'+
+    '<div class="rm-list">'+removed.map(v=>'<div class="rm-item"><div class="rm-h"><b>v'+v.v+'</b>'+sourceTag(v.source)+'<span class="muted">'+v.date+'</span></div>'+sumList(v.summary)+'</div>').join('')+'</div>'+
+    '<div class="sec-head"><span class="label" style="font-weight:600;margin:0">Changes from v'+s.version+' (current) to the content of v'+target+'</span>'+d.stat+'</div>'+d.html+
+    '<div class="field" style="margin-top:12px"><label class="label req" for="rb-reason">Reason</label><input class="input" id="rb-reason" placeholder="Why do you set the skill to this version? Stored with the new version."><div class="err-text" id="rb-err" style="display:none">Reason is required.</div></div>'+
+    '<div class="alert alert-info">'+I.info+'<span><b>Creates v'+next+' with the content of v'+target+'.</b> '+range+' stay in history; you can roll forward again.</span></div>'+
+    '<p class="muted" style="margin:8px 0 0">Summary stored with v'+next+' (generated): “Restored content of v'+target+' (rollback by admin)”. Approved by: admin (you) · applies now.</p></div>'+
+    '<div class="dlg-foot"><button class="btn primary" data-act="do-rollback:'+target+'">Set skill to v'+target+'</button><button class="btn" data-act="close">Cancel</button></div></div>';
+}
+function applyRollback(s,target,reason){
+  const vs=versionsOf(s), t=vs.find(x=>x.v===target), next=s.version+1, date='2026-10-24 08:40';
+  vs.unshift({v:next,date,source:'rollback',from:target,reason,approver:'admin',by:'admin',sumBy:'generated',content:t.content,summary:[S('rst','Restored content of v'+target+' (rollback by admin)')]});
+  s.version=next; s.updated=date; st.hFrom=null; st.hTo=null; st.hPicks=null;
+  return next;
+}
+/* ---------- screen 2c: version history timeline ---------- */
+function scrHistory(){
+  const s=skillByName(st.selected), vs=versionsOf(s), cur=s.version, has=v=>vs.some(x=>x.v===v);
+  let from=st.hFrom!=null&&has(st.hFrom)?st.hFrom:vs[Math.min(1,vs.length-1)].v, to=st.hTo!=null&&has(st.hTo)?st.hTo:cur;
+  st.hFrom=from; st.hTo=to;
+  const fa=vs.find(x=>x.v===from), ta=vs.find(x=>x.v===to), lo=Math.min(from,to), hi=Math.max(from,to), fwd=to>from;
+  const between=vs.filter(x=>x.v>lo&&x.v<=hi);
+  const d=from===to?null:renderDiff(fa.content,ta.content,st.view);
+  const opt=sel=>vs.map(x=>'<option value="'+x.v+'" '+(x.v===sel?'selected':'')+'>v'+x.v+(x.v===cur?' (current)':'')+' · '+SOURCE[x.source]+'</option>').join('');
+  const tl=vs.map(v=>{
+    const isCur=v.v===cur, picked=v.v===from||v.v===to;
+    return '<li class="tl-item'+(isCur?' cur':'')+(v.source==='rollback'?' rb':'')+(picked?' picked':'')+'"><span class="tl-dot"></span><div class="tl-card">'+
+      '<div class="tl-h"><span class="ver-tag">v'+v.v+'</span>'+(isCur?'<span class="tag tag-cur">Current</span>':'')+sourceTag(v.source)+'<span class="tl-date">'+v.date+'</span>'+
+        '<label class="tl-pick"><input type="checkbox" data-act="hpick:'+v.v+'" '+(picked?'checked':'')+'> Compare</label></div>'+
+      (v.source==='rollback'?'<div class="tl-restored">↺ Restored from v'+v.from+'</div>':'')+
+      '<div class="tl-meta"><span><b>Changed by</b> '+(v.by==='extractor'?'extractor · session <span class="mono">'+v.session+'</span>':esc(v.by))+'</span><span><b>Approved by</b> '+(v.approver==='system'?'system (auto-applied)':esc(v.approver))+'</span></div>'+
+      '<div class="tl-reason"><span class="muted">Reason:</span> '+esc(v.reason)+'</div>'+
+      sumList(v.summary)+'<div class="sum-by">'+sumByText(v)+'</div>'+
+      '<div class="tl-acts"><button class="link" data-act="vd:'+v.v+'">View details</button>'+
+        (isCur?'<span class="muted" style="font-size:12px">This is the current version</span>':'<button class="btn sm" data-act="rollback:'+v.v+'">Set skill to this version</button>')+'</div>'+
+    '</div></li>';}).join('');
+  return '<nav class="crumbs"><a data-go="list">Skills</a>/<a data-go="detail">'+esc(s.name)+'</a>/<span>Version history</span></nav>'+
+  '<section class="card card-pad"><div class="vd-head"><div><div class="vd-title"><span class="mono">'+esc(s.name)+'</span><span class="ver-tag">v'+cur+' current</span>'+scopeBadge(s)+originChip(s.origin)+'</div>'+
+    '<div class="aph-sub" style="margin-top:6px">'+vs.length+' versions · newest first · times in Asia/Saigon · every change is kept; rollback adds a new version</div></div>'+
+    '<div class="sd-actions"><button class="btn" data-go="detail">Back to skill</button></div></div></section>'+
+  '<div class="hist-grid"><section class="card card-pad"><div class="sec-head"><span class="sec-title">Timeline</span><span class="muted" style="font-size:11px">Tick two versions to compare</span></div><ol class="tl">'+tl+'</ol></section>'+
+  '<section class="card card-pad hist-cmp"><div class="sec-head"><span class="sec-title">Compare versions</span></div>'+
+    '<div class="diff-bar"><span class="f-label">From</span><select class="sel-box" id="h-from" aria-label="From version">'+opt(from)+'</select>'+
+      '<span class="f-label">To</span><select class="sel-box" id="h-to" aria-label="To version">'+opt(to)+'</select>'+
+      '<button class="btn sm" data-act="hswap">Swap</button>'+
+      '<div class="seg"><button class="'+(st.view==='unified'?'on':'')+'" data-act="view:unified">Unified</button><button class="'+(st.view==='side'?'on':'')+'" data-act="view:side">Side by side</button></div></div>'+
+    (from===to?'<div class="alert alert-info">'+I.info+'<span>Choose two different versions.</span></div>':
+    '<div class="cmp-sum"><span class="label" style="font-weight:600;margin:0">'+(fwd?'Improvements from v'+from+' to v'+to:'Going back from v'+from+' to v'+to+' removes')+'</span>'+
+      between.map(v=>'<div class="rm-h"><b>v'+v.v+'</b>'+sourceTag(v.source)+'<span class="muted">'+v.date+'</span></div>'+sumList(v.summary)).join('')+'</div>'+
+    '<div class="diff-bar"><span class="sec-title">Changes v'+from+' → v'+to+'</span>'+d.stat+'</div>'+d.html)+
+  '</section></div>';
 }
 function promoteDlg(tag){
   const s=skillByName(st.selected);
@@ -869,18 +960,23 @@ const NOTES={
   detail:['Màn hình 2 · Chi tiết và lịch sử phiên bản',[
     'Skill dự án: thay đổi của bộ trích xuất được tự áp dụng, cột Approved by ghi <code>system (auto-applied)</code>. Sửa tay, rollback, chuyển thành toàn cục: áp dụng ngay, người duyệt là chính người thao tác.',
     SUMMARY_NOTE,
-    'Danh sách lịch sử không hiện diff. Bấm một dòng (hoặc "View details") để mở chi tiết phiên bản, ở đó mới có diff và nút rollback.',
+    'Dưới phần Body là mục "Version history": thẻ bản hiện tại (vN · Current) rồi toàn bộ phiên bản cũ, mới nhất trên cùng, không cần chuyển màn. Mỗi thẻ có nguồn, thời điểm, người sửa, người duyệt, tóm tắt (hiện 2 dòng đầu), "View details & diff" và "Set skill to this version". Diff chỉ hiện trong trang chi tiết phiên bản.',
     'Rollback không xóa lịch sử: tạo phiên bản mới chép nội dung phiên bản cũ. Ví dụ v3 là rollback về nội dung v1, v2 vẫn còn.']],
   version:['Chi tiết phiên bản (mở từ màn hình 2)',[
     'Phần đầu: phiên bản, nguồn sửa, lý do, người sửa, người duyệt, thời điểm (Asia/Saigon).',
     'Tóm tắt nằm trên diff để đọc nhanh trước khi xem từng dòng. '+SUMMARY_NOTE,
     'Diff mặc định so với phiên bản liền trước; chọn được phiên bản khác ở ô "Compare with". Dòng thêm màu xanh, dòng xóa màu đỏ.',
     'Không rollback về phiên bản hiện tại (nút bị tắt).']],
-  dialogs:['Màn hình 3 · Xác nhận Rollback và Promote',[
-    'Rollback về v2 tạo <code>v5</code> với nội dung của v2; v3 và v4 vẫn nằm trong lịch sử. Nguồn: <code>Rollback</code>, tóm tắt do hệ thống tạo: "Restored content of v2 (rollback by admin)".',
+  history:['Màn hình 2b · Lịch sử phiên bản và rollback',[
+    'Dòng thời gian liệt kê mọi phiên bản, mới nhất trên cùng: số phiên bản, đánh dấu Current, thời điểm (Asia/Saigon), nguồn, người sửa, người duyệt, tóm tắt cải tiến; bản rollback ghi "Restored from vN".',
+    'So sánh hai phiên bản bất kỳ: chọn From/To hoặc tick hai ô Compare. Hiện tóm tắt các phiên bản nằm giữa hai bản rồi mới đến diff (xanh thêm, đỏ xóa).',
+    'Mọi phiên bản không phải hiện tại đều có nút "Set skill to this version" (về kỹ thuật là rollback). Hộp xác nhận cho xem trước diff từ bản hiện tại tới nội dung đích, liệt kê các cải tiến sẽ mất, bắt buộc nhập lý do. Rollback tạo phiên bản mới (ví dụ v7 chép nội dung v2), không xóa v3–v6, nên có thể roll forward lại bằng cách rollback tới v6.',
+    'Skill toàn cục: rollback do người dùng bấm được áp dụng ngay (người dùng là người duyệt), không tạo đề xuất chờ duyệt, và được ghi lại như mọi phiên bản khác. Skill dự án cũng vậy.']],
+  dialogs:['Màn hình 3 · Xác nhận Promote to Global',[
+    'Rollback có màn riêng: xem màn 2b (Version history) và hộp xác nhận xem trước.',
     'Promote to Global: <code>scope = global</code>, <code>origin = manual</code>, ghi một phiên bản nguồn <code>Promotion</code>. Skill được inject cho mọi dự án của agent.',
     'Sau khi promote, bộ trích xuất không tự sửa nữa; nó chỉ được đề xuất và đề xuất phải được duyệt (Panel hoặc form trong Claude Code).',
-    'Hai hộp thoại hiện cùng lúc chỉ để xem mockup; trong sản phẩm mỗi lần mở một hộp.']],
+    'Nút Promote chỉ bật khi đã tick ô xác nhận nội dung hợp lệ cho mọi dự án.']],
   proposals:['Màn hình 4 · Đề xuất chờ duyệt (skill toàn cục)',[
     'Chỉ skill toàn cục có đề xuất chờ duyệt. Đề xuất cho skill dự án được áp dụng ngay nên không xuất hiện ở đây.',
     'Mỗi đề xuất có lý do và tóm tắt "What this change brings" để người dùng biết thay đổi mang lại gì trước khi duyệt.',
@@ -901,15 +997,15 @@ const NOTES={
     '"Later" giữ pending và không hỏi lại trong session; vẫn duyệt được trên Panel.',
     'Sau khi trả lời, proxy chuyển tiếp nguyên prompt gốc của người dùng. Request 2 minh họa từng nhánh (Approve, Reject, Later, Other); "Other" không đọc được thì giữ pending.']],
 };
-const SCREEN_GROUP={list:'list',detail:'detail',version:'detail',dialogs:'dialogs',proposals:'proposals',proposal:'proposals',new:'new',cc:'cc'};
+const SCREEN_GROUP={history:'history',list:'list',detail:'detail',version:'detail',dialogs:'dialogs',proposals:'proposals',proposal:'proposals',new:'new',cc:'cc'};
 
 /* ---------- render ---------- */
 function render(){
   const page=document.getElementById('page'), ov=document.getElementById('overlay');
   ov.innerHTML='';
   const scr=st.screen;
-  page.innerHTML = ({list:scrList,detail:scrDetail,version:scrVersion,dialogs:scrDialogs,proposals:scrProposals,proposal:scrProposal,new:scrNew,cc:scrCC})[scr]();
-  if (scr==='dialogs') ov.innerHTML='<div class="mask">'+rollbackDlg(2,true)+promoteDlg(true)+'</div>';
+  page.innerHTML = ({history:scrHistory,list:scrList,detail:scrDetail,version:scrVersion,dialogs:scrDialogs,proposals:scrProposals,proposal:scrProposal,new:scrNew,cc:scrCC})[scr]();
+  if (scr==='dialogs') ov.innerHTML='<div class="mask">'+promoteDlg(true)+'</div>';
   if (scr==='new') ov.innerHTML='<div class="mask">'+newDlg()+'</div>';
   document.querySelectorAll('.mock-strip button[data-go]').forEach(b=>b.classList.toggle('on',b.dataset.go===SCREEN_GROUP[scr]));
   const n=NOTES[scr]; document.getElementById('notes-title').textContent='Ghi chú · '+n[0];
@@ -925,18 +1021,24 @@ function go(screen){
 }
 function fromHash(){
   const h=decodeURIComponent(location.hash.slice(1)||'list');
-  const [k,arg]=h.split(':');
+  const [k,arg,arg2]=h.split(':');
   if (k==='version'){ st.vd=+arg||4; st.cmp=null; }
   if (k==='proposal'){ st.prop=arg||'p1'; }
-  if (k==='detail'||k==='dialogs'||k==='version') st.selected='paseo-computer-use-gating';
+  if (k==='detail'||k==='dialogs'||k==='version'||k==='history') st.selected='paseo-computer-use-gating';
+  const s0=skillByName('paseo-computer-use-gating');
+  if (k==='history'&&arg==='after'&&!versionsOf(s0).some(x=>x.source==='rollback'&&x.from===2)) applyRollback(s0,2,'Restore the 15-minute limit and testable pass/fail wording from v2');
   st.screen = NOTES[k]?k:'list';
   render();
+  if (k==='history'&&arg==='rollback'){ document.getElementById('overlay').innerHTML='<div class="mask">'+rollbackDlg(+arg2||2)+'</div>'; }
+  if (k==='history'&&arg==='after'){ toast(I.ok+'<span>Skill set to v2 content: created v'+s0.version+' with the content of v2. v3–v'+(s0.version-1)+' stay in history.</span>'); }
 }
 function toast(html){ const t=document.getElementById('toast'); t.innerHTML=html; t.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),2600); }
 function bindInputs(){
   const fp=document.getElementById('f-project'); if(fp) fp.onchange=e=>{st.project=e.target.value;render();};
   const fo=document.getElementById('f-origin'); if(fo) fo.onchange=e=>{st.origin=e.target.value;render();};
   const fq=document.getElementById('f-q'); if(fq) fq.oninput=e=>{st.q=e.target.value;const pos=e.target.selectionStart;render();const n=document.getElementById('f-q');n.focus();n.setSelectionRange(pos,pos);};
+  const hf=document.getElementById('h-from'); if(hf) hf.onchange=e=>{st.hFrom=+e.target.value;st.hPicks=null;render();};
+  const ht=document.getElementById('h-to'); if(ht) ht.onchange=e=>{st.hTo=+e.target.value;st.hPicks=null;render();};
   const cmp=document.getElementById('cmp'); if(cmp) cmp.onchange=e=>{st.cmp=+e.target.value;render();};
   const np=document.getElementById('n-proj'); if(np) np.onchange=e=>{st.newProject=e.target.value;st.newErr=false;render();};
   const pr=document.getElementById('pr-ok'); if(pr) pr.onchange=e=>{document.getElementById('pr-btn').disabled=!e.target.checked;};
@@ -953,13 +1055,17 @@ document.addEventListener('click',e=>{
     case 'vd': e.stopPropagation(); st.vd=+v; st.cmp=null; go('version'); break;
     case 'expand': e.stopPropagation(); { const td=document.getElementById('sum-'+v); td.classList.toggle('open'); a.textContent=td.classList.contains('open')?'Show less':'Show all'; } break;
     case 'view': st.view=v; render(); break;
-    case 'rollback': e.stopPropagation(); ov.innerHTML='<div class="mask">'+rollbackDlg(+v,false)+'</div>'; bindInputs(); break;
+    case 'rollback': e.stopPropagation(); ov.innerHTML='<div class="mask">'+rollbackDlg(+v)+'</div>'; bindInputs(); break;
+    case 'hpick': { const n=+v; let pk=st.hPicks||[st.hFrom,st.hTo]; if(!pk.includes(n)) pk=[pk[1],n]; st.hPicks=pk; st.hFrom=Math.min(...pk); st.hTo=Math.max(...pk); render(); } break;
+    case 'hswap': { const t=st.hFrom; st.hFrom=st.hTo; st.hTo=t; st.hPicks=null; render(); } break;
     case 'promote': ov.innerHTML='<div class="mask">'+promoteDlg(false)+'</div>'; bindInputs(); break;
     case 'new': go('new'); break;
     case 'import': case 'export': toast(I.info+'<span>Existing action, unchanged by this plan.</span>'); break;
     case 'close': ov.innerHTML=''; if(st.screen==='dialogs') go('detail'); if(st.screen==='new') go('list'); break;
-    case 'do-rollback': ov.innerHTML=''; toast(I.ok+'<span>Created v5 with the content of v'+v+'. History is kept.</span>'); if(st.screen==='dialogs') go('detail'); break;
-    case 'do-promote': ov.innerHTML=''; toast(I.ok+'<span>Promoted to Global as v5 (Promotion). Origin is now Manual.</span>'); if(st.screen==='dialogs') go('detail'); break;
+    case 'do-rollback': { const r=document.getElementById('rb-reason'); if(!r.value.trim()){ document.getElementById('rb-err').style.display='block'; r.style.borderColor='var(--tea-color-text-error-default)'; r.focus(); break; }
+      const sk=skillByName(st.selected), n=applyRollback(sk,+v,r.value.trim()); ov.innerHTML=''; go('history');
+      toast(I.ok+'<span>Skill set to v'+v+': created v'+n+' with its content (Rollback). v'+(+v+1)+'–v'+(n-1)+' stay in history.</span>'); } break;
+    case 'do-promote': ov.innerHTML=''; toast(I.ok+'<span>Promoted to Global as v'+(skillByName(st.selected).version+1)+' (Promotion). Origin is now Manual.</span>'); if(st.screen==='dialogs') go('detail'); break;
     case 'nscope': st.newScope=v; st.newErr=false; render(); break;
     case 'create': if(st.newScope==='project'&&!st.newProject){ st.newErr=true; render(); } else { toast(I.ok+'<span>Skill created as '+(st.newScope==='global'?'Global':'Project · '+esc(st.newProject))+' · v1 (Manual).</span>'); go('list'); } break;
     case 'approve': case 'reject': { const p=PROPOSALS.find(x=>x.id===v); p.status=k==='approve'?'approved':'rejected'; toast((k==='approve'?I.ok+'<span>Approved · '+p.skill+' is now v'+(p.base+1)+' · approved by admin</span>':I.info+'<span>Rejected · '+p.skill+' stays at v'+p.base+'</span>')); render(); } break;
@@ -981,6 +1087,7 @@ document.getElementById('notes-toggle').onclick=()=>{
   b.setAttribute('aria-label',st.notesOpen?'Collapse annotations':'Expand annotations');
 };
 window.addEventListener('hashchange',fromHash);
+if (window.innerWidth<1400 && !/notes=open/.test(location.search)) document.getElementById('notes-toggle').click();
 renderShell(); fromHash();
 </script>
 </body>
