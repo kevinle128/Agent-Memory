@@ -900,7 +900,7 @@ function newDlg(){
         '<label class="radio"><input type="radio" name="sc" value="project" '+(proj?'checked':'')+' data-act="nscope:project"><span>Project<small>Injected only in sessions of the chosen project</small></span></label></div></div>'+
       (proj?'<div class="field"><label class="label req" for="n-proj">Project</label><select class="sel-box" id="n-proj" style="width:100%;'+(st.newErr?'border-color:var(--tea-color-text-error-default)':'')+'"><option value="">Select a project</option>'+
         PROJECTS.map(p=>'<option value="'+p.name+'" '+(st.newProject===p.name?'selected':'')+'>'+p.name+(p.local?' (local, no remote)':'')+'</option>').join('')+'</select>'+
-        (st.newErr?'<div class="err-text">Project is required when Scope is Project.</div>':'<div class="muted" style="font-size:11px;margin-top:4px">Projects come from sessions that the hook linked to a repo (owner/repo of origin, or the folder name).</div>')+'</div>':'')+
+        (st.newErr?'<div class="err-text">Project is required when Scope is Project.</div>':'<div class="muted" style="font-size:11px;margin-top:4px">Projects come from sessions that the hook linked to a repo (origin path without the host, e.g. vtc/3q-chess/3q-game-api, or the folder name).</div>')+'</div>':'')+
       '<div class="field"><label class="label req" for="n-body">Content (SKILL.md)</label><textarea class="input" id="n-body" rows="7">'+esc(L(['# Release notes','','## Steps','1. List PRs merged since the last tag.','2. Group them as Features, Fixes, Chores.','3. Link each item to its PR.']))+'</textarea></div>'+
       '<div class="alert alert-info">'+I.info+'<span>Automatic extraction only creates <b>project</b> skills. Global skills are created only by people, here or with “Promote to Global”.</span></div>'+
     '</div><div class="dlg-foot"><button class="btn primary" data-act="create">Create</button><button class="btn" data-act="close">Cancel</button></div></div>';
@@ -950,7 +950,7 @@ function scrCC(){
 const SUMMARY_NOTE='Tóm tắt "What\'s improved" được tạo lúc sửa và lưu cùng phiên bản (bộ trích xuất bắt buộc ghi; sửa tay thì người dùng nhập hoặc hệ thống tạo), không tính lại mỗi lần xem.';
 const NOTES={
   list:['Màn hình 1 · Danh sách skill',[
-    'Nhãn <code>Global</code>: skill toàn cục, inject vào mọi session của agent. Nhãn <code>Project · owner/repo</code>: chỉ inject khi session đang làm đúng dự án đó (dự án lấy từ báo cáo của hook). Không biết dự án thì session chỉ nhận skill toàn cục.',
+    'Nhãn <code>Global</code>: skill toàn cục, inject vào mọi session của agent. Nhãn <code>Project · đường dẫn repo</code> (ví dụ <code>vtc/3q-chess/3q-game-api</code>): chỉ inject khi session đang làm đúng dự án đó (dự án lấy từ báo cáo của hook). Không biết dự án thì session chỉ nhận skill toàn cục.',
     'Origin: <code>Extracted</code> do bộ trích xuất tạo, luôn là skill dự án; <code>Manual</code> do người dùng tạo hoặc đã chuyển thành toàn cục; <code>Template</code> là skill mẫu (code-review, unit-test, api-docs).',
     'Repo không có remote hiện bằng tên thư mục gốc, ví dụ <code>operator-master</code> (local, no remote). Fork và repo gốc là hai dự án riêng.',
     'Nút "2 pending changes" đếm đề xuất sửa skill toàn cục đang chờ duyệt (không đếm đề xuất Stale); bấm để mở màn hình 4.']],
@@ -986,7 +986,7 @@ const NOTES={
   new:['Màn hình 5 · Tạo skill mới',[
     'Chọn phạm vi Global hoặc Project. Chọn Project thì bắt buộc chọn dự án; bấm Create khi chưa chọn sẽ báo lỗi.',
     'Trích xuất tự động chỉ tạo skill dự án; hệ thống không bao giờ tự tạo skill toàn cục.',
-    'Danh sách dự án do Core cung cấp từ dữ liệu đã gắn dự án (hash và tên <code>owner/repo</code>).',
+    'Danh sách dự án do Core cung cấp từ dữ liệu đã gắn dự án (hash và tên là đường dẫn repo không có host).',
     'Trùng tên với skill ở phạm vi khác thì Core trả mã lỗi riêng.']],
   cc:['Màn hình 6 · Form duyệt trong Claude Code',[
     'Proxy chỉ hỏi ở request <code>main</code> của Claude Code có tool <code>AskUserQuestion</code>; không hỏi ở fork, subagent, request phụ, hoặc khi đang có form khác (khởi tạo session).',

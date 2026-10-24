@@ -20,7 +20,7 @@ Nhánh `feat/server_team`. Nghiên cứu: `plans/reports/researcher-261024-0307-
 7. 18 skill mẫu (`api-docs`, `code-review`, `unit-test`) thành skill mẫu, phạm vi toàn cục, sau khi kiểm tra nội dung.
 8. Codex và pi được bổ sung phần nhận dự án từ hook.
 9. `promptMode` giữ ở mức instance. `code`: theo kiểu mới. `chat`: giữ kiểu cũ (không có dự án, skill trích xuất là skill chung, inject như cũ). Trên production instance là `code`, nên hermes và openclaw không trích xuất skill.
-10. Tên dự án là `owner/repo` của remote mà hook dùng (`origin`), ví dụ `kevinle128/paseo`; repo không có remote thì là tên thư mục gốc. `getpaseo/paseo` là dự án riêng. `project_hash` và `project_key` giữ nguyên như hiện tại (không chuyển dữ liệu); tên chỉ để hiển thị trên giao diện và trong khối inject. Bộ trích xuất được đọc skill toàn cục nhưng không được sửa.
+10. Tên dự án là toàn bộ đường dẫn của remote mà hook dùng (`origin`), bỏ host, scheme và đuôi `.git`: `github.com/kevinle128/paseo` thành `kevinle128/paseo`, `https://git.oceanlabs.dev/vtc/3q-chess/3q-game-api` thành `vtc/3q-chess/3q-game-api` (giữ mọi cấp nhóm); repo không có remote thì là tên thư mục gốc. `getpaseo/paseo` là dự án riêng. `project_hash` và `project_key` giữ nguyên như hiện tại (không chuyển dữ liệu); tên chỉ để hiển thị trên giao diện và trong khối inject. Bộ trích xuất được đọc skill toàn cục nhưng không được sửa.
 
 11. Skill toàn cục: hệ thống được đề xuất sửa để skill tốt hơn, nhưng chỉ áp dụng khi người dùng duyệt trên Hub. Skill dự án: hệ thống tự áp dụng, không hỏi. Cả hai có lịch sử sửa, lý do sửa, người duyệt, phiên bản hiện tại và rollback về phiên bản cũ. (Thay cho ý "bộ trích xuất chỉ đọc skill toàn cục" ở mục 10: nay bộ trích xuất được đề xuất, không được tự áp dụng.)
 12. Thiết kế phải dễ bảo trì, đúng kiến trúc và design pattern (xem mục "Kiến trúc").
@@ -57,10 +57,10 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 
 ### Giai đoạn 0: Tên dự án (Proxy và Core)
 
-- `buildProjectIdentity` (`MemoryProxy/src/project-scope/project-key.ts`) trả thêm `projectName`: `owner/repo` lấy từ phần đường dẫn của remote đã chuẩn hóa (bỏ host); không có remote thì là tên thư mục gốc. `projectHash` và `projectKey` không đổi.
+- `buildProjectIdentity` (`MemoryProxy/src/project-scope/project-key.ts`) trả thêm `projectName`: toàn bộ đường dẫn của remote đã chuẩn hóa, bỏ host (giữ mọi cấp nhóm, ví dụ `vtc/3q-chess/3q-game-api`); không có remote thì là tên thư mục gốc. `projectHash` và `projectKey` không đổi.
 - Lưu `projectName` cùng báo cáo của hook (`SessionWorkspace`), đưa vào `TdaiIdentity`, gửi kèm cho Core (L0 và lượt gom skill) dưới dạng `project_name` để Core có nguồn tên dự án cho giao diện.
 - Khối `<project_memory>` dùng tên dự án thay cho 8 ký tự đầu của hash.
-- Test: `kevinle128/paseo` từ ssh/https/có port; GitLab nhiều cấp nhóm (`group/sub/repo`); không có remote.
+- Test: `kevinle128/paseo` từ ssh/https/có port; GitLab nhiều cấp nhóm (`https://git.oceanlabs.dev/vtc/3q-chess/3q-game-api` thành `vtc/3q-chess/3q-game-api`); không có remote.
 
 ### Giai đoạn 1: Lưu trữ và ràng buộc (Core)
 
@@ -100,7 +100,7 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 
 ### Giai đoạn 5: Giao diện (Hub và Panel)
 
-- Nhãn trên từng skill: "Toàn cục" hoặc "Dự án <tên>", với tên dự án dạng `owner/repo` (ví dụ `kevinle128/paseo`). Core cung cấp danh sách dự án (hash và tên) từ dữ liệu đã gắn dự án.
+- Nhãn trên từng skill: "Toàn cục" hoặc "Dự án <tên>", với tên dự án là đường dẫn repo không có host (ví dụ `kevinle128/paseo`, `vtc/3q-chess/3q-game-api`). Core cung cấp danh sách dự án (hash và tên) từ dữ liệu đã gắn dự án.
 - Bộ lọc theo dự án và theo loại.
 - Hộp thoại tạo skill có lựa chọn phạm vi (toàn cục hoặc chọn một dự án). Nhập session phải chọn dự án.
 - Thao tác "Chuyển thành toàn cục" cho skill trích xuất: đổi thành `scope = global`, `origin = manual`, có xác nhận.
