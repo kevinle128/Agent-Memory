@@ -24,6 +24,9 @@ Nhánh `feat/server_team`. Nghiên cứu: `plans/reports/researcher-261024-0307-
 
 11. Skill toàn cục: hệ thống được đề xuất sửa để skill tốt hơn, nhưng chỉ áp dụng khi người dùng duyệt (hỏi bằng `AskUserQuestion`). Skill dự án: hệ thống tự áp dụng, không hỏi. Cả hai có lịch sử sửa, lý do sửa, người duyệt, phiên bản hiện tại và rollback về phiên bản cũ. (Thay cho ý "bộ trích xuất chỉ đọc skill toàn cục" ở mục 10: nay bộ trích xuất được đề xuất, không được tự áp dụng.)
 12. Thiết kế phải dễ bảo trì, đúng kiến trúc và design pattern (xem mục "Kiến trúc").
+13. Duyệt đề xuất ở hai nơi, cùng một API Core: form `AskUserQuestion` trong session Claude Code, và danh sách đề xuất trên Hub. Duyệt ở nơi nào thì skill được áp dụng ngay: Core tạo phiên bản mới qua `SkillChangeService` trong cùng lời gọi, không có bước áp dụng thứ hai. Ngoại lệ duy nhất là đề xuất đã `stale` (skill đã đổi phiên bản), khi đó không áp dụng. Nơi còn lại thấy đề xuất đã xử lý và không hỏi lại.
+14. Câu hỏi `AskUserQuestion` không được trả lời trong 1 phút thì tính là "Để sau": đề xuất giữ `pending`, session tiếp tục, không hỏi lại trong session đó, vẫn duyệt được trên Hub.
+15. Đề xuất `stale` không có nút Dismiss. Nó ở lại danh sách cho đến khi có người Từ chối.
 
 ## Kiến trúc
 
@@ -105,9 +108,11 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 ### Giai đoạn 4b: Hỏi duyệt đề xuất trong session (Proxy)
 
 - Bước mới trong pipeline của Claude Code, chạy sau khởi tạo session, chỉ ở request `main` có tool `AskUserQuestion`: lấy một đề xuất `pending` của skill toàn cục mà agent đang dùng, trả form `AskUserQuestion` (dùng lại bộ dựng form và bộ đọc câu trả lời hiện có).
-- Đọc câu trả lời ở request kế tiếp: "Duyệt" hoặc "Từ chối" gọi API Core với người duyệt là user đã xác thực; "Để sau" không hỏi lại trong session. Sau đó chuyển tiếp prompt gốc.
+- Đọc câu trả lời ở request kế tiếp: "Duyệt" hoặc "Từ chối" gọi API Core với người duyệt là user đã xác thực; "Duyệt" áp dụng ngay và báo phiên bản mới trong câu trả lời; "Để sau" không hỏi lại trong session. Sau đó chuyển tiếp prompt gốc. Skill mới có hiệu lực từ request kế tiếp (cache danh sách skill của session được làm mới).
+- Hết 1 phút không trả lời: Claude Code từ v2.1.200 có cài đặt `askUserQuestionTimeout` (mặc định `never`); khi hết giờ, Claude Code gửi `tool_result` không có câu trả lời. Proxy coi câu trả lời rỗng, câu trả lời không đọc được, và câu trả lời đến sau hơn 60 giây mà rỗng đều là "Để sau".
+- Nếu đề xuất đã được duyệt hoặc từ chối trên Hub trong lúc form đang chờ, câu trả lời trong session không đổi gì và proxy báo trạng thái đã xử lý.
 - Giới hạn: tối đa một form mỗi N phút và mỗi session; không hỏi khi đang có form khác; không có tool `AskUserQuestion` thì không hỏi (đề xuất vẫn chờ trên Panel).
-- Test: đủ các nhánh trả lời, câu trả lời không đọc được thì giữ `pending`, fork/subagent/request phụ không bị hỏi, prompt gốc được chuyển tiếp nguyên vẹn.
+- Test: đủ các nhánh trả lời, câu trả lời rỗng hoặc hết giờ thì là "Để sau", duyệt áp dụng ngay, đề xuất đã xử lý trên Hub thì không áp dụng lại, fork/subagent/request phụ không bị hỏi, prompt gốc được chuyển tiếp nguyên vẹn.
 
 ### Giai đoạn 5: Giao diện (Hub và Panel)
 
@@ -118,7 +123,7 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 - Ở chế độ `chat`, giao diện không hiện phần dự án.
 - Lịch sử phiên bản: tóm tắt cải tiến của từng phiên bản (và của phiên bản hiện tại ở đầu trang), lý do sửa, nguồn sửa, người duyệt, thời điểm; đánh dấu phiên bản hiện tại; bấm vào một phiên bản mới mở trang chi tiết: lý do, người duyệt, tóm tắt cải tiến, khác biệt với phiên bản trước (dòng thêm và dòng bỏ được tô màu, có thể chọn phiên bản khác để so), và nút "Set skill to this version" (có xác nhận). Danh sách lịch sử không hiện khác biệt.
 - Màn hình "Version history" riêng, mở từ nút trên trang chi tiết skill: dòng thời gian mọi phiên bản (phiên bản hiện tại, thời gian, nguồn, người sửa, người duyệt, tóm tắt cải tiến, "khôi phục từ vN" với bản rollback); so sánh hai phiên bản bất kỳ (chọn "từ" và "đến"); nút "Set skill to this version" cho mọi phiên bản không phải hiện tại (rollback). Hộp xác nhận rollback xem trước khác biệt từ bản hiện tại tới bản đích, liệt kê các cải tiến sẽ mất, bắt buộc nhập lý do, và ghi rõ kết quả "tạo vN+1 với nội dung của bản đích; các bản sau vẫn còn trong lịch sử".
-- Danh sách đề xuất chờ duyệt của skill toàn cục, có Duyệt và Từ chối (cho client không có `AskUserQuestion`).
+- Danh sách đề xuất chờ duyệt của skill toàn cục, có Duyệt và Từ chối, luôn có trên Hub (không chỉ cho client thiếu `AskUserQuestion`). Duyệt ở đây áp dụng ngay như duyệt trong session. Đề xuất `stale` hiện nhãn Stale, chỉ có Từ chối.
 - Test: component và API.
 
 ### Giai đoạn 6: Codex và pi nhận dự án từ hook
