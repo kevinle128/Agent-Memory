@@ -163,3 +163,12 @@ Kế hoạch chi tiết: [plan.md](plan.md)
   - Test: Proxy 655/655, tsc sạch. E2E `MemoryProxy/scripts/qa/hook-gate-e2e.sh` với Claude Code thật: local 12/12 (chạy hai lần), production 12/12. Các e2e khác: 2/2, 6/6, 7/7. Log production sau deploy: 0 lỗi.
   - Lưu ý: Claude Code mặc định chạy chế độ auto, và bộ kiểm tra của chế độ này có thể chặn lệnh cài `curl | bash`. Khi đó gate in lệnh để người dùng tự chạy (gõ `!` trước lệnh), rồi session tiếp tục. Tắt gate: `hookGate.enabled: false`.
 - Còn lại: Giai đoạn 8 (client khác), cần bạn quyết định.
+
+### 2026-10-24 tối, nhật ký lệnh gọi LLM của Core và judge
+- Commit `84151afc`, deploy Core production `84151af`. Trước deploy: sao lưu `~/backups/core-20261024-215259/core-data.tgz` kèm bản chụp sqlite `vectors-snap-20261024-215259.db` (`integrity_check ok`).
+- Một cơ chế chung: wrapper quanh LLM runner ghi mọi lệnh gọi lỗi của mọi stage, và mọi lệnh gọi judge, vào bảng `llm_calls`. Một công tắc: `memory.llmCallLog.enabled` hoặc `TDAI_LLM_CALL_LOG_ENABLED`. Đọc bằng `POST /v3/llm-call/list` và `/v3/llm-call/stats`. Không retry.
+- Judge không có kết luận: giữ persona cũ, không gắn dấu từ chối. Checkpoint đánh dấu lỗi, nên chỉ ngưỡng 50 memory mới chạy lại (cold start, khôi phục và migration không chạy lại ở mỗi lượt L3). Lần gọi thủ công lỗi không làm lệch lịch tự động.
+- Review độc lập: 1 lỗi cao (persona chạy lại ở mỗi lượt L3 sau khi judge lỗi) và 3 lỗi trung bình (wrapper có thể che lỗi gốc; phân loại sai 429 có chữ billing, giới hạn theo phút, abort không có deadline; lần gọi thủ công lỗi đặt lại lịch); đã sửa hết, thêm kind `aborted`, che thêm khóa `Basic`, `?key=`, `AIza…`.
+- Test: MemoryCore 957 pass, e2e `MemoryCore/scripts/qa/persona-scope-judge-e2e.sh` 31/31.
+- Production: tạo lại persona toàn cục của `agt-f0bzvpye01` (sao lưu `.backup/persona-manual/persona-2026-10-24T14-58-34-237Z.md`). Judge gọi 1 lần, 1,7 giây, kết quả `pass`, persona có dấu scope. Langfuse có trace của Core (`persona-generation`, `persona-scope-check`), và request thật sau đó đã nhận khối `<l3_core_memory>`.
+- Lý do lần từ chối lúc 10:3x không đọc lại được: log L3 cũ không lưu kết quả judge và Langfuse của Core khi đó còn tắt. Mã cũ đổi mọi lỗi kỹ thuật của judge thành dấu từ chối; đường này đã bỏ. Từ nay mọi lỗi được lưu với loại lỗi cụ thể.
