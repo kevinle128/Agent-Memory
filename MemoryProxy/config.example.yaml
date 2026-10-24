@@ -955,6 +955,17 @@ ccRequestRouting:
   enabled: true                    # 默认开启。关闭时所有请求强制 main，title-gen 并发会撞 session-init state 导致 bypass。
 
 
+# ── 项目 Hook 门禁 (Claude Code) ─────────────────────────────────────────────
+# 交互式 Claude Code 会话所在机器尚未安装项目 hook（没有 hook 上报）时，proxy 在第一个
+# 模型请求前返回安装表单："Install now" 在会话内执行安装命令后继续回答原问题，"Exit" 则
+# 拒绝本会话的后续请求。无头运行（claude -p、SDK、CI）不弹表单，原样放行。
+# 被拦截的请求不转发上游、不写 L0、不计费。
+hookGate:
+  enabled: true                    # 默认开启。false = 完全不拦截（回滚开关）。
+  # publicOrigin: "https://proxy.example.com"   # 可选。安装命令里的 proxy 地址（scheme://host[:port]，无路径）；
+  #                                             # 不设时取请求头 x-forwarded-proto/host，其次 Host。反向代理改写 Host 时请设置。
+
+
 # ── Per-Agent 上游路由 ─────────────────────────────────────────────────────
 # 见文件顶部 `upstream.agents` 一段。
 

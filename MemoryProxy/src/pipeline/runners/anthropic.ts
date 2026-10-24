@@ -670,6 +670,30 @@ export async function runAnthropicPipeline(
   // sk-mem key（用于 TDAI ACL / MetadataClient 的 x-tdai-user-key）就是入口的 apiKey。
   const callerUserKey = apiKey || null;
 
+  // ── Hook gate (before anything stores or forwards the turn) ──────────────
+  // An interactive Claude Code session without a hook report gets an install
+  // form instead of a model answer. A gated turn returns here, so it writes no
+  // L0, buffers no skill and bills no upstream call. On a pass, the body has
+  // the synthetic gate turns removed.
+  {
+    const { runHookGate, resolveProxyOrigin } = await import("../../session/claude-code/hook-gate.js");
+    const gate = await runHookGate({
+      config, agentSource, memoryTurn, path: c.req.path, headers: lcHeaders, body,
+      // The key of the hook report route: the verified user id, else "anonymous".
+      spaceId: spaceId || c.req.param("spaceId") || "", userId: earlyVerify.userId || "anonymous", modelId,
+      origin: resolveProxyOrigin(lcHeaders, c.req.url),
+    });
+    if (gate.action === "respond") {
+      console.log(`[hook-gate] session=${lcHeaders["x-claude-code-session-id"]} answered locally: ${gate.reason}`);
+      return gate.response;
+    }
+    if (gate.body !== body) {
+      body = gate.body;
+      messages = Array.isArray(body.messages) ? body.messages : [];
+      console.log(`[hook-gate] session=${lcHeaders["x-claude-code-session-id"]} removed synthetic turns: ${gate.reason}`);
+    }
+  }
+
   const sessionTurnSeed = createSessionTurnSeed(config, {
     agent: agentSource,
     path: c.req.path,

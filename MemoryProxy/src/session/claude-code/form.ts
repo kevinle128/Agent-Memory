@@ -81,7 +81,7 @@ const CC_MAX_OPTIONS = CC_MAX_OPTIONS_SHARED;
  *
  * 值本身对模型无影响 —— fake session-init 不真过模型。
  */
-const THINKING_SIGNATURE_PLACEHOLDER =
+export const THINKING_SIGNATURE_PLACEHOLDER =
   "UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc=";
 
 /** Returns true if the given string contains any CC form title marker. */
@@ -275,18 +275,29 @@ function buildAskUserQuestionArgs(data: FormData): { questions: CCAskQuestion[] 
   return { questions };
 }
 
-// ── Form Builder ───────────────────────────────────────────────────────────────
+// ── Synthetic assistant message ────────────────────────────────────────────────
+
+/** One content block of a synthetic assistant message. */
+export type SyntheticBlock =
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | { type: "text"; text: string };
+
+const SSE_HEADERS = { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" };
 
 /**
- * Build a Claude Code `AskUserQuestion` fake form response.
- * Always Anthropic SSE streaming (Claude Code only speaks Anthropic).
+ * Build an Anthropic SSE response for an assistant message that never reached a
+ * model. The message always starts with an empty `thinking` block that carries
+ * a placeholder signature (see THINKING_SIGNATURE_PLACEHOLDER for why). The
+ * given blocks follow from index 1. The stop reason is `tool_use` when any
+ * block is a tool call, else `end_turn`.
  */
-export function buildFormResponse(data: FormData): Response {
-  const model = data.modelId ?? "unknown";
-  const msgId = "msg_cc_session_init_" + Date.now();
-  const toolUseId = TOOLCALL_PREFIX + Date.now();
-  const input = buildAskUserQuestionArgs(data);
-  const inputJson = JSON.stringify(input);
+export function buildSyntheticAssistantSse(
+  model: string,
+  blocks: SyntheticBlock[],
+  messageIdPrefix = "msg_cc_session_init_",
+): Response {
+  const msgId = messageIdPrefix + Date.now();
+  const hasToolUse = blocks.some((b) => b.type === "tool_use");
 
   const encoder = new TextEncoder();
   const sse = (event: string, d: unknown) =>
@@ -303,65 +314,84 @@ export function buildFormResponse(data: FormData): Response {
         },
       }));
 
-      // ── Fake `thinking` block (index 0) ───────────────────────────────────
-      // 无条件 emit —— DeepSeek 官方 Anthropic 兼容端点在 thinking mode 下强查
-      // 历史 assistant 必须带 thinking block,否则 400。详见
-      // THINKING_SIGNATURE_PLACEHOLDER 常量注释。real Anthropic 场景零回归
-      // (无 thinking mode 时不 crypto 校验 sig;有 thinking mode 时本来就已经
-      // 因为 fake tool_use 无 thinking 而 400)。
+      // Fake `thinking` block (index 0). It is always emitted: the DeepSeek
+      // Anthropic endpoint in thinking mode rejects a history without it.
       controller.enqueue(sse("content_block_start", {
         type: "content_block_start",
         index: 0,
         content_block: { type: "thinking", thinking: "" },
       }));
-
       controller.enqueue(sse("content_block_delta", {
         type: "content_block_delta",
         index: 0,
         delta: { type: "thinking_delta", thinking: "" },
       }));
-
       controller.enqueue(sse("content_block_delta", {
         type: "content_block_delta",
         index: 0,
         delta: { type: "signature_delta", signature: THINKING_SIGNATURE_PLACEHOLDER },
       }));
-
       controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index: 0 }));
 
-      // ── tool_use block (index 1) ─────────────────────────────────────────
-      controller.enqueue(sse("content_block_start", {
-        type: "content_block_start",
-        index: 1,
-        content_block: {
-          type: "tool_use",
-          id: toolUseId,
-          name: TOOL_NAME,
-          input: {},
-        },
-      }));
-
-      controller.enqueue(sse("content_block_delta", {
-        type: "content_block_delta",
-        index: 1,
-        delta: { type: "input_json_delta", partial_json: inputJson },
-      }));
-
-      controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index: 1 }));
+      blocks.forEach((block, i) => {
+        const index = i + 1;
+        if (block.type === "tool_use") {
+          controller.enqueue(sse("content_block_start", {
+            type: "content_block_start",
+            index,
+            content_block: { type: "tool_use", id: block.id, name: block.name, input: {} },
+          }));
+          controller.enqueue(sse("content_block_delta", {
+            type: "content_block_delta",
+            index,
+            delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) },
+          }));
+        } else {
+          controller.enqueue(sse("content_block_start", {
+            type: "content_block_start",
+            index,
+            content_block: { type: "text", text: "" },
+          }));
+          controller.enqueue(sse("content_block_delta", {
+            type: "content_block_delta",
+            index,
+            delta: { type: "text_delta", text: block.text },
+          }));
+        }
+        controller.enqueue(sse("content_block_stop", { type: "content_block_stop", index }));
+      });
 
       controller.enqueue(sse("message_delta", {
         type: "message_delta",
-        delta: { stop_reason: "tool_use", stop_sequence: null },
+        delta: { stop_reason: hasToolUse ? "tool_use" : "end_turn", stop_sequence: null },
         usage: { output_tokens: 0 },
       }));
-
       controller.enqueue(sse("message_stop", { type: "message_stop" }));
       controller.close();
     },
   });
 
-  return new Response(stream, {
-    status: 200,
-    headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" },
-  });
+  return new Response(stream, { status: 200, headers: SSE_HEADERS });
+}
+
+// ── Form Builder ───────────────────────────────────────────────────────────────
+
+/**
+ * Build a Claude Code `AskUserQuestion` fake form response.
+ * Always Anthropic SSE streaming (Claude Code only speaks Anthropic).
+ */
+export function buildFormResponse(data: FormData): Response {
+  return buildSyntheticAssistantSse(data.modelId ?? "unknown", [
+    { type: "tool_use", id: TOOLCALL_PREFIX + Date.now(), name: TOOL_NAME, input: buildAskUserQuestionArgs(data) },
+  ]);
+}
+
+/** Build a synthetic assistant message that calls one tool. The tool_use id is `idPrefix` plus a timestamp. */
+export function buildToolUseResponse(name: string, input: unknown, idPrefix: string, model = "unknown"): Response {
+  return buildSyntheticAssistantSse(model, [{ type: "tool_use", id: idPrefix + Date.now(), name, input }], "msg_cc_synthetic_");
+}
+
+/** Build a synthetic assistant message that holds one text block. */
+export function buildTextResponse(text: string, model = "unknown"): Response {
+  return buildSyntheticAssistantSse(model, [{ type: "text", text }], "msg_cc_synthetic_");
 }

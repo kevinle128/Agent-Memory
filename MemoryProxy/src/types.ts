@@ -680,6 +680,8 @@ export interface ProxyConfig {
    * 详见 docs/design/2026-07-30-cc-request-routing-plan.md
    */
   ccRequestRouting: CcRequestRoutingConfig;
+  /** Mandatory project hook for interactive Claude Code sessions. */
+  hookGate: HookGateConfig;
 
   /**
    * WorkBuddy 请求分流总开关（运维 kill switch）。
@@ -711,6 +713,20 @@ export interface TraceArchiveConfig {
   enabled: boolean;
   /** 归档目录（相对于项目根目录或绝对路径）。默认 "logs/traces"。 */
   dir: string;
+}
+
+export interface HookGateConfig {
+  /**
+   * Ask interactive Claude Code sessions to install the project hook before the
+   * first model request. Default true. When false the proxy never gates a request.
+   */
+  enabled: boolean;
+  /**
+   * Origin that clients use to reach the proxy, for example `https://proxy.example.com`
+   * (scheme, host, optional port; no path). The install command uses it before the origin
+   * derived from the request headers. Set it when a reverse proxy rewrites Host.
+   */
+  publicOrigin?: string;
 }
 
 export interface CcRequestRoutingConfig {

@@ -203,6 +203,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   admin: { apiKey: "" },
   memCommand: {},
   ccRequestRouting: { enabled: true },
+  hookGate: { enabled: true },
   workbuddyRequestRouting: { enabled: true },
   traceArchive: { enabled: false, dir: "logs/traces" },
 };
@@ -349,6 +350,7 @@ function parseProfileScopeMode(raw: unknown): import("./tdai/types.js").ProfileS
 export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
   const configPath = overrides.configFile || "config.yaml";
   const yaml = loadYamlConfig(configPath);
+  const hookGateYaml = (yaml as { hookGate?: { enabled?: boolean; publicOrigin?: unknown } }).hookGate;
   const defaultWecomIdentity = DEFAULT_CONFIG.wecomIdentity!;
 
   const selection = buildSelectionConfig(yaml.selection, configPath);
@@ -676,6 +678,12 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
       enabled:
         (yaml as { ccRequestRouting?: { enabled?: boolean } }).ccRequestRouting?.enabled
         ?? DEFAULT_CONFIG.ccRequestRouting.enabled,
+    },
+    hookGate: {
+      enabled: hookGateYaml?.enabled ?? DEFAULT_CONFIG.hookGate.enabled,
+      ...(typeof hookGateYaml?.publicOrigin === "string" && hookGateYaml.publicOrigin
+        ? { publicOrigin: hookGateYaml.publicOrigin }
+        : {}),
     },
     workbuddyRequestRouting: {
       enabled:

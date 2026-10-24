@@ -1,0 +1,69 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildFormResponse > keeps the byte layout of the session-init form stream 1`] = `
+"event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_session_init_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_cc_session_init_1792800000000","name":"AskUserQuestion","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"questions\\":[{\\"question\\":\\"Link team assets for this conversation? (Pick the closest option. Custom text is not supported. Skipping injects no team assets.)\\",\\"header\\":\\"Assets\\",\\"options\\":[{\\"label\\":\\"Yes, link team assets\\",\\"description\\":\\"Choose a team, agent, and task, then inject that context\\"},{\\"label\\":\\"No, skip for this session\\",\\"description\\":\\"Inject nothing and continue\\"}],\\"multiSelect\\":false}]}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;
+
+exports[`buildFormResponse > keeps the byte layout of the team form stream 1`] = `
+"event: message_start
+data: {"type":"message_start","message":{"id":"msg_cc_session_init_1792800000000","type":"message","role":"assistant","model":"test-model","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"UHJveHlDQ1Nlc3Npb25Jbml0RmFrZVRoaW5raW5nUGxhY2Vob2xkZXJTaWc="}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_cc_session_init_1792800000000","name":"AskUserQuestion","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\\"questions\\":[{\\"question\\":\\"⚠️ Choose the team for this session: (Pick the closest option. Custom text is not supported. Skipping injects no team assets.)\\",\\"header\\":\\"Team\\",\\"options\\":[{\\"label\\":\\"Alpha (aaaa1111)\\",\\"description\\":\\"\\"},{\\"label\\":\\"Beta (bbbb2222)\\",\\"description\\":\\"\\"}],\\"multiSelect\\":false}]}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"
+`;

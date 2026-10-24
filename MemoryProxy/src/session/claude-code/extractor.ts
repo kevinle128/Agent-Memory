@@ -96,7 +96,7 @@ export function extractAssetConfirm(content: string): boolean | null {
  *   - `{ type: "multi_question_result", questions: [...] }`
  *   - 纯文本字符串（用户自由输入）
  */
-function extractAnswerFromJson(content: string): string | null {
+export function extractAnswerFromJson(content: string): string | null {
   try {
     const parsed = JSON.parse(content);
     if (typeof parsed === "string") return parsed.trim() || null;

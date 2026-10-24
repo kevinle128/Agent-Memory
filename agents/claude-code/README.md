@@ -233,6 +233,25 @@ echo '{"session_id":"test","cwd":"'"$PWD"'","hook_event_name":"Manual"}' \
 
 退出码 0 且无输出表示 proxy 已收到上报；退出码 1 时 stderr 会给出原因（例如 `HTTP 401`）。
 
+### 11.3.1 强制安装（hook 门禁）
+
+交互式会话所在机器没有安装 hook 时，proxy 在第一个模型请求前返回一个 `AskUserQuestion` 表单：
+
+- **Install now**：proxy 返回一个 `Bash` 工具调用，执行 `curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client claude-code --session <session_id>`（Claude Code 会先让你批准这条命令）。命令结束后 proxy 再查一次上报（最多等约 3 秒）：已有上报则去掉这几轮合成对话，继续回答原来的问题；没有则返回错误说明和手动安装命令
+- auto mode 的分类器可能拒绝执行安装命令（"Unauthorized Persistence"）。此时 proxy 返回错误说明和手动命令，在终端执行，或在 Claude Code 里在命令前加 `!` 直接执行，然后重新发送问题即可
+- **Exit**：本会话之后的每个请求都只收到一条固定说明，不会发给模型；只要 proxy 收到该会话的上报（例如在终端或用 `!` 执行说明里的安装命令），同一个会话再发消息即可继续，不必新开会话
+- 在表单里选 "Other" 输入自由文本时，proxy 会重新弹出表单
+- 请求里没有 `Bash` 工具（例如 `--disallowedTools Bash`）时不弹表单，直接返回带安装命令的说明，由你在终端执行
+- 无头运行（`claude -p`、CI）不拦截：请求里没有 `AskUserQuestion` 工具，原样放行（这类运行本来就没有项目，不会注入项目记忆）。Agent SDK 会提供 `AskUserQuestion`，所以按 User-Agent 入口（`sdk-ts`、`sdk-py`、`sdk-cli` 等以 `sdk` 开头）放行；入口只用于放行，从不作为拦截依据。子 agent 请求与标题、模型探测等旁路请求也不拦截
+- 只拦截 `/claude-code/<space>/v1/messages`（有对应 `/v3/hook/report` 的路径）；`/v1/messages`、`/claude-code/v1/messages`、`cost-guard`、`analyse` 等路径原样放行
+- 防循环：历史里表单结果读不出来（报错、被宿主拒绝、自由文本）达到 2 次后，该会话不再询问，请求直接放行
+- 每次放行（包括关闭门禁、fork、`claude -p --resume`）都会先从历史里去掉门禁的合成对话，不会把占位 thinking 签名或假的工具调用发给模型
+- 已有上报（包括不在 git 目录里的无项目上报）即视为已安装，之后不再询问
+- 被拦截的请求不转发上游、不写 L0、不计费
+- 安装命令里的 proxy 地址默认取 `x-forwarded-proto`/`x-forwarded-host`，其次 `Host`；反向代理改写了 Host 时，在配置里设置 `hookGate.publicOrigin: "https://proxy.example.com"`（scheme://host[:port]，无路径），它优先于请求头
+- 门禁是安装引导，不是安全控制：它 fail open。禁用 `AskUserQuestion`、使用 SDK、无头运行、上报查询失败、历史被压缩都会使请求放行或重新询问，不能用来强制合规
+- 回滚：proxy 配置 `hookGate.enabled: false`（默认 `true`），关闭后不拦截任何请求
+
 ### 11.4 Codex 与 pi
 
 同一个安装器也支持 Codex 与 pi，用 `--client` 选择。两者上报的内容和 Claude Code 相同，proxy 用上报的 session id 关联请求。
