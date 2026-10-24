@@ -29,6 +29,14 @@ import type {
   SkillStatus,
 } from "../../skill/types.js";
 import { SkillStoreError } from "../../skill/skill-store.interface.js";
+import { auditFor, placementFor, readAudit, readPlacement, serializeChangeSummary } from "../../skill/skill-audit.js";
+import type {
+  ListProposalsOptions,
+  ProposalTransitionPatch,
+  SkillChangeProposal,
+  SkillProposalFiles,
+  SkillProposalStatus,
+} from "../../skill/skill-proposal-types.js";
 
 // ─── Config ─────────────────────────────────────────────────────────────
 
@@ -60,6 +68,7 @@ export interface TcvdbSkillStoreConfig {
 
 const TAG = "[tcvdb-skill-store]";
 const SKILLS_COLLECTION_SUFFIX = "_skills";
+const PROPOSALS_COLLECTION_SUFFIX = "_skill_proposals";
 
 /** VDB 密集向量索引 (DISK_FLAT, HNSW fallback) */
 const VECTOR_INDEX_DISK_FLAT: Record<string, unknown> = {
@@ -86,6 +95,19 @@ const SKILL_OUTPUT_FIELDS: string[] = [
   "name", "description", "content", "content_hash",
   "manifest_json", "storage_dir", "status", "metadata_json",
   "created_at_ms", "updated_at_ms",
+  // Scope and audit fields. Documents written before they existed do not hold
+  // them; they read back as the migration defaults (see skill-audit.ts).
+  "scope", "project_key", "project_hash", "project_name", "origin", "source_session_id",
+  "change_source", "change_reason", "change_summary", "approved_by", "approved_at_ms",
+  "base_version", "proposal_id",
+];
+
+/** Fields returned for a proposal document. */
+const PROPOSAL_OUTPUT_FIELDS: string[] = [
+  "id", "proposal_id", "team_id", "owner_agent_id", "skill_id", "skill_name", "base_version",
+  "proposed_content", "proposed_description", "proposed_files_json",
+  "change_reason", "change_summary", "source_session_id", "created_by",
+  "status", "created_at_ms", "decided_at_ms", "decided_by", "result_version",
 ];
 
 /** 向量字段名 (VDB 内部名) */
@@ -115,6 +137,8 @@ function isDiskFlatUnsupported(err: unknown): boolean {
 export class TcvdbSkillStore implements ISkillStore {
   private readonly client: TcvdbClient;
   private readonly skillsCollection: string;
+  private readonly proposalsCollection: string;
+  private proposalsReady?: Promise<void>;
   private readonly embeddingModel: string;
   private readonly logger?: StoreLogger;
   private readonly bm25Encoder?: BM25LocalEncoder;
@@ -135,6 +159,7 @@ export class TcvdbSkillStore implements ISkillStore {
       caPemPath: config.caPemPath,
     });
     this.skillsCollection = `${config.database}${SKILLS_COLLECTION_SUFFIX}`;
+    this.proposalsCollection = `${config.database}${PROPOSALS_COLLECTION_SUFFIX}`;
     this.embeddingModel = config.embeddingModel;
     this.logger = config.logger;
     this.bm25Encoder = config.bm25Encoder;
@@ -182,9 +207,12 @@ export class TcvdbSkillStore implements ISkillStore {
     // 1. 查旧 head
     const head = await this._getHeadAsync(sid, tid);
 
+    const placement = placementFor(input, head);
+    const audit = auditFor(input);
+
     // 2. Name 唯一性校验 (无 head → 新 skill, 检查重名)
     if (!head) {
-      await this._assertNameUnique(input.name, tid, input.owner_agent_id ?? "default", sid);
+      await this._assertNameUnique(input.name, tid, input.owner_agent_id ?? "default", sid, placement);
     } else {
       // 已有 history → name 不可变
       if (head.name !== input.name) {
@@ -194,10 +222,18 @@ export class TcvdbSkillStore implements ISkillStore {
 
     // 3. 版本唯一性校验
     const newVersion = head ? head.version + 1 : 1;
+    const expected = input.expected_head_version;
+    if (expected !== undefined && (head?.version ?? 0) !== expected) {
+      throw new SkillStoreError("SKILL_VERSION_STALE", `expected version ${expected}, head is ${head?.version ?? 0}`);
+    }
     const existing = await this._queryOneAsync(
       `skill_id="${this._escape(sid)}" and version=${newVersion} and team_id="${this._escape(tid)}"`,
     );
     if (existing) {
+      // With an expected head, a row at the next version is another writer's win, not an idempotent repeat.
+      if (expected !== undefined) {
+        throw new SkillStoreError("SKILL_VERSION_STALE", `version ${newVersion} was written by another request`);
+      }
       // 同一版本已存在 → 幂等返回
       return existing;
     }
@@ -228,6 +264,9 @@ export class TcvdbSkillStore implements ISkillStore {
       metadata_json: input.metadata_json ?? "{}",
       created_at_ms: ts,
       updated_at_ms: ts,
+      ...placement,
+      ...audit,
+      change_summary: serializeChangeSummary(audit.change_summary),
     };
 
     // 5. BM25 稀疏向量编码
@@ -607,6 +646,11 @@ export class TcvdbSkillStore implements ISkillStore {
         { fieldName: "status",         fieldType: "string", indexType: "filter" },
         { fieldName: "created_at_ms",  fieldType: "uint64", indexType: "filter" },
         { fieldName: "updated_at_ms",  fieldType: "uint64", indexType: "filter" },
+        // Scope filters. They only exist on a collection created after this
+        // change; an existing collection needs an online index add (not done
+        // here) before a filter on them works.
+        { fieldName: "scope",          fieldType: "string", indexType: "filter" },
+        { fieldName: "project_hash",   fieldType: "string", indexType: "filter" },
       ],
     );
 
@@ -818,6 +862,7 @@ export class TcvdbSkillStore implements ISkillStore {
     teamId: string,
     ownerAgentId: string,
     excludeSkillId: string,
+    placement: { scope: string; project_hash: string },
   ): Promise<void> {
     const filter =
       `team_id="${this._escape(teamId)}" and owner_agent_id="${this._escape(ownerAgentId)}" ` +
@@ -827,11 +872,19 @@ export class TcvdbSkillStore implements ISkillStore {
       const resp = await this.client.query(this.skillsCollection, {
         filter,
         limit: 1,
-        outputFields: ["skill_id"],
+        outputFields: ["skill_id", "scope", "project_hash"],
       });
       if (resp.documents && resp.documents.length > 0) {
         const dupId = resp.documents[0].skill_id as string;
         if (dupId !== excludeSkillId) {
+          // Same rule as the SQLite store: a clash across scopes or projects has its own code.
+          const dup = readPlacement(resp.documents[0]);
+          if (dup.scope !== placement.scope || dup.project_hash !== placement.project_hash) {
+            throw new SkillStoreError(
+              "SKILL_NAME_SCOPE_CONFLICT",
+              `name '${name}' is used by a ${dup.scope} skill of this agent`,
+            );
+          }
           throw new SkillStoreError("SKILL_NAME_DUPLICATE", `name '${name}' already exists for agent in team`);
         }
       }
@@ -990,6 +1043,8 @@ export class TcvdbSkillStore implements ISkillStore {
       metadata_json: (doc.metadata_json as string) ?? "{}",
       created_at_ms: (doc.created_at_ms as number) ?? 0,
       updated_at_ms: (doc.updated_at_ms as number) ?? 0,
+      ...readPlacement(doc),
+      ...readAudit(doc),
     };
   }
 
@@ -1014,6 +1069,191 @@ export class TcvdbSkillStore implements ISkillStore {
       metadata_json: skill.metadata_json,
       created_at_ms: skill.created_at_ms,
       updated_at_ms: skill.updated_at_ms,
+      scope: skill.scope,
+      project_key: skill.project_key,
+      project_hash: skill.project_hash,
+      project_name: skill.project_name,
+      origin: skill.origin,
+      source_session_id: skill.source_session_id,
+      change_source: skill.change_source,
+      change_reason: skill.change_reason,
+      change_summary: serializeChangeSummary(skill.change_summary),
+      approved_by: skill.approved_by,
+      approved_at_ms: skill.approved_at_ms,
+      base_version: skill.base_version,
+      proposal_id: skill.proposal_id,
+    };
+  }
+
+  // ─── Change proposals ────────────────────────────────────────────────
+  //
+  // Proposals live in their own collection (`{database}_skill_proposals`),
+  // created on first use so a deployment that never makes a proposal does not
+  // pay for it. The collection has the same shape as the skills one (a vector
+  // index is mandatory in VDB, so server-side embedding runs on the proposed
+  // content; volume is low: one document per proposal).
+
+  private _ensureProposalsCollection(): Promise<void> {
+    if (!this.proposalsReady) {
+      this.proposalsReady = this._createProposalsCollection().catch((err) => {
+        this.proposalsReady = undefined; // let the next call retry
+        throw err;
+      });
+    }
+    return this.proposalsReady;
+  }
+
+  private async _createProposalsCollection(): Promise<void> {
+    await this._createCollectionWithVectorFallback(
+      {
+        collection: this.proposalsCollection,
+        shardNum: 1,
+        replicaNum: 2,
+        description: "Skill change proposals",
+        embedding: {
+          status: "enabled",
+          field: "proposed_content",
+          vectorField: DENSE_VECTOR_FIELD,
+          model: this.embeddingModel,
+        },
+      },
+      [
+        { fieldName: "proposal_id",    fieldType: "string", indexType: "filter" },
+        { fieldName: "team_id",        fieldType: "string", indexType: "filter" },
+        { fieldName: "owner_agent_id", fieldType: "string", indexType: "filter" },
+        { fieldName: "skill_id",       fieldType: "string", indexType: "filter" },
+        { fieldName: "status",         fieldType: "string", indexType: "filter" },
+        { fieldName: "created_at_ms",  fieldType: "uint64", indexType: "filter" },
+      ],
+    );
+  }
+
+  private async _proposalsReadyOrThrow(): Promise<void> {
+    await this._ensureInit();
+    if (this.degraded) throw new Error("TcvdbSkillStore degraded");
+    await this._ensureProposalsCollection();
+  }
+
+  async insertProposal(p: SkillChangeProposal): Promise<void> {
+    await this._proposalsReadyOrThrow();
+    await this.client.upsert(this.proposalsCollection, [this._proposalToDoc(p)]);
+  }
+
+  async getProposal(proposalId: string, teamId?: string): Promise<SkillChangeProposal | null> {
+    await this._proposalsReadyOrThrow();
+    const filter = teamId
+      ? `proposal_id="${this._escape(proposalId)}" and team_id="${this._escape(teamId)}"`
+      : `proposal_id="${this._escape(proposalId)}"`;
+    const resp = await this.client.query(this.proposalsCollection, {
+      filter,
+      limit: 1,
+      outputFields: PROPOSAL_OUTPUT_FIELDS,
+    });
+    return resp.documents && resp.documents.length > 0 ? this._docToProposal(resp.documents[0]) : null;
+  }
+
+  async listProposals(opts: ListProposalsOptions): Promise<{ items: SkillChangeProposal[]; total: number }> {
+    await this._proposalsReadyOrThrow();
+    const conditions: string[] = [];
+    if (opts.team_id) conditions.push(`team_id="${this._escape(opts.team_id)}"`);
+    if (opts.owner_agent_id) conditions.push(`owner_agent_id="${this._escape(opts.owner_agent_id)}"`);
+    if (opts.skill_id) conditions.push(`skill_id="${this._escape(opts.skill_id)}"`);
+    if (opts.status?.length) {
+      // VDB has no IN; expand to OR (see listSkills).
+      conditions.push(`(${opts.status.map((s) => `status="${this._escape(s)}"`).join(" or ")})`);
+    }
+    if (opts.created_before_ms !== undefined) conditions.push(`created_at_ms<${Math.floor(opts.created_before_ms)}`);
+    const filter = conditions.length ? conditions.join(" and ") : undefined;
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 1000);
+    const offset = Math.max(opts.offset ?? 0, 0);
+
+    const total = await this.client.count(this.proposalsCollection, filter);
+    const resp = await this.client.query(this.proposalsCollection, {
+      ...(filter ? { filter } : {}),
+      limit,
+      offset,
+      outputFields: PROPOSAL_OUTPUT_FIELDS,
+      sort: [{ fieldName: "created_at_ms", direction: "desc" }],
+    });
+    return { items: (resp.documents ?? []).map((d) => this._docToProposal(d)), total };
+  }
+
+  async transitionProposal(
+    proposalId: string,
+    from: SkillProposalStatus[],
+    patch: ProposalTransitionPatch,
+  ): Promise<SkillChangeProposal | null> {
+    if (from.length === 0) return null;
+    await this._proposalsReadyOrThrow();
+    // Server-side compare-and-set, same technique as the head flip in appendVersion:
+    // the expected status is part of the filter, so only the first writer matches.
+    const affected = await this.client.update(this.proposalsCollection, {
+      filter:
+        `proposal_id="${this._escape(proposalId)}" and ` +
+        `(${from.map((s) => `status="${this._escape(s)}"`).join(" or ")})`,
+      update: {
+        status: patch.status,
+        decided_at_ms: patch.decided_at_ms,
+        decided_by: patch.decided_by,
+        result_version: patch.result_version,
+      },
+    });
+    if (affected === 0) return null;
+    return this.getProposal(proposalId);
+  }
+
+  private _proposalToDoc(p: SkillChangeProposal): Record<string, unknown> {
+    return {
+      id: p.proposal_id,
+      proposal_id: p.proposal_id,
+      team_id: p.team_id,
+      owner_agent_id: p.owner_agent_id,
+      skill_id: p.skill_id,
+      skill_name: p.skill_name,
+      base_version: p.base_version,
+      proposed_content: p.proposed_content,
+      proposed_description: p.proposed_description,
+      proposed_files_json: JSON.stringify(p.proposed_files),
+      change_reason: p.change_reason,
+      change_summary: serializeChangeSummary(p.change_summary),
+      source_session_id: p.source_session_id,
+      created_by: p.created_by,
+      status: p.status,
+      created_at_ms: p.created_at_ms,
+      decided_at_ms: p.decided_at_ms,
+      decided_by: p.decided_by,
+      result_version: p.result_version,
+    };
+  }
+
+  private _docToProposal(doc: Record<string, unknown>): SkillChangeProposal {
+    let files: SkillProposalFiles = { write: [], remove: [] };
+    try {
+      const parsed = JSON.parse(String(doc.proposed_files_json ?? "{}")) as Partial<SkillProposalFiles>;
+      files = {
+        write: Array.isArray(parsed.write) ? parsed.write : [],
+        remove: Array.isArray(parsed.remove) ? parsed.remove : [],
+      };
+    } catch { /* damaged payload reads as no file change */ }
+    return {
+      proposal_id: String(doc.proposal_id ?? doc.id ?? ""),
+      team_id: String(doc.team_id ?? ""),
+      owner_agent_id: String(doc.owner_agent_id ?? ""),
+      skill_id: String(doc.skill_id ?? ""),
+      skill_name: String(doc.skill_name ?? ""),
+      base_version: Number(doc.base_version ?? 0),
+      proposed_content: String(doc.proposed_content ?? ""),
+      proposed_description: String(doc.proposed_description ?? ""),
+      proposed_files: files,
+      change_reason: String(doc.change_reason ?? ""),
+      change_summary: readAudit({ change_summary: doc.change_summary }).change_summary,
+      source_session_id: String(doc.source_session_id ?? ""),
+      created_by: String(doc.created_by ?? ""),
+      status: (doc.status as SkillProposalStatus) ?? "pending",
+      created_at_ms: Number(doc.created_at_ms ?? 0),
+      decided_at_ms: Number(doc.decided_at_ms ?? 0),
+      decided_by: String(doc.decided_by ?? ""),
+      result_version: Number(doc.result_version ?? 0),
     };
   }
 

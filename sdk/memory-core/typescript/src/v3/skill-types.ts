@@ -52,6 +52,35 @@ export interface SkillSummary {
   updated_at_ms: number;
   /** Arbitrary user metadata; present only when the record has non-empty `metadata_json`. */
   metadata?: Record<string, unknown>;
+  /** Scope and audit fields. Rows from before they existed read as global / extracted with an empty trail. */
+  scope?: SkillScope;
+  project_key?: string;
+  project_hash?: string;
+  project_name?: string;
+  origin?: SkillOrigin;
+  source_session_id?: string;
+  /** `null` for rows written before the audit trail existed. */
+  change_source?: SkillChangeSource | null;
+  change_reason?: string;
+  change_summary?: string[];
+  approved_by?: string;
+  approved_at_ms?: number;
+  base_version?: number;
+  proposal_id?: string;
+}
+
+export type SkillScope = "global" | "project";
+export type SkillOrigin = "extracted" | "manual" | "template";
+export type SkillChangeSource = "extracted" | "manual" | "rollback" | "promotion" | "template";
+
+/** Optional note a writer attaches to a create / update / patch / files write. */
+export interface SkillChangeNote {
+  /** Default `manual`. `extracted` marks a system proposal; on a global skill it creates a proposal, not a version. */
+  change_source?: "manual" | "extracted";
+  change_reason?: string;
+  /** 1–5 short items. */
+  change_summary?: string[];
+  source_session_id?: string;
 }
 
 export interface SkillDetail extends SkillSummary {
@@ -74,7 +103,12 @@ export interface SkillPagination {
 }
 
 // ── /v3/skill/create ──
-export interface SkillCreateRequest extends SkillIdFields {
+export interface SkillCreateRequest extends SkillIdFields, SkillChangeNote {
+  /** Default global. `project` needs `project_hash` (16 lowercase hex characters). */
+  scope?: SkillScope;
+  project_key?: string;
+  project_hash?: string;
+  project_name?: string;
   /** 1–64 chars; must match the frontmatter `name` inside `content`. */
   name: string;
   /** Full SKILL.md including frontmatter. */
@@ -85,7 +119,7 @@ export interface SkillCreateRequest extends SkillIdFields {
 }
 
 // ── /v3/skill/update ──
-export interface SkillUpdateRequest extends SkillIdFields {
+export interface SkillUpdateRequest extends SkillIdFields, SkillChangeNote {
   skill_id: string;
   /** Optimistic-lock version; required by the current schema. */
   expected_version: number;
@@ -93,7 +127,7 @@ export interface SkillUpdateRequest extends SkillIdFields {
 }
 
 // ── /v3/skill/patch ──
-export interface SkillPatchRequest extends SkillIdFields {
+export interface SkillPatchRequest extends SkillIdFields, SkillChangeNote {
   skill_id: string;
   expected_version: number;
   old_string: string;
@@ -195,8 +229,94 @@ export interface SkillVersionsData {
   total: number;
 }
 
+// ── /v3/skill/versions/diff, rollback, proposals ──
+export interface SkillVersionsDiffRequest extends SkillIdFields {
+  skill_id: string;
+  from_version: number;
+  to_version: number;
+}
+export interface SkillDiffLine {
+  type: "added" | "removed" | "unchanged";
+  text: string;
+  old_line?: number;
+  new_line?: number;
+}
+export interface SkillVersionsDiffData {
+  skill_id: string;
+  from_version: number;
+  to_version: number;
+  lines: SkillDiffLine[];
+  added: number;
+  removed: number;
+  unchanged: number;
+  /** True when the changed block was too large and is reported as one removed and one added block. */
+  approximate: boolean;
+}
+
+export interface SkillRollbackRequest extends SkillIdFields {
+  skill_id: string;
+  target_version: number;
+  /** Required. */
+  reason: string;
+  expected_version?: number;
+}
+
+export type SkillProposalStatus = "pending" | "approved" | "rejected" | "stale" | "expired";
+export interface SkillProposal {
+  proposal_id: string;
+  team_id: string;
+  owner_agent_id: string;
+  skill_id: string;
+  skill_name: string;
+  base_version: number;
+  proposed_content: string;
+  proposed_description: string;
+  proposed_files: { write: SkillResourcePayload[]; remove: string[] };
+  change_reason: string;
+  change_summary: string[];
+  source_session_id: string;
+  created_by: string;
+  status: SkillProposalStatus;
+  created_at_ms: number;
+  decided_at_ms: number;
+  decided_by: string;
+  result_version: number;
+}
+export interface SkillProposalsListRequest {
+  team_id: string;
+  agent_id?: string;
+  skill_id?: string;
+  status?: SkillProposalStatus[];
+  pagination?: SkillPagination;
+}
+export interface SkillProposalsListData {
+  items: SkillProposal[];
+  total: number;
+}
+export interface SkillProposalDecisionRequest {
+  team_id: string;
+  /** Person who decides; must have write access to the skill. */
+  user_id: string;
+  proposal_id: string;
+  agent_id?: string;
+}
+export interface SkillProposalApproveData {
+  applied: true;
+  proposal: SkillProposal;
+  skill: SkillSummary;
+}
+export interface SkillProposalRejectData {
+  proposal: SkillProposal;
+}
+/** Returned by a write that was turned into a proposal (HTTP envelope code 0). */
+export interface SkillProposedData {
+  applied: false;
+  skill_id: string;
+  proposal: SkillProposal;
+}
+
 // ── /v3/skill/files/write ──
-export interface SkillFilesWriteRequest extends SkillIdFields {
+export interface SkillFilesWriteRequest extends SkillIdFields, SkillChangeNote {
   skill_id: string;
   expected_version: number;
   /** 1–100 entries. */
@@ -204,7 +324,7 @@ export interface SkillFilesWriteRequest extends SkillIdFields {
 }
 
 // ── /v3/skill/files/remove ──
-export interface SkillFilesRemoveRequest extends SkillIdFields {
+export interface SkillFilesRemoveRequest extends SkillIdFields, SkillChangeNote {
   skill_id: string;
   expected_version: number;
   /** 1–100 UNIX-style paths. */

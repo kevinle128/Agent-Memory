@@ -17,7 +17,8 @@
  */
 
 import { tool, jsonSchema } from "ai";
-import { SkillCoreError, type SkillCore } from "./skill-core.js";
+import { SkillApprovalRequiredError, SkillCoreError, type SkillCore } from "./skill-core.js";
+import type { ChangePlacement } from "./skill-change-service.js";
 
 export type ExtractedAction =
   | "create"
@@ -40,8 +41,36 @@ export interface CreateSkillToolsOptions {
   team_id: string;
   agent_id: string;
   task_id?: string;
+  /** Session the conversation came from. Stored on every version the tools write. */
+  source_session_id?: string;
+  /**
+   * Project of the conversation. Set by the caller from the verified project;
+   * the model cannot set it. In `code` mode a create without a valid project is refused by Core.
+   */
+  project?: Pick<ChangePlacement, "project_key" | "project_hash" | "project_name">;
   auditSink: ExtractedSkillCandidate[];
   logger?: { info(msg: string): void; warn(msg: string): void; error(msg: string): void };
+}
+
+/** Shared tool parameters: every write says why and what it brings. */
+const CHANGE_NOTE_PROPERTIES = {
+  change_reason: {
+    type: "string",
+    description:
+      "Why this change is made, in one or two sentences. Required for every write.",
+  },
+  change_summary: {
+    type: "array",
+    items: { type: "string" },
+    maxItems: 5,
+    description:
+      "1-5 short items that tell a reviewer what the change adds, fixes or removes compared to the previous version.",
+  },
+} as const;
+
+interface ChangeNote {
+  change_reason?: string;
+  change_summary?: string[];
 }
 
 function jsonError(e: unknown): string {
@@ -53,6 +82,24 @@ function jsonError(e: unknown): string {
 
 export function createSkillTools(opts: CreateSkillToolsOptions) {
   const { core, user_id, team_id, agent_id, task_id, auditSink, logger } = opts;
+  // Everything the tools write is a change of the extractor: the approval policy
+  // treats it as a proposal of the system, never as a person's edit.
+  const note = (n: ChangeNote) => ({
+    change_source: "extracted" as const,
+    change_reason: n.change_reason,
+    change_summary: n.change_summary,
+    source_session_id: opts.source_session_id,
+  });
+  /** A change on a global skill becomes a proposal. Tell the model, so it does not retry. */
+  const proposedJson = (e: unknown): string | undefined =>
+    e instanceof SkillApprovalRequiredError
+      ? JSON.stringify({
+          ok: true,
+          proposed: true,
+          proposal_id: e.proposal.proposal_id,
+          message: "This skill is global. Your change waits for a person to approve it; it is not applied yet.",
+        })
+      : undefined;
   // Read 路径：不带 task_id — audit 字段不参与检索。skill-core.ts:list/search
   // 内部已经再兜底 undefine 掉 task_id, 但工具层依然显式区分以让意图清晰、
   // 并防止未来 core 侧回退时又把 bug 引回来。
@@ -121,17 +168,22 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
 
     skill_create: tool({
       description: "Create a new skill. The frontmatter `name` MUST equal the `name` parameter.",
-      inputSchema: jsonSchema<{ name: string; content: string }>({
+      inputSchema: jsonSchema<{ name: string; content: string } & ChangeNote>({
         type: "object",
         properties: {
           name: { type: "string", description: "Skill name (lowercase letters/digits/hyphen)" },
           content: { type: "string", description: "Full SKILL.md text including frontmatter" },
+          ...CHANGE_NOTE_PROPERTIES,
         },
-        required: ["name", "content"],
+        required: ["name", "content", "change_reason", "change_summary"],
       }),
-      execute: async ({ name, content }) => {
+      execute: async ({ name, content, ...n }) => {
         try {
-          const r = await core.create({ ...writeIds, name, content });
+          const r = await core.create({
+            ...writeIds, name, content, ...note(n),
+            // A conversation with a verified project makes a project skill.
+            ...(opts.project?.project_hash ? { scope: "project" as const, ...opts.project } : {}),
+          });
           auditSink.push({ action: "create", name, skill_id: r.skill_id, version: r.version, description: r.description });
           logger?.info(`[skill-tools] created ${r.skill_id}`);
           return JSON.stringify({ ok: true, skill_id: r.skill_id, version: r.version });
@@ -141,21 +193,22 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
 
     skill_update: tool({
       description: "Replace the entire SKILL.md of an existing skill (you must own it).",
-      inputSchema: jsonSchema<{ skill_id: string; content: string; expected_version: number }>({
+      inputSchema: jsonSchema<{ skill_id: string; content: string; expected_version: number } & ChangeNote>({
         type: "object",
         properties: {
           skill_id: { type: "string" },
           content: { type: "string", description: "New full SKILL.md text" },
+          ...CHANGE_NOTE_PROPERTIES,
           expected_version: { type: "number", description: "Required optimistic lock — the version you just read (skill_list/skill_view). After a successful write use the returned version for the next edit." },
         },
-        required: ["skill_id", "content", "expected_version"],
+        required: ["skill_id", "content", "expected_version", "change_reason", "change_summary"],
       }),
-      execute: async ({ skill_id, content, expected_version }) => {
+      execute: async ({ skill_id, content, expected_version, ...n }) => {
         try {
-          const r = await core.update({ ...writeIds, skill_id, content, expected_version });
+          const r = await core.update({ ...writeIds, skill_id, content, expected_version, ...note(n) });
           auditSink.push({ action: "update", name: r.name, skill_id, version: r.version });
           return JSON.stringify({ ok: true, version: r.version });
-        } catch (e) { return jsonError(e); }
+        } catch (e) { return proposedJson(e) ?? jsonError(e); }
       },
     }),
 
@@ -164,23 +217,24 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
       inputSchema: jsonSchema<{
         skill_id: string; old_string: string; new_string: string;
         replace_all?: boolean; expected_version: number;
-      }>({
+      } & ChangeNote>({
         type: "object",
         properties: {
           skill_id: { type: "string" },
           old_string: { type: "string" },
           new_string: { type: "string" },
           replace_all: { type: "boolean", description: "Default false" },
+          ...CHANGE_NOTE_PROPERTIES,
           expected_version: { type: "number", description: "Required optimistic lock — the version you just read (skill_list/skill_view). After a successful write use the returned version for the next edit." },
         },
-        required: ["skill_id", "old_string", "new_string", "expected_version"],
+        required: ["skill_id", "old_string", "new_string", "expected_version", "change_reason", "change_summary"],
       }),
-      execute: async ({ skill_id, old_string, new_string, replace_all, expected_version }) => {
+      execute: async ({ skill_id, old_string, new_string, replace_all, expected_version, ...n }) => {
         try {
-          const r = await core.patch({ ...writeIds, skill_id, old_string, new_string, replace_all, expected_version });
+          const r = await core.patch({ ...writeIds, skill_id, old_string, new_string, replace_all, expected_version, ...note(n) });
           auditSink.push({ action: "patch", name: r.name, skill_id, version: r.version });
           return JSON.stringify({ ok: true, version: r.version });
-        } catch (e) { return jsonError(e); }
+        } catch (e) { return proposedJson(e) ?? jsonError(e); }
       },
     }),
 
@@ -190,7 +244,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         skill_id: string; path: string; content: string;
         encoding?: "utf-8" | "base64"; mime_type?: string; is_executable?: boolean;
         expected_version: number;
-      }>({
+      } & ChangeNote>({
         type: "object",
         properties: {
           skill_id: { type: "string" },
@@ -199,19 +253,20 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
           encoding: { type: "string", enum: ["utf-8", "base64"] },
           mime_type: { type: "string" },
           is_executable: { type: "boolean" },
+          ...CHANGE_NOTE_PROPERTIES,
           expected_version: { type: "number", description: "Required optimistic lock — the version you just read (skill_list/skill_view). After a successful write use the returned version for the next edit." },
         },
-        required: ["skill_id", "path", "content", "expected_version"],
+        required: ["skill_id", "path", "content", "expected_version", "change_reason", "change_summary"],
       }),
-      execute: async ({ skill_id, path, content, encoding, mime_type, is_executable, expected_version }) => {
+      execute: async ({ skill_id, path, content, encoding, mime_type, is_executable, expected_version, ...n }) => {
         try {
           const r = await core.writeFiles({
-            ...writeIds, skill_id, expected_version,
+            ...writeIds, skill_id, expected_version, ...note(n),
             files: [{ path, content, encoding: encoding ?? "utf-8", mime_type, is_executable }],
           });
           auditSink.push({ action: "files_write", name: r.name, skill_id, version: r.version });
           return JSON.stringify({ ok: true, version: r.version });
-        } catch (e) { return jsonError(e); }
+        } catch (e) { return proposedJson(e) ?? jsonError(e); }
       },
     }),
   };

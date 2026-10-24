@@ -29,6 +29,14 @@ import type {
   SkillStatus,
 } from "../../skill/types.js";
 import { SkillStoreError } from "../../skill/skill-store.interface.js";
+import { auditFor, placementFor, readAudit, readPlacement } from "../../skill/skill-audit.js";
+import type {
+  ListProposalsOptions,
+  ProposalTransitionPatch,
+  SkillChangeProposal,
+  SkillProposalFiles,
+  SkillProposalStatus,
+} from "../../skill/skill-proposal-types.js";
 import { randomBase62 } from "../../../utils/short-id.js";
 import { tokenizeForFts, mongoSearchScoreToScore } from "../tokenize.js";
 import { COLLECTIONS } from "./collections.js";
@@ -104,6 +112,13 @@ export class MongoSkillStore implements ISkillStore {
       { key: { skill_id: 1, is_head: 1, status: 1 } },
       { key: { team_id: 1, owner_agent_id: 1, name: 1 } },
       { key: { is_head: 1, status: 1, created_at_ms: 1 } },
+      // Scope-aware reads: same shape as the SQLite index.
+      { key: { team_id: 1, owner_agent_id: 1, is_head: 1, status: 1, scope: 1, project_hash: 1 } },
+    ]);
+    await db.collection(COLLECTIONS.SKILL_CHANGE_PROPOSALS).createIndexes([
+      { key: { proposal_id: 1 }, unique: true },
+      { key: { team_id: 1, status: 1, created_at_ms: -1 } },
+      { key: { skill_id: 1, status: 1 } },
     ]);
     try {
       this.searchIndexReady = await ensureSearchIndex(
@@ -161,15 +176,28 @@ export class MongoSkillStore implements ISkillStore {
     const head = await this._getHead(coll, sid, tid, { includeArchived: true });
     const activeHead = head && head.status === "active" ? head : null;
 
+    const placement = placementFor(input, head);
+    const audit = auditFor(input);
+
     if (!head) {
-      await this._assertNameUnique(coll, input.name, tid, input.owner_agent_id ?? "default", sid);
+      await this._assertNameUnique(coll, input.name, tid, input.owner_agent_id ?? "default", sid, placement);
     } else if (head.name !== input.name) {
       throw new SkillStoreError("SKILL_NAME_DUPLICATE", "name change is not allowed across versions");
     }
 
     const newVersion = head ? head.version + 1 : 1;
+    const expected = input.expected_head_version;
+    if (expected !== undefined && (head?.version ?? 0) !== expected) {
+      throw new SkillStoreError("SKILL_VERSION_STALE", `expected version ${expected}, head is ${head?.version ?? 0}`);
+    }
     const existing = await coll.findOne({ skill_id: sid, version: newVersion, team_id: tid } as never);
-    if (existing) return this._docToSkill(existing);
+    if (existing) {
+      // With an expected head, a row at the next version is another writer's win, not an idempotent repeat.
+      if (expected !== undefined) {
+        throw new SkillStoreError("SKILL_VERSION_STALE", `version ${newVersion} was written by another request`);
+      }
+      return this._docToSkill(existing);
+    }
 
     const ownerForRow = head ? head.owner_agent_id : (input.owner_agent_id ?? "default");
     const userIdForRow = input.user_id ?? "default";
@@ -198,11 +226,21 @@ export class MongoSkillStore implements ISkillStore {
       created_at_ms: ts,
       updated_at_ms: ts,
       search_tokens: tokenizeForFts(`${input.name} ${input.description}`),
+      ...placement,
+      ...audit,
     };
 
     // New row first, then flip old head — matches VDB's compensating order so a
     // crash between the two leaves the newest version resolvable by version DESC.
-    await coll.insertOne(doc as never);
+    try {
+      await coll.insertOne(doc as never);
+    } catch (err) {
+      // The unique (skill_id, version) index decides between two writers on the same base.
+      if ((err as { code?: number }).code === 11000) {
+        throw new SkillStoreError("SKILL_VERSION_STALE", `version ${newVersion} was written by another request`);
+      }
+      throw err;
+    }
     if (activeHead) {
       await coll.updateOne(
         { _id: activeHead.row_id } as never,
@@ -407,6 +445,7 @@ export class MongoSkillStore implements ISkillStore {
     teamId: string,
     ownerAgentId: string,
     excludeSkillId: string,
+    placement: { scope: string; project_hash: string },
   ): Promise<void> {
     const dup = await coll.findOne({
       team_id: teamId,
@@ -418,6 +457,14 @@ export class MongoSkillStore implements ISkillStore {
     if (dup) {
       const dupId = (dup as { skill_id?: string }).skill_id;
       if (dupId && dupId !== excludeSkillId) {
+        // Same rule as the SQLite store: a clash across scopes or projects has its own code.
+        const dupScope = readPlacement(dup as Record<string, unknown>);
+        if (dupScope.scope !== placement.scope || dupScope.project_hash !== placement.project_hash) {
+          throw new SkillStoreError(
+            "SKILL_NAME_SCOPE_CONFLICT",
+            `name '${name}' is used by a ${dupScope.scope} skill of this agent`,
+          );
+        }
         throw new SkillStoreError("SKILL_NAME_DUPLICATE", `name '${name}' already exists for agent in team`);
       }
     }
@@ -452,8 +499,95 @@ export class MongoSkillStore implements ISkillStore {
       metadata_json: String(d.metadata_json ?? "{}"),
       created_at_ms: Number(d.created_at_ms ?? 0),
       updated_at_ms: Number(d.updated_at_ms ?? 0),
+      ...readPlacement(d),
+      ...readAudit(d),
     };
   }
+
+  // ── Change proposals ────────────────────────────────────
+
+  private async proposals(): Promise<Collection> {
+    await this._ensureInit();
+    if (this.degraded || !this.db) throw new Error(`${TAG} degraded/not-connected`);
+    return this.db.collection(COLLECTIONS.SKILL_CHANGE_PROPOSALS);
+  }
+
+  async insertProposal(p: SkillChangeProposal): Promise<void> {
+    const coll = await this.proposals();
+    await coll.insertOne({ _id: p.proposal_id, ...p } as never);
+  }
+
+  async getProposal(proposalId: string, teamId?: string): Promise<SkillChangeProposal | null> {
+    const coll = await this.proposals();
+    const q: Record<string, unknown> = { proposal_id: proposalId };
+    if (teamId) q.team_id = teamId;
+    const doc = await coll.findOne(q as never);
+    return doc ? docToProposal(doc) : null;
+  }
+
+  async listProposals(opts: ListProposalsOptions): Promise<{ items: SkillChangeProposal[]; total: number }> {
+    const coll = await this.proposals();
+    const q: Record<string, unknown> = {};
+    if (opts.team_id) q.team_id = opts.team_id;
+    if (opts.owner_agent_id) q.owner_agent_id = opts.owner_agent_id;
+    if (opts.skill_id) q.skill_id = opts.skill_id;
+    if (opts.status?.length) q.status = { $in: opts.status };
+    if (opts.created_before_ms !== undefined) q.created_at_ms = { $lt: opts.created_before_ms };
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 1000);
+    const offset = Math.max(opts.offset ?? 0, 0);
+    const total = await coll.countDocuments(q as never);
+    const docs = await coll
+      .find(q as never)
+      .sort({ created_at_ms: -1, proposal_id: -1 })
+      .skip(offset)
+      .limit(limit)
+      .toArray();
+    return { items: docs.map(docToProposal), total };
+  }
+
+  async transitionProposal(
+    proposalId: string,
+    from: SkillProposalStatus[],
+    patch: ProposalTransitionPatch,
+  ): Promise<SkillChangeProposal | null> {
+    if (from.length === 0) return null;
+    const coll = await this.proposals();
+    // Atomic compare-and-set: the status test is part of the filter.
+    const doc = await coll.findOneAndUpdate(
+      { proposal_id: proposalId, status: { $in: from } } as never,
+      { $set: { ...patch } } as never,
+      { returnDocument: "after" },
+    );
+    return doc ? docToProposal(doc) : null;
+  }
+}
+
+function docToProposal(doc: Document): SkillChangeProposal {
+  const d = doc as Record<string, unknown>;
+  const files = (d.proposed_files ?? {}) as Partial<SkillProposalFiles>;
+  return {
+    proposal_id: String(d.proposal_id ?? d._id),
+    team_id: String(d.team_id ?? ""),
+    owner_agent_id: String(d.owner_agent_id ?? ""),
+    skill_id: String(d.skill_id ?? ""),
+    skill_name: String(d.skill_name ?? ""),
+    base_version: Number(d.base_version ?? 0),
+    proposed_content: String(d.proposed_content ?? ""),
+    proposed_description: String(d.proposed_description ?? ""),
+    proposed_files: {
+      write: Array.isArray(files.write) ? files.write : [],
+      remove: Array.isArray(files.remove) ? files.remove : [],
+    },
+    change_reason: String(d.change_reason ?? ""),
+    change_summary: readAudit({ change_summary: d.change_summary }).change_summary,
+    source_session_id: String(d.source_session_id ?? ""),
+    created_by: String(d.created_by ?? ""),
+    status: (d.status as SkillProposalStatus) ?? "pending",
+    created_at_ms: Number(d.created_at_ms ?? 0),
+    decided_at_ms: Number(d.decided_at_ms ?? 0),
+    decided_by: String(d.decided_by ?? ""),
+    result_version: Number(d.result_version ?? 0),
+  };
 }
 
 function escapeRegex(s: string): string {

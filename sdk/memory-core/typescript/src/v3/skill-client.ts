@@ -55,12 +55,35 @@ import type {
   SkillSearchRequest,
   SkillSummary,
   SkillUpdateRequest,
+  SkillChangeNote,
   SkillVersionsData,
   SkillVersionsRequest,
+  SkillVersionsDiffData,
+  SkillVersionsDiffRequest,
+  SkillRollbackRequest,
+  SkillProposalsListData,
+  SkillProposalsListRequest,
+  SkillProposalDecisionRequest,
+  SkillProposalApproveData,
+  SkillProposalRejectData,
 } from "./skill-types.js";
 import type { MemoryClientConfig } from "../client.js";
 
 const V3 = "/v3/skill";
+
+/** Fields that describe a change and where a new skill lives; sent only when set. */
+function changeFields(p: SkillChangeNote & Partial<Pick<SkillCreateRequest, "scope" | "project_key" | "project_hash" | "project_name">>): Record<string, unknown> {
+  return {
+    change_source: p.change_source,
+    change_reason: p.change_reason,
+    change_summary: p.change_summary,
+    source_session_id: p.source_session_id,
+    scope: p.scope,
+    project_key: p.project_key,
+    project_hash: p.project_hash,
+    project_name: p.project_name,
+  };
+}
 
 function stripUndefined(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
@@ -197,6 +220,7 @@ export class SkillClient {
   create(params: SkillCreateRequest): Promise<SkillSummary> {
     const body = stripUndefined({
       ...this.ids(params),
+      ...changeFields(params),
       name: params.name,
       content: params.content,
       resources: params.resources,
@@ -209,6 +233,7 @@ export class SkillClient {
   update(params: SkillUpdateRequest): Promise<SkillSummary> {
     const body = stripUndefined({
       ...this.ids(params),
+      ...changeFields(params),
       skill_id: params.skill_id,
       expected_version: params.expected_version,
       content: params.content,
@@ -220,6 +245,7 @@ export class SkillClient {
   patch(params: SkillPatchRequest): Promise<SkillSummary> {
     const body = stripUndefined({
       ...this.ids(params),
+      ...changeFields(params),
       skill_id: params.skill_id,
       expected_version: params.expected_version,
       old_string: params.old_string,
@@ -302,6 +328,44 @@ export class SkillClient {
     return this.http.post(`${V3}/versions`, body);
   }
 
+  /** `POST /v3/skill/versions/diff` — line diff between any two versions. */
+  versionsDiff(params: SkillVersionsDiffRequest): Promise<SkillVersionsDiffData> {
+    const body = stripUndefined({
+      ...this.ids(params),
+      skill_id: params.skill_id,
+      from_version: params.from_version,
+      to_version: params.to_version,
+    });
+    return this.http.post(`${V3}/versions/diff`, body);
+  }
+
+  /** `POST /v3/skill/rollback` — copy an older version into a new version. */
+  rollback(params: SkillRollbackRequest): Promise<SkillSummary> {
+    const body = stripUndefined({
+      ...this.ids(params),
+      skill_id: params.skill_id,
+      target_version: params.target_version,
+      reason: params.reason,
+      expected_version: params.expected_version,
+    });
+    return this.http.post(`${V3}/rollback`, body);
+  }
+
+  /** `POST /v3/skill/proposals/list` */
+  proposalsList(params: SkillProposalsListRequest): Promise<SkillProposalsListData> {
+    return this.http.post(`${V3}/proposals/list`, stripUndefined({ ...params }));
+  }
+
+  /** `POST /v3/skill/proposals/approve` — approves and applies in the same call. */
+  proposalsApprove(params: SkillProposalDecisionRequest): Promise<SkillProposalApproveData> {
+    return this.http.post(`${V3}/proposals/approve`, stripUndefined({ ...params }));
+  }
+
+  /** `POST /v3/skill/proposals/reject` */
+  proposalsReject(params: SkillProposalDecisionRequest): Promise<SkillProposalRejectData> {
+    return this.http.post(`${V3}/proposals/reject`, stripUndefined({ ...params }));
+  }
+
   // ─────────────────────────────────────────────────────────────
   // resource files
   // ─────────────────────────────────────────────────────────────
@@ -310,6 +374,7 @@ export class SkillClient {
   writeFiles(params: SkillFilesWriteRequest): Promise<SkillSummary> {
     const body = stripUndefined({
       ...this.ids(params),
+      ...changeFields(params),
       skill_id: params.skill_id,
       expected_version: params.expected_version,
       files: params.files,
@@ -321,6 +386,7 @@ export class SkillClient {
   removeFiles(params: SkillFilesRemoveRequest): Promise<SkillSummary> {
     const body = stripUndefined({
       ...this.ids(params),
+      ...changeFields(params),
       skill_id: params.skill_id,
       expected_version: params.expected_version,
       paths: params.paths,

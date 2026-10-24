@@ -14,6 +14,11 @@
  *   SKILL_NAME_DUPLICATE      → 42201
  *   SKILL_PATCH_NOT_UNIQUE    → 42202
  *   SKILL_FRONTMATTER_INVALID → 42203  (frontmatter parse / 长度 / regex)
+ *   SKILL_NAME_SCOPE_CONFLICT → 42204  (name used by a skill of another scope or project)
+ *   SKILL_PROJECT_REQUIRED    → 42205  (project skill without valid project_hash; extracted skill without project in code mode)
+ *   SKILL_CHANGE_INVALID      → 40001  (missing reason / summary, rollback to head, ...)
+ *   SKILL_PROPOSAL_NOT_FOUND  → 40401
+ *   SKILL_PROPOSAL_STATE_INVALID → 40902 (proposal already decided)
  *   STORAGE_NOT_FOUND         → 50301  (版本目录被 GC)
  *   QUEUE_UNAVAILABLE         → 50301  (extract 时队列未就绪)
  *   LLM_UNAVAILABLE           → 50302  (LLM 不可用)
@@ -43,9 +48,14 @@ import {
   exportRequestSchema,
   conversationAddRequestSchema,
   forceArchiveRequestSchema,
+  rollbackRequestSchema,
+  versionsDiffRequestSchema,
+  proposalsListRequestSchema,
+  proposalDecisionRequestSchema,
 } from "./skill-schemas.js";
 import type { ApiResponseEnvelope, V2AuthContext } from "./v2-schemas.js";
-import { SkillCoreError, type SkillCore } from "../core/skill/skill-core.js";
+import { SkillApprovalRequiredError, SkillCoreError, type SkillCore } from "../core/skill/skill-core.js";
+import type { SkillChangeProposal } from "../core/skill/skill-proposal-types.js";
 import type { SkillExtractor } from "../core/skill/skill-extractor.js";
 import type { Logger } from "../core/types.js";
 import type { Skill, ResolvedSkillConfig } from "../core/skill/types.js";
@@ -156,6 +166,11 @@ const ERROR_CODE_MAP: Record<string, number> = {
   SKILL_NAME_DUPLICATE: 42201,
   SKILL_PATCH_NOT_UNIQUE: 42202,
   SKILL_FRONTMATTER_INVALID: 42203,
+  SKILL_NAME_SCOPE_CONFLICT: 42204,
+  SKILL_PROJECT_REQUIRED: 42205,
+  SKILL_CHANGE_INVALID: 40001,
+  SKILL_PROPOSAL_NOT_FOUND: 40401,
+  SKILL_PROPOSAL_STATE_INVALID: 40902,
   STORAGE_NOT_FOUND: 50301,
   LLM_UNAVAILABLE: 50302,
   SKILL_COS_REQUIRED: 50303,
@@ -165,6 +180,14 @@ const ERROR_CODE_MAP: Record<string, number> = {
 };
 
 function mapCoreError(e: unknown, requestId: string, deps?: SkillRouterDeps, meta?: Record<string, unknown>): ApiResponseEnvelope {
+  // A change that waits for approval is not a failure: the request was valid
+  // and a proposal exists. Answer with success and say that nothing was applied.
+  if (e instanceof SkillApprovalRequiredError) {
+    return successEnvelope(
+      { applied: false, skill_id: e.proposal.skill_id, proposal: toProposalView(e.proposal) },
+      requestId,
+    );
+  }
   if (e instanceof SkillCoreError) {
     const code = ERROR_CODE_MAP[e.code] ?? 50001;
 
@@ -193,6 +216,18 @@ function mapCoreError(e: unknown, requestId: string, deps?: SkillRouterDeps, met
     return errorEnvelope(code, e.message, requestId);
   }
   return errorEnvelope(50001, (e as Error).message ?? "internal error", requestId);
+}
+
+/**
+ * Log the failure of a write handler. A change that became a proposal is an
+ * expected outcome, so it is logged at info level, not as an error.
+ */
+function logWriteFailure(event: string, fields: Record<string, unknown>, e: unknown): void {
+  if (e instanceof SkillApprovalRequiredError) {
+    obsLogger.info(event, { ...fields, code: 0, applied: false, proposal_id: e.proposal.proposal_id });
+    return;
+  }
+  obsLogger.error(event, fields, e instanceof Error ? e : undefined);
 }
 
 function formatZodErr(err: ZodError): string {
@@ -284,8 +319,27 @@ function toSummary(s: Skill) {
     task_id: s.task_id,
     created_at_ms: s.created_at_ms,
     updated_at_ms: s.updated_at_ms,
+    // Scope and audit fields (additive). Rows written before they existed read
+    // as global / extracted with an empty trail; `change_source` is null then.
+    scope: s.scope,
+    project_key: s.project_key,
+    project_hash: s.project_hash,
+    project_name: s.project_name,
+    origin: s.origin,
+    source_session_id: s.source_session_id,
+    change_source: s.change_source || null,
+    change_reason: s.change_reason,
+    change_summary: s.change_summary,
+    approved_by: s.approved_by,
+    approved_at_ms: s.approved_at_ms,
+    base_version: s.base_version,
+    proposal_id: s.proposal_id,
     ...(metadata ? { metadata } : {}),
   };
+}
+
+function toProposalView(p: SkillChangeProposal) {
+  return { ...p };
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -334,6 +388,7 @@ export async function handleCreate(body: unknown, auth: V2AuthContext, requestId
           team_id: r.team_id,
           agent_id: r.owner_agent_id,
           name: r.name,
+          source_type: r.origin,
         });
       } catch (err) {
         deps.logger.error(
@@ -369,7 +424,7 @@ export async function handleUpdate(body: unknown, auth: V2AuthContext, requestId
     obsLogger.info("skill.handleUpdate.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, name: r.name, version: r.version });
     return successEnvelope(toSummary(r), requestId);
   } catch (e) {
-    obsLogger.error("skill.handleUpdate.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, expected_version: pre.data.expected_version }, e instanceof Error ? e : undefined);
+    logWriteFailure("skill.handleUpdate.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, expected_version: pre.data.expected_version }, e);
     return mapCoreError(e, requestId, deps, { skill_id: pre.data.skill_id, expected_version: pre.data.expected_version });
   }
 }
@@ -393,7 +448,7 @@ export async function handlePatch(body: unknown, auth: V2AuthContext, requestId:
     obsLogger.info("skill.handlePatch.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, name: r.name, version: r.version });
     return successEnvelope(toSummary(r), requestId);
   } catch (e) {
-    obsLogger.error("skill.handlePatch.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, expected_version: pre.data.expected_version }, e instanceof Error ? e : undefined);
+    logWriteFailure("skill.handlePatch.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, expected_version: pre.data.expected_version }, e);
     return mapCoreError(e, requestId, deps, { skill_id: pre.data.skill_id, expected_version: pre.data.expected_version });
   }
 }
@@ -601,6 +656,174 @@ export async function handleVersions(body: unknown, _auth: V2AuthContext, reques
   } catch (e) { obsLogger.error("skill.handleVersions.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id }, e instanceof Error ? e : undefined); return mapCoreError(e, requestId); }
 }
 
+/**
+ * `POST /v3/skill/rollback` — restore an older version as a new version.
+ * Nothing is deleted: the version that was current and every version after
+ * the target stay in the history.
+ */
+export async function handleRollback(body: unknown, auth: V2AuthContext, requestId: string, deps: SkillRouterDeps): Promise<ApiResponseEnvelope> {
+  const t0 = Date.now();
+  const pre = await precheckWrite(rollbackRequestSchema, body, auth, deps, requestId);
+  if (!pre.ok) { obsLogger.warn("skill.handleRollback.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
+
+  if (deps.quotaManager) {
+    const check = await deps.quotaManager.checkMemoryQuota(auth.serviceId, 1);
+    if (!check.allowed) {
+      obsLogger.warn("skill.handleRollback.done", { req_id: requestId, code: 4291, dur_ms: Date.now() - t0, reason: "quota", current: check.current, limit: check.limit });
+      return errorEnvelope(4291, `Memory limit exceeded (current=${check.current}, limit=${check.limit})`, requestId);
+    }
+  }
+
+  try {
+    const r = await pre.core.rollback({
+      user_id: pre.data.user_id,
+      team_id: pre.data.team_id,
+      agent_id: pre.data.agent_id,
+      task_id: pre.data.task_id,
+      skill_id: pre.data.skill_id,
+      target_version: pre.data.target_version,
+      reason: pre.data.reason,
+      expected_version: pre.data.expected_version,
+    });
+    try { trace.report("skill.rollback", { skill_id: r.skill_id, team_id: r.team_id, agent_id: r.owner_agent_id, name: r.name, version: r.version, target_version: pre.data.target_version }); } catch { /* noop */ }
+    obsLogger.info("skill.handleRollback.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, version: r.version, target_version: pre.data.target_version });
+    return successEnvelope(toSummary(r), requestId);
+  } catch (e) {
+    obsLogger.error("skill.handleRollback.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id }, e instanceof Error ? e : undefined);
+    return mapCoreError(e, requestId, deps, { skill_id: pre.data.skill_id, expected_version: pre.data.expected_version });
+  }
+}
+
+/** `POST /v3/skill/versions/diff` — line diff of SKILL.md between any two versions. */
+export async function handleVersionsDiff(body: unknown, auth: V2AuthContext, requestId: string, deps: SkillRouterDeps): Promise<ApiResponseEnvelope> {
+  const t0 = Date.now();
+  const pre = await precheck(versionsDiffRequestSchema, body, auth, deps, requestId);
+  if (!pre.ok) { obsLogger.warn("skill.handleVersionsDiff.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
+  try {
+    const r = await pre.core.diffVersions(pre.data);
+    obsLogger.info("skill.handleVersionsDiff.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, from: r.from_version, to: r.to_version, added: r.added, removed: r.removed });
+    return successEnvelope(r, requestId);
+  } catch (e) {
+    obsLogger.error("skill.handleVersionsDiff.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id }, e instanceof Error ? e : undefined);
+    return mapCoreError(e, requestId);
+  }
+}
+
+/** `POST /v3/skill/proposals/list` — newest first; filter by status, agent or skill. */
+export async function handleProposalsList(body: unknown, auth: V2AuthContext, requestId: string, deps: SkillRouterDeps): Promise<ApiResponseEnvelope> {
+  const t0 = Date.now();
+  const pre = await precheck(proposalsListRequestSchema, body, auth, deps, requestId);
+  if (!pre.ok) { obsLogger.warn("skill.handleProposalsList.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
+  try {
+    const r = await pre.core.listProposals(pre.data);
+    obsLogger.info("skill.handleProposalsList.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, items: r.items.length, total: r.total });
+    return successEnvelope({ items: r.items.map(toProposalView), total: r.total }, requestId);
+  } catch (e) {
+    obsLogger.error("skill.handleProposalsList.done", { req_id: requestId, dur_ms: Date.now() - t0 }, e instanceof Error ? e : undefined);
+    return mapCoreError(e, requestId);
+  }
+}
+
+/**
+ * The person who decides on a proposal must be allowed to write the skill.
+ *
+ * With a metadata service, that is the asset ACL check on the skill (asset id
+ * equals skill id): owner, team role, or explicit grant. A skill without an
+ * asset row is refused until a read has registered it. Without a metadata
+ * service (embedded tests), the team of the request has already been matched
+ * to the proposal, and an `agent_id` that is sent must be the owner agent.
+ */
+async function mayDecideProposal(
+  proposal: SkillChangeProposal,
+  input: { user_id: string; agent_id?: string },
+  auth: V2AuthContext,
+  deps: SkillRouterDeps,
+): Promise<boolean> {
+  if (!deps.getMetadataService) {
+    return !input.agent_id || input.agent_id === proposal.owner_agent_id;
+  }
+  const metaSvc = await deps.getMetadataService(auth.serviceId);
+  const verdict = await metaSvc.checkAssetPermission({
+    user_id: input.user_id,
+    asset_id: proposal.skill_id,
+    action: "write",
+  });
+  return verdict.allowed;
+}
+
+type ProposalDecision = "approve" | "reject";
+
+async function handleProposalDecision(
+  decision: ProposalDecision,
+  body: unknown,
+  auth: V2AuthContext,
+  requestId: string,
+  deps: SkillRouterDeps,
+): Promise<ApiResponseEnvelope> {
+  const t0 = Date.now();
+  const event = decision === "approve" ? "skill.handleProposalApprove.done" : "skill.handleProposalReject.done";
+  const pre = await precheckWrite(proposalDecisionRequestSchema, body, auth, deps, requestId);
+  if (!pre.ok) { obsLogger.warn(event, { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
+  const { proposal_id, team_id, user_id, agent_id } = pre.data;
+
+  try {
+    // team_id is part of the lookup: a proposal of another team reads as not found.
+    const proposal = await pre.core.getProposal(proposal_id, team_id);
+    if (!proposal) {
+      obsLogger.info(event, { req_id: requestId, code: 40401, dur_ms: Date.now() - t0, proposal_id, reason: "not_found" });
+      return errorEnvelope(40401, "SKILL_PROPOSAL_NOT_FOUND: proposal not found", requestId);
+    }
+    if (!(await mayDecideProposal(proposal, { user_id, agent_id }, auth, deps))) {
+      obsLogger.warn(event, { req_id: requestId, code: 40301, dur_ms: Date.now() - t0, proposal_id, reason: "forbidden" });
+      return errorEnvelope(40301, "SKILL_NOT_OWNER: user may not decide on this proposal", requestId);
+    }
+
+    if (decision === "reject") {
+      const rejected = await pre.core.rejectProposal({ proposal_id, team_id, user_id });
+      obsLogger.info(event, { req_id: requestId, code: 0, dur_ms: Date.now() - t0, proposal_id, skill_id: rejected.skill_id });
+      return successEnvelope({ proposal: toProposalView(rejected) }, requestId);
+    }
+
+    // Approving creates a version, so it counts against the quota like an update.
+    if (deps.quotaManager) {
+      const check = await deps.quotaManager.checkMemoryQuota(auth.serviceId, 1);
+      if (!check.allowed) {
+        obsLogger.warn(event, { req_id: requestId, code: 4291, dur_ms: Date.now() - t0, reason: "quota", current: check.current, limit: check.limit });
+        return errorEnvelope(4291, `Memory limit exceeded (current=${check.current}, limit=${check.limit})`, requestId);
+      }
+    }
+    const result = await pre.core.approveProposal({ proposal_id, team_id, user_id });
+    if (result.status === "stale") {
+      obsLogger.info(event, { req_id: requestId, code: 40901, dur_ms: Date.now() - t0, proposal_id, reason: "stale", current_version: result.current_version });
+      return errorEnvelope(
+        40901,
+        `SKILL_VERSION_STALE: proposal is based on v${result.proposal.base_version}, head is ${result.current_version}; the proposal is marked stale and was not applied`,
+        requestId,
+        { current_version: result.current_version, proposal: toProposalView(result.proposal) },
+      );
+    }
+    try { trace.report("skill.proposal_approve", { skill_id: result.skill.skill_id, team_id, version: result.skill.version, proposal_id }); } catch { /* noop */ }
+    obsLogger.info(event, { req_id: requestId, code: 0, dur_ms: Date.now() - t0, proposal_id, skill_id: result.skill.skill_id, version: result.skill.version });
+    return successEnvelope(
+      { applied: true, proposal: toProposalView(result.proposal), skill: toSummary(result.skill) },
+      requestId,
+    );
+  } catch (e) {
+    obsLogger.error(event, { req_id: requestId, dur_ms: Date.now() - t0, proposal_id }, e instanceof Error ? e : undefined);
+    return mapCoreError(e, requestId);
+  }
+}
+
+/** `POST /v3/skill/proposals/approve` — approve and apply in the same call. */
+export function handleProposalApprove(body: unknown, auth: V2AuthContext, requestId: string, deps: SkillRouterDeps): Promise<ApiResponseEnvelope> {
+  return handleProposalDecision("approve", body, auth, requestId, deps);
+}
+
+/** `POST /v3/skill/proposals/reject` — reject a pending or stale proposal. */
+export function handleProposalReject(body: unknown, auth: V2AuthContext, requestId: string, deps: SkillRouterDeps): Promise<ApiResponseEnvelope> {
+  return handleProposalDecision("reject", body, auth, requestId, deps);
+}
+
 export async function handleFilesWrite(body: unknown, auth: V2AuthContext, requestId: string, deps: SkillRouterDeps): Promise<ApiResponseEnvelope> {
   const t0 = Date.now();
   const pre = await precheckWrite(filesWriteRequestSchema, body, auth, deps, requestId);
@@ -619,7 +842,7 @@ export async function handleFilesWrite(body: unknown, auth: V2AuthContext, reque
     obsLogger.info("skill.handleFilesWrite.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, version: r.version, files: pre.data.files.length });
     return successEnvelope(toSummary(r), requestId);
   } catch (e) {
-    obsLogger.error("skill.handleFilesWrite.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, expected_version: pre.data.expected_version }, e instanceof Error ? e : undefined);
+    logWriteFailure("skill.handleFilesWrite.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, expected_version: pre.data.expected_version }, e);
     return mapCoreError(e, requestId, deps, { skill_id: pre.data.skill_id, expected_version: pre.data.expected_version });
   }
 }
@@ -642,7 +865,7 @@ export async function handleFilesRemove(body: unknown, auth: V2AuthContext, requ
     obsLogger.info("skill.handleFilesRemove.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, version: r.version, paths: pre.data.paths.length });
     return successEnvelope(toSummary(r), requestId);
   } catch (e) {
-    obsLogger.error("skill.handleFilesRemove.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, expected_version: pre.data.expected_version }, e instanceof Error ? e : undefined);
+    logWriteFailure("skill.handleFilesRemove.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, expected_version: pre.data.expected_version }, e);
     return mapCoreError(e, requestId, deps, { skill_id: pre.data.skill_id, expected_version: pre.data.expected_version });
   }
 }
@@ -1436,6 +1659,11 @@ export function makeSkillRouteTable(): Record<string, SkillHandler> {
     "/v3/skill/list": handleList,
     "/v3/skill/search": handleSearch,
     "/v3/skill/versions": handleVersions,
+    "/v3/skill/versions/diff": handleVersionsDiff,
+    "/v3/skill/rollback": handleRollback,
+    "/v3/skill/proposals/list": handleProposalsList,
+    "/v3/skill/proposals/approve": handleProposalApprove,
+    "/v3/skill/proposals/reject": handleProposalReject,
     "/v3/skill/files/write": handleFilesWrite,
     "/v3/skill/files/remove": handleFilesRemove,
     "/v3/skill/files/read": handleFilesRead,

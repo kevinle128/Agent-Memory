@@ -163,7 +163,8 @@ export function runMemoryStoreContract(harness: MemoryStoreContractHarness): voi
       try {
         const projectKey = "git:github.com/kevinle128/agent-memory";
         const projectHash = "0123456789abcdef";
-        expect(await store.upsertL0(makeL0("l0-proj", "A message inside a project", { projectKey, projectHash }))).toBe(true);
+        const projectName = "kevinle128/agent-memory";
+        expect(await store.upsertL0(makeL0("l0-proj", "A message inside a project", { projectKey, projectHash, projectName }))).toBe(true);
         expect(await store.upsertL0(makeL0("l0-noproj", "A message without any project"))).toBe(true);
 
         const rows = await store.queryL0ForL1("sk-contract");
@@ -171,12 +172,15 @@ export function runMemoryStoreContract(harness: MemoryStoreContractHarness): voi
         const without = rows.find((r) => r.record_id === "l0-noproj");
         expect(withProject?.project_key).toBe(projectKey);
         expect(withProject?.project_hash).toBe(projectHash);
+        expect(withProject?.project_name).toBe(projectName);
         // A row written without a project reads back empty.
         expect(without?.project_key ?? "").toBe("");
         expect(without?.project_hash ?? "").toBe("");
+        expect(without?.project_name ?? "").toBe("");
 
         const page = await store.queryL0Paginated?.({ limit: 10, offset: 0 });
         expect(page?.rows.find((r) => r.record_id === "l0-proj")?.project_hash).toBe(projectHash);
+        expect(page?.rows.find((r) => r.record_id === "l0-proj")?.project_name).toBe(projectName);
 
         // Same isolation tuple and session: one group, project kept per message.
         const groups = await store.queryL0GroupedBySessionId("sk-contract");

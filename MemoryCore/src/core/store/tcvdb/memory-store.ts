@@ -139,7 +139,7 @@ const L1_OUTPUT_FIELDS = [
 
 /** All L0 output fields returned by query/search. */
 const L0_OUTPUT_FIELDS = [
-  "id", "message_text", "team_id", "user_id", "agent_id", "session_key", "session_id", "task_id", "project_key", "project_hash", "role",
+  "id", "message_text", "team_id", "user_id", "agent_id", "session_key", "session_id", "task_id", "project_key", "project_hash", "project_name", "role",
   "recorded_at_ms", "timestamp",
 ];
 
@@ -412,7 +412,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
           { fieldName: "session_id",      fieldType: "string", indexType: "filter" },
           { fieldName: "task_id",         fieldType: "string", indexType: "filter" },
           // project_hash: filter index only exists on collections created from now on;
-          // an existing collection cannot get one later. project_key is stored but not indexed.
+          // an existing collection cannot get one later. project_key and project_name are stored but not indexed.
           { fieldName: "project_hash",    fieldType: "string", indexType: "filter" },
           { fieldName: "version",         fieldType: "uint64", indexType: "filter" },
           { fieldName: "timestamp_start", fieldType: "string", indexType: "filter" },
@@ -1145,6 +1145,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
       task_id: record.taskId ?? "",
       project_key: record.projectKey ?? "",
       project_hash: record.projectHash ?? "",
+      project_name: record.projectName ?? "",
       role: record.role,
       recorded_at_ms: isoToEpochMs(record.recordedAt),
       timestamp: record.timestamp,
@@ -1183,6 +1184,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
           task_id: record.taskId ?? "",
           project_key: record.projectKey ?? "",
           project_hash: record.projectHash ?? "",
+          project_name: record.projectName ?? "",
           role: record.role,
           recorded_at_ms: isoToEpochMs(record.recordedAt),
           timestamp: record.timestamp,
@@ -1320,6 +1322,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         task_id: String(doc.task_id ?? ""),
         project_key: String(doc.project_key ?? ""),
         project_hash: String(doc.project_hash ?? ""),
+        project_name: String(doc.project_name ?? ""),
         user_id: String(doc.user_id ?? ""),
         agent_id: String(doc.agent_id ?? ""),
         role: String(doc.role ?? ""),
@@ -1928,6 +1931,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         task_id: d.task_id ?? "",
         project_key: d.project_key ?? "",
         project_hash: d.project_hash ?? "",
+        project_name: d.project_name ?? "",
         user_id: d.user_id ?? "",
         agent_id: d.agent_id ?? "",
         role: d.role ?? "",
@@ -2131,6 +2135,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
         task_id: String(doc.task_id ?? ""),
         project_key: String(doc.project_key ?? ""),
         project_hash: String(doc.project_hash ?? ""),
+        project_name: String(doc.project_name ?? ""),
         user_id: String(doc.user_id ?? ""),
         agent_id: String(doc.agent_id ?? ""),
         role: String(doc.role ?? ""),

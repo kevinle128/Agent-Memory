@@ -264,6 +264,63 @@ export interface SkillProposeResult {
   similar_skills: SkillSimilarityResult[];
 }
 
+// ============================
+// Scope, origin and version audit
+// ============================
+
+/** Where a skill is visible: to every session, or only to sessions of one project. */
+export type SkillScope = "global" | "project";
+
+/** How a skill came to exist. Stays the same across the versions of one skill. */
+export type SkillOrigin = "extracted" | "manual" | "template";
+
+/** What produced one version row. */
+export type SkillChangeSource = "extracted" | "manual" | "rollback" | "promotion" | "template";
+
+/**
+ * Placement of a skill. Stored on every version row so that a version read
+ * back from history still says where it belonged at that time.
+ *
+ * `project_hash` is 16 lowercase hex characters when `scope = "project"`;
+ * all three project fields are empty strings when `scope = "global"`.
+ * Rows written before these columns existed read back as
+ * `scope = "global"`, `origin = "extracted"`, empty project fields.
+ */
+export interface SkillPlacement {
+  scope: SkillScope;
+  project_key: string;
+  project_hash: string;
+  project_name: string;
+  origin: SkillOrigin;
+  /** Session that produced this version. Empty when unknown. */
+  source_session_id: string;
+}
+
+/**
+ * Append-only audit trail of one version row.
+ *
+ * `change_summary` is stored as a JSON array of 1-5 short strings and read
+ * back as `string[]`. Rows written before these columns existed read back
+ * with `change_source = ""` (unknown), an empty summary, `base_version = 0`
+ * and no approver.
+ */
+export interface SkillVersionAudit {
+  change_source: SkillChangeSource | "";
+  change_reason: string;
+  change_summary: string[];
+  /** User who approved or made the change. Empty when the system applied it on its own. */
+  approved_by: string;
+  /** Epoch ms of the approval. 0 when `approved_by` is empty. */
+  approved_at_ms: number;
+  /** Head version the change was based on. 0 for a first version. */
+  base_version: number;
+  /** Proposal that produced this version. Empty when none. */
+  proposal_id: string;
+}
+
+/** Scope and audit values a writer passes to `appendVersion`. All optional so old callers keep working. */
+export interface AppendVersionAudit extends Partial<SkillPlacement>, Partial<SkillVersionAudit> {}
+
 /**
  * skill 主表的一行。每行 = (skill_id, version) 一个不可变快照。
  *
@@ -271,7 +328,7 @@ export interface SkillProposeResult {
  * - `manifest` 是 `manifest_json` 列反序列化后的结构化形式
  * - `is_head` 是 boolean（DB 中是 0/1 INTEGER）
  */
-export interface Skill {
+export interface Skill extends SkillPlacement, SkillVersionAudit {
   row_id: string;
   skill_id: string;
   version: number;
@@ -296,7 +353,7 @@ export interface Skill {
 }
 
 /** `appendVersion` 的入参。store 内部基于 head 推导 version+1。 */
-export interface AppendVersionInput {
+export interface AppendVersionInput extends AppendVersionAudit {
   /** 写入身份。不传则写 "default"。 */
   user_id?: string;
   team_id?: string;
@@ -315,6 +372,13 @@ export interface AppendVersionInput {
 
   /** 仅 create 时由调用方指定为 owner_agent_id；后续版本由 store 校验后从 head 继承。 */
   owner_agent_id?: string;
+
+  /**
+   * Version of the head this row is written on top of (0 = no head yet).
+   * The store checks it atomically with the write and throws
+   * SKILL_VERSION_STALE when the head moved. Absent = no check (old callers).
+   */
+  expected_head_version?: number;
 
   metadata_json?: string;
 }

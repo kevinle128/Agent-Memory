@@ -172,6 +172,8 @@ export interface L0Record {
    */
   projectKey?: string;
   projectHash?: string;
+  /** Readable project name for display. Set only with the key and hash; empty means unknown. */
+  projectName?: string;
   role: string;
   messageText: string;
   recordedAt: string;
@@ -190,6 +192,8 @@ export interface L0SearchResult {
   project_key?: string;
   /** First 16 hex chars of sha256(project_key). Empty or absent means no project. */
   project_hash?: string;
+  /** Readable project name. Empty or absent means unknown. */
+  project_name?: string;
   user_id: string;
   agent_id: string;
   role: string;
@@ -232,6 +236,8 @@ export interface L0QueryRow {
   project_key?: string;
   /** First 16 hex chars of sha256(project_key). Empty or absent means no project. */
   project_hash?: string;
+  /** Readable project name. Empty or absent means unknown. */
+  project_name?: string;
   user_id: string;
   agent_id: string;
   role: string;

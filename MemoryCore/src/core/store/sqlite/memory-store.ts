@@ -632,6 +632,7 @@ export class VectorStore implements IMemoryStore {
         task_id TEXT DEFAULT '',
         project_key TEXT DEFAULT '',
         project_hash TEXT DEFAULT '',
+        project_name TEXT DEFAULT '',
         user_id TEXT NOT NULL DEFAULT 'default',
         agent_id TEXT NOT NULL DEFAULT 'default',
         role TEXT NOT NULL DEFAULT '',
@@ -653,6 +654,7 @@ export class VectorStore implements IMemoryStore {
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN task_id TEXT DEFAULT ''"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN project_key TEXT DEFAULT ''"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN project_hash TEXT DEFAULT ''"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l0_conversations ADD COLUMN project_name TEXT DEFAULT ''"); } catch { /* exists */ }
     this.db.prepare("UPDATE l0_conversations SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l0_conversations SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l0_conversations SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL").run(DEFAULT_ISOLATION_ID);
@@ -700,8 +702,8 @@ export class VectorStore implements IMemoryStore {
     this.stmtL0UpsertMeta = this.db.prepare(`
       INSERT INTO l0_conversations (
         record_id, session_key, session_id, team_id, task_id, role, message_text, recorded_at, timestamp,
-        user_id, agent_id, project_key, project_hash
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, agent_id, project_key, project_hash, project_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         message_text=excluded.message_text,
         recorded_at=excluded.recorded_at,
@@ -711,7 +713,8 @@ export class VectorStore implements IMemoryStore {
         user_id=excluded.user_id,
         agent_id=excluded.agent_id,
         project_key=excluded.project_key,
-        project_hash=excluded.project_hash
+        project_hash=excluded.project_hash,
+        project_name=excluded.project_name
     `);
 
     if (this.dimensions > 0) {
@@ -721,7 +724,7 @@ export class VectorStore implements IMemoryStore {
     this.stmtL0DeleteMeta = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?");
 
     this.stmtL0GetMeta = this.db.prepare(`
-      SELECT session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT session_key, session_id, team_id, task_id, project_key, project_hash, project_name, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations WHERE record_id = ?
     `);
 
@@ -747,7 +750,7 @@ export class VectorStore implements IMemoryStore {
     // time) because L1 cursor uses recorded_at semantics. ISO 8601 string
     // comparison preserves time order.
     this.stmtL0QueryAll = this.db.prepare(`
-      SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, project_name, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations
       WHERE session_key = ?
       ORDER BY recorded_at ASC
@@ -755,7 +758,7 @@ export class VectorStore implements IMemoryStore {
     `);
 
     this.stmtL0QueryAfter = this.db.prepare(`
-      SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, role, message_text, recorded_at, timestamp
+      SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, project_name, user_id, agent_id, role, message_text, recorded_at, timestamp
       FROM l0_conversations
       WHERE session_key = ? AND recorded_at > ?
       ORDER BY recorded_at ASC
@@ -1804,6 +1807,7 @@ export class VectorStore implements IMemoryStore {
           (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
           record.projectKey || "",
           record.projectHash || "",
+          record.projectName || "",
         );
 
         if (!skipVec) {
@@ -1962,6 +1966,7 @@ export class VectorStore implements IMemoryStore {
               task_id: string;
               project_key?: string;
               project_hash?: string;
+              project_name?: string;
               user_id: string;
               agent_id: string;
               role: string;
@@ -1993,6 +1998,7 @@ export class VectorStore implements IMemoryStore {
           task_id: meta.task_id ?? "",
           project_key: meta.project_key ?? "",
           project_hash: meta.project_hash ?? "",
+          project_name: meta.project_name ?? "",
           user_id: meta.user_id ?? "",
           agent_id: meta.agent_id ?? "",
           role: meta.role,
@@ -2336,6 +2342,7 @@ export class VectorStore implements IMemoryStore {
         task_id: (r.task_id as string) || "",
         project_key: (r.project_key as string) || "",
         project_hash: (r.project_hash as string) || "",
+        project_name: (r.project_name as string) || "",
         user_id: (r.user_id as string) || "",
         agent_id: (r.agent_id as string) || "",
         role: r.role as string,
@@ -2523,7 +2530,7 @@ export class VectorStore implements IMemoryStore {
       const total = countRow?.cnt ?? 0;
 
       // Fetch page
-      const dataSql = `SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, role, message_text, recorded_at, timestamp FROM l0_conversations ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+      const dataSql = `SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, project_name, user_id, agent_id, role, message_text, recorded_at, timestamp FROM l0_conversations ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
       const rows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as L0QueryRow[];
 
       return { rows, total };

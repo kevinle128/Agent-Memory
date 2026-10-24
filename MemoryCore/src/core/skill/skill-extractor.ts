@@ -263,6 +263,7 @@ export class SkillExtractor {
       team_id: input.team_id,
       agent_id: input.agent_id,
       task_id: input.task_id,
+      source_session_id: input.session_id,
       auditSink,
       logger: this.logger,
     });

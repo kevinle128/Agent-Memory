@@ -17,11 +17,15 @@ import type {
   Skill,
   SkillStatus,
 } from "./types.js";
+import type { ISkillProposalStore } from "./skill-proposal-types.js";
 
 // ─── Errors (contract-level, backend-neutral) ──────────────────────────────
 
 export type SkillErrorCode =
   | "SKILL_NAME_DUPLICATE"
+  // Same name exists for the agent, but in another scope or another project.
+  // The extractor reads this code to pick a name with a project prefix.
+  | "SKILL_NAME_SCOPE_CONFLICT"
   | "SKILL_NOT_FOUND"
   // 并发 appendVersion 抢 head-flip CAS 失败（见 tcvdb/skill-store.ts）；
   // 对齐 skill-core 层同名码，toCoreError 直接透传。
@@ -81,7 +85,7 @@ export interface ExpiredVersionMeta {
 
 // ─── Store Interface ───────────────────────────────────────────────────────
 
-export interface ISkillStore {
+export interface ISkillStore extends ISkillProposalStore {
   // ── 生命周期 ──
   /** 初始化存储（建表/建 Collection 等）。 */
   init(): void;

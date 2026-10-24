@@ -17,7 +17,23 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import { randomBase62 } from "../../../utils/short-id.js";
-import { SKILLS_DDL, SKILL_FTS_DDL, SKILL_VEC_DDL_TEMPLATE, FTS_CONTENT_MAX } from "../../skill/skill-store-ddl.js";
+import {
+  SKILLS_DDL,
+  SKILLS_ADDED_COLUMNS,
+  SKILLS_SCOPE_INDEX_DDL,
+  SKILL_PROPOSALS_DDL,
+  SKILL_FTS_DDL,
+  SKILL_VEC_DDL_TEMPLATE,
+  FTS_CONTENT_MAX,
+} from "../../skill/skill-store-ddl.js";
+import { auditFor, placementFor, readAudit, readPlacement, serializeChangeSummary } from "../../skill/skill-audit.js";
+import type {
+  ListProposalsOptions,
+  ProposalTransitionPatch,
+  SkillChangeProposal,
+  SkillProposalFiles,
+  SkillProposalStatus,
+} from "../../skill/skill-proposal-types.js";
 import { buildFtsQuery, tokenizeForFts } from "../tokenize.js";
 import type { ISkillStore, ExpiredVersionMeta, SkillStoreCapabilities, SkillSearchResult } from "../../skill/skill-store.interface.js";
 import { SkillStoreError } from "../../skill/skill-store.interface.js";
@@ -91,6 +107,74 @@ interface SkillRowRaw {
   metadata_json: string;
   created_at_ms: number;
   updated_at_ms: number;
+
+  // Scope and audit columns. A row from an old database holds the column
+  // defaults after the ALTER step, so these are always present.
+  scope: string;
+  project_key: string;
+  project_hash: string;
+  project_name: string;
+  origin: string;
+  source_session_id: string;
+  change_source: string;
+  change_reason: string;
+  change_summary: string;
+  approved_by: string;
+  approved_at_ms: number;
+  base_version: number;
+  proposal_id: string;
+}
+
+interface ProposalRowRaw {
+  proposal_id: string;
+  team_id: string;
+  owner_agent_id: string;
+  skill_id: string;
+  skill_name: string;
+  base_version: number;
+  proposed_content: string;
+  proposed_description: string;
+  proposed_files_json: string;
+  change_reason: string;
+  change_summary: string;
+  source_session_id: string;
+  created_by: string;
+  status: string;
+  created_at_ms: number;
+  decided_at_ms: number;
+  decided_by: string;
+  result_version: number;
+}
+
+function toProposal(raw: ProposalRowRaw): SkillChangeProposal {
+  let files: SkillProposalFiles = { write: [], remove: [] };
+  try {
+    const parsed = JSON.parse(raw.proposed_files_json) as Partial<SkillProposalFiles>;
+    files = {
+      write: Array.isArray(parsed.write) ? parsed.write : [],
+      remove: Array.isArray(parsed.remove) ? parsed.remove : [],
+    };
+  } catch { /* damaged payload reads as no file change */ }
+  return {
+    proposal_id: raw.proposal_id,
+    team_id: raw.team_id,
+    owner_agent_id: raw.owner_agent_id,
+    skill_id: raw.skill_id,
+    skill_name: raw.skill_name,
+    base_version: raw.base_version,
+    proposed_content: raw.proposed_content,
+    proposed_description: raw.proposed_description,
+    proposed_files: files,
+    change_reason: raw.change_reason,
+    change_summary: readAudit({ change_summary: raw.change_summary }).change_summary,
+    source_session_id: raw.source_session_id,
+    created_by: raw.created_by,
+    status: raw.status as SkillProposalStatus,
+    created_at_ms: raw.created_at_ms,
+    decided_at_ms: raw.decided_at_ms,
+    decided_by: raw.decided_by,
+    result_version: raw.result_version,
+  };
 }
 
 function toSkill(raw: SkillRowRaw): Skill {
@@ -120,6 +204,8 @@ function toSkill(raw: SkillRowRaw): Skill {
     metadata_json: raw.metadata_json,
     created_at_ms: raw.created_at_ms,
     updated_at_ms: raw.updated_at_ms,
+    ...readPlacement(raw),
+    ...readAudit(raw),
   };
 }
 
@@ -147,6 +233,10 @@ export class SqliteSkillStore implements ISkillStore {
   /** 创建表与索引。幂等。同时迁移旧索引与 FTS schema。 */
   init(): void {
     this.db.exec(SKILLS_DDL);
+    // Old databases hold a `skills` table without the scope and audit columns.
+    this.migrateSkillColumns();
+    this.db.exec(SKILLS_SCOPE_INDEX_DDL);
+    this.db.exec(SKILL_PROPOSALS_DDL);
     // 迁移：删除旧版 (team_id, name) 唯一索引（v2 重构后改为 team_id + owner_agent_id + name）
     this.db.exec("DROP INDEX IF EXISTS uniq_skills_team_name_head");
     this.db.exec(SKILL_FTS_DDL);
@@ -160,6 +250,26 @@ export class SqliteSkillStore implements ISkillStore {
       } catch (e) {
         this.logger?.warn(`[skill-store] vec0 init failed: ${(e as Error).message}; downgrade to bm25-only`);
         this.vecAvailable = false;
+      }
+    }
+  }
+
+  /**
+   * Add the scope and audit columns to a `skills` table that lacks them.
+   * Safe to run again: a column that exists is skipped, and a concurrent
+   * process that adds the same column first is tolerated.
+   */
+  private migrateSkillColumns(): void {
+    const existing = new Set(
+      (this.db.prepare("PRAGMA table_info('skills')").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    for (const col of SKILLS_ADDED_COLUMNS) {
+      if (existing.has(col.name)) continue;
+      try {
+        this.db.exec(`ALTER TABLE skills ADD COLUMN ${col.ddl}`);
+        this.logger?.info(`[skill-store] migrated skills: added column ${col.name}`);
+      } catch (e) {
+        if (!/duplicate column name/i.test((e as Error).message)) throw e;
       }
     }
   }
@@ -274,6 +384,9 @@ export class SqliteSkillStore implements ISkillStore {
     const tid = input.team_id ?? "default";
     const head = await this.getHead(input.skill_id, tid);
 
+    const placement = placementFor(input, head);
+    const audit = auditFor(input);
+
     // [4] 同 team 同 agent 同 name 已 active head（且不是同一 skill_id 的更新） → 重名
     if (!head) {
       const oid = input.owner_agent_id ?? "default";
@@ -283,6 +396,15 @@ export class SqliteSkillStore implements ISkillStore {
         )
         .get(tid, oid, input.name) as SkillRowRaw | undefined;
       if (dupRaw) {
+        // The unique index spans all scopes. A clash with a skill of another
+        // scope or project gets its own code, so the writer can pick a
+        // different name instead of treating it as a plain duplicate.
+        if (dupRaw.scope !== placement.scope || dupRaw.project_hash !== placement.project_hash) {
+          throw new SkillStoreError(
+            "SKILL_NAME_SCOPE_CONFLICT",
+            `name '${input.name}' is used by a ${dupRaw.scope} skill of this agent`,
+          );
+        }
         throw new SkillStoreError("SKILL_NAME_DUPLICATE", `name '${input.name}' already exists for agent in team`);
       }
     } else {
@@ -304,6 +426,19 @@ export class SqliteSkillStore implements ISkillStore {
     // 必须保持 synchronous（不要在中间 await），与 sqlite-transaction-guard 同思路。
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      // The head read above happened before the write lock. Check it again under
+      // the lock, so two writers on the same base cannot both create the next version.
+      if (input.expected_head_version !== undefined) {
+        const cur = this.db
+          .prepare("SELECT version FROM skills WHERE skill_id=? AND is_head=1 ORDER BY version DESC LIMIT 1")
+          .get(input.skill_id) as { version: number } | undefined;
+        if ((cur?.version ?? 0) !== input.expected_head_version) {
+          throw new SkillStoreError(
+            "SKILL_VERSION_STALE",
+            `expected version ${input.expected_head_version}, head is ${cur?.version ?? 0}`,
+          );
+        }
+      }
       if (head) {
         this.db
           .prepare("UPDATE skills SET is_head=0 WHERE skill_id=? AND version=?")
@@ -316,8 +451,10 @@ export class SqliteSkillStore implements ISkillStore {
             row_id, skill_id, version, is_head,
             user_id, owner_agent_id, team_id, task_id,
             name, description, content, content_hash, manifest_json, storage_dir,
-            status, metadata_json, created_at_ms, updated_at_ms
-          ) VALUES (?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?)`,
+            status, metadata_json, created_at_ms, updated_at_ms,
+            scope, project_key, project_hash, project_name, origin, source_session_id,
+            change_source, change_reason, change_summary, approved_by, approved_at_ms, base_version, proposal_id
+          ) VALUES (?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?,?,?)`,
         )
         .run(
           newRowId,
@@ -338,6 +475,19 @@ export class SqliteSkillStore implements ISkillStore {
           input.metadata_json ?? "{}",
           ts,
           ts,
+          placement.scope,
+          placement.project_key,
+          placement.project_hash,
+          placement.project_name,
+          placement.origin,
+          placement.source_session_id,
+          audit.change_source,
+          audit.change_reason,
+          serializeChangeSummary(audit.change_summary),
+          audit.approved_by,
+          audit.approved_at_ms,
+          audit.base_version,
+          audit.proposal_id,
         );
 
       // FTS 同步：删除该 skill_id 的所有旧索引行 → 仅插入新 head
@@ -678,6 +828,79 @@ export class SqliteSkillStore implements ISkillStore {
       }
     }
     return changes;
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  //  Change proposals
+  // ────────────────────────────────────────────────────────────────────
+
+  async insertProposal(p: SkillChangeProposal): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT INTO skill_change_proposals (
+           proposal_id, team_id, owner_agent_id, skill_id, skill_name, base_version,
+           proposed_content, proposed_description, proposed_files_json,
+           change_reason, change_summary, source_session_id, created_by,
+           status, created_at_ms, decided_at_ms, decided_by, result_version
+         ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?,?)`,
+      )
+      .run(
+        p.proposal_id, p.team_id, p.owner_agent_id, p.skill_id, p.skill_name, p.base_version,
+        p.proposed_content, p.proposed_description, JSON.stringify(p.proposed_files),
+        p.change_reason, serializeChangeSummary(p.change_summary), p.source_session_id, p.created_by,
+        p.status, p.created_at_ms, p.decided_at_ms, p.decided_by, p.result_version,
+      );
+  }
+
+  async getProposal(proposalId: string, teamId?: string): Promise<SkillChangeProposal | null> {
+    const raw = (teamId
+      ? this.db.prepare("SELECT * FROM skill_change_proposals WHERE proposal_id=? AND team_id=?").get(proposalId, teamId)
+      : this.db.prepare("SELECT * FROM skill_change_proposals WHERE proposal_id=?").get(proposalId)) as
+      | ProposalRowRaw
+      | undefined;
+    return raw ? toProposal(raw) : null;
+  }
+
+  async listProposals(opts: ListProposalsOptions): Promise<{ items: SkillChangeProposal[]; total: number }> {
+    const where: string[] = [];
+    const args: Array<string | number> = [];
+    if (opts.team_id) { where.push("team_id=?"); args.push(opts.team_id); }
+    if (opts.owner_agent_id) { where.push("owner_agent_id=?"); args.push(opts.owner_agent_id); }
+    if (opts.skill_id) { where.push("skill_id=?"); args.push(opts.skill_id); }
+    if (opts.status?.length) {
+      where.push(`status IN (${opts.status.map(() => "?").join(",")})`);
+      args.push(...opts.status);
+    }
+    if (opts.created_before_ms !== undefined) { where.push("created_at_ms < ?"); args.push(opts.created_before_ms); }
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 1000);
+    const offset = Math.max(opts.offset ?? 0, 0);
+
+    const total = (this.db
+      .prepare(`SELECT COUNT(*) AS c FROM skill_change_proposals ${whereSql}`)
+      .get(...args) as { c: number }).c;
+    const rows = this.db
+      .prepare(`SELECT * FROM skill_change_proposals ${whereSql} ORDER BY created_at_ms DESC, proposal_id DESC LIMIT ? OFFSET ?`)
+      .all(...args, limit, offset) as unknown as ProposalRowRaw[];
+    return { items: rows.map(toProposal), total };
+  }
+
+  async transitionProposal(
+    proposalId: string,
+    from: SkillProposalStatus[],
+    patch: ProposalTransitionPatch,
+  ): Promise<SkillChangeProposal | null> {
+    if (from.length === 0) return null;
+    // One UPDATE with the status test in WHERE: the database decides who wins.
+    const r = this.db
+      .prepare(
+        `UPDATE skill_change_proposals
+            SET status=?, decided_at_ms=?, decided_by=?, result_version=?
+          WHERE proposal_id=? AND status IN (${from.map(() => "?").join(",")})`,
+      )
+      .run(patch.status, patch.decided_at_ms, patch.decided_by, patch.result_version, proposalId, ...from);
+    if ((r.changes ?? 0) === 0) return null;
+    return this.getProposal(proposalId);
   }
 
   // ────────────────────────────────────────────────────────────────────

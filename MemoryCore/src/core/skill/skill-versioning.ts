@@ -15,11 +15,13 @@
 
 import { createHash } from "node:crypto";
 
+import { randomBase62 } from "../../utils/short-id.js";
+
 import type { ISkillStore } from "./skill-store.interface.js";
 import { IdempotentNoOpError, SkillStoreError } from "./skill-store.interface.js";
 import { SkillResourceStore, SkillResourceError, type SkillResourcePayload } from "./skill-resource-store.js";
 import type { StorageAdapter } from "../storage/adapter.js";
-import type { SkillManifestEntry, Skill } from "./types.js";
+import type { AppendVersionAudit, SkillManifestEntry, SkillOrigin, Skill } from "./types.js";
 
 function computeContentHash(content: string): string {
   return createHash("md5").update(content, "utf-8").digest("hex");
@@ -30,6 +32,8 @@ export interface AppendVersionContext {
   team_id?: string;
   agent_id?: string;
   task_id?: string;
+  /** Scope and audit values stored on the new version row. */
+  audit?: AppendVersionAudit;
 }
 
 export interface AppendVersionMutation {
@@ -44,6 +48,16 @@ export interface AppendVersionMutation {
   resourcesToRemove?: string[];
   /** 可选：metadata_json 直接覆盖（默认保留上一版）。 */
   metadata_json?: string;
+  /**
+   * Restore an older version: its file tree and manifest become the base of the
+   * new version, instead of the head's. `content` must be that version's content.
+   */
+  restoreFrom?: Skill;
+  /**
+   * Write a new version even when content and files are unchanged. Used by
+   * changes whose point is the audit trail or the scope (rollback, promotion).
+   */
+  forceNewVersion?: boolean;
 }
 
 export interface SkillVersioningOptions {
@@ -74,6 +88,8 @@ export interface SkillVersioningOptions {
     user_id?: string;
     name: string;
     description: string;
+    /** Origin of the new skill, for the asset `source_type`. */
+    origin?: SkillOrigin;
   }) => Promise<void>;
 }
 
@@ -160,6 +176,8 @@ export class SkillVersioning {
         storage_dir: storageDir,
         owner_agent_id: ownerAgentId,
         metadata_json: mut.metadata_json,
+        expected_head_version: 0,
+        ...ctx.audit,
       });
     } catch (e) {
       await this.cleanupVersionDir(storageDir).catch(() => { /* ignore */ });
@@ -178,6 +196,7 @@ export class SkillVersioning {
           user_id: ctx.user_id,
           name: mut.name,
           description: mut.description,
+          origin: ctx.audit?.origin,
         });
       } catch (assetErr) {
         // 反向删 skill DB。deleteSkill 本身也可能失败（DB 挂了），
@@ -216,7 +235,9 @@ export class SkillVersioning {
   ): Promise<Skill> {
     const newVersion = head.version + 1;
     const newStorageDir = this.resources.versionDir(head.skill_id, newVersion);
-    const oldStorageDir = head.storage_dir;
+    // A restore copies the older version's files; every other change copies the head's.
+    const baseVersion = mut.restoreFrom ?? head;
+    const oldStorageDir = baseVersion.storage_dir;
     const newContentHash = computeContentHash(mut.content);
 
     const noContentChange = newContentHash === head.content_hash;
@@ -224,7 +245,7 @@ export class SkillVersioning {
       (!mut.resourcesToWrite || mut.resourcesToWrite.length === 0) &&
       (!mut.resourcesToRemove || mut.resourcesToRemove.length === 0);
 
-    if (noContentChange && noResourceChange) {
+    if (noContentChange && noResourceChange && !mut.forceNewVersion) {
       return head; // 幂等
     }
 
@@ -240,41 +261,61 @@ export class SkillVersioning {
       );
     }
 
-    // 1) 拷贝旧版本目录到新版本目录（如果旧版本有内容）
-    try {
-      await this.storage.copyTree(oldStorageDir, newStorageDir);
-    } catch (e) {
-      const msg = (e as Error).message ?? "";
-      // 如果旧版本根本没目录（旧 skill 创建时无资源），跳过 copy
-      if (!/STORAGE_NOT_FOUND/.test(msg)) {
-        throw e;
-      }
+    // Fail early when the head moved: the store enforces the same check inside
+    // its transaction, but a stale writer should not copy files first.
+    const current = await this.store.getHead(head.skill_id, head.team_id);
+    if (current && current.version !== head.version) {
+      throw new SkillStoreError("SKILL_VERSION_STALE", `expected version ${head.version}, head is ${current.version}`);
     }
 
-    // 2) 在新版本目录上应用资源变更
-    let manifest: SkillManifestEntry[] = [...head.manifest];
+    // The new version is built in a directory that only this writer knows
+    // (a staging "skill" id). Two writers on the same base both target
+    // `newStorageDir`; building there would let the loser overwrite or delete
+    // the files of the winner. The final directory is touched only after the
+    // store accepted this version, which proves this writer owns it.
+    const stageSkillId = `${head.skill_id}.stage-${randomBase62(10)}`;
+    const stageDir = this.resources.versionDir(stageSkillId, newVersion);
+
     try {
+      // 1) Copy the base version's files into the staging directory.
+      try {
+        await this.storage.copyTree(oldStorageDir, stageDir);
+      } catch (e) {
+        const msg = (e as Error).message ?? "";
+        // 如果旧版本根本没目录（旧 skill 创建时无资源），跳过 copy
+        if (!/STORAGE_NOT_FOUND/.test(msg)) {
+          throw e;
+        }
+        // A restore that loses its files would write a version whose manifest
+        // lists files that do not exist. Fail instead of restoring half a skill.
+        if (mut.restoreFrom && mut.restoreFrom.manifest.length > 0) {
+          throw Object.assign(
+            new Error(`files of v${mut.restoreFrom.version} are missing from storage (may have been GC'd)`),
+            { code: "STORAGE_NOT_FOUND" },
+          );
+        }
+      }
+
+      // 2) Apply the file changes in the staging directory.
+      let manifest: SkillManifestEntry[] = [...baseVersion.manifest];
       if (mut.resourcesToRemove) {
         for (const p of mut.resourcesToRemove) {
-          await this.resources.removeResource(head.skill_id, newVersion, p);
+          await this.resources.removeResource(stageSkillId, newVersion, p);
           manifest = manifest.filter((m) => m.path !== p);
         }
       }
       if (mut.resourcesToWrite) {
         for (const p of mut.resourcesToWrite) {
-          const entry = await this.resources.writeResource(head.skill_id, newVersion, p);
+          const entry = await this.resources.writeResource(stageSkillId, newVersion, p);
           // 合并到 manifest（覆盖同 path）
           manifest = manifest.filter((m) => m.path !== entry.path);
           manifest.push(entry);
         }
       }
-    } catch (e) {
-      await this.cleanupVersionDir(newStorageDir).catch(() => { /* ignore */ });
-      throw e;
-    }
 
-    // 3) 写 DB（事务内 + fts 同步）
-    try {
+      // 3) Write the DB row. The store checks the expected head version inside
+      //    its transaction; a writer that lost the race gets SKILL_VERSION_STALE
+      //    here, and nothing outside its own staging directory was touched.
       const row = await this.store.appendVersion({
         user_id: ctx.user_id,
         team_id: ctx.team_id,
@@ -289,15 +330,27 @@ export class SkillVersioning {
         storage_dir: newStorageDir,
         owner_agent_id: head.owner_agent_id,
         metadata_json: mut.metadata_json ?? head.metadata_json,
+        expected_head_version: head.version,
+        ...ctx.audit,
       });
       this.onSkillVdbChanged?.(1);
+
+      // 4) This writer owns the version now: move the files to their final place.
+      if (manifest.length > 0) {
+        try {
+          await this.storage.copyTree(stageDir, newStorageDir);
+        } catch (e) {
+          this.logger?.error(
+            `[skill-tx] ${head.skill_id} v${newVersion} is written but its files could not be moved from staging: ` +
+              (e instanceof Error ? e.message : String(e)),
+          );
+          throw e;
+        }
+      }
       return row;
-    } catch (e) {
-      // DB 失败 → 清理刚 copy 的新目录
-      // 注：store.appendVersion 不再做 hash 幂等（由本类早期 short-circuit 处理），
-      // 因此不会抛 IdempotentNoOpError；类型仍保留导出供外部 import 一处即可。
-      await this.cleanupVersionDir(newStorageDir).catch(() => { /* ignore */ });
-      throw e;
+    } finally {
+      // Only the staging directory is removed. It is unique to this call.
+      await this.cleanupVersionDir(stageDir).catch(() => { /* ignore */ });
     }
   }
 

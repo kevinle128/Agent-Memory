@@ -28,6 +28,7 @@ export interface MetadataServiceLike {
     team_id: string;
     agent_id: string;
     name: string;
+    source_type?: string;
   }): Promise<unknown>;
 }
 
@@ -79,6 +80,8 @@ export class SkillCoreSink implements SkillCandidatesSink {
           team_id: task.team_id,
           agent_id: task.agent_id,
           name,
+          // The sink only sees skills the extractor created.
+          source_type: "extracted",
         });
       } catch (err) {
         // asset 登记失败不影响主流程 —— skill 已经在 skills 表里，

@@ -426,6 +426,12 @@ export type IsolationFields = z.infer<typeof isolationFieldsSchema>;
 /** Upper bound for a project key. Keys are labels such as a git remote or a local path. */
 export const PROJECT_KEY_MAX_LENGTH = 512;
 const PROJECT_HASH_PATTERN = /^[0-9a-f]{16}$/;
+/** Upper bound for a project name such as `group/subgroup/repo`. */
+export const PROJECT_NAME_MAX_LENGTH = 200;
+// eslint-disable-next-line no-control-regex -- control characters are the point of the check
+// Same rule as the proxy: no control or line-separator characters, no bidi
+// overrides, no angle brackets. Readers may render the name in prompts and HTML.
+const PROJECT_NAME_FORBIDDEN = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069<>]/;
 
 /**
  * Validate the optional project pair sent by the proxy.
@@ -435,15 +441,22 @@ const PROJECT_HASH_PATTERN = /^[0-9a-f]{16}$/;
  * request itself must still succeed, because a project is only a label and
  * not part of the tenancy identity. The hash is not recomputed from the key;
  * the sender owns that contract.
+ *
+ * The optional name is display text for the same project. It is kept only
+ * together with a valid pair, and a bad name is dropped without failing the
+ * request, so an older or newer proxy keeps working.
  */
 function resolveProjectFields(
   rawKey: unknown,
   rawHash: unknown,
-): { projectKey?: string; projectHash?: string } {
+  rawName?: unknown,
+): { projectKey?: string; projectHash?: string; projectName?: string } {
   if (typeof rawKey !== "string" || typeof rawHash !== "string") return {};
   if (rawKey.length < 1 || rawKey.length > PROJECT_KEY_MAX_LENGTH) return {};
   if (!PROJECT_HASH_PATTERN.test(rawHash)) return {};
-  return { projectKey: rawKey, projectHash: rawHash };
+  const name = typeof rawName === "string" ? rawName.trim() : "";
+  const nameOk = name.length > 0 && name.length <= PROJECT_NAME_MAX_LENGTH && !PROJECT_NAME_FORBIDDEN.test(name);
+  return { projectKey: rawKey, projectHash: rawHash, ...(nameOk ? { projectName: name } : {}) };
 }
 
 /**
@@ -457,7 +470,7 @@ export function resolveIsolation(
   body: Record<string, unknown> | undefined,
   headers: Record<string, string | string[] | undefined>,
   opts: { legacyCompatMode?: boolean; legacyPlaceholder?: string } = {},
-): { ok: true; ctx: { userId: string; agentId: string; sessionId: string; taskId?: string; projectKey?: string; projectHash?: string } } {
+): { ok: true; ctx: { userId: string; agentId: string; sessionId: string; taskId?: string; projectKey?: string; projectHash?: string; projectName?: string } } {
   const headerStr = (k: string): string | undefined => {
     const raw = headers[k] ?? headers[k.toLowerCase()];
     if (Array.isArray(raw)) return raw[0];
@@ -478,7 +491,7 @@ export function resolveIsolation(
   // header could describe two different projects.
   const bodyHasProject = body?.project_key !== undefined || body?.project_hash !== undefined;
   const project = bodyHasProject
-    ? resolveProjectFields(body?.project_key, body?.project_hash)
+    ? resolveProjectFields(body?.project_key, body?.project_hash, body?.project_name)
     : resolveProjectFields(headerStr("x-tdai-project-key"), headerStr("x-tdai-project-hash"));
   const missing: string[] = [];
   if (!userId) missing.push("user_id");

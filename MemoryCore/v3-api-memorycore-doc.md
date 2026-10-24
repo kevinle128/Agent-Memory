@@ -85,7 +85,7 @@ v3 接口按鉴权方式分四层（均需 `Authorization: Bearer <KERNEL_AUTH_T
 | 模块 | 接口数 | 前缀 |
 |---|---|---|
 | L0–L3 数据面 | 19 | `/v3/conversation·atomic·scenario·core/*`、`/v3/session/add` |
-| Skill | 17 | `/v3/skill/*` |
+| Skill | 22 | `/v3/skill/*` |
 | Knowledge 明细 | 5 | `/v3/knowledge/*` |
 | Chat-Memory | 1 | `/v3/chat-memory/*` |
 | Memory-Prompt | 7 | `/v3/memory-prompt/*` |
@@ -444,7 +444,23 @@ sessions/<source>/<team-id>/<user-id>/<session-id>/subagents/<subagent-id>/<star
 
 **响应** `data`：`SkillSummary`（见 §3.2 末尾统一说明）。
 
-**错误**：`40001`(参数/frontmatter 不一致)、`42201`(重名)、`4291`(配额超限)、`50304`(skill_id 连续碰撞)。
+**错误**：`40001`(参数/frontmatter 不一致)、`42201`(重名)、`42204`(重名且在另一范围/项目)、`42205`(项目 skill 缺合法 `project_hash`；`code` 模式下 extracted skill 缺项目)、`4291`(配额超限)、`50304`(skill_id 连续碰撞)。
+
+**范围与审计字段（可选，新增）**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| scope | `"global"`\|`"project"` | 默认 global；`project` 必须带 `project_hash` |
+| project_hash | string | 16 位小写十六进制 |
+| project_key / project_name | string | 项目标识与展示名 |
+| change_source | `"manual"`\|`"extracted"` | 默认 manual（人工）；`extracted` 表示系统提议 |
+| change_reason | string ≤1000 | 修改原因。`code` 模式下 `extracted` 必填 |
+| change_summary | string[] 1–5 项，每项 ≤200 | 本次改进摘要。`code` 模式下 `extracted` 必填；manual 未填则系统生成，每项以 `(auto) ` 开头 |
+| source_session_id | string | 产生本版本的 session |
+
+> `update` / `patch` / `files/write` / `files/remove` 同样接受 `change_source`、`change_reason`、`change_summary`、`source_session_id`。
+> `code` 模式（实例 `promptMode`）：`origin=extracted` 必须是 `scope=project` 且 `project_hash` 合法；`chat` 模式不受此限。
+> 全局 skill 上 `change_source=extracted` 的修改**不产生新版本**，而是创建待审批提案，响应 `data` 为 `{ applied: false, skill_id, proposal }`（`code` 为 0）。
 
 **示例**
 
@@ -535,7 +551,51 @@ sessions/<source>/<team-id>/<user-id>/<session-id>/subagents/<subagent-id>/<star
 
 **响应** `data`：`{ items: (SkillSummary & { is_expired })[], total }`。
 
+`SkillSummary` 新增（只增不改）：`scope`、`project_key`、`project_hash`、`project_name`、`origin`(`extracted`\|`manual`\|`template`)、`source_session_id`、`change_source`(`extracted`\|`manual`\|`rollback`\|`promotion`\|`template`，历史行为 `null`)、`change_reason`、`change_summary`(string[])、`approved_by`(无审批人为 `""`)、`approved_at_ms`(无为 0)、`base_version`、`proposal_id`。历史行读出为 `scope=global`、`origin=extracted`、审计字段为空。
+
 **错误**：`40401`(skill 不存在)。
+
+### POST /v3/skill/versions/diff
+
+任意两个版本的 SKILL.md 行级差异。
+
+**请求体**：`skill_id`、`from_version`、`to_version` + id 字段。
+
+**响应** `data`：`{ skill_id, from_version, to_version, lines: { type: "added"\|"removed"\|"unchanged", text, old_line?, new_line? }[], added, removed, unchanged, approximate }`。`approximate=true` 表示差异块过大，按「整块删除 + 整块新增」返回。
+
+**错误**：`40401`(skill 或版本不存在)。
+
+### POST /v3/skill/rollback
+
+回滚：以旧版本的内容、文件和 manifest 创建**新版本**（`change_source=rollback`，`change_summary=["Restored content of vN"]`，`base_version`=当前 head）。旧版本及其后的版本都保留。
+
+**请求体**：`skill_id`、`target_version`(≥1)、`reason`(必填，≤1000)、`expected_version?`(传则要求 head 仍是该版本) + id 字段（`user_id` 记为审批人）。
+
+**响应** `data`：`SkillSummary`（新 head）。
+
+**错误**：`40001`(缺 reason / 目标是当前版本)、`40401`、`40901`(`expected_version` 过期)、`4291`。
+
+### POST /v3/skill/proposals/list
+
+待审批提案列表（新到旧）。
+
+**请求体**：`team_id`、`agent_id?`、`skill_id?`、`status?`(`pending`\|`approved`\|`rejected`\|`stale`\|`expired` 数组)、`pagination?`。
+
+**响应** `data`：`{ items: Proposal[], total }`。`Proposal`：`proposal_id`、`team_id`、`owner_agent_id`、`skill_id`、`skill_name`、`base_version`、`proposed_content`、`proposed_description`、`proposed_files`(`{ write, remove }`)、`change_reason`、`change_summary`、`source_session_id`、`created_by`、`status`、`created_at_ms`、`decided_at_ms`、`decided_by`、`result_version`。
+
+### POST /v3/skill/proposals/approve
+
+批准并**立即应用**（同一次调用创建新版本，带 `proposal_id`、`approved_by`、`approved_at_ms`，复制提案的原因和摘要）。
+
+**请求体**：`team_id`、`user_id`(审批人)、`proposal_id`、`agent_id?`。审批人需对该 skill 有 `write` 权限（资产 ACL）。
+
+**响应** `data`：`{ applied: true, proposal, skill: SkillSummary }`。
+
+**错误**：`40901`(提案已 `stale`：head 已不是 `base_version`，不应用，`data` 带 `current_version` 和 `proposal`)、`40902`(提案已决定)、`40401`、`40301`、`4291`。
+
+### POST /v3/skill/proposals/reject
+
+拒绝 `pending` 或 `stale` 提案。请求体同 approve。**响应** `data`：`{ proposal }`。**错误**：`40902`、`40401`、`40301`。
 
 ### POST /v3/skill/files/write
 

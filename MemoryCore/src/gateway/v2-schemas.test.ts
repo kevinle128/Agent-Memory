@@ -75,3 +75,33 @@ describe("resolveIsolation project fields", () => {
     expect("projectHash" in ctx).toBe(false);
   });
 });
+
+describe("resolveIsolation project name", () => {
+  const withName = (name: unknown, extra: Record<string, unknown> = { project_key: KEY, project_hash: HASH }) =>
+    resolveIsolation({ ...BASE_BODY, ...extra, project_name: name }, {}).ctx.projectName;
+
+  it("keeps a trimmed name that comes with a valid pair", () => {
+    expect(withName("  vtc/3q-chess/3q-game-api ")).toBe("vtc/3q-chess/3q-game-api");
+  });
+
+  it("accepts 200 characters and drops 201", () => {
+    expect(withName("n".repeat(200))).toBe("n".repeat(200));
+    expect(withName("n".repeat(201))).toBeUndefined();
+  });
+
+  it.each(["", "   ", 42, null, "a\nb", "a\u0000b", "a\u007fb"])("drops the name %j without dropping the pair", (name) => {
+    const { ctx } = resolveIsolation({ ...BASE_BODY, project_key: KEY, project_hash: HASH, project_name: name }, {});
+    expect(ctx.projectName).toBeUndefined();
+    expect(ctx).toMatchObject({ projectKey: KEY, projectHash: HASH });
+  });
+
+  it("ignores a name that has no valid pair", () => {
+    expect(withName("x/y", { project_key: KEY, project_hash: "bad" })).toBeUndefined();
+    expect(withName("x/y", {})).toBeUndefined();
+  });
+
+  it("leaves the context without a name when an older proxy sends none", () => {
+    const { ctx } = resolveIsolation({ ...BASE_BODY, project_key: KEY, project_hash: HASH }, {});
+    expect("projectName" in ctx).toBe(false);
+  });
+});

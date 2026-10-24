@@ -24,6 +24,17 @@
  */
 
 import { parseSkillFile, validateSkillFile } from "./skill-format.js";
+import { SkillApprovalRequiredError, SkillCoreError, type SkillCoreErrorCode } from "./skill-errors.js";
+import {
+  SkillChangeService,
+  type ChangePlacement,
+  type SubmitResult,
+  type ApproveResult,
+} from "./skill-change-service.js";
+import { diffLines, type LineDiff } from "./skill-diff.js";
+import type { ChangeApprovalPolicy } from "./change-approval-policy.js";
+import type { ListProposalsOptions, SkillChangeProposal, SkillProposalStatus } from "./skill-proposal-types.js";
+import type { MemoryPromptMode } from "../../config.js";
 import { SkillResourceStore, type SkillResourcePayload } from "./skill-resource-store.js";
 import type { ISkillStore, SkillSearchResult } from "./skill-store.interface.js";
 import { SkillVersioning } from "./skill-versioning.js";
@@ -53,30 +64,8 @@ const TAG = "[skill-core]";
 // ═════════════════════════════════════════════════════════════════════
 
 
-export type SkillCoreErrorCode =
-  | "INVALID_FRONTMATTER"
-  | "SKILL_FRONTMATTER_INVALID"
-  | "SKILL_PATCH_NOT_UNIQUE"
-  | "SKILL_NAME_DUPLICATE"
-  | "SKILL_NOT_OWNER"
-  | "SKILL_TEAM_MISMATCH"
-  | "SKILL_NOT_FOUND"
-  | "SKILL_VERSION_STALE"
-  | "SKILL_VERSION_EXPIRED"
-  | "SKILL_ID_COLLISION"
-  | "INVALID_PATH"
-  | "RESOURCE_TOO_LARGE"
-  | "STORAGE_NOT_FOUND"
-  | "LLM_UNAVAILABLE"
-  | "SKILL_COS_REQUIRED"
-  | "SKILL_EXPORT_TOO_LARGE";
-
-export class SkillCoreError extends Error {
-  constructor(public readonly code: SkillCoreErrorCode, message?: string) {
-    super(message ? `${code}: ${message}` : code);
-    this.name = "SkillCoreError";
-  }
-}
+// Error classes live in skill-errors.ts; re-exported so existing imports keep working.
+export { SkillCoreError, SkillApprovalRequiredError, type SkillCoreErrorCode } from "./skill-errors.js";
 
 // 工具：把下层抛的各类错误统一翻译为 SkillCoreError（保留原 message）
 function toCoreError(e: unknown): never {
@@ -110,6 +99,18 @@ export interface SkillCoreOptions {
   /** 每个 skill 最多保留的非 head 版本数。0 = 关闭。 */
   maxNonHeadVersions?: number;
   /**
+   * Prompt mode of the instance, read on each write. Decides the scope rule
+   * and the approval policy. Absent means `chat` (the earlier behavior).
+   */
+  getPromptMode?: () => MemoryPromptMode;
+  /** Approval rule. Absent means `DefaultChangeApprovalPolicy`. */
+  policy?: ChangeApprovalPolicy;
+  /**
+   * Change service to use. Absent means one built from the options above.
+   * A host passes its own only to share one service between several cores.
+   */
+  changes?: SkillChangeService;
+  /**
    * `delete` 成功归档 head 后同步触发。fire-and-forget：钩子抛异常
    * 会被吞掉，不影响 delete 返回值（asset 状态漂移可容忍：skill 已经
    * archived，asset 慢一步同步不影响业务）。
@@ -134,26 +135,75 @@ export interface SkillCoreOptions {
   onSkillAccessed?: (skill: Skill) => void;
 }
 
+/**
+ * Why and by whom a write is made. Stored on the new version row.
+ * The default source is `manual`: a person (Hub, Panel) made the change.
+ * The extractor passes `extracted`, which the approval policy treats as a
+ * proposal of the system.
+ */
+export interface ChangeMeta {
+  change_source?: "extracted" | "manual";
+  change_reason?: string;
+  /** 1-5 short strings. */
+  change_summary?: string[];
+  source_session_id?: string;
+}
+
 // 各 action 入参类型（四个 ID 全部可选）
-export interface CreateInput extends IdFields {
+export interface CreateInput extends IdFields, ChangeMeta, ChangePlacement {
   name: string;
   content: string;
   resources?: SkillResourcePayload[];
   metadata?: Record<string, unknown>;
 }
 
-export interface UpdateInput extends IdFields {
+export interface UpdateInput extends IdFields, ChangeMeta {
   skill_id: string;
   expected_version: number;
   content: string;
 }
 
-export interface PatchInput extends IdFields {
+export interface PatchInput extends IdFields, ChangeMeta {
   skill_id: string;
   expected_version: number;
   old_string: string;
   new_string: string;
   replace_all?: boolean;
+}
+
+export interface RollbackInput extends IdFields {
+  skill_id: string;
+  /** Version whose content, files and manifest are copied into a new version. */
+  target_version: number;
+  /** Why the skill is rolled back. Required. */
+  reason: string;
+  /** When set, the head must still be this version. */
+  expected_version?: number;
+}
+
+export interface DiffVersionsInput extends IdFields {
+  skill_id: string;
+  from_version: number;
+  to_version: number;
+}
+
+export interface DiffVersionsResult extends LineDiff {
+  skill_id: string;
+  from_version: number;
+  to_version: number;
+}
+
+export interface ListProposalsInput extends IdFields {
+  skill_id?: string;
+  status?: SkillProposalStatus[];
+  pagination?: { limit?: number; offset?: number };
+}
+
+export interface DecideProposalInput {
+  proposal_id: string;
+  team_id?: string;
+  /** User who decides. */
+  user_id: string;
 }
 
 export interface DeleteInput extends IdFields {
@@ -167,13 +217,13 @@ export interface GetInput extends IdFields {
   include_manifest?: boolean;
 }
 
-export interface WriteFilesInput extends IdFields {
+export interface WriteFilesInput extends IdFields, ChangeMeta {
   skill_id: string;
   expected_version: number;
   files: SkillResourcePayload[];
 }
 
-export interface RemoveFilesInput extends IdFields {
+export interface RemoveFilesInput extends IdFields, ChangeMeta {
   skill_id: string;
   expected_version: number;
   paths: string[];
@@ -224,6 +274,8 @@ export class SkillCore {
   private readonly now: () => number;
   private readonly versionTtlSeconds: number;
   private readonly maxNonHeadVersions: number;
+  /** Single door for every change of skill content. */
+  readonly changes: SkillChangeService;
   private readonly onSkillArchived?: SkillCoreOptions["onSkillArchived"];
   private readonly onSkillAccessed?: SkillCoreOptions["onSkillAccessed"];
 
@@ -240,6 +292,17 @@ export class SkillCore {
     this.maxNonHeadVersions = opts.maxNonHeadVersions ?? 0;
     this.onSkillArchived = opts.onSkillArchived;
     this.onSkillAccessed = opts.onSkillAccessed;
+    this.changes =
+      opts.changes ??
+      new SkillChangeService({
+        store: opts.store,
+        versioning: opts.versioning,
+        policy: opts.policy,
+        getPromptMode: opts.getPromptMode,
+        versionTtlSeconds: this.versionTtlSeconds,
+        maxNonHeadVersions: this.maxNonHeadVersions,
+        now: this.now,
+      });
   }
 
   /** 读路径读到具体 skill 后 fire。异常吞掉，不阻塞读。 */
@@ -293,18 +356,28 @@ export class SkillCore {
     }
 
     try {
-      return await this.versioning.createNewSkill(
-        sid,
-        input.agent_id ?? "default",
-        { user_id: input.user_id, team_id: input.team_id, agent_id: input.agent_id, task_id: input.task_id },
-        {
+      return this.settle(await this.changes.submit({
+        kind: "create",
+        skill_id: sid,
+        // agent_id stays as given: the asset hook skips a create without an agent.
+        actor: { user_id: input.user_id, team_id: input.team_id, agent_id: input.agent_id, task_id: input.task_id },
+        head: null,
+        mutation: {
           content: input.content,
           name: input.name,
           description: file.frontmatter.description,
           resourcesToWrite: input.resources,
           metadata_json: input.metadata ? JSON.stringify(input.metadata) : undefined,
         },
-      );
+        ...this.metaOf(input),
+        placement: {
+          scope: input.scope,
+          project_key: input.project_key,
+          project_hash: input.project_hash,
+          project_name: input.project_name,
+          origin: input.origin,
+        },
+      }));
     } catch (e) {
       toCoreError(e);
     }
@@ -321,15 +394,14 @@ export class SkillCore {
     }
 
     try {
-      const result = await this.versioning.appendNextVersion(head, this.ctxOf(input, head), {
-        content: input.content,
-        name: head.name,
-        description: file.frontmatter.description,
-      });
-      void this.versioning.cleanupExpiredVersionsForSkill(
-        head.skill_id, this.versionTtlSeconds, this.maxNonHeadVersions,
-      ).catch(() => { /* fire-and-forget */ });
-      return result;
+      return this.settle(await this.changes.submit({
+        kind: "update",
+        skill_id: head.skill_id,
+        actor: this.ctxOf(input, head),
+        head,
+        mutation: { content: input.content, name: head.name, description: file.frontmatter.description },
+        ...this.metaOf(input),
+      }));
     } catch (e) {
       toCoreError(e);
     }
@@ -360,15 +432,14 @@ export class SkillCore {
     }
 
     try {
-      const result = await this.versioning.appendNextVersion(head, this.ctxOf(input, head), {
-        content: newContent,
-        name: head.name,
-        description: file.frontmatter.description,
-      });
-      void this.versioning.cleanupExpiredVersionsForSkill(
-        head.skill_id, this.versionTtlSeconds, this.maxNonHeadVersions,
-      ).catch(() => { /* fire-and-forget */ });
-      return result;
+      return this.settle(await this.changes.submit({
+        kind: "update",
+        skill_id: head.skill_id,
+        actor: this.ctxOf(input, head),
+        head,
+        mutation: { content: newContent, name: head.name, description: file.frontmatter.description },
+        ...this.metaOf(input),
+      }));
     } catch (e) {
       toCoreError(e);
     }
@@ -405,16 +476,19 @@ export class SkillCore {
     assertVersionFreshWrap(head, input.expected_version);
 
     try {
-      const result = await this.versioning.appendNextVersion(head, this.ctxOf(input, head), {
-        content: head.content,
-        name: head.name,
-        description: head.description,
-        resourcesToWrite: input.files,
-      });
-      void this.versioning.cleanupExpiredVersionsForSkill(
-        head.skill_id, this.versionTtlSeconds, this.maxNonHeadVersions,
-      ).catch(() => { /* fire-and-forget */ });
-      return result;
+      return this.settle(await this.changes.submit({
+        kind: "files",
+        skill_id: head.skill_id,
+        actor: this.ctxOf(input, head),
+        head,
+        mutation: {
+          content: head.content,
+          name: head.name,
+          description: head.description,
+          resourcesToWrite: input.files,
+        },
+        ...this.metaOf(input),
+      }));
     } catch (e) {
       toCoreError(e);
     }
@@ -434,16 +508,122 @@ export class SkillCore {
     }
 
     try {
-      const result = await this.versioning.appendNextVersion(head, this.ctxOf(input, head), {
-        content: head.content,
-        name: head.name,
-        description: head.description,
-        resourcesToRemove: toRemove,
+      return this.settle(await this.changes.submit({
+        kind: "files",
+        skill_id: head.skill_id,
+        actor: this.ctxOf(input, head),
+        head,
+        mutation: {
+          content: head.content,
+          name: head.name,
+          description: head.description,
+          resourcesToRemove: toRemove,
+        },
+        ...this.metaOf(input),
+      }));
+    } catch (e) {
+      toCoreError(e);
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  //  Rollback, diff and proposals
+  // ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Restore an older version as a new version. History is kept: the older
+   * version and every version after it stay. Returns the new head.
+   */
+  async rollback(input: RollbackInput): Promise<Skill> {
+    const reason = input.reason?.trim() ?? "";
+    if (reason === "") throw new SkillCoreError("SKILL_CHANGE_INVALID", "a rollback needs a reason");
+
+    const head = await this.requireHead(input.skill_id, input.team_id);
+    if (input.agent_id) assertOwnerWrap(head, input.agent_id, input.team_id);
+    if (typeof input.expected_version === "number") assertVersionFreshWrap(head, input.expected_version);
+
+    if (input.target_version === head.version) {
+      throw new SkillCoreError("SKILL_CHANGE_INVALID", `v${input.target_version} is already the current version`);
+    }
+    const target = await this.store.getByVersion(input.skill_id, input.target_version, input.team_id);
+    if (!target) {
+      throw new SkillCoreError(
+        "SKILL_NOT_FOUND",
+        `version ${input.target_version} not found (may have been GC'd); current head is v${head.version}`,
+      );
+    }
+    this.assertVersionNotExpired(target, head.version);
+
+    try {
+      return this.settle(await this.changes.submit({
+        kind: "rollback",
+        skill_id: head.skill_id,
+        actor: this.ctxOf(input, head),
+        head,
+        mutation: { content: target.content, name: head.name, description: target.description },
+        source: "rollback",
+        reason,
+        restore_from: target,
+      }));
+    } catch (e) {
+      toCoreError(e);
+    }
+  }
+
+  /** Line diff of the SKILL.md of two versions of one skill, in either order. */
+  async diffVersions(input: DiffVersionsInput): Promise<DiffVersionsResult> {
+    await this.requireHead(input.skill_id, input.team_id);
+    const [from, to] = await Promise.all([
+      this.store.getByVersion(input.skill_id, input.from_version, input.team_id),
+      this.store.getByVersion(input.skill_id, input.to_version, input.team_id),
+    ]);
+    const missing = !from ? input.from_version : !to ? input.to_version : undefined;
+    if (!from || !to) {
+      throw new SkillCoreError("SKILL_NOT_FOUND", `version ${missing} not found (may have been GC'd)`);
+    }
+    return {
+      skill_id: input.skill_id,
+      from_version: from.version,
+      to_version: to.version,
+      ...diffLines(from.content, to.content),
+    };
+  }
+
+  listProposals(input: ListProposalsInput): Promise<{ items: SkillChangeProposal[]; total: number }> {
+    const opts: ListProposalsOptions = {
+      team_id: input.team_id,
+      owner_agent_id: input.agent_id,
+      skill_id: input.skill_id,
+      status: input.status,
+      limit: input.pagination?.limit,
+      offset: input.pagination?.offset,
+    };
+    return this.changes.listProposals(opts);
+  }
+
+  getProposal(proposalId: string, teamId?: string): Promise<SkillChangeProposal | null> {
+    return this.changes.getProposal(proposalId, teamId);
+  }
+
+  async approveProposal(input: DecideProposalInput): Promise<ApproveResult> {
+    try {
+      return await this.changes.approveProposal({
+        proposal_id: input.proposal_id,
+        team_id: input.team_id,
+        approver: input.user_id,
       });
-      void this.versioning.cleanupExpiredVersionsForSkill(
-        head.skill_id, this.versionTtlSeconds, this.maxNonHeadVersions,
-      ).catch(() => { /* fire-and-forget */ });
-      return result;
+    } catch (e) {
+      toCoreError(e);
+    }
+  }
+
+  async rejectProposal(input: DecideProposalInput): Promise<SkillChangeProposal> {
+    try {
+      return await this.changes.rejectProposal({
+        proposal_id: input.proposal_id,
+        team_id: input.team_id,
+        decided_by: input.user_id,
+      });
     } catch (e) {
       toCoreError(e);
     }
@@ -670,6 +850,27 @@ export class SkillCore {
     if (teamId) assertTeamMatchWrap(head, teamId);
     if (!head) throw new SkillCoreError("SKILL_NOT_FOUND");
     return head;
+  }
+
+  /** The legacy write methods return a `Skill`; a proposal is not one, so it surfaces as an error. */
+  private settle(result: SubmitResult): Skill {
+    if (result.outcome === "pending_approval") throw new SkillApprovalRequiredError(result.proposal);
+    return result.skill;
+  }
+
+  /** Audit fields of a write request. A request without a source is a person's change. */
+  private metaOf(input: ChangeMeta): {
+    source: "extracted" | "manual";
+    reason?: string;
+    summary?: string[];
+    source_session_id?: string;
+  } {
+    return {
+      source: input.change_source ?? "manual",
+      reason: input.change_reason,
+      summary: input.change_summary,
+      source_session_id: input.source_session_id,
+    };
   }
 
   private ctxOf(

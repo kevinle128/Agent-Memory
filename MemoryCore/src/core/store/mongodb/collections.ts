@@ -20,6 +20,7 @@ export const COLLECTIONS = {
   MEMORY_PROMPT_SETTING_LOGS: "memory_prompt_setting_logs",
   MEMORY_GENERATION_REFS: "memory_generation_refs",
   SKILLS: "skills",
+  SKILL_CHANGE_PROPOSALS: "skill_change_proposals",
 } as const;
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS];

@@ -1582,6 +1582,12 @@ export class MetadataService {
     team_id: string;
     agent_id: string;
     name: string;
+    /**
+     * How the skill came to exist ("extracted", "manual" or "template"), stored
+     * as the asset `source_type`. Callers pass `skill.origin`. Defaults to
+     * "manual" when the caller does not know.
+     */
+    source_type?: string;
   }): Promise<AssetEntity> {
     const assetId = params.skill_id; // skill_id === asset_id（约定）
 
@@ -1627,7 +1633,7 @@ export class MetadataService {
           asset_type: "skill",
           name: params.name,
           owner_user_id: agent.owner_user_id,
-          source_type: "extracted",
+          source_type: params.source_type ?? "manual",
           visibility: "private",
           status: "active",
         });

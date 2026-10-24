@@ -44,6 +44,7 @@ export interface L0Doc {
   /** Absent on documents written before the project fields existed. */
   project_key?: string;
   project_hash?: string;
+  project_name?: string;
   user_id: string;
   agent_id: string;
   role: string;
@@ -63,6 +64,7 @@ export function l0RecordToDoc(record: L0Record): L0Doc {
     task_id: record.taskId ?? "",
     project_key: record.projectKey ?? "",
     project_hash: record.projectHash ?? "",
+    project_name: record.projectName ?? "",
     user_id: record.userId || DEFAULT_ISOLATION_ID,
     agent_id: record.agentId || DEFAULT_ISOLATION_ID,
     role: record.role,
@@ -83,6 +85,7 @@ export function docToL0QueryRow(doc: L0Doc): L0QueryRow {
     task_id: doc.task_id ?? "",
     project_key: doc.project_key ?? "",
     project_hash: doc.project_hash ?? "",
+    project_name: doc.project_name ?? "",
     user_id: doc.user_id ?? "",
     agent_id: doc.agent_id ?? "",
     role: doc.role,

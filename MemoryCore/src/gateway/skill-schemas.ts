@@ -40,6 +40,28 @@ function refineAgentNeedsTeam(data: { team_id?: string; agent_id?: string }, ctx
 export const idFieldsReadSchema = z.object(idFieldsShape).superRefine(refineAgentNeedsTeam);
 export const idFieldsWriteSchema = z.object(idFieldsShape).superRefine(refineAgentNeedsTeam);
 
+/**
+ * Why a write is made. A request without `change_source` is a person's edit.
+ * `extracted` marks a change the system proposes; on a global skill it waits
+ * for approval instead of creating a version.
+ */
+const changeNoteShape = {
+  change_source: z.enum(["manual", "extracted"]).optional(),
+  change_reason: z.string().min(1).max(1000).optional(),
+  /** 1-5 short strings: what the change adds, fixes or removes. */
+  change_summary: z.array(z.string().min(1).max(200)).min(1).max(5).optional(),
+  source_session_id: z.string().min(1).max(128).optional(),
+};
+
+/** Where a new skill lives. Absent scope means a global skill. */
+const placementShape = {
+  scope: z.enum(["global", "project"]).optional(),
+  project_key: z.string().min(1).max(512).optional(),
+  /** 16 lowercase hex characters, the same form the proxy sends. */
+  project_hash: z.string().regex(/^[0-9a-f]{16}$/, "project_hash must be 16 lowercase hex characters").optional(),
+  project_name: z.string().min(1).max(512).optional(),
+};
+
 export const skillResourcePayloadSchema = z.object({
   path: z.string().min(1).max(512),
   content: z.string(),
@@ -89,6 +111,8 @@ export const paginationSchema = z.object({
 
 export const createRequestSchema = z.object({
   ...idFieldsShape,
+  ...changeNoteShape,
+  ...placementShape,
   name: z.string().min(1).max(64),
   content: z.string().min(1),
   resources: z.array(skillResourcePayloadSchema).max(100).optional(),
@@ -97,6 +121,7 @@ export const createRequestSchema = z.object({
 
 export const updateRequestSchema = z.object({
   ...idFieldsShape,
+  ...changeNoteShape,
   skill_id: z.string().min(1),
   expected_version: z.number().int().min(1),
   content: z.string().min(1),
@@ -104,6 +129,7 @@ export const updateRequestSchema = z.object({
 
 export const patchRequestSchema = z.object({
   ...idFieldsShape,
+  ...changeNoteShape,
   skill_id: z.string().min(1),
   expected_version: z.number().int().min(1),
   old_string: z.string().min(1),
@@ -175,8 +201,45 @@ export const versionsRequestSchema = z.object({
   pagination: paginationSchema.optional(),
 }).superRefine(refineAgentNeedsTeam);
 
+/**
+ * `POST /v3/skill/rollback` — copy an older version into a new version.
+ * `reason` is required. `expected_version`, when sent, must equal the head.
+ */
+export const rollbackRequestSchema = z.object({
+  ...idFieldsShape,
+  skill_id: z.string().min(1),
+  target_version: z.number().int().min(1),
+  reason: z.string().trim().min(1).max(1000),
+  expected_version: z.number().int().min(1).optional(),
+}).superRefine(refineAgentNeedsTeam);
+
+/** `POST /v3/skill/versions/diff` — line diff between any two versions. */
+export const versionsDiffRequestSchema = z.object({
+  ...idFieldsShape,
+  skill_id: z.string().min(1),
+  from_version: z.number().int().min(1),
+  to_version: z.number().int().min(1),
+}).superRefine(refineAgentNeedsTeam);
+
+export const proposalsListRequestSchema = z.object({
+  ...idFieldsShape,
+  team_id: z.string().min(1),
+  skill_id: z.string().min(1).optional(),
+  status: z.array(z.enum(["pending", "approved", "rejected", "stale", "expired"])).min(1).optional(),
+  pagination: paginationSchema.optional(),
+}).superRefine(refineAgentNeedsTeam);
+
+/** Approve and reject name the person who decides; team_id is required so a proposal of another team is not found. */
+export const proposalDecisionRequestSchema = z.object({
+  team_id: z.string().min(1),
+  user_id: z.string().min(1),
+  agent_id: z.string().min(1).optional(),
+  proposal_id: z.string().min(1),
+});
+
 export const filesWriteRequestSchema = z.object({
   ...idFieldsShape,
+  ...changeNoteShape,
   skill_id: z.string().min(1),
   expected_version: z.number().int().min(1),
   files: z.array(skillResourcePayloadSchema).min(1).max(100),
@@ -184,6 +247,7 @@ export const filesWriteRequestSchema = z.object({
 
 export const filesRemoveRequestSchema = z.object({
   ...idFieldsShape,
+  ...changeNoteShape,
   skill_id: z.string().min(1),
   expected_version: z.number().int().min(1),
   paths: z.array(z.string().min(1)).min(1).max(100),
@@ -302,6 +366,10 @@ export type GetByNameRequest = z.infer<typeof getByNameRequestSchema>;
 export type ListRequest = z.infer<typeof listRequestSchema>;
 export type SearchRequest = z.infer<typeof searchRequestSchema>;
 export type VersionsRequest = z.infer<typeof versionsRequestSchema>;
+export type RollbackRequest = z.infer<typeof rollbackRequestSchema>;
+export type VersionsDiffRequest = z.infer<typeof versionsDiffRequestSchema>;
+export type ProposalsListRequest = z.infer<typeof proposalsListRequestSchema>;
+export type ProposalDecisionRequest = z.infer<typeof proposalDecisionRequestSchema>;
 export type FilesWriteRequest = z.infer<typeof filesWriteRequestSchema>;
 export type FilesRemoveRequest = z.infer<typeof filesRemoveRequestSchema>;
 export type FilesReadRequest = z.infer<typeof filesReadRequestSchema>;

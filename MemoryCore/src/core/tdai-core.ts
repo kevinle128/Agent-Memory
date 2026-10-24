@@ -78,7 +78,7 @@ import type {
   SkillEnvProbe,
   ExtractorLLMRunner,
 } from "./skill/index.js";
-import type { Skill } from "./skill/types.js";
+import type { Skill, SkillOrigin } from "./skill/types.js";
 
 const TAG = "[memory-tdai] [core]";
 
@@ -110,6 +110,7 @@ export interface SkillAssetHooks {
     user_id?: string;
     name: string;
     description: string;
+    origin?: SkillOrigin;
   }) => Promise<void>;
   onSkillAccessed?: (skill: Skill) => void;
   onSkillArchived?: (params: { skill_id: string; team_id?: string }) => void;
@@ -923,6 +924,8 @@ export class TdaiCore {
         // 都不配就是 0 (关闭), 行为与新增前完全一致, 向后兼容。
         versionTtlSeconds: resolved.versionTtlSeconds,
         maxNonHeadVersions: resolved.maxNonHeadVersions,
+        // Scope rule and approval policy follow the prompt mode of this instance.
+        getPromptMode: () => this.cfg.promptMode,
         onSkillAccessed: assetHooks?.onSkillAccessed,
         onSkillArchived: assetHooks?.onSkillArchived,
       });
