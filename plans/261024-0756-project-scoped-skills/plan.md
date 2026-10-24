@@ -74,7 +74,7 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 - Test: ràng buộc, migration trên dữ liệu cũ, trùng tên.
 - `SkillChangeService` và `ChangeApprovalPolicy` (xem "Kiến trúc"): chuyển mọi đường ghi skill hiện có (bộ trích xuất qua `skill-tools.ts`, API create/update/files của Hub và Panel, nhập session) về một cửa này. Thêm cột lịch sử cho mỗi phiên bản: `change_source`, `change_reason`, `change_summary`, `approved_by`, `approved_at`, `base_version`, `proposal_id`.
 - Bảng `skill_change_proposals` với vòng đời `pending` → `approved` | `rejected` | `stale` | `expired`.
-- API Core: `POST /v3/skill/rollback` (tạo phiên bản mới từ phiên bản cũ), `POST /v3/skill/proposals/list`, `.../approve`, `.../reject`. `/v3/skill/versions` trả thêm các cột lịch sử.
+- API Core: `POST /v3/skill/rollback` (tạo phiên bản mới từ phiên bản cũ, bắt buộc có lý do), `POST /v3/skill/versions/diff` (khác biệt giữa hai phiên bản bất kỳ), `POST /v3/skill/proposals/list`, `.../approve`, `.../reject`. `/v3/skill/versions` trả thêm các cột lịch sử.
 - Test: policy theo từng trường hợp; đề xuất bị `stale` khi phiên bản đổi; rollback giữ đủ lịch sử; không đường ghi nào bỏ qua service (test kiến trúc: tìm lời gọi `appendVersion` ngoài service).
 
 ### Giai đoạn 2: Gắn dự án khi gom hội thoại (Proxy và Core)
@@ -116,7 +116,8 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 - Hộp thoại tạo skill có lựa chọn phạm vi (toàn cục hoặc chọn một dự án). Nhập session phải chọn dự án.
 - Thao tác "Chuyển thành toàn cục" cho skill trích xuất: đổi thành `scope = global`, `origin = manual`, có xác nhận.
 - Ở chế độ `chat`, giao diện không hiện phần dự án.
-- Lịch sử phiên bản: tóm tắt cải tiến của từng phiên bản (và của phiên bản hiện tại ở đầu trang), lý do sửa, nguồn sửa, người duyệt, thời điểm; đánh dấu phiên bản hiện tại; bấm vào một phiên bản mới mở trang chi tiết: lý do, người duyệt, tóm tắt cải tiến, khác biệt với phiên bản trước (dòng thêm và dòng bỏ được tô màu, có thể chọn phiên bản khác để so), và nút "Rollback về phiên bản này" (có xác nhận). Danh sách lịch sử không hiện khác biệt.
+- Lịch sử phiên bản: tóm tắt cải tiến của từng phiên bản (và của phiên bản hiện tại ở đầu trang), lý do sửa, nguồn sửa, người duyệt, thời điểm; đánh dấu phiên bản hiện tại; bấm vào một phiên bản mới mở trang chi tiết: lý do, người duyệt, tóm tắt cải tiến, khác biệt với phiên bản trước (dòng thêm và dòng bỏ được tô màu, có thể chọn phiên bản khác để so), và nút "Set skill to this version" (có xác nhận). Danh sách lịch sử không hiện khác biệt.
+- Màn hình "Version history" riêng, mở từ nút trên trang chi tiết skill: dòng thời gian mọi phiên bản (phiên bản hiện tại, thời gian, nguồn, người sửa, người duyệt, tóm tắt cải tiến, "khôi phục từ vN" với bản rollback); so sánh hai phiên bản bất kỳ (chọn "từ" và "đến"); nút "Set skill to this version" cho mọi phiên bản không phải hiện tại (rollback). Hộp xác nhận rollback xem trước khác biệt từ bản hiện tại tới bản đích, liệt kê các cải tiến sẽ mất, bắt buộc nhập lý do, và ghi rõ kết quả "tạo vN+1 với nội dung của bản đích; các bản sau vẫn còn trong lịch sử".
 - Danh sách đề xuất chờ duyệt của skill toàn cục, có Duyệt và Từ chối (cho client không có `AskUserQuestion`).
 - Test: component và API.
 
