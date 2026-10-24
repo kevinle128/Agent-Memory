@@ -147,3 +147,12 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - Production (Langfuse, `claude -p` thật): `~/Movies` → `scopesInjected: ["global-l3"]`, không có `<project_memory>`; gốc Agent-Memory và `MemoryProxy/src` → `["global-l3","project-l3","project-l2"]`, `projectHash: db73c988534bc1c8`.
 - Persona dự án Agent-Memory và operator-master đã tự tạo lại từ L1 sạch (nội dung từ hội thoại thật). Còn: persona dự án vẫn có phần "Scene Navigation" (trùng danh sách scene proxy inject); vài mục trạng thái cũ.
 - Phát hiện: `skill-injector` inject danh sách skill của cả agent (tên/mô tả nhắc tên dự án, ví dụ "agent-memory-production-noise-cleanup") vào mọi session, kể cả `~/Movies`. Đây là lớp skill, chưa theo dự án.
+
+### 2026-10-24 chiều, các việc còn lại
+- JSONL ngày 23/10: sao lưu `~/backups/agent-memory-jsonl-2026-10-23-20261024-085859-before-cleanup.tgz` (mở được, 2.424 và 897 dòng). Chạy thử khớp con số đã ghi; áp dụng bỏ 505 dòng L0 và 150 bản ghi L1. Kiểm tra: không còn id nào trong danh sách, mọi dòng đọc được, Core healthy. Script và danh sách tạm đã xóa.
+- Scene Navigation trùng: không cần sửa. Langfuse của một session thật trong repo cho thấy persona dự án được inject không còn mục này (proxy đã cắt). Mục chỉ còn trong file lưu ở Core.
+- Proxy với Core khởi động lại: commit `3f4aded6`. Khi Core không trả lời (lỗi kết nối, timeout, 5xx), key đã xác thực trong 120 giây gần nhất vẫn được chấp nhận; key lạ hoặc bị Core từ chối vẫn bị 401. Đo local: trước 9 lần 401, sau 0. Production (khởi động lại Core thật): 0 lần 401, 25 request dùng kết quả cũ.
+- Tin giao việc của Paseo: commit `46ad5ba2`. Khi ghi L0, khối `<paseo-system>` không được coi là câu người dùng gõ (Claude Code, OpenAI-chat, OpenCode, Codex). E2E với Claude Code thật: tin Paseo chỉ ghi câu trả lời; tin thường ghi đủ. Gọi lại L1 và trace vẫn giữ nội dung.
+- Review độc lập cho hai thay đổi trên: không có lỗi nặng; đã sửa đường OpenCode, phản hồi 200 không phải JSON, race khôi phục key đã thu hồi, quét tuyến tính, tài liệu `staleOnErrorMs`.
+- Deploy proxy production `46ad5ba`.
+- Chờ quyết định: xóa 101 dòng Paseo cũ (và L1 sinh ra từ chúng); Giai đoạn 7-8 (bắt buộc cài hook).
