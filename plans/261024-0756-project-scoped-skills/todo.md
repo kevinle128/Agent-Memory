@@ -21,3 +21,7 @@
   - Review độc lập: không có lỗi chặn. Đã sửa: import có `strict_mode` mà không có dự án thì bị từ chối ở chế độ `code`; tra L0 đọc hết các trang, phần chưa đọc được coi là hỗn hợp; lỗi dựng extractor luôn là lỗi tạm thời; giới hạn thời gian chờ khi lưu trữ.
   - Thứ tự deploy cần đổi: Proxy trước Core. Proxy cũ không gửi dự án, nên Core mới sẽ bỏ mọi task ở chế độ `code`.
   - Ghi nhận, chưa sửa: hai lượt thêm hội thoại đồng thời trong cùng session có thể lưu trữ một buffer hai lần (lỗi có từ trước; không gây trộn dự án).
+- Giai đoạn 4 (lọc skill theo dự án khi inject, liệt kê, tìm, đọc, ghi): commit sau `b27a5e2a` (xem git log).
+  - Test: Core 829/829, Proxy 501/501, tsc sạch. E2E local (`MemoryCore/scripts/qa/skill-project-read-e2e.sh`): 7/7, gồm hai phiên Claude Code thật (repo dự án A nhận skill toàn cục và skill dự án A; ngoài git chỉ nhận skill toàn cục; skill dự án B không xuất hiện ở listing, search, get, inject). E2E các giai đoạn trước: 5/5, 10/10, 2/2.
+  - Review độc lập: không có lỗi chặn với cấu hình mặc định. Đã sửa: đường `selection` (khi bật) và `versions` cũng lọc theo dự án; Proxy từ chối `files/read`, `files/download`, `versions` khi Core cũ không trả lại phạm vi; ghi theo id vào skill của dự án khác bị từ chối; bridge bỏ `source_session_id` do model gửi; cảnh báo khi quét quá 5000 skill.
+  - Production dùng giá trị mặc định (`selection` tắt, `allowLlmWrite` tắt, `profileScopeMode` scoped), đã kiểm tra trong `/data/config.yaml` của proxy.
