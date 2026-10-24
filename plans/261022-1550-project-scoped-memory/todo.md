@@ -155,4 +155,5 @@ Kế hoạch chi tiết: [plan.md](plan.md)
 - Tin giao việc của Paseo: commit `46ad5ba2`. Khi ghi L0, khối `<paseo-system>` không được coi là câu người dùng gõ (Claude Code, OpenAI-chat, OpenCode, Codex). E2E với Claude Code thật: tin Paseo chỉ ghi câu trả lời; tin thường ghi đủ. Gọi lại L1 và trace vẫn giữ nội dung.
 - Review độc lập cho hai thay đổi trên: không có lỗi nặng; đã sửa đường OpenCode, phản hồi 200 không phải JSON, race khôi phục key đã thu hồi, quét tuyến tính, tài liệu `staleOnErrorMs`.
 - Deploy proxy production `46ad5ba`.
-- Chờ quyết định: xóa 101 dòng Paseo cũ (và L1 sinh ra từ chúng); Giai đoạn 7-8 (bắt buộc cài hook).
+- Dọn tin Paseo cũ (bạn chọn A, đã xem danh sách): sao lưu `~/backups/agent-memory-core-data-20261024-101037-before-paseo-cleanup.tgz` kèm bản chụp sqlite nhất quán (`quick_check ok`, L0 4.611, L1 612). Xóa qua API Core, lô 10, kiểm tra sức khỏe sau mỗi lô: 102 dòng L0 (chỉ chứa tin Paseo; 43 của dự án `4ca24d03`, 59 của `ebc7f934`) và 6 bản ghi L1 chỉ sinh từ chúng; 12 lệnh, chậm nhất 312 ms. JSONL ngày 23 bỏ 102 dòng L0 và 45 bản ghi L1 (6 trên cộng 39 chỉ còn trong JSONL). Giữ: 10 bản ghi L1 có nguồn lẫn, và 2 dòng L0 có thẻ nhưng là nội dung thật. Kiểm tra: không còn id nào, JSONL đọc được hết, Core healthy, proxy không có 401.
+- Chờ quyết định: Giai đoạn 7-8 (bắt buộc cài hook).
