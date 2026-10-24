@@ -182,6 +182,16 @@ PROXY_PORT=8096
 
 ---
 
+## 9.1 项目上报 Hook
+
+Codex 的请求不带工作目录。要让 proxy 知道会话属于哪个项目（项目 skill、L0 的项目字段），每台机器需安装一次 hook：
+
+```bash
+curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client codex --base-url <proxy-origin>
+```
+
+`setup-proxy.sh` 选择 codex 时会自动安装。安装位置、key 读取顺序、trust 与卸载规则见 `agents/claude-code/README.md` §11.4。
+
 ## 10. 常见问题
 
 **Q: Codex Default mode 下完全没有记忆注入吗？**  

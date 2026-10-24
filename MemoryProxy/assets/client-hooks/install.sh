@@ -659,7 +659,10 @@ codex_hooks_list() {
   out="$dir/out"
   mkfifo "$fifo" || { rm -rf "$dir"; return 0; }
   : > "$out"
-  CODEX_HOME="$CODEX_DIR" codex app-server < "$fifo" > "$out" 2>/dev/null &
+  # Codex puts the config path in each hook key, resolved differently when
+  # CODEX_HOME is set. Run app-server with the same environment the user runs
+  # Codex with, so the trusted keys match: never set CODEX_HOME ourselves.
+  codex app-server < "$fifo" > "$out" 2>/dev/null &
   pid=$!
   # Open the pipe for reading and writing here, so this shell never blocks
   # when codex fails to start. Closing it later gives codex the end of input.

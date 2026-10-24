@@ -188,10 +188,10 @@ Proxy 只有知道会话属于哪个项目，才能注入项目记忆。Claude C
 
 ### 11.1 安装
 
-`setup-proxy.sh` 选择 claude-code 时会自动安装（失败只告警，不影响配置）。手动安装：
+`setup-proxy.sh` 选择 claude-code 或 codex 时会自动安装（失败只告警，不影响配置）。手动安装：
 
 ```bash
-curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- [--base-url URL] [--client claude-code] [--session SID] [--uninstall]
+curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- [--base-url URL] [--client claude-code|codex|pi] [--session SID] [--uninstall]
 ```
 
 - `--base-url`：默认取环境变量 `ANTHROPIC_BASE_URL`，其次取 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL`；`<proxy-origin>` 是它的 `scheme://host[:port]` 部分
@@ -232,3 +232,27 @@ echo '{"session_id":"test","cwd":"'"$PWD"'","hook_event_name":"Manual"}' \
 ```
 
 退出码 0 且无输出表示 proxy 已收到上报；退出码 1 时 stderr 会给出原因（例如 `HTTP 401`）。
+
+### 11.4 Codex 与 pi
+
+同一个安装器也支持 Codex 与 pi，用 `--client` 选择。两者上报的内容和 Claude Code 相同，proxy 用上报的 session id 关联请求。
+
+**Codex（`--client codex`）**
+
+- 读取 `$CODEX_HOME/config.toml`（默认 `~/.codex`）中当前 model provider 的 `base_url` 与 key。`base_url` 必须是 Agent-Memory 的 Codex 路由（`.../codex/<space>`），否则不上报，key 不会发往其他 host
+- key 的读取顺序与 proxy 认证一致：`x-tdai-user-key`（`http_headers`，其次 `env_http_headers` 指定的环境变量），然后 `experimental_bearer_token`，最后 `env_key`。支持 `profile` 选择的 provider
+- 在 `config.toml` 第一个 table 之前写入两个带标记的块：`SessionStart`（matcher `startup|resume|clear|fork`）与 `UserPromptSubmit` 的 hook，以及 hook trust（`[hooks.state."<key>"] trusted_hash`）。trust 的 key 和 hash 由 `codex app-server` 的 `hooks/list` 给出；没有 `codex` 命令时 hook 不被信任，需在 Codex 中执行 `/hooks`
+- 每个块的副本保存在 `~/.agent-memory/codex-hooks.block` 与 `codex-trust.block`。重新安装或卸载前会逐行比对：块被改过（例如 Codex 把别的 table 写进了块内）时，脚本退出 1、不修改文件，并列出需要手动移走的行
+- Codex 之后追加的 table（`codex mcp add`、项目信任等）写在块之外，重新安装和卸载都会保留
+- 写入后若 Codex 无法加载配置或没有列出这两个 hook，脚本恢复备份并退出 1
+- 注意：hook 的 key 包含它在 `config.toml` 中的位置。如果之后在它前面加了别的 hook，trust 会失效、上报静默停止；重新运行安装器即可
+
+**pi（`--client pi`）**
+
+- 把 extension 写入 `$PI_CODING_AGENT_DIR/extensions/agent-memory.ts`（默认 `~/.pi/agent`），在 `session_start` 与 `input` 事件上报
+- extension 使用当前 model 的 `baseUrl` 与 key，只在 model 走 `.../pi/<space>/v1` 路由时上报，超时 2 秒，从不抛错
+- 在 `models.json` 中所有指向 `.../pi/<space>/v1` 的 provider 上设置 `compat.sendSessionAffinityHeaders: true`，让 pi 在请求中带 `session_id` 头；proxy 只对 pi 用这个头作为 session key。修改前备份，JSON 无效时不改文件
+- 卸载会删除 extension，保留 compat 设置（无害）
+- 需要支持 `compat.sendSessionAffinityHeaders` 的 pi 版本，且 API 类型为 `openai-completions`
+
+**验证**：`MemoryProxy/scripts/qa/codex-pi-e2e.sh` 在临时 HOME 中用真实的 codex 与 pi 检查上报、session 关联与 L0 的项目字段。

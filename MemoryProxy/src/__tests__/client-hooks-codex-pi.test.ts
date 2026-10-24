@@ -93,7 +93,8 @@ function mkTmp(prefix: string): string {
 // trusted_hash, and one error when the file holds the text BREAK-THE-CONFIG.
 const FAKE_CODEX = `#!/usr/bin/env bash
 [ "$1" = "app-server" ] || exit 1
-cfg="$CODEX_HOME/config.toml"
+[ -z "$FAKE_CODEX_ENV_LOG" ] || echo "CODEX_HOME=\${CODEX_HOME-<unset>}" >> "$FAKE_CODEX_ENV_LOG"
+cfg="\${CODEX_HOME:-$HOME/.codex}/config.toml"
 while IFS= read -r line; do
   case "$line" in
     *'"id":2'*)
@@ -340,6 +341,18 @@ describe("install.sh --client codex", () => {
     const r = await runInstaller(["--client", "codex", "--base-url", `${origin}/codex/default`], withFakeCodex());
     expect(r.code).toBe(0);
     expect(fs.readFileSync(codexConfigPath(), "utf8")).toContain("[[hooks.SessionStart]]");
+  });
+
+  it("runs codex with the caller's CODEX_HOME, so trust keys match a normal codex run", async () => {
+    // Codex resolves the config path in each hook key differently when
+    // CODEX_HOME is set, so the installer must not set it on its own.
+    writeCodexConfig();
+    const log = path.join(work, "codex-env.log");
+    const r = await runInstaller(["--client", "codex"], { ...withFakeCodex(), FAKE_CODEX_ENV_LOG: log });
+    expect(r.code).toBe(0);
+    const lines = fs.readFileSync(log, "utf8").trim().split("\n");
+    expect(lines.length).toBeGreaterThan(0);
+    expect(new Set(lines)).toEqual(new Set(["CODEX_HOME=<unset>"]));
   });
 
   it("adds the hooks without trust and says so when the codex command is missing", async () => {

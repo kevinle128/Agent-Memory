@@ -18,6 +18,8 @@
 # Checks:
 #   C1  a Codex session in a repo reports the project name and writes it on L0
 #   C2  a Codex session outside git reports no project and writes none on L0
+#   C3  `codex exec resume` keeps the session id and its project
+#   C4  `codex exec fork` gets a new session id that reports the project
 #   P1  a pi session in a repo reports the project name, and the proxy session
 #       key equals the reported session id
 #   P2  a pi session outside git reports no project, with the same join
@@ -93,10 +95,12 @@ wait_l0() {
   done
 }
 
-# Run one Codex prompt; print the session id from the first hook report.
+# Run one Codex exec in a folder; print the first Codex hook report.
+# Extra arguments go before the prompt (for example: resume <id>).
 run_codex() {
-  local before; before="$(wc -l < "$PROXY_LOG")"
-  (cd "$1" && timeout 120 codex exec --skip-git-repo-check "Reply with the single word ok." </dev/null >/dev/null 2>&1)
+  local dir="$1" before; shift
+  before="$(wc -l < "$PROXY_LOG")"
+  (cd "$dir" && timeout 120 codex exec --skip-git-repo-check "$@" "Reply with the single word ok." </dev/null >/dev/null 2>&1)
   log_since "$before" | grep "\[hook-report\]" | grep "agent=codex" | head -1
 }
 
@@ -121,6 +125,25 @@ elif ! echo "$ROWS" | grep -q "\"project_name\":\"$EXPECTED_NAME\""; then
   bad "C1 L0 rows for $SID: ${ROWS:-none}"
 else
   ok "C1 hook report and L0 project_name=$EXPECTED_NAME"
+fi
+
+C1_SID="$SID"
+
+echo "== C3: Codex resume"
+REPORT="$(run_codex "$WORK/repo" resume "$C1_SID")"
+if [[ -n "$C1_SID" && "$(sid_of "$REPORT")" == "$C1_SID" && "$REPORT" == *"name=$EXPECTED_NAME"* ]]; then
+  ok "C3 resume keeps session $C1_SID and its project"
+else
+  bad "C3 hook report: ${REPORT:-none}"
+fi
+
+echo "== C4: Codex fork"
+REPORT="$(run_codex "$WORK/repo" fork "$C1_SID")"
+SID="$(sid_of "$REPORT")"
+if [[ -n "$SID" && "$SID" != "$C1_SID" && "$REPORT" == *"name=$EXPECTED_NAME"* ]]; then
+  ok "C4 fork has its own session $SID with the project"
+else
+  bad "C4 hook report: ${REPORT:-none}"
 fi
 
 echo "== C2: Codex outside git"
