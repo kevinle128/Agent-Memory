@@ -595,6 +595,23 @@ export class SkillCore {
     }
   }
 
+  /**
+   * Mark a skill as a template: global scope, origin `template`, same content.
+   * Used when seeding or cleaning the template skills of an agent; a new
+   * version records the change.
+   */
+  async markTemplate(input: PromoteInput): Promise<Skill> {
+    const head = await this.requireHead(input.skill_id, input.team_id);
+    if (input.agent_id) assertOwnerWrap(head, input.agent_id, input.team_id);
+    if (typeof input.expected_version === "number") assertVersionFreshWrap(head, input.expected_version);
+    try {
+      const reason = input.reason?.trim();
+      return this.settle(await this.changes.markTemplate(head, this.ctxOf(input, head), reason || undefined));
+    } catch (e) {
+      toCoreError(e);
+    }
+  }
+
   /** Line diff of the SKILL.md of two versions of one skill, in either order. */
   async diffVersions(input: DiffVersionsInput): Promise<DiffVersionsResult> {
     await this.requireHead(input.skill_id, input.team_id);

@@ -802,6 +802,21 @@ export async function handlePromote(body: unknown, auth: V2AuthContext, requestI
   }
 }
 
+/** `POST /v3/skill/mark-template` — mark a skill as a global template; the content stays the same. */
+export async function handleMarkTemplate(body: unknown, auth: V2AuthContext, requestId: string, deps: SkillRouterDeps): Promise<ApiResponseEnvelope> {
+  const t0 = Date.now();
+  const pre = await precheckWrite(promoteRequestSchema, body, auth, deps, requestId);
+  if (!pre.ok) { obsLogger.warn("skill.handleMarkTemplate.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
+  try {
+    const r = await pre.core.markTemplate(pre.data);
+    obsLogger.info("skill.handleMarkTemplate.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, version: r.version });
+    return successEnvelope(toSummary(r), requestId);
+  } catch (e) {
+    obsLogger.error("skill.handleMarkTemplate.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id }, e instanceof Error ? e : undefined);
+    return mapCoreError(e, requestId, deps, { skill_id: pre.data.skill_id, expected_version: pre.data.expected_version });
+  }
+}
+
 /**
  * `POST /v3/skill/settings` — instance settings that the Hub needs to render
  * skills: `prompt_mode` (`code` shows global and project skills; `chat` has no
@@ -1814,6 +1829,7 @@ export function makeSkillRouteTable(): Record<string, SkillHandler> {
     "/v3/skill/versions/diff": handleVersionsDiff,
     "/v3/skill/rollback": handleRollback,
     "/v3/skill/promote": handlePromote,
+    "/v3/skill/mark-template": handleMarkTemplate,
     "/v3/skill/settings": handleSettings,
     "/v3/skill/proposals/list": handleProposalsList,
     "/v3/skill/proposals/approve": handleProposalApprove,

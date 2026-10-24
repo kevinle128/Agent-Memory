@@ -13,6 +13,7 @@ import {
   handleProposalReject,
   handleProposalsList,
   handlePromote,
+  handleMarkTemplate,
   handleSettings,
   handleRollback,
   handleUpdate,
@@ -347,5 +348,15 @@ describe("promote and settings", () => {
     h = createSkillHarness({ mode: "code" });
     const res = await handleSettings({}, auth, "r", deps({ getPromptMode: () => "code" }));
     expect(res.data).toEqual({ prompt_mode: "code" });
+  });
+});
+
+describe("mark-template", () => {
+  it("marks a skill as a global template with the same content", async () => {
+    h = createSkillHarness({ mode: "code" });
+    const g = await createGlobal("code-review");
+    const res = await handleMarkTemplate({ ...IDS, skill_id: g.skill_id, reason: "Seed template" }, auth, "r", deps());
+    expect(res.code).toBe(0);
+    expect(res.data).toMatchObject({ version: 2, scope: "global", origin: "template", change_source: "template" });
   });
 });

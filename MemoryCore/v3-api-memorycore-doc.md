@@ -585,6 +585,12 @@ sessions/<source>/<team-id>/<user-id>/<session-id>/subagents/<subagent-id>/<star
 
 **错误**：`40001`(已是全局)、`40401`、`40901`。
 
+### POST /v3/skill/mark-template
+
+把 skill 标记为模板（内容不变，新建版本：`scope=global`、`origin=template`、`change_source=template`）。用于初始化或整理 agent 的模板 skill。
+
+**请求体**：同 `promote`。**响应** `data`：`SkillSummary`（新 head）。
+
 ### POST /v3/skill/settings
 
 Hub 渲染 skill 所需的实例设置。**响应** `data`：`{ prompt_mode: "code" | "chat" }`（`chat` 模式没有项目概念）。
