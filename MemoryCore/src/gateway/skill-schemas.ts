@@ -12,7 +12,7 @@
  */
 
 import { z } from "zod";
-import { resolveProjectFields } from "./v2-schemas.js";
+import { projectHashSchema, resolveProjectFields } from "./v2-schemas.js";
 
 // ═════════════════════════════════════════════════════════════════════
 //  公共片段
@@ -155,8 +155,21 @@ export const createRequestSchema = z.object({
   metadata: z.record(z.string(), z.any()).optional(),
 }).superRefine(refineAgentNeedsTeam);
 
+/**
+ * Optional project view of a request. A read returns only visible skills; a write
+ * of a skill hidden by the view is refused.
+ * With `project_hash`: global skills plus the skills of that project.
+ * With `scope_filter: "global_only"` and no `project_hash`: global skills only.
+ * With neither: every skill (Hub and Panel callers).
+ */
+const projectViewShape = {
+  project_hash: projectHashSchema.optional(),
+  scope_filter: z.enum(["global_only"]).optional(),
+};
+
 export const updateRequestSchema = z.object({
   ...idFieldsShape,
+  ...projectViewShape,
   ...changeNoteShape,
   skill_id: z.string().min(1),
   expected_version: z.number().int().min(1),
@@ -165,6 +178,7 @@ export const updateRequestSchema = z.object({
 
 export const patchRequestSchema = z.object({
   ...idFieldsShape,
+  ...projectViewShape,
   ...changeNoteShape,
   skill_id: z.string().min(1),
   expected_version: z.number().int().min(1),
@@ -175,10 +189,12 @@ export const patchRequestSchema = z.object({
 
 export const deleteRequestSchema = z.object({
   ...idFieldsShape,
+  ...projectViewShape,
   skill_id: z.string().min(1),
 }).superRefine(refineAgentNeedsTeam);
 
 export const getRequestSchema = z.object({
+  ...projectViewShape,
   ...idFieldsShape,
   skill_id: z.string().min(1),
   version: z.number().int().min(1).optional(),
@@ -202,6 +218,7 @@ export const getRequestSchema = z.object({
  * 缺 team_id 或 agent_id 直接 40001; 找不到 name 返回 40401(与 get 对齐)。
  */
 export const getByNameRequestSchema = z.object({
+  ...projectViewShape,
   user_id: z.string().min(1).optional(),
   team_id: z.string().min(1),
   agent_id: z.string().min(1),
@@ -213,6 +230,7 @@ export const getByNameRequestSchema = z.object({
 });
 
 export const listRequestSchema = z.object({
+  ...projectViewShape,
   ...idFieldsShape,
   filters: z.object({
     owner_agent_id: z.string().min(1).optional(),
@@ -223,6 +241,7 @@ export const listRequestSchema = z.object({
 }).superRefine(refineAgentNeedsTeam);
 
 export const searchRequestSchema = z.object({
+  ...projectViewShape,
   ...idFieldsShape,
   query: z.string().min(1).max(2048),
   top_k: z.number().int().min(1).max(50).optional(),
@@ -233,6 +252,7 @@ export const searchRequestSchema = z.object({
 
 export const versionsRequestSchema = z.object({
   ...idFieldsShape,
+  ...projectViewShape,
   skill_id: z.string().min(1),
   pagination: paginationSchema.optional(),
 }).superRefine(refineAgentNeedsTeam);
@@ -275,6 +295,7 @@ export const proposalDecisionRequestSchema = z.object({
 
 export const filesWriteRequestSchema = z.object({
   ...idFieldsShape,
+  ...projectViewShape,
   ...changeNoteShape,
   skill_id: z.string().min(1),
   expected_version: z.number().int().min(1),
@@ -283,6 +304,7 @@ export const filesWriteRequestSchema = z.object({
 
 export const filesRemoveRequestSchema = z.object({
   ...idFieldsShape,
+  ...projectViewShape,
   ...changeNoteShape,
   skill_id: z.string().min(1),
   expected_version: z.number().int().min(1),
@@ -290,6 +312,7 @@ export const filesRemoveRequestSchema = z.object({
 }).superRefine(refineAgentNeedsTeam);
 
 export const filesReadRequestSchema = z.object({
+  ...projectViewShape,
   ...idFieldsShape,
   skill_id: z.string().min(1),
   version: z.number().int().min(1).optional(),
@@ -305,6 +328,7 @@ export const exportRequestSchema = z.object({
 }).superRefine(refineAgentNeedsTeam);
 
 export const listingRequestSchema = z.object({
+  ...projectViewShape,
   ...idFieldsShape,
   query: z.string().max(2048).optional(),
   char_budget: z.number().int().min(0).max(64_000).optional(),

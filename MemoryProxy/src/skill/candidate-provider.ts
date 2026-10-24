@@ -38,6 +38,8 @@ import {
 import type { CoreSkillConfig } from "../types.js";
 import type { AgentDetail, TaskDetail } from "../session/types.js";
 
+import { isSkillViewAnswer, viewProjectHash, type SkillViewFields } from "./skill-project-view.js";
+
 const TAG = "[skill-candidates]";
 
 /** 候选集 TTL —— 与 session 生命周期同量级，超时后重算。 */
@@ -49,6 +51,11 @@ export interface CandidateScope {
   team_id: string;
   agent_id: string;
   space_id?: string;
+  /**
+   * Project view of the session. When set, only global skills and the skills of
+   * the project are candidates. Absent means the earlier unfiltered catalog.
+   */
+  view?: SkillViewFields;
 }
 
 export interface CandidateSet {
@@ -185,6 +192,9 @@ export class SkillCandidateProvider {
       // query 参与 key —— 对话 query 逐轮变化时会自然触发重新检索（逐轮语义召回）。
       query ?? "",
       String(maxCandidates),
+      // The view is part of the key: a session that reports its project later
+      // must not be served the candidates of the earlier view.
+      scope.view ? (viewProjectHash(scope.view) ?? "global_only") : "unfiltered",
     ].join("|");
 
     const now = Date.now();
@@ -209,9 +219,15 @@ export class SkillCandidateProvider {
             query: convQuery!,
             top_k: Math.min(50, Math.max(1, maxCandidates)),
             mode: "hybrid",
+            ...(scope.view ?? {}),
           },
           { serviceId: scope.space_id || undefined },
         );
+        // Fail closed: a Core that ignored the view answered with every skill.
+        if (scope.view && !isSkillViewAnswer(result, viewProjectHash(scope.view))) {
+          console.warn(`${TAG} core did not apply the project view to search — no candidates`);
+          return empty;
+        }
         rawCandidates = (Array.isArray(result.items) ? result.items : [])
           .filter((h) => h && typeof h.skill_id === "string" && typeof h.version === "number")
           .map((h) => ({
@@ -229,9 +245,14 @@ export class SkillCandidateProvider {
             agent_id: scope.agent_id,
             query,
             mode: listingMode,
+            ...(scope.view ?? {}),
           },
           { serviceId: scope.space_id || undefined },
         );
+        if (scope.view && !isSkillViewAnswer(result, viewProjectHash(scope.view))) {
+          console.warn(`${TAG} core did not apply the project view to listing — no candidates`);
+          return empty;
+        }
         // 老内核不返回 candidates → 视为无候选。不去解析 `listing` 文本还原
         // 候选（格式受 SKILL_VIEW_MODE / 截断影响，解析不可靠）。
         rawCandidates = (Array.isArray(result.candidates) ? result.candidates : [])

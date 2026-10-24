@@ -71,13 +71,19 @@ export interface SearchHit extends SkillSummary {
   snippet?: string;
 }
 
-export interface SearchSkillsInput extends IdFields {
+/** Project view of a read: global skills plus this project, or global skills only. */
+export interface SkillViewInput {
+  project_hash?: string;
+  scope_filter?: "global_only";
+}
+
+export interface SearchSkillsInput extends IdFields, SkillViewInput {
   query: string;
   top_k?: number;                        // 1..50, default 10
   mode?: "bm25" | "embedding" | "hybrid"; // default 'hybrid'
 }
 
-export interface SearchSkillsResult {
+export interface SearchSkillsResult extends SkillViewInput {
   items: SearchHit[];
 }
 
@@ -202,7 +208,7 @@ export interface ListSkillsResult {
 }
 
 /** Input for /v3/skill/listing — owner-agent skill injection. */
-export interface ListingInput extends IdFields {
+export interface ListingInput extends IdFields, SkillViewInput {
   /** Optional search query; when set, plugin uses FTS BM25 to match relevant skills. */
   query?: string;
   /** char budget for the rendered listing block. Default 8000 in plugin. */
@@ -218,6 +224,10 @@ export interface ListingInput extends IdFields {
    * 设计: docs/design/2026-09-09-skill-usage-telemetry-and-default-task-recall.md
    */
   mode?: "auto" | "activity";
+  /** Project view: global skills plus the skills of this project. */
+  project_hash?: string;
+  /** Without a project: `global_only` returns global skills only. */
+  scope_filter?: "global_only";
 }
 
 /**
@@ -246,10 +256,14 @@ export interface ListingResult {
   hits: Array<{ skill_id: string; version: number; name: string }>;
   /** 结构化候选。老内核缺该字段时为 `undefined`。 */
   candidates?: ListingCandidate[];
+  /** Echo of the requested `project_hash`. A Core that ignores the project view omits it. */
+  project_hash?: string;
+  /** Echo of the requested `scope_filter`. A Core that ignores the view omits it. */
+  scope_filter?: "global_only";
 }
 
 /** Input for /v3/skill/get —— 只读取指定 skill 的正文/清单。 */
-export interface GetSkillInput extends IdFields {
+export interface GetSkillInput extends IdFields, SkillViewInput {
   skill_id: string;
   /** 固定版本。不传 = head —— selection 链路必须显式传，避免读到与候选不同的版本。 */
   version?: number;
@@ -261,6 +275,9 @@ export interface GetSkillInput extends IdFields {
 export interface GetSkillResult extends SkillSummary {
   content?: string;
   manifest?: Array<{ path: string; size_bytes?: number; mime_type?: string }>;
+  /** Placement of the skill; a project skill carries the hash of its project. */
+  scope?: string;
+  project_hash?: string;
 }
 
 /** Core gateway envelope (mirrors `tdai-memory-plugin/src/gateway/v2-router.ts:145-150`). */

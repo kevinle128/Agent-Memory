@@ -18,36 +18,53 @@ const MAX_SCANNED_ROWS = 5000;
 const SEARCH_OVERFETCH = 4;
 const SEARCH_MAX_TOP_K = 100;
 
-/** True when a session of `projectHash` may see the skill. */
+/**
+ * True when a session of `projectHash` may see the skill.
+ * A `null` hash means a session without a project: only global skills are visible.
+ */
 export function isVisibleToProject(
   skill: Pick<Skill, "scope" | "project_hash">,
-  projectHash: string,
+  projectHash: string | null,
 ): boolean {
-  return skill.scope !== "project" || skill.project_hash === projectHash;
+  return skill.scope !== "project" || (projectHash !== null && skill.project_hash === projectHash);
 }
+
+type ListFilters = Parameters<SkillCore["list"]>[0]["filters"];
 
 /**
  * The newest visible skills, at most `limit`, with the count of all visible
  * skills. The store has no project filter, so pages are read and filtered here.
+ * `offset` skips visible skills, not stored rows, so paging stays correct.
  */
 export async function listVisibleSkills(
   core: SkillCore,
   ids: IdFields,
-  projectHash: string,
+  projectHash: string | null,
   limit: number,
+  opts: { offset?: number; filters?: ListFilters } = {},
 ): Promise<{ items: Skill[]; total: number }> {
   const items: Skill[] = [];
+  const skip = opts.offset ?? 0;
   let total = 0;
   let offset = 0;
-  while (offset < MAX_SCANNED_ROWS) {
-    const page = await core.list({ ...ids, pagination: { limit: PAGE_SIZE, offset } });
+  let truncated = false;
+  while (true) {
+    if (offset >= MAX_SCANNED_ROWS) { truncated = true; break; }
+    const page = await core.list({
+      ...ids,
+      ...(opts.filters ? { filters: opts.filters } : {}),
+      pagination: { limit: PAGE_SIZE, offset },
+    });
     for (const s of page.items) {
       if (!isVisibleToProject(s, projectHash)) continue;
       total++;
-      if (items.length < limit) items.push(s);
+      if (total > skip && items.length < limit) items.push(s);
     }
     offset += PAGE_SIZE;
     if (page.items.length < PAGE_SIZE || offset >= page.total) break;
+  }
+  if (truncated) {
+    console.warn(`[skill-project-view] scan stopped at ${MAX_SCANNED_ROWS} rows; the listing may miss skills`);
   }
   return { items, total };
 }
@@ -56,13 +73,15 @@ export async function listVisibleSkills(
 export async function searchVisibleSkills(
   core: SkillCore,
   ids: IdFields,
-  projectHash: string,
+  projectHash: string | null,
   query: string,
   topK: number,
+  mode?: "bm25" | "embedding" | "hybrid",
 ): Promise<SkillSearchResult[]> {
   const hits = await core.search({
     ...ids,
     query,
+    ...(mode ? { mode } : {}),
     top_k: Math.min(topK * SEARCH_OVERFETCH, SEARCH_MAX_TOP_K),
   });
   return hits.filter((h) => isVisibleToProject(h.skill, projectHash)).slice(0, topK);

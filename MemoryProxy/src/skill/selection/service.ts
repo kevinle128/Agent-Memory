@@ -43,10 +43,14 @@ export const SKILL_SELECTION_INSTRUCTIONS = [
 
 export const SKILL_NONE_DESCRIPTION = "No candidate skill materially helps with the current request.";
 
+import type { SkillViewFields } from "../skill-project-view.js";
+
 export interface SelectionScope {
   team_id: string;
   agent_id: string;
   space_id?: string;
+  /** Project view of the session; absent means the earlier unfiltered catalog. */
+  view?: SkillViewFields;
 }
 
 export type SelectionDecision =

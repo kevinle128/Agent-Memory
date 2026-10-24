@@ -363,6 +363,7 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
         new SkillInjector({
           coreSkill: config.coreSkill,
           defaultTaskId: config.sessionInit?.defaultTaskId,
+          profileScopeMode: config.tdai?.memory?.profileScopeMode,
         }),
       );
 

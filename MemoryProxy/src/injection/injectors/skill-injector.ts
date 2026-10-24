@@ -36,6 +36,13 @@ import {
   type ListingResult,
 } from "../../skill/core-client.js";
 import type { CoreSkillConfig } from "../../types.js";
+import { getProjectHash } from "../../tdai/identity.js";
+import {
+  isSkillProjectViewOn,
+  isSkillViewAnswer,
+  skillCatalogVariant,
+  skillViewFields,
+} from "../../skill/skill-project-view.js";
 
 const TAG = "[skill-injector]";
 
@@ -53,6 +60,12 @@ export interface SkillInjectorConfig {
    * 设计: docs/design/2026-09-09-skill-usage-telemetry-and-default-task-recall.md
    */
   defaultTaskId?: string;
+  /**
+   * Profile scope mode of the deployment. Anything but "legacy" shows the
+   * session only the global skills and the skills of its own project.
+   * Absent means the default mode, which filters.
+   */
+  profileScopeMode?: unknown;
 }
 
 /**
@@ -168,12 +181,29 @@ export class SkillInjector implements InjectionHook {
   description = "Inject agent-owned cloud skills via /v3/skill/listing before <agent_skills>.";
   /** Listing result is stable for the session. */
   cacheStrategy: CacheStrategy = "session_init";
+  /** Id of the catalog without a known project, which is the one prewarm writes. */
+  cacheVariant: string | undefined;
 
   constructor(
     private config: SkillInjectorConfig,
     /** Optional override (tests). */
     private clientOverride?: CoreSkillClient,
-  ) {}
+  ) {
+    this.cacheVariant = isSkillProjectViewOn(config.profileScopeMode) ? skillCatalogVariant(undefined) : undefined;
+  }
+
+  /**
+   * The project of the session is part of the cache id, so a session that
+   * reports its project later, or changes it, renders the catalog of the new
+   * project, and a catalog prewarmed without a project is not reused for it.
+   * The prefix differs from the earlier catalog id, so catalogs cached before
+   * the project view are never read again.
+   */
+  cacheVariantFor(custom: Record<string, unknown> | undefined): string | undefined {
+    return isSkillProjectViewOn(this.config.profileScopeMode)
+      ? skillCatalogVariant(getProjectHash(custom))
+      : this.cacheVariant;
+  }
 
   /**
    * Live-path execute (cache-miss self-heal).
@@ -211,6 +241,7 @@ export class SkillInjector implements InjectionHook {
       space_id: session?.space_id,
       query: undefined,
       trigger: "execute",
+      projectHash: getProjectHash(custom),
     });
   }
 
@@ -281,8 +312,11 @@ export class SkillInjector implements InjectionHook {
     /** 'activity' 触发 core 的活跃度分支; 未传 = auto (老逻辑)。 */
     mode?: "auto" | "activity";
     trigger: "prewarm" | "execute" | "prewarm-default";
+    /** Project of the session; undefined when the hook has not reported one. */
+    projectHash?: string;
   }): Promise<ContextBlock[]> {
-    const { team_id, agent_id, space_id, query, mode, trigger } = args;
+    const { team_id, agent_id, space_id, query, mode, trigger, projectHash } = args;
+    const filtered = isSkillProjectViewOn(this.config.profileScopeMode);
     if (!team_id || !agent_id) {
       console.log(
         `${TAG} ${trigger}: missing session identity (team_id/agent_id) — skipping listing`,
@@ -299,7 +333,8 @@ export class SkillInjector implements InjectionHook {
       `${TAG} ${trigger} team=${team_id} agent=${agent_id}`
         + ` space=${space_id ?? "(none)"} serviceId=${serviceId ?? "(fallback config)"}`
         + ` query=${JSON.stringify(query?.slice(0, 80) ?? null)}`
-        + ` requested_mode=${mode ?? "auto"}`,
+        + ` requested_mode=${mode ?? "auto"}`
+        + ` project=${filtered ? (projectHash ?? "none") : "legacy"}`,
     );
 
     let result: ListingResult;
@@ -310,15 +345,24 @@ export class SkillInjector implements InjectionHook {
         agent_id,
         query,
         mode,
+        ...(filtered ? skillViewFields(projectHash) : {}),
       }, { serviceId });
       console.log(
         `${TAG} ${trigger} result mode=${result.mode}`
-          + ` hits=${result.hits?.length ?? 0} listingLen=${(result.listing ?? "").length}`,
+          + ` hits=${result.hits?.length ?? 0} listingLen=${(result.listing ?? "").length}`
+          + ` names=${JSON.stringify((result.hits ?? []).slice(0, 20).map((h) => h.name))}`,
       );
     } catch (err) {
       console.warn(
         `${TAG} ${trigger} core listing failed, degrading to empty <available_skills>: ${(err as Error).message}`,
       );
+      return [];
+    }
+
+    // Fail closed: a Core that ignored the view answered with every skill, and
+    // that catalog must not reach the model. An empty catalog is the safe result.
+    if (filtered && !isSkillViewAnswer(result, projectHash)) {
+      console.warn(`${TAG} ${trigger}: core did not apply the project view — no <available_skills>`);
       return [];
     }
 

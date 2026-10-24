@@ -106,6 +106,34 @@ export async function withSessionProject<T extends { projectKey?: string; projec
   }
 }
 
+/**
+ * Project of a bridge session, from the workspace the client hook reported.
+ * `ids` comes from the session state; `sessionKey` is the fallback composite key
+ * (`<agentSource>:<sessionId>`). Returns undefined when the hook reported no
+ * project: a missing project means "no project", never a guess.
+ */
+export async function resolveSessionProject(
+  config: { storage?: import("../types.js").ProxyConfig["storage"] },
+  ids: { space_id?: string; user_id: string; composite_key?: string },
+  sessionKey: string,
+): Promise<{ projectKey: string; projectHash: string; projectName?: string } | undefined> {
+  const composite = ids.composite_key ?? sessionKey;
+  const sep = composite.indexOf(":");
+  if (sep <= 0) return undefined;
+  const found = await withSessionProject<{ projectKey?: string; projectHash?: string; projectName?: string }>(
+    {},
+    config,
+    {
+      spaceId: ids.space_id ?? "",
+      userId: ids.user_id,
+      agentSource: composite.slice(0, sep),
+      sessionId: composite.slice(sep + 1),
+    },
+  );
+  if (!found?.projectKey || !found.projectHash) return undefined;
+  return { projectKey: found.projectKey, projectHash: found.projectHash, ...(found.projectName ? { projectName: found.projectName } : {}) };
+}
+
 /** Replace the process-wide store (tests). */
 export function setSessionWorkspaceStore(store: SessionWorkspaceStore | null): void {
   instance = store;

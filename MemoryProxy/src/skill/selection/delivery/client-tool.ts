@@ -26,6 +26,8 @@ import {
   skillLoadToolUseId,
 } from "./detect.js";
 import { buildClientToolResponse } from "./response.js";
+import { resolveSessionProject } from "../../../project-scope/session-workspace.js";
+import { isSkillProjectViewOn, skillViewFields, type SkillViewFields } from "../../skill-project-view.js";
 
 export interface ClientToolRequest {
   protocol: ClientToolProtocol;
@@ -42,6 +44,8 @@ export interface ClientToolRequest {
   sessionKey: string;
   agentSource: string;
   skillCapability: boolean;
+  /** Project view of the session; absent means the earlier unfiltered catalog. */
+  skillView?: SkillViewFields;
 }
 
 export type ClientToolOutcome =
@@ -88,7 +92,7 @@ export class ClientToolDelivery {
     if (history.loaded.size >= MAX_CLIENT_LOADS) return pass("max_loads_reached");
 
     const decision = await this.service.select({
-      scope: { team_id: s.team_id, agent_id: s.agent_id, space_id: s.space_id },
+      scope: { team_id: s.team_id, agent_id: s.agent_id, space_id: s.space_id, view: req.skillView },
       taskId: s.task_id,
       sessionScope: req.sessionKey,
       dialogue: extractRawDialogue(req.messages),
@@ -143,7 +147,18 @@ export async function tryClientToolDelivery(
     const delivery = getClientToolDelivery(config);
     if (!delivery) return null;
     const sid = typeof session.session_id === "string" && session.session_id ? session.session_id : req.conversationId;
-    const outcome = await delivery.maybeRespond({ ...req, conversationId: sid });
+    // The project comes from the workspace the hook reported, never from the model.
+    let skillView: SkillViewFields | undefined;
+    if (isSkillProjectViewOn(config.tdai?.memory?.profileScopeMode)) {
+      const userId = typeof session.user_id === "string" ? session.user_id : "";
+      const project = await resolveSessionProject(
+        config,
+        { space_id: typeof session.space_id === "string" ? session.space_id : undefined, user_id: userId },
+        `${req.agentSource}:${sid}`,
+      );
+      skillView = skillViewFields(project?.projectHash);
+    }
+    const outcome = await delivery.maybeRespond({ ...req, conversationId: sid, skillView });
     if (outcome.kind !== "respond") return null;
     console.log(
       `[skill-selection] client_tool load protocol=${req.protocol} skill=${outcome.skillId}@${outcome.version} session=${req.sessionKey}`,

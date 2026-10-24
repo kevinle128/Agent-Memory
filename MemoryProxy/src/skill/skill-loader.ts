@@ -25,6 +25,7 @@ import {
   type GetSkillResult,
 } from "./core-client.js";
 import type { CoreSkillConfig } from "../types.js";
+import { isSkillVisibleInView, type SkillViewFields } from "./skill-project-view.js";
 
 const TAG = "[skill-loader]";
 
@@ -32,6 +33,8 @@ export interface LoadScope {
   team_id: string;
   agent_id: string;
   space_id?: string;
+  /** Project view of the session; absent means the earlier unfiltered read. */
+  view?: SkillViewFields;
 }
 
 export type LoadOutcome =
@@ -70,12 +73,19 @@ export class SkillLoader {
           include_content: true,
           // manifest 暂不使用 —— 首版只注入正文，不下发附件。
           include_manifest: false,
+          ...(scope.view ?? {}),
         },
         { serviceId: scope.space_id || undefined },
       );
     } catch (err) {
       console.warn(`${TAG} get failed skill=${skillId}@${version}: ${(err as Error).message}`);
       return { kind: "failed", reason: "core_error" };
+    }
+
+    // A skill of another project is refused, even when an old Core served it.
+    if (scope.view && !isSkillVisibleInView(result, scope.view)) {
+      console.warn(`${TAG} skill=${skillId} is outside the project view, refusing to inject`);
+      return { kind: "failed", reason: "not_visible" };
     }
 
     // 一致性校验 —— core 必须回同一个 skill 的同一个版本。

@@ -60,6 +60,7 @@ import type { SkillChangeProposal } from "../core/skill/skill-proposal-types.js"
 import type { SkillExtractor } from "../core/skill/skill-extractor.js";
 import type { Logger } from "../core/types.js";
 import type { Skill, ResolvedSkillConfig } from "../core/skill/types.js";
+import { isVisibleToProject, listVisibleSkills, searchVisibleSkills } from "../core/skill/skill-project-view.js";
 import { DEFAULT_COMPRESS_OPTIONS } from "../core/skill/conversation-add/message-compressor.js";
 import { DEFAULT_OVERSIZE_OPTIONS } from "../core/skill/conversation-add/oversize-strategy.js";
 import { prepareArchivePayload } from "../core/skill/conversation-add/prepare-archive.js";
@@ -301,6 +302,54 @@ async function precheckWrite<T>(
 // 把 Skill 行形成 SkillSummary 形态（不带 content；带 manifest 当 detail 时再加）
 // 字段对齐设计文档 §3.4 SkillSummary。
 /** 反序列化 skill.metadata_json 到 metadata 对象；无效 JSON 返回 undefined。 */
+/**
+ * Project view of a read request. `undefined` means no filtering (Hub, Panel and
+ * old proxies). A `null` hash means a session without a project: global skills only.
+ */
+type ReadView = { hash: string | null };
+
+function readView(d: { project_hash?: string; scope_filter?: "global_only" }): ReadView | undefined {
+  if (d.project_hash) return { hash: d.project_hash };
+  if (d.scope_filter === "global_only") return { hash: null };
+  return undefined;
+}
+
+/**
+ * The requested view is echoed so a proxy can detect an old Core that ignored it
+ * and returned every skill: `project_hash` for a project view, `scope_filter`
+ * for a global-only view.
+ */
+function viewEcho(d: { project_hash?: string; scope_filter?: "global_only" }): { project_hash?: string; scope_filter?: "global_only" } {
+  if (d.project_hash) return { project_hash: d.project_hash };
+  return d.scope_filter ? { scope_filter: d.scope_filter } : {};
+}
+
+function hiddenByView(view: ReadView | undefined, s: Pick<Skill, "scope" | "project_hash">): boolean {
+  return view !== undefined && !isVisibleToProject(s, view.hash);
+}
+
+/**
+ * Refuses a skill hidden by the request view, the same way as a missing skill.
+ * Returns the 40401 envelope, or null when the skill is visible or no view was sent.
+ */
+async function refuseHidden(
+  core: SkillCore,
+  data: { project_hash?: string; scope_filter?: "global_only"; user_id?: string; team_id?: string; agent_id?: string; skill_id: string },
+  requestId: string,
+  event: string,
+  t0: number,
+): Promise<ApiResponseEnvelope | null> {
+  const view = readView(data);
+  if (!view) return null;
+  const head = await core.get({
+    user_id: data.user_id, team_id: data.team_id, agent_id: data.agent_id,
+    skill_id: data.skill_id, include_content: false, include_manifest: false,
+  });
+  if (!hiddenByView(view, head)) return null;
+  obsLogger.warn(event, { req_id: requestId, code: 40401, dur_ms: Date.now() - t0, skill_id: data.skill_id, reason: "hidden_by_view" });
+  return errorEnvelope(40401, `SKILL_NOT_FOUND: ${data.skill_id}`, requestId);
+}
+
 function parseMetadata(s: Skill): Record<string, unknown> | undefined {
   const raw = s.metadata_json;
   if (!raw || raw === "{}" || raw === "") return undefined;
@@ -427,6 +476,8 @@ export async function handleUpdate(body: unknown, auth: V2AuthContext, requestId
   }
 
   try {
+    const hidden = await refuseHidden(pre.core, pre.data, requestId, "skill.handleUpdate.done", t0);
+    if (hidden) return hidden;
     const r = await pre.core.update(pre.data);
     try { trace.report("skill.update", { skill_id: r.skill_id, team_id: r.team_id, agent_id: r.owner_agent_id, name: r.name, version: r.version }); } catch { /* noop */ }
     obsLogger.info("skill.handleUpdate.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, name: r.name, version: r.version });
@@ -451,6 +502,8 @@ export async function handlePatch(body: unknown, auth: V2AuthContext, requestId:
   }
 
   try {
+    const hidden = await refuseHidden(pre.core, pre.data, requestId, "skill.handlePatch.done", t0);
+    if (hidden) return hidden;
     const r = await pre.core.patch(pre.data);
     try { trace.report("skill.patch", { skill_id: r.skill_id, team_id: r.team_id, agent_id: r.owner_agent_id, name: r.name, version: r.version }); } catch { /* noop */ }
     obsLogger.info("skill.handlePatch.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, name: r.name, version: r.version });
@@ -466,6 +519,8 @@ export async function handleDelete(body: unknown, _auth: V2AuthContext, requestI
   const pre = await precheck(deleteRequestSchema, body, _auth, deps, requestId);
   if (!pre.ok) { obsLogger.warn("skill.handleDelete.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
   try {
+    const hidden = await refuseHidden(pre.core, pre.data, requestId, "skill.handleDelete.done", t0);
+    if (hidden) return hidden;
     const r = await pre.core.delete(pre.data);
 
     // ── asset 物理删除兜底：DELETE meta_assets + 级联清 agent 绑定 / ACL ──
@@ -534,7 +589,8 @@ export async function handleGetByName(body: unknown, _auth: V2AuthContext, reque
       filters: { name_prefix: pre.data.skill_name },
       pagination: { limit: 10 },
     });
-    const hit = listed.items.find((s) => s.name === pre.data.skill_name);
+    const view = readView(pre.data);
+    const hit = listed.items.find((s) => s.name === pre.data.skill_name && !hiddenByView(view, s));
     if (!hit) {
       obsLogger.info("skill.handleGetByName.done", {
         req_id: requestId, code: 40401, dur_ms: Date.now() - t0,
@@ -588,6 +644,11 @@ export async function handleGet(body: unknown, _auth: V2AuthContext, requestId: 
   if (!pre.ok) { obsLogger.warn("skill.handleGet.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
   try {
     const row = await pre.core.get(pre.data);
+    // A skill of another project reads as missing, the same as an unknown id.
+    if (hiddenByView(readView(pre.data), row)) {
+      obsLogger.info("skill.handleGet.done", { req_id: requestId, code: 40401, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, reason: "hidden_by_view" });
+      return errorEnvelope(40401, `SKILL_NOT_FOUND: ${pre.data.skill_id}`, requestId);
+    }
     const includeContent = pre.data.include_content ?? true;
     const includeManifest = pre.data.include_manifest ?? true;
     // Detail view 额外附上 content_hash / storage_dir（summary 没输出这些）。
@@ -616,9 +677,19 @@ export async function handleList(body: unknown, _auth: V2AuthContext, requestId:
     // 仅供管控台"回收站"视图使用。不传 status 时默认只返回 active（见
     // SqliteSkillStore.listSkills / TcvdbSkillStore.listSkills 中的默认值）。
     // 普通业务调用方 **不应** 显式请求 archived——它对读/写 API 已经不可见。
-    const r = await pre.core.list(pre.data);
+    const view = readView(pre.data);
+    // With a view the store rows are filtered here, so `total` counts visible skills only.
+    const r = view
+      ? await listVisibleSkills(
+          pre.core,
+          { user_id: pre.data.user_id, team_id: pre.data.team_id, agent_id: pre.data.agent_id },
+          view.hash,
+          pre.data.pagination?.limit ?? 50,
+          { offset: pre.data.pagination?.offset, filters: pre.data.filters },
+        )
+      : await pre.core.list(pre.data);
     obsLogger.info("skill.handleList.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, items: r.items.length, total: r.total });
-    return successEnvelope({ items: r.items.map(toSummary), total: r.total }, requestId);
+    return successEnvelope({ items: r.items.map(toSummary), total: r.total, ...viewEcho(pre.data) }, requestId);
   } catch (e) { obsLogger.error("skill.handleList.done", { req_id: requestId, dur_ms: Date.now() - t0 }, e instanceof Error ? e : undefined); return mapCoreError(e, requestId); }
 }
 
@@ -629,11 +700,21 @@ export async function handleSearch(body: unknown, _auth: V2AuthContext, requestI
   try {
     // scope="team" → strip agent_id so store does team-wide search (no owner filter).
     // The v3 isolation middleware already verified team_id + agent_id + user_id are present.
-    const { scope, ...data } = pre.data;
+    const { scope, project_hash: _projectHash, scope_filter: _scopeFilter, ...data } = pre.data;
     const searchInput = scope === "team"
       ? { ...data, agent_id: undefined }
       : data;
-    const hits = await pre.core.search(searchInput);
+    const view = readView(pre.data);
+    const hits = view
+      ? await searchVisibleSkills(
+          pre.core,
+          { user_id: searchInput.user_id, team_id: searchInput.team_id, agent_id: searchInput.agent_id },
+          view.hash,
+          searchInput.query,
+          searchInput.top_k ?? 10,
+          searchInput.mode,
+        )
+      : await pre.core.search(searchInput);
     const items = hits.map((h) => ({
       ...toSummary(h.skill),
       score: h.score,
@@ -641,7 +722,7 @@ export async function handleSearch(body: unknown, _auth: V2AuthContext, requestI
       snippet: h.snippet && h.snippet.length > 0 ? h.snippet : h.skill.description,
     }));
     obsLogger.info("skill.handleSearch.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, items: items.length, scope: pre.data.scope ?? "agent" });
-    return successEnvelope({ items }, requestId);
+    return successEnvelope({ items, ...viewEcho(pre.data) }, requestId);
   } catch (e) { obsLogger.error("skill.handleSearch.done", { req_id: requestId, dur_ms: Date.now() - t0 }, e instanceof Error ? e : undefined); return mapCoreError(e, requestId); }
 }
 
@@ -650,6 +731,8 @@ export async function handleVersions(body: unknown, _auth: V2AuthContext, reques
   const pre = await precheck(versionsRequestSchema, body, _auth, deps, requestId);
   if (!pre.ok) { obsLogger.warn("skill.handleVersions.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
   try {
+    const hidden = await refuseHidden(pre.core, pre.data, requestId, "skill.handleVersions.done", t0);
+    if (hidden) return hidden;
     const r = await pre.core.listVersions(pre.data);
     if (r.total === 0) {
       obsLogger.warn("skill.handleVersions.done", { req_id: requestId, code: 40401, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, reason: "not_found" });
@@ -660,7 +743,7 @@ export async function handleVersions(body: unknown, _auth: V2AuthContext, reques
       is_expired: (s as Skill & { is_expired: boolean }).is_expired ?? false,
     }));
     obsLogger.info("skill.handleVersions.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, items: items.length, total: r.total });
-    return successEnvelope({ items, total: r.total }, requestId);
+    return successEnvelope({ items, total: r.total, ...viewEcho(pre.data) }, requestId);
   } catch (e) { obsLogger.error("skill.handleVersions.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id }, e instanceof Error ? e : undefined); return mapCoreError(e, requestId); }
 }
 
@@ -846,6 +929,8 @@ export async function handleFilesWrite(body: unknown, auth: V2AuthContext, reque
   }
 
   try {
+    const hidden = await refuseHidden(pre.core, pre.data, requestId, "skill.handleFilesWrite.done", t0);
+    if (hidden) return hidden;
     const r = await pre.core.writeFiles(pre.data);
     obsLogger.info("skill.handleFilesWrite.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, version: r.version, files: pre.data.files.length });
     return successEnvelope(toSummary(r), requestId);
@@ -869,6 +954,8 @@ export async function handleFilesRemove(body: unknown, auth: V2AuthContext, requ
   }
 
   try {
+    const hidden = await refuseHidden(pre.core, pre.data, requestId, "skill.handleFilesRemove.done", t0);
+    if (hidden) return hidden;
     const r = await pre.core.removeFiles(pre.data);
     obsLogger.info("skill.handleFilesRemove.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: r.skill_id, version: r.version, paths: pre.data.paths.length });
     return successEnvelope(toSummary(r), requestId);
@@ -883,12 +970,23 @@ export async function handleFilesRead(body: unknown, _auth: V2AuthContext, reque
   const pre = await precheck(filesReadRequestSchema, body, _auth, deps, requestId);
   if (!pre.ok) { obsLogger.warn("skill.handleFilesRead.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
   try {
+    const view = readView(pre.data);
+    if (view) {
+      const head = await pre.core.get({
+        user_id: pre.data.user_id, team_id: pre.data.team_id, agent_id: pre.data.agent_id,
+        skill_id: pre.data.skill_id, include_content: false, include_manifest: false,
+      });
+      if (hiddenByView(view, head)) {
+        obsLogger.info("skill.handleFilesRead.done", { req_id: requestId, code: 40401, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id, reason: "hidden_by_view" });
+        return errorEnvelope(40401, `SKILL_NOT_FOUND: ${pre.data.skill_id}`, requestId);
+      }
+    }
     const r = await pre.core.readFile(pre.data);
     obsLogger.info("skill.handleFilesRead.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id,
       version: r.version,
       size_bytes: r.size_bytes,
       encoding: r.encoding, });
-    return successEnvelope(r, requestId);
+    return successEnvelope({ ...r, ...viewEcho(pre.data) }, requestId);
   } catch (e) { obsLogger.error("skill.handleFilesRead.done", { req_id: requestId, dur_ms: Date.now() - t0, skill_id: pre.data.skill_id }, e instanceof Error ? e : undefined); return mapCoreError(e, requestId); }
 }
 
@@ -942,8 +1040,9 @@ async function resolveActivityHits(args: {
   team_id: string;
   agent_id: string;
   top_k: number;
+  view?: ReadView;
 }): Promise<Array<{ skill_id: string; name: string; description: string; version: number }> | null> {
-  const { deps, core, team_id, agent_id, top_k } = args;
+  const { deps, core, team_id, agent_id, top_k, view } = args;
 
   // 无 CH client dep → 未装配, 直接降级 (向后兼容: 老 deployment 完全不受影响)
   if (!deps.getAnalyticsChClient) return null;
@@ -1009,6 +1108,7 @@ async function resolveActivityHits(args: {
   await Promise.all(candidates.map(async (c) => {
     try {
       const head = await core.get({ skill_id: c.skill_id, team_id });
+      if (hiddenByView(view, head)) return;
       const eventTs = Date.parse(String(c.last_active_ts));    // ISO → ms; 失败为 NaN
       const eventTsSafe = Number.isFinite(eventTs) ? eventTs : 0;
       // CH JSONEachRow 对 UInt64 count 默认返回 string (output_format_json_quote_64bit_integers=1);
@@ -1096,6 +1196,7 @@ export async function handleListing(body: unknown, _auth: V2AuthContext, request
     const charBudget = pre.data.char_budget ?? 8000;
     const query = (pre.data.query ?? "").trim();
     const useSearch = query.length > 0;
+    const view = readView(pre.data);
 
     // 从配置读 routing：searchTopK（listing 最多注入多少条）+ mode（bm25/embedding/hybrid）。
     const routing = deps.getResolvedSkillConfig?.()?.routing;
@@ -1120,6 +1221,7 @@ export async function handleListing(body: unknown, _auth: V2AuthContext, request
           team_id: pre.data.team_id!,
           agent_id: pre.data.agent_id!,
           top_k: topK,
+          view,
         });
         if (activityItems && activityItems.length > 0) {
           items = activityItems;
@@ -1141,14 +1243,10 @@ export async function handleListing(body: unknown, _auth: V2AuthContext, request
     // search 模式：按 routing.mode 选检索算法；fallback 到 list head（query 为空）。
     if (mode !== "activity") {
       if (useSearch) {
-        const hits = await pre.core.search({
-          user_id: pre.data.user_id,
-          team_id: pre.data.team_id,
-          agent_id: pre.data.agent_id,
-          query,
-          top_k: topK,
-          mode: routing?.mode,
-        });
+        const listingIds = { user_id: pre.data.user_id, team_id: pre.data.team_id, agent_id: pre.data.agent_id };
+        const hits = view
+          ? await searchVisibleSkills(pre.core, listingIds, view.hash, query, topK, routing?.mode)
+          : await pre.core.search({ ...listingIds, query, top_k: topK, mode: routing?.mode });
         items = hits.map((h) => ({
           skill_id: h.skill.skill_id,
           name: h.skill.name,
@@ -1157,12 +1255,11 @@ export async function handleListing(body: unknown, _auth: V2AuthContext, request
         }));
         mode = "search";
       } else {
-        const r = await pre.core.list({
-          user_id: pre.data.user_id,
-          team_id: pre.data.team_id,
-          agent_id: pre.data.agent_id,
-          pagination: { limit: topK },
-        });
+        const listIds = { user_id: pre.data.user_id, team_id: pre.data.team_id, agent_id: pre.data.agent_id };
+        // Filter before the limit, so a hidden skill never takes a slot of a visible one.
+        const r = view
+          ? await listVisibleSkills(pre.core, listIds, view.hash, topK)
+          : await pre.core.list({ ...listIds, pagination: { limit: topK } });
         items = r.items.map((s) => ({
           skill_id: s.skill_id,
           name: s.name,
@@ -1244,6 +1341,7 @@ export async function handleListing(body: unknown, _auth: V2AuthContext, request
       listing,
       hits: items.map((s) => ({ skill_id: s.skill_id, version: s.version, name: s.name })),
       candidates,
+      ...viewEcho(pre.data),
     }, requestId);
   } catch (e) { obsLogger.error("skill.handleListing.done", { req_id: requestId, dur_ms: Date.now() - t0 }, e instanceof Error ? e : undefined); return mapCoreError(e, requestId); }
 }

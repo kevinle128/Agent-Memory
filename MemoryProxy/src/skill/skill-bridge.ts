@@ -36,6 +36,12 @@ import { emitBridgeToolCallTelemetry, emitBridgeRejectTelemetry, emitSkillUsageT
 import { getCoreSkillClient, type CoreSkillClient } from "./core-client.js";
 import { renderSkillResult } from "./selection/query.js";
 import { sessionKeyCandidates } from "../agent-adapters/index.js";
+import { resolveSessionProject } from "../project-scope/session-workspace.js";
+import {
+  guardSkillResponse,
+  isSkillProjectViewOn,
+  skillViewFields,
+} from "./skill-project-view.js";
 
 /**
  * 二选一的 pin repo（KvVersionPinRepo 或 VersionPinRepo）——
@@ -160,6 +166,29 @@ const ALLOWED_SUBPATHS = new Set<string>([
   // (不依赖 messages, core 从 conversation buffer 拿)。见下方 sub === "extract" 分支。
   "extract",
 ]);
+
+/**
+ * Fields only the proxy may set. The model controls neither the project view
+ * of a read nor the change policy and placement of a write, so a value sent by
+ * the model is dropped and the proxy sets its own from the session.
+ */
+const MODEL_FORBIDDEN_FIELDS = [
+  "change_source",
+  "scope",
+  "project_hash",
+  "project_key",
+  "project_name",
+  "origin",
+  "scope_filter",
+  "source_session_id",
+] as const;
+
+/** Copy of `body` without the fields only the proxy may set. */
+function stripModelFields(body: Record<string, unknown>): Record<string, unknown> {
+  const copy = { ...body };
+  for (const field of MODEL_FORBIDDEN_FIELDS) delete copy[field];
+  return copy;
+}
 
 /** Write subpaths — rejected when `allowLlmWrite=false`. */
 const WRITE_SUBPATHS = new Set<string>([
@@ -578,6 +607,40 @@ export function createSkillBridgeHandler(
       return envelope(40001, `${TAG} invalid JSON body: ${(err as Error).message}`, 400);
     }
 
+    // Project view. The model never chooses the project: its own fields are
+    // dropped, and the project comes from the workspace the hook reported.
+    // "legacy" keeps the earlier unfiltered behavior.
+    const viewOn = isSkillProjectViewOn(config.tdai?.memory?.profileScopeMode);
+    const sessionProject = viewOn ? await resolveSessionProject(config, ids, sessionKey) : undefined;
+    const sessionProjectHash = sessionProject?.projectHash;
+    if (viewOn) inboundBody = stripModelFields(inboundBody);
+    // Fields the proxy adds to the Core request of this call.
+    const viewFields: Record<string, unknown> = viewOn
+      ? {
+          ...skillViewFields(sessionProjectHash),
+          ...(WRITE_SUBPATHS.has(sub)
+            // A model edit is a system proposal: a global skill is not changed
+            // in place, and a new skill belongs to the project of the session.
+            ? {
+                change_source: "extracted",
+                // Provenance comes from the session, never from the model.
+                source_session_id: (() => {
+                  const composite = ids.composite_key ?? sessionKey;
+                  const sep = composite.indexOf(":");
+                  return (sep > 0 ? composite.slice(sep + 1) : composite).slice(0, 128);
+                })(),
+                ...(sub === "create" && sessionProject
+                  ? {
+                      scope: "project",
+                      project_key: sessionProject.projectKey,
+                      project_name: sessionProject.projectName,
+                    }
+                  : {}),
+              }
+            : {}),
+        }
+      : {};
+
     // ── files/download: read from core, decode, return raw bytes ──────
     // LLM uses `curl -o <local_path>` to save directly; no JSON parsing needed.
     if (sub === "files/download") {
@@ -586,6 +649,7 @@ export function createSkillBridgeHandler(
         user_id: ids.user_id,
         team_id: ids.team_id,
         agent_id: ids.agent_id,
+        ...viewFields,
       };
       const upstreamUrl = `${config.coreSkill.endpoint.replace(/\/$/, "")}/v3/skill/files/read`;
       const headers: Record<string, string> = {
@@ -634,6 +698,14 @@ export function createSkillBridgeHandler(
           status: coreResp.status,
           headers: { "content-type": coreResp.headers.get("content-type") ?? "application/json" },
         });
+      }
+
+      // Fail closed: a Core that ignored the view may serve a file of any project.
+      if (viewOn) {
+        const guarded = guardSkillResponse("files/read", coreText, sessionProjectHash);
+        if (guarded !== coreText) {
+          return new Response(guarded, { status: 200, headers: { "content-type": "application/json" } });
+        }
       }
 
       // Parse envelope, extract file content
@@ -731,6 +803,7 @@ export function createSkillBridgeHandler(
         team_id: ids.team_id,
         agent_id: ids.agent_id,
         user_id: ids.user_id,
+        ...viewFields,
       };
     } else {
       // v3 strict-isolation: ALL /v3 paths need team_id + agent_id + user_id.
@@ -740,6 +813,7 @@ export function createSkillBridgeHandler(
         team_id: ids.team_id,
         agent_id: ids.agent_id,
         user_id: ids.user_id,
+        ...viewFields,
       };
       // For "search" subpath: stamp scope="team" so the handler skips
       // agent_id owner-filtering → team-wide search.
@@ -801,6 +875,7 @@ export function createSkillBridgeHandler(
             team_id: ids.team_id,
             agent_id: ids.agent_id,
             pagination: { limit: 1000 },
+            ...(viewOn ? skillViewFields(sessionProjectHash) : {}),
           },
           { serviceId: ids.space_id },
         ).then(r => r.items.map(s => s.skill_id))
@@ -852,6 +927,7 @@ export function createSkillBridgeHandler(
           agent_id: ids.agent_id,
           user_id: ids.user_id,
           scope: "team",
+          ...viewFields,
           // Overfetch to plugin's hard cap so response-side filtering has room.
           // Plugin remains unaware of proxy's ACL concerns — it just sees a
           // large-but-legal top_k. See PLUGIN_SEARCH_HARD_TOPK doc for why this
@@ -956,13 +1032,16 @@ export function createSkillBridgeHandler(
     // stays invisible to the caller. This runs BEFORE lazy-pin so pinning
     // only records versions the caller actually gets to see.
     let finalRespText = respText;
+    if (viewOn && resp.status >= 200 && resp.status < 300) {
+      finalRespText = guardSkillResponse(sub, finalRespText, sessionProjectHash);
+    }
     if (
       isTeamWideSearch
       && searchVisibleIds
       && resp.status >= 200
       && resp.status < 300
     ) {
-      finalRespText = filterTeamSearchResponse(respText, searchVisibleIds, searchOriginalTopK);
+      finalRespText = filterTeamSearchResponse(finalRespText, searchVisibleIds, searchOriginalTopK);
     }
 
     // ── Lazy-pin: extract version from response and record in pin repo ──

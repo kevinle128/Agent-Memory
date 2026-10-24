@@ -30,7 +30,7 @@ import { resolveFixedAssetCtxs, type FixedAssetCtx } from "../injection/injector
 import type { TdaiIdentity } from "../tdai/types.js";
 import { emitBridgeToolCallTelemetry, emitBridgeRejectTelemetry, agentSourceFromSessionKey } from "./bridge-telemetry.js";
 import { sessionKeyCandidates } from "../agent-adapters/index.js";
-import { withSessionProject } from "../project-scope/session-workspace.js";
+import { resolveSessionProject } from "../project-scope/session-workspace.js";
 import { isProjectAnswer } from "../tdai/project-echo.js";
 import { resolveProfileScopeMode } from "../tdai/profile-scope-mode.js";
 
@@ -264,20 +264,7 @@ async function resolveSessionProjectHash(
   ids: SessionIdFields,
   sessionKey: string,
 ): Promise<string | undefined> {
-  const composite = ids.composite_key ?? sessionKey;
-  const sep = composite.indexOf(":");
-  if (sep <= 0) return undefined;
-  const withProject = await withSessionProject<{ projectKey?: string; projectHash?: string }>(
-    {},
-    config,
-    {
-      spaceId: ids.space_id ?? "",
-      userId: ids.user_id,
-      agentSource: composite.slice(0, sep),
-      sessionId: composite.slice(sep + 1),
-    },
-  );
-  return withProject?.projectHash;
+  return (await resolveSessionProject(config, ids, sessionKey))?.projectHash;
 }
 
 function sceneScopeFrom(body: Record<string, unknown>): SceneScope | undefined {
