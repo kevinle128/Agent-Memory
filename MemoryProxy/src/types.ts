@@ -817,6 +817,14 @@ export interface AuthConfig {
    * Mirrors `tdai.apiKey` / `skill.serviceToken` for the sibling kernel clients.
    */
   apiKey: string;
+  /**
+   * How long, in ms, a key verified before stays accepted while the auth
+   * service cannot be reached (connection error, timeout or HTTP 5xx), for
+   * example during a MemoryCore restart. A key that was never verified, or
+   * that the service rejects, is still rejected. 0 turns this off.
+   * Default: 120000.
+   */
+  staleOnErrorMs?: number;
 }
 
 /**
@@ -1134,6 +1142,7 @@ export interface RawYamlConfig {
     url?: string;
     timeoutMs?: number;
     apiKey?: string;
+    staleOnErrorMs?: number;
   };
   systemUsers?: Partial<SystemUserEntry>[];
   admin?: {

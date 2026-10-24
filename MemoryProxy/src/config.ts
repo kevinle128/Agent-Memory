@@ -197,6 +197,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
     url: "",
     timeoutMs: 5000,
     apiKey: "",
+    staleOnErrorMs: 120_000,
   },
   systemUsers: [],
   admin: { apiKey: "" },
@@ -620,6 +621,10 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
       url: yaml.auth?.url ?? DEFAULT_CONFIG.auth.url,
       timeoutMs: yaml.auth?.timeoutMs ?? DEFAULT_CONFIG.auth.timeoutMs,
       apiKey: expandEnv(yaml.auth?.apiKey ?? DEFAULT_CONFIG.auth.apiKey).trim(),
+      // A non-number or negative value falls back to the default.
+      staleOnErrorMs: typeof yaml.auth?.staleOnErrorMs === "number" && yaml.auth.staleOnErrorMs >= 0
+        ? yaml.auth.staleOnErrorMs
+        : DEFAULT_CONFIG.auth.staleOnErrorMs,
     },
     // Entries without a non-empty userId are silently dropped — matching is
     // by userId now, and an empty userId would otherwise collide with

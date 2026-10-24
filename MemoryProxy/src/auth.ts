@@ -2,12 +2,16 @@
  * Auth service client — verifies user_key and resolves user_id via auth/verify API.
  *
  * Features:
- * - Every call goes directly to the auth service (no caching)
+ * - Every call goes directly to the auth service. Only when the service cannot
+ *   be reached (connection error, timeout, HTTP 5xx), a key that it verified in
+ *   the last `staleOnErrorMs` stays accepted, so a MemoryCore restart does not
+ *   reject every request. Unknown or rejected keys are never accepted this way.
  * - Returns structured result to allow caller to reject invalid keys
  * - x-tdai-service-id is derived from the request path's spaceId (not config)
  * - Configurable via YAML `auth` section
  */
 
+import { createHash } from "node:crypto";
 import { log } from "./report/log.js";
 import type { AuthConfig } from "./types.js";
 
@@ -26,6 +30,57 @@ export interface VerifyUserResult {
 // ── Module state ──────────────────────────────────────────────────────────────
 
 let config: AuthConfig | null = null;
+
+/**
+ * Last verification result per (service id, key hash). Keys are never stored.
+ * `userId` is set after a success; `forgottenAtMs` after a refusal, so a slow
+ * success that started before the refusal cannot bring the key back.
+ */
+const lastGood = new Map<string, { userId?: string; atMs: number; forgottenAtMs?: number }>();
+const LAST_GOOD_MAX = 10_000;
+
+function lastGoodKey(serviceId: string, userKey: string): string {
+  return `${serviceId}\u0000${createHash("sha256").update(userKey).digest("hex")}`;
+}
+
+function store(k: string, entry: { userId?: string; atMs: number; forgottenAtMs?: number }): void {
+  lastGood.delete(k);
+  lastGood.set(k, entry);
+  if (lastGood.size > LAST_GOOD_MAX) lastGood.delete(lastGood.keys().next().value as string);
+}
+
+function rememberGood(serviceId: string, userKey: string, userId: string, startedAtMs: number): void {
+  const k = lastGoodKey(serviceId, userKey);
+  const prev = lastGood.get(k);
+  if (prev?.forgottenAtMs !== undefined && prev.forgottenAtMs >= startedAtMs) return;
+  store(k, { userId, atMs: Date.now() });
+}
+
+/** Forget a key that the service rejected, so a revoked key is never served stale. */
+function forgetGood(serviceId: string, userKey: string): void {
+  const k = lastGoodKey(serviceId, userKey);
+  if (!lastGood.has(k)) return;
+  const now = Date.now();
+  store(k, { atMs: now, forgottenAtMs: now });
+}
+
+/**
+ * When the auth service is unavailable, accept a key it verified recently.
+ * Returns null when there is no fresh enough earlier verification.
+ */
+function staleResult(serviceId: string, userKey: string, reason: string): VerifyUserResult | null {
+  const windowMs = config?.staleOnErrorMs ?? 0;
+  if (windowMs <= 0) return null;
+  const hit = lastGood.get(lastGoodKey(serviceId, userKey));
+  if (!hit?.userId || Date.now() - hit.atMs > windowMs) return null;
+  log.warn("auth.verify.staleAccepted", { serviceId, ageMs: Date.now() - hit.atMs, reason });
+  return { userId: hit.userId, rejected: false };
+}
+
+/** Clear remembered verifications. For tests. */
+export function resetAuthCacheForTest(): void {
+  lastGood.clear();
+}
 
 /**
  * Initialize the auth client.
@@ -65,13 +120,15 @@ export function isAuthEnabled(): boolean {
  * - `{ userId: "", rejected: false }` — auth not enabled (passthrough)
  *
  * This function never throws.
- * Each call directly queries the auth service (no caching).
+ * Each call queries the auth service; see the module comment for the one
+ * fallback used while the service is unavailable.
  */
 export async function verifyUserKey(userKey: string, serviceId: string): Promise<VerifyUserResult> {
   if (!config) return { userId: "", rejected: false };
   if (!serviceId) return { userId: "", rejected: true, rejectReason: "missing service_id (spaceId not in request path)" };
   if (!userKey) return { userId: "", rejected: true, rejectReason: "missing user_key" };
 
+  const startedAtMs = Date.now();
   try {
     // A gateway-protected kernel (server.apiKey / TDAI_GATEWAY_API_KEY) answers 401 to
     // an unauthenticated verify call, so send the configured bearer like the sibling
@@ -95,19 +152,33 @@ export async function verifyUserKey(userKey: string, serviceId: string): Promise
     if (!resp.ok) {
       const reason = `auth service returned HTTP ${resp.status}`;
       log.warn("auth.verify.httpError", { status: resp.status, serviceId });
+      // A 5xx means the service is unavailable; a 4xx is a real refusal.
+      if (resp.status >= 500) {
+        const stale = staleResult(serviceId, userKey, reason);
+        if (stale) return stale;
+      } else {
+        forgetGood(serviceId, userKey);
+      }
       return { userId: "", rejected: true, rejectReason: reason };
     }
 
-    const body = await resp.json() as {
-      code?: number;
-      data?: { valid?: boolean; user?: { user_id?: string } };
-    };
+    let body: { code?: number; data?: { valid?: boolean; user?: { user_id?: string } } };
+    try {
+      body = await resp.json() as typeof body;
+    } catch {
+      // A 200 that is not JSON (for example an error page from something in
+      // between) is not an answer from the auth service: refuse, no fallback.
+      forgetGood(serviceId, userKey);
+      return { userId: "", rejected: true, rejectReason: "auth service returned a non-JSON response" };
+    }
 
     // Only accept: code=0 AND valid=true AND user_id present
     if (body.code === 0 && body.data?.valid === true && body.data.user?.user_id) {
+      rememberGood(serviceId, userKey, body.data.user.user_id, startedAtMs);
       return { userId: body.data.user.user_id, rejected: false };
     }
 
+    forgetGood(serviceId, userKey);
     // Everything else is a rejection
     const reason = body.data?.valid === false
       ? "invalid user_key"
@@ -119,6 +190,8 @@ export async function verifyUserKey(userKey: string, serviceId: string): Promise
       ? `auth service timeout (${config.timeoutMs}ms)`
       : `auth service error: ${err instanceof Error ? err.message : String(err)}`;
     log.warn("auth.verify.error", { error: reason, serviceId });
+    const stale = staleResult(serviceId, userKey, reason);
+    if (stale) return stale;
     return { userId: "", rejected: true, rejectReason: reason };
   }
 }
