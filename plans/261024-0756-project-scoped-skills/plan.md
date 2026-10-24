@@ -129,7 +129,7 @@ Làm sau khi Giai đoạn 1-4 đã deploy, để không có skill nào được 
 
 ## Thứ tự deploy
 
-Core trước (nhận trường mới, có giá trị mặc định), rồi proxy, rồi Hub. Proxy mới gặp Core cũ thì chỉ dùng skill toàn cục.
+Proxy trước, rồi Core, rồi Hub. Proxy mới gửi thêm trường dự án; Core cũ bỏ qua các trường lạ. Nếu Core mới chạy trước, proxy cũ không gửi dự án nên mọi task trích xuất ở chế độ `code` bị bỏ. Proxy mới gặp Core cũ thì chỉ dùng skill toàn cục.
 
 ## Kiểm chứng tổng thể
 
