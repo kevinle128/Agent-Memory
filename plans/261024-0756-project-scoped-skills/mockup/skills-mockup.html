@@ -388,7 +388,6 @@ textarea.input{height:auto;padding:8px 10px;font-family:var(--font-mono);line-he
   <button data-go="dialogs">3 · Promote to Global</button>
   <button data-go="proposals">4 · Pending proposals</button>
   <button data-go="new">5 · New Skill</button>
-  <button data-go="cc">6 · Claude Code session</button>
   <span class="sp"></span>
   <span style="white-space:nowrap;color:#8b93a1">Times: Asia/Saigon (GMT+7) · not product UI</span>
 </nav>
@@ -979,7 +978,7 @@ const NOTES={
     'Chỉ skill toàn cục có đề xuất chờ duyệt. Đề xuất cho skill dự án được áp dụng ngay nên không xuất hiện ở đây.',
     'Mỗi đề xuất có lý do và tóm tắt "What this change brings" để người dùng biết thay đổi mang lại gì trước khi duyệt.',
     'Đề xuất ghi <code>base_version</code>. Lúc duyệt, nếu phiên bản hiện tại khác base thì chuyển <code>Stale</code> và không áp dụng (khóa lạc quan), tránh ghi đè thay đổi mới hơn.',
-    'Panel dùng cùng API duyệt/từ chối của Core với proxy, cho client không có <code>AskUserQuestion</code>. Người duyệt lấy từ phiên đăng nhập. "View diff" mở cùng bố cục với chi tiết phiên bản.']],
+    'Đây là nơi duyệt duy nhất: session không hỏi duyệt. Duyệt là áp dụng ngay (tạo phiên bản mới). Người duyệt lấy từ phiên đăng nhập. "View diff" mở cùng bố cục với chi tiết phiên bản.']],
   proposal:['Chi tiết đề xuất (mở từ "View diff")',[
     'Cùng bố cục với chi tiết phiên bản: phần đầu, tóm tắt, rồi diff giữa base và nội dung đề xuất.',
     'Duyệt tạo phiên bản mới (ví dụ v3), nguồn <code>Extracted</code>, người duyệt là user đang đăng nhập. Từ chối giữ nguyên skill.',

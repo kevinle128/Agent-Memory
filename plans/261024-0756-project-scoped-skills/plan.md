@@ -22,15 +22,14 @@ Nhánh `feat/server_team`. Nghiên cứu: `plans/reports/researcher-261024-0307-
 9. `promptMode` giữ ở mức instance. `code`: theo kiểu mới. `chat`: giữ kiểu cũ (không có dự án, skill trích xuất là skill chung, inject như cũ). Trên production instance là `code`, nên hermes và openclaw không trích xuất skill.
 10. Tên dự án là `owner/repo` của remote mà hook dùng (`origin`), ví dụ `kevinle128/paseo`; repo không có remote thì là tên thư mục gốc. `getpaseo/paseo` là dự án riêng. `project_hash` và `project_key` giữ nguyên như hiện tại (không chuyển dữ liệu); tên chỉ để hiển thị trên giao diện và trong khối inject. Bộ trích xuất được đọc skill toàn cục nhưng không được sửa.
 
-11. Skill toàn cục: hệ thống được đề xuất sửa để skill tốt hơn, nhưng chỉ áp dụng khi người dùng duyệt (hỏi bằng `AskUserQuestion`). Skill dự án: hệ thống tự áp dụng, không hỏi. Cả hai có lịch sử sửa, lý do sửa, người duyệt, phiên bản hiện tại và rollback về phiên bản cũ. (Thay cho ý "bộ trích xuất chỉ đọc skill toàn cục" ở mục 10: nay bộ trích xuất được đề xuất, không được tự áp dụng.)
+11. Skill toàn cục: hệ thống được đề xuất sửa để skill tốt hơn, nhưng chỉ áp dụng khi người dùng duyệt trên Hub. Skill dự án: hệ thống tự áp dụng, không hỏi. Cả hai có lịch sử sửa, lý do sửa, người duyệt, phiên bản hiện tại và rollback về phiên bản cũ. (Thay cho ý "bộ trích xuất chỉ đọc skill toàn cục" ở mục 10: nay bộ trích xuất được đề xuất, không được tự áp dụng.)
 12. Thiết kế phải dễ bảo trì, đúng kiến trúc và design pattern (xem mục "Kiến trúc").
-13. Duyệt đề xuất ở hai nơi, cùng một API Core: form `AskUserQuestion` trong session Claude Code, và danh sách đề xuất trên Hub. Duyệt ở nơi nào thì skill được áp dụng ngay: Core tạo phiên bản mới qua `SkillChangeService` trong cùng lời gọi, không có bước áp dụng thứ hai. Ngoại lệ duy nhất là đề xuất đã `stale` (skill đã đổi phiên bản), khi đó không áp dụng. Nơi còn lại thấy đề xuất đã xử lý và không hỏi lại.
-14. Câu hỏi `AskUserQuestion` không được trả lời trong 1 phút thì tính là "Để sau": đề xuất giữ `pending`, session tiếp tục, không hỏi lại trong session đó, vẫn duyệt được trên Hub.
-15. Đề xuất `stale` không có nút Dismiss. Nó ở lại danh sách cho đến khi có người Từ chối.
+13. Không hỏi duyệt trong session (bỏ `AskUserQuestion` cho thay đổi skill toàn cục). Người dùng duyệt đề xuất trên Hub. Duyệt là áp dụng ngay: Core tạo phiên bản mới qua `SkillChangeService` trong cùng lời gọi, không có bước áp dụng thứ hai. Ngoại lệ duy nhất là đề xuất đã `stale` (skill đã đổi phiên bản), khi đó không áp dụng. Session thấy skill mới từ request kế tiếp.
+14. Đề xuất `stale` không có nút Dismiss. Nó ở lại danh sách cho đến khi có người Từ chối.
 
 ## Kiến trúc
 
-Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`appendVersion`, `is_head`, `MemoryCore/src/core/store/sqlite/skill-store.ts:273-466`); API lịch sử `/v3/skill/versions` (`gateway/skill-handlers.ts:585`); Panel có màn hình lịch sử chỉ đọc (`SkillDetailPane.tsx`); proxy có form `AskUserQuestion` dùng chung (`MemoryProxy/src/session/form.ts`, `session/claude-code/extractor.ts`, SessionStore). Chưa có: lý do sửa, người duyệt, rollback, trạng thái chờ duyệt.
+Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`appendVersion`, `is_head`, `MemoryCore/src/core/store/sqlite/skill-store.ts:273-466`); API lịch sử `/v3/skill/versions` (`gateway/skill-handlers.ts:585`); Panel có màn hình lịch sử chỉ đọc (`SkillDetailPane.tsx`). Chưa có: lý do sửa, người duyệt, rollback, trạng thái chờ duyệt.
 
 **Nguyên tắc:**
 
@@ -44,14 +43,8 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 3. **Lịch sử chỉ thêm, không sửa (append-only audit log).** Mỗi phiên bản ghi: `change_source` (`extracted`, `manual`, `rollback`, `promotion`, `template`), `change_reason`, `change_summary` (tóm tắt cải tiến so với phiên bản trước: thêm gì, sửa gì, bỏ gì, 2-5 ý), `approved_by`, `approved_at`, `base_version`, `proposal_id`. Tóm tắt được tạo lúc sửa và lưu cùng phiên bản, không tính lại mỗi lần xem: bộ trích xuất bắt buộc ghi (thiếu thì thay đổi bị từ chối); sửa tay thì người dùng nhập, hoặc hệ thống tạo và đánh dấu là tự tạo; rollback và chuyển thành toàn cục dùng câu cố định (ví dụ "Khôi phục nội dung v2"). Đề xuất chờ duyệt cũng mang tóm tắt này để người duyệt biết thay đổi đem lại gì. Rollback tạo một phiên bản mới chép nội dung của phiên bản cũ, không xóa gì, nên lịch sử luôn đầy đủ.
 4. **Đề xuất có vòng đời rõ ràng (state machine).** Bảng `skill_change_proposals`: `pending` → `approved` | `rejected` | `stale` | `expired`. Đề xuất ghi `base_version`; lúc duyệt, nếu phiên bản hiện tại đã khác `base_version` thì chuyển `stale` và không áp dụng (khóa lạc quan, tránh ghi đè thay đổi mới hơn). Chỉ chuyển trạng thái qua service, có kiểm tra chuyển hợp lệ.
 5. **Lưu trữ qua repository có sẵn.** Thêm cột và bảng qua lớp store hiện có (sqlite, mongo, tcvdb) theo mẫu DDL chạy lại an toàn; domain service không biết backend.
-6. **Proxy và Panel chỉ là lớp hiển thị (ports and adapters).** Core sở hữu quy tắc và trạng thái. Proxy hỏi người dùng bằng `AskUserQuestion` rồi gọi API duyệt hoặc từ chối của Core. Panel hiện cùng danh sách đề xuất, lịch sử, nút rollback và gọi cùng API. Không lớp hiển thị nào tự quyết định.
-7. **Hiển thị đề xuất trong session (proxy).** Dùng lại bộ dựng form và bộ đọc câu trả lời hiện có, thêm một "câu hỏi" mới chứ không viết lại form:
-   - chỉ ở request `main` của Claude Code có tool `AskUserQuestion`, không ở fork, subagent, request phụ, và không khi đang ở form khác (khởi tạo session);
-   - mỗi lần hỏi một đề xuất, có lý do và tóm tắt cải tiến; lựa chọn: "Duyệt", "Từ chối", "Để sau";
-   - "Để sau" giữ `pending` và không hỏi lại trong cùng session; giới hạn số lần hỏi để không làm phiền;
-   - người duyệt là user của session (lấy từ xác thực, không lấy từ nội dung request);
-   - sau khi trả lời, chuyển tiếp prompt gốc của người dùng như cơ chế hiện có.
-8. **Kiểm tra quyền ở Core.** API duyệt kiểm tra người duyệt có quyền với skill đó (chủ agent hoặc team); proxy không tự cấp quyền.
+6. **Proxy và Panel chỉ là lớp hiển thị (ports and adapters).** Core sở hữu quy tắc và trạng thái. Proxy chỉ đọc skill và inject; không hỏi duyệt. Hub và Panel hiện danh sách đề xuất, lịch sử, nút rollback và gọi API của Core. Không lớp hiển thị nào tự quyết định.
+7. **Kiểm tra quyền ở Core.** API duyệt kiểm tra người duyệt có quyền với skill đó (chủ agent hoặc team); người duyệt lấy từ phiên đăng nhập Hub.
 
 ## Định nghĩa
 
@@ -105,15 +98,6 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 - Chế độ `chat`: giữ kiểu cũ.
 - Test: không dự án chỉ có skill toàn cục; có dự án thêm đúng skill của dự án; skill dự án khác không bao giờ xuất hiện; Core cũ; cache khi đổi dự án.
 
-### Giai đoạn 4b: Hỏi duyệt đề xuất trong session (Proxy)
-
-- Bước mới trong pipeline của Claude Code, chạy sau khởi tạo session, chỉ ở request `main` có tool `AskUserQuestion`: lấy một đề xuất `pending` của skill toàn cục mà agent đang dùng, trả form `AskUserQuestion` (dùng lại bộ dựng form và bộ đọc câu trả lời hiện có).
-- Đọc câu trả lời ở request kế tiếp: "Duyệt" hoặc "Từ chối" gọi API Core với người duyệt là user đã xác thực; "Duyệt" áp dụng ngay và báo phiên bản mới trong câu trả lời; "Để sau" không hỏi lại trong session. Sau đó chuyển tiếp prompt gốc. Skill mới có hiệu lực từ request kế tiếp (cache danh sách skill của session được làm mới).
-- Hết 1 phút không trả lời: Claude Code từ v2.1.200 có cài đặt `askUserQuestionTimeout` (mặc định `never`); khi hết giờ, Claude Code gửi `tool_result` không có câu trả lời. Proxy coi câu trả lời rỗng, câu trả lời không đọc được, và câu trả lời đến sau hơn 60 giây mà rỗng đều là "Để sau".
-- Nếu đề xuất đã được duyệt hoặc từ chối trên Hub trong lúc form đang chờ, câu trả lời trong session không đổi gì và proxy báo trạng thái đã xử lý.
-- Giới hạn: tối đa một form mỗi N phút và mỗi session; không hỏi khi đang có form khác; không có tool `AskUserQuestion` thì không hỏi (đề xuất vẫn chờ trên Panel).
-- Test: đủ các nhánh trả lời, câu trả lời rỗng hoặc hết giờ thì là "Để sau", duyệt áp dụng ngay, đề xuất đã xử lý trên Hub thì không áp dụng lại, fork/subagent/request phụ không bị hỏi, prompt gốc được chuyển tiếp nguyên vẹn.
-
 ### Giai đoạn 5: Giao diện (Hub và Panel)
 
 - Nhãn trên từng skill: "Toàn cục" hoặc "Dự án <tên>", với tên dự án dạng `owner/repo` (ví dụ `kevinle128/paseo`). Core cung cấp danh sách dự án (hash và tên) từ dữ liệu đã gắn dự án.
@@ -123,7 +107,7 @@ Dựa trên mã hiện có: phiên bản skill đã lưu dạng chỉ thêm (`ap
 - Ở chế độ `chat`, giao diện không hiện phần dự án.
 - Lịch sử phiên bản: tóm tắt cải tiến của từng phiên bản (và của phiên bản hiện tại ở đầu trang), lý do sửa, nguồn sửa, người duyệt, thời điểm; đánh dấu phiên bản hiện tại; bấm vào một phiên bản mới mở trang chi tiết: lý do, người duyệt, tóm tắt cải tiến, khác biệt với phiên bản trước (dòng thêm và dòng bỏ được tô màu, có thể chọn phiên bản khác để so), và nút "Set skill to this version" (có xác nhận). Danh sách lịch sử không hiện khác biệt.
 - Màn hình "Version history" riêng, mở từ nút trên trang chi tiết skill: dòng thời gian mọi phiên bản (phiên bản hiện tại, thời gian, nguồn, người sửa, người duyệt, tóm tắt cải tiến, "khôi phục từ vN" với bản rollback); so sánh hai phiên bản bất kỳ (chọn "từ" và "đến"); nút "Set skill to this version" cho mọi phiên bản không phải hiện tại (rollback). Hộp xác nhận rollback xem trước khác biệt từ bản hiện tại tới bản đích, liệt kê các cải tiến sẽ mất, bắt buộc nhập lý do, và ghi rõ kết quả "tạo vN+1 với nội dung của bản đích; các bản sau vẫn còn trong lịch sử".
-- Danh sách đề xuất chờ duyệt của skill toàn cục, có Duyệt và Từ chối, luôn có trên Hub (không chỉ cho client thiếu `AskUserQuestion`). Duyệt ở đây áp dụng ngay như duyệt trong session. Đề xuất `stale` hiện nhãn Stale, chỉ có Từ chối.
+- Danh sách đề xuất chờ duyệt của skill toàn cục, có Duyệt và Từ chối. Đây là nơi duyệt duy nhất; duyệt là áp dụng ngay và hiện phiên bản mới. Trang danh sách skill có số đề xuất đang chờ để người dùng biết cần vào duyệt. Đề xuất `stale` hiện nhãn Stale, chỉ có Từ chối.
 - Test: component và API.
 
 ### Giai đoạn 6: Codex và pi nhận dự án từ hook
@@ -145,7 +129,7 @@ Làm sau khi Giai đoạn 1-4 đã deploy, để không có skill nào được 
 
 ## Thứ tự deploy
 
-Core trước (nhận trường mới, có giá trị mặc định), rồi proxy, rồi Hub. Giai đoạn 4b chỉ bật sau khi API đề xuất của Core đã chạy. Proxy mới gặp Core cũ thì chỉ dùng skill toàn cục.
+Core trước (nhận trường mới, có giá trị mặc định), rồi proxy, rồi Hub. Proxy mới gặp Core cũ thì chỉ dùng skill toàn cục.
 
 ## Kiểm chứng tổng thể
 
