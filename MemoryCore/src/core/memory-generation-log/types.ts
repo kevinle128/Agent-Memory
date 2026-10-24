@@ -41,6 +41,23 @@ export interface MemoryGenerationLog {
   latency_ms: number;
   error_code?: string;
   error_message?: string;
+  /** Result of the user-global scope check of an L3 run; absent for other runs. */
+  scope_check?: MemoryGenerationScopeCheck;
+}
+
+export interface MemoryGenerationScopeCheck {
+  /** passed: accepted marker; rejected: project facts found twice; judge_failed: no verdict, previous persona kept. */
+  result: "passed" | "rejected" | "judge_failed";
+  /** Specific cause when the judge call failed (see LlmErrorKind). */
+  error_kind?: string;
+  /** Failure reason of the last check, for example judge-leaks or judge-timeout. */
+  reason?: string;
+  /** First leaks the last check found, each cut to a short length. */
+  leaks?: string[];
+  /** Judge calls made in the whole run. */
+  judge_attempts: number;
+  /** Ids of the llm_calls records of this run. */
+  judge_record_ids: string[];
 }
 
 export interface MemoryGenerationProvenance {

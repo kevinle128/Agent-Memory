@@ -19,6 +19,7 @@
  *   // HTTP handler calls core.handleBeforeRecall / core.handleTurnCommitted / etc.
  */
 
+import { LlmCallRecordingRunner, type LlmCallRecorderOptions } from "./report/llm-call-recorder.js";
 import type {
   HostAdapter,
   Logger,
@@ -535,6 +536,16 @@ export class TdaiCore {
   }
 
   /** Get the shared VectorStore (may be undefined if init failed). */
+  /** Options that make the runners of a factory record failed LLM calls in the given store. */
+  private callLogOptions(getStore: () => IMemoryStore | undefined): LlmCallRecorderOptions {
+    return {
+      config: this.cfg.llmCallLog,
+      getStore,
+      getInstanceId: () => this.instanceId,
+      logger: this.logger,
+    };
+  }
+
   getVectorStore(): IMemoryStore | undefined {
     return this.vectorStore;
   }
@@ -731,7 +742,9 @@ export class TdaiCore {
 
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
     // Kafka 未配置时 metricProducer.send() 是 no-op，零开销
-    const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
+    const trackingFactory = new MetricTrackingRunnerFactory(
+      runnerFactory, () => this.instanceId, undefined, undefined, this.callLogOptions(() => this.vectorStore),
+    );
 
     const l1LlmRunner = useStandaloneRunner
       ? trackingFactory.createRunner({ enableTools: false })
@@ -1039,14 +1052,10 @@ export class TdaiCore {
       enableTools: true,
       logger,
     });
-    return {
-      async run(params) {
-        // Pass through everything: prompt, systemPrompt, tools, enableTools,
-        // maxIterations, taskId, timeoutMs. StandaloneLLMRunner.run() now
-        // honors all of these (see types.ts / standalone/llm-runner.ts).
-        return runner.run(params);
-      },
-    };
+    // Pass through everything: prompt, systemPrompt, tools, enableTools,
+    // maxIterations, taskId, timeoutMs. StandaloneLLMRunner.run() now
+    // honors all of these (see types.ts / standalone/llm-runner.ts).
+    return new LlmCallRecordingRunner(runner, this.callLogOptions(() => this.vectorStore));
   }
 
   // ============================
@@ -1095,7 +1104,9 @@ export class TdaiCore {
       );
     }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
-    const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
+    const trackingFactory = new MetricTrackingRunnerFactory(
+      runnerFactory, () => this.instanceId, undefined, undefined, this.callLogOptions(() => store),
+    );
     const llmRunner = useStandaloneRunner
       ? trackingFactory.createRunner({ enableTools: false })
       : undefined;
@@ -1157,7 +1168,9 @@ export class TdaiCore {
       );
     }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
-    const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
+    const trackingFactory = new MetricTrackingRunnerFactory(
+      runnerFactory, () => this.instanceId, undefined, undefined, this.callLogOptions(() => store),
+    );
     const llmRunner = useStandaloneRunner
       ? trackingFactory.createRunner({ enableTools: true })
       : undefined;
@@ -1213,7 +1226,9 @@ export class TdaiCore {
       );
     }
     // 用 MetricTrackingRunnerFactory 装饰器包装（非侵入式 credit 上报）
-    const trackingFactory = new MetricTrackingRunnerFactory(runnerFactory, () => this.instanceId);
+    const trackingFactory = new MetricTrackingRunnerFactory(
+      runnerFactory, () => this.instanceId, undefined, undefined, this.callLogOptions(() => store),
+    );
     const llmRunner = useStandaloneRunner
       ? trackingFactory.createRunner({ enableTools: true })
       : undefined;

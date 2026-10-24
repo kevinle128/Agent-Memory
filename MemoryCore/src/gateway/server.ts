@@ -117,6 +117,8 @@ import { makeKnowledgeRouteTable } from "./knowledge-handlers.js";
 import { makeChatMemoryRouteTable, clearChatMemoryContentResilient } from "./chat-memory-handlers.js";
 import { makeMemoryPromptRouteTable } from "./memory-prompt-handlers.js";
 import { makeMemoryGenerationLogRouteTable } from "./memory-generation-log-handlers.js";
+import { makePersonaRegenerateRouteTable, type PersonaRegenerateDeps } from "./persona-regenerate-handlers.js";
+import { makeLlmCallRouteTable } from "./llm-call-handlers.js";
 import { handleOffloadV2Route } from "../offload_server/router.js";
 import type { OffloadV2Deps } from "../offload_server/router.js";
 import { resolveV3StrictIsolation } from "../utils/env-config.js";
@@ -1212,7 +1214,21 @@ export class TdaiGateway {
       // Compose deps: V2RouterDeps fields + SkillRouterDeps fields. The
       // route table union of routeTable + makeSkillRouteTable() is what
       // tells the dispatcher which subset of fields each handler reads.
-      const mergedDeps = Object.assign({}, v2Deps, skillDeps);
+      const personaDeps: Pick<PersonaRegenerateDeps, "runPersonaRegeneration" | "checkCreditAllowed"> = {
+        checkCreditAllowed: async (instanceId) => {
+          if (!this.quotaManager) return true;
+          return (await this.quotaManager.checkCreditQuota(instanceId)).allowed;
+        },
+        runPersonaRegeneration: async ({ instanceId, store, storage, context }) => {
+          this.core.setInstanceId(instanceId);
+          const { creditUsed } = await this.core.runL3WithStore(store, storage, context, this.buildCheckpointLock(instanceId));
+          if (this.quotaManager) {
+            const reportCredit = this.reportedCreditFor(creditUsed, "L3");
+            if (reportCredit > 0) this.quotaManager.reportUsage(instanceId, 0, reportCredit, "L3").catch(() => {});
+          }
+        },
+      };
+      const mergedDeps = Object.assign({}, v2Deps, skillDeps, personaDeps);
 
       // Merge management-plane extra route tables.
       const extraRoutes = {
@@ -1221,6 +1237,8 @@ export class TdaiGateway {
         ...makeChatMemoryRouteTable(),
         ...makeMemoryPromptRouteTable(),
         ...makeMemoryGenerationLogRouteTable(),
+        ...makePersonaRegenerateRouteTable(),
+        ...makeLlmCallRouteTable(),
       } as Record<
         string,
         (body: unknown, auth: import("./v2-schemas.js").V2AuthContext, requestId: string, deps: unknown) => Promise<import("./v2-schemas.js").ApiResponseEnvelope>
@@ -2265,9 +2283,19 @@ export class TdaiGateway {
       },
     });
     const cfg = this.core.getResolvedSkillConfig();
+    const { LlmCallRecordingRunner } = await import("../core/report/llm-call-recorder.js");
+    const recordingRunner = new LlmCallRecordingRunner(llmRunner, {
+      config: this.config.memory.llmCallLog,
+      getStore: async () => {
+        const { vdbConfig, mongoConfig } = await this.resolveStoreBackendConfigs(instanceId);
+        return (await this.storePool!.getStore(instanceId, vdbConfig, mongoConfig)).store;
+      },
+      getInstanceId: () => instanceId,
+      logger: this.logger,
+    });
     return new SkillExtractorClass({
       core: skillCore,
-      runner: llmRunner,
+      runner: recordingRunner,
       systemPrompt: SKILL_REVIEW_PROMPT,
       // 冷启动/批量导入 (asset-import) 会传 strict_mode:true,经 SkillTaskEntry.mode
       // 一路带到 extract({mode:'strict'}); 老流量 mode 未传时仍用上面的 SKILL_REVIEW_PROMPT。
@@ -2996,6 +3024,41 @@ export class TdaiGateway {
   }
 
   /**
+   * Cross-node mutex for the checkpoint of one instance (see the long note in
+   * buildTaskExecutor). Undefined without a state backend: a single process
+   * then relies on the in-process lock alone.
+   */
+  private buildCheckpointLock(
+    instanceId: string,
+  ): import("../utils/checkpoint.js").CheckpointLockOptions | undefined {
+    const backend = this.stateBackend;
+    if (!backend) return undefined;
+    return {
+      lock: {
+        acquireLock: (key, ownerId, ttlMs) => backend.acquireLock(key, ownerId, ttlMs),
+        renewLock: (key, ownerId, ttlMs) => backend.renewLock(key, ownerId, ttlMs),
+        releaseLock: (key, ownerId) => backend.releaseLock(key, ownerId),
+      },
+      lockKey: instanceId,
+      metrics: {
+        onRequeueRequired: (key, waitedMs) => {
+          this.logger.warn(
+            `[checkpoint-lock] acquire timeout key=${key} waited=${waitedMs}ms → task will be requeued`,
+          );
+        },
+        onBackendError: (key, err) => {
+          this.logger.warn(
+            `[checkpoint-lock] backend error key=${key}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        },
+        onLockLost: (key) => {
+          this.logger.warn(`[checkpoint-lock] lock lost during critical section key=${key}`);
+        },
+      },
+    };
+  }
+
+  /**
    * Build a TaskExecutor that bridges Pipeline tasks to TdaiCore's existing L1/L2/L3 runners.
    *
    * Multi-instance aware: each task carries a instanceId in task.data.
@@ -3051,33 +3114,7 @@ export class TdaiGateway {
      */
     const resolveCheckpointLock = (
       instanceId: string,
-    ): import("../utils/checkpoint.js").CheckpointLockOptions | undefined => {
-      const backend = gateway.stateBackend;
-      if (!backend) return undefined;
-      return {
-        lock: {
-          acquireLock: (key, ownerId, ttlMs) => backend.acquireLock(key, ownerId, ttlMs),
-          renewLock: (key, ownerId, ttlMs) => backend.renewLock(key, ownerId, ttlMs),
-          releaseLock: (key, ownerId) => backend.releaseLock(key, ownerId),
-        },
-        lockKey: instanceId,
-        metrics: {
-          onRequeueRequired: (key, waitedMs) => {
-            gateway.logger.warn(
-              `[checkpoint-lock] acquire timeout key=${key} waited=${waitedMs}ms → task will be requeued`,
-            );
-          },
-          onBackendError: (key, err) => {
-            gateway.logger.warn(
-              `[checkpoint-lock] backend error key=${key}: ${err instanceof Error ? err.message : String(err)}`,
-            );
-          },
-          onLockLost: (key) => {
-            gateway.logger.warn(`[checkpoint-lock] lock lost during critical section key=${key}`);
-          },
-        },
-      };
-    };
+    ): import("../utils/checkpoint.js").CheckpointLockOptions | undefined => gateway.buildCheckpointLock(instanceId);
 
     return {
       async executeL1(task: TaskPayload, signal?: AbortSignal) {

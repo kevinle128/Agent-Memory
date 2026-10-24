@@ -30,13 +30,20 @@ function reverseTimestamp(timestampMs: number): string {
   return String(MAX_TS - timestampMs).padStart(13, "0");
 }
 
+/** New generation id. A caller that needs the id before the log exists mints it here. */
+export function newGenerationId(): string {
+  return `mg_${randomUUID().replace(/-/g, "")}`;
+}
+
 export function buildGenerationLogIdentity(
   layer: MemoryGenerationLayer,
   finishedAtMs: number,
   anchorMemoryId?: string,
   status: MemoryGenerationStatus = "succeeded",
+  /** Reuse an id minted earlier, so records written during the run point at this log. */
+  existingGenerationId?: string,
 ): { generationId: string; logId: string; key: string } {
-  const generationId = `mg_${randomUUID().replace(/-/g, "")}`;
+  const generationId = existingGenerationId ?? newGenerationId();
   const anchor = safeId(anchorMemoryId ?? "none");
   const suffix = generationId.slice(3, 19);
   const logId = `mgl_${layer}_${status}_${finishedAtMs}_${anchor}_${suffix}`;

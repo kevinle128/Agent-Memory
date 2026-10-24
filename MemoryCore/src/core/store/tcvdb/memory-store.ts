@@ -47,6 +47,14 @@ import type {
   MemoryContentClearResult,
 } from "../types.js";
 import { DEFAULT_ISOLATION_ID } from "../types.js";
+import {
+  aggregateLlmCalls,
+  truncateUtf8,
+  type LlmCallListFilter,
+  type LlmCallRecord,
+  type LlmCallStatsFilter,
+  type LlmCallStatsGroup,
+} from "../../report/llm-call-types.js";
 import { TcvdbClient, TcvdbApiError } from "./client.js";
 import type { BM25LocalEncoder } from "../bm25-local.js";
 import type { SparseVector } from "@tencentdb-agent-memory/tcvdb-text";
@@ -97,6 +105,22 @@ const MEMORY_PROMPTS_COLLECTION_SUFFIX = "memory_prompts";
 const MEMORY_PROMPT_SETTINGS_COLLECTION_SUFFIX = "memory_prompt_settings";
 const MEMORY_PROMPT_SETTING_LOGS_COLLECTION_SUFFIX = "memory_prompt_setting_logs";
 const MEMORY_GENERATION_REFS_COLLECTION_SUFFIX = "memory_generation_refs";
+const LLM_CALLS_COLLECTION_SUFFIX = "llm_calls";
+/**
+ * Reply kept per LLM call record in this backend. The service limit for one
+ * string field is not documented here, so the bound is lower than the 16 KiB
+ * of the other backends.
+ */
+const LLM_CALL_REPLY_MAX_BYTES_TCVDB = 8 * 1024;
+/** Most records one stats request reads in this backend (it cannot group in the service). */
+const LLM_CALL_STATS_MAX_ROWS = 20_000;
+const LLM_CALL_OUTPUT_FIELDS = [
+  "id", "instance_id", "created_at_ms", "finished_at_ms", "latency_ms", "stage", "trace_name", "model",
+  "team_id", "agent_id", "user_id", "session_id", "project_hash", "generation_id", "outcome", "timeout_ms",
+  "prompt_chars", "error_kind", "error_class", "http_status", "provider_error_type", "provider_error_code",
+  "retry_after_ms", "sdk_attempts", "error_message", "response_excerpt", "verdict", "reply", "reply_truncated",
+];
+const LLM_CALL_STATS_FIELDS = ["id", "created_at_ms", "stage", "model", "outcome", "error_kind", "http_status", "provider_error_code"];
 
 const MEMORY_GENERATION_REF_OUTPUT_FIELDS = [
   "id", "layer", "memory_id", "generation_id", "generation_log_id", "generation_log_key",
@@ -250,6 +274,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
   private readonly memoryPromptSettingsCollection: string;
   private readonly memoryPromptSettingLogsCollection: string;
   private readonly memoryGenerationRefsCollection: string;
+  private readonly llmCallsCollection: string;
   private degraded = false;
 
   /** Promise that resolves when async init completes. */
@@ -280,6 +305,7 @@ export class TcvdbMemoryStore implements IMemoryStore {
     this.memoryPromptSettingsCollection = `${config.database}_${MEMORY_PROMPT_SETTINGS_COLLECTION_SUFFIX}`;
     this.memoryPromptSettingLogsCollection = `${config.database}_${MEMORY_PROMPT_SETTING_LOGS_COLLECTION_SUFFIX}`;
     this.memoryGenerationRefsCollection = `${config.database}_${MEMORY_GENERATION_REFS_COLLECTION_SUFFIX}`;
+    this.llmCallsCollection = `${config.database}_${LLM_CALLS_COLLECTION_SUFFIX}`;
   }
 
   // ── Lifecycle ────────────────────────────────────────────
@@ -570,6 +596,16 @@ export class TcvdbMemoryStore implements IMemoryStore {
         { fieldName: "generation_id", fieldType: "string", indexType: "filter" },
         { fieldName: "generation_log_id", fieldType: "string", indexType: "filter" },
         { fieldName: "memory_prompt_id", fieldType: "string", indexType: "filter" },
+        { fieldName: "created_at_ms", fieldType: "uint64", indexType: "filter" },
+      ]);
+      await scalarCollection(this.llmCallsCollection, "LLM call log", [
+        { fieldName: "instance_id", fieldType: "string", indexType: "filter" },
+        { fieldName: "stage", fieldType: "string", indexType: "filter" },
+        { fieldName: "outcome", fieldType: "string", indexType: "filter" },
+        { fieldName: "error_kind", fieldType: "string", indexType: "filter" },
+        { fieldName: "team_id", fieldType: "string", indexType: "filter" },
+        { fieldName: "agent_id", fieldType: "string", indexType: "filter" },
+        { fieldName: "generation_id", fieldType: "string", indexType: "filter" },
         { fieldName: "created_at_ms", fieldType: "uint64", indexType: "filter" },
       ]);
 
@@ -2169,6 +2205,81 @@ export class TcvdbMemoryStore implements IMemoryStore {
         created_at_ms: record.created_at_ms,
       })));
     }
+  }
+
+  async insertLlmCall(r: LlmCallRecord): Promise<void> {
+    await this._ensureInit();
+    const reply = truncateUtf8(r.reply, LLM_CALL_REPLY_MAX_BYTES_TCVDB);
+    await this.client.upsert(this.llmCallsCollection, [{
+      ...r,
+      vector: [0],
+      reply: reply.text,
+      reply_truncated: r.reply_truncated || reply.truncated ? 1 : 0,
+    }]);
+  }
+
+  async pruneLlmCalls(olderThanMs: number): Promise<number> {
+    await this._ensureInit();
+    return this.client.deleteDoc(this.llmCallsCollection, {
+      query: { filter: `created_at_ms < ${Math.floor(olderThanMs)}` },
+    });
+  }
+
+  private llmCallFilter(f: Partial<LlmCallListFilter> & { startTimeMs: number; endTimeMs: number }, endMs: number): string | undefined {
+    const conds: string[] = [`created_at_ms >= ${f.startTimeMs}`, `created_at_ms <= ${endMs}`];
+    if (f.instanceId) conds.push(eqFilter("instance_id", f.instanceId));
+    if (f.stage) conds.push(eqFilter("stage", f.stage));
+    if (f.teamId) conds.push(eqFilter("team_id", f.teamId));
+    if (f.agentId) conds.push(eqFilter("agent_id", f.agentId));
+    if (f.outcome) conds.push(eqFilter("outcome", f.outcome));
+    if (f.errorKind) conds.push(eqFilter("error_kind", f.errorKind));
+    if (f.generationId) conds.push(eqFilter("generation_id", f.generationId));
+    return joinFilter(conds);
+  }
+
+  private llmCallFromDoc(d: Record<string, unknown>): LlmCallRecord {
+    const str = (v: unknown) => String(v ?? "");
+    const num = (v: unknown) => Number(v ?? 0);
+    return {
+      id: str(d.id), instance_id: str(d.instance_id), created_at_ms: num(d.created_at_ms),
+      finished_at_ms: num(d.finished_at_ms), latency_ms: num(d.latency_ms), stage: str(d.stage),
+      trace_name: str(d.trace_name), model: str(d.model), team_id: str(d.team_id), agent_id: str(d.agent_id),
+      user_id: str(d.user_id), session_id: str(d.session_id), project_hash: str(d.project_hash),
+      generation_id: str(d.generation_id), outcome: d.outcome as LlmCallRecord["outcome"],
+      timeout_ms: num(d.timeout_ms), prompt_chars: num(d.prompt_chars), error_kind: str(d.error_kind),
+      error_class: str(d.error_class), http_status: num(d.http_status),
+      provider_error_type: str(d.provider_error_type), provider_error_code: str(d.provider_error_code),
+      retry_after_ms: num(d.retry_after_ms), sdk_attempts: num(d.sdk_attempts),
+      error_message: str(d.error_message), response_excerpt: str(d.response_excerpt),
+      verdict: str(d.verdict), reply: str(d.reply), reply_truncated: num(d.reply_truncated) === 1,
+    };
+  }
+
+  async listLlmCalls(filter: LlmCallListFilter): Promise<LlmCallRecord[]> {
+    await this._ensureInit();
+    const endMs = filter.before ? Math.min(filter.endTimeMs, filter.before.createdAtMs) : filter.endTimeMs;
+    // The service has no composite sort key. Read a page that is wider than the
+    // request, then order by (created_at_ms, id) and drop the rows already seen.
+    const docs = await this._queryAllDocs(
+      this.llmCallsCollection, this.llmCallFilter(filter, endMs), LLM_CALL_OUTPUT_FIELDS,
+      filter.limit + 200, [{ fieldName: "created_at_ms", direction: "desc" }],
+    );
+    const records = docs.map((d) => this.llmCallFromDoc(d));
+    records.sort((a, b) => b.created_at_ms - a.created_at_ms || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+    const before = filter.before;
+    const page = before
+      ? records.filter((r) => r.created_at_ms < before.createdAtMs || (r.created_at_ms === before.createdAtMs && r.id < before.id))
+      : records;
+    return page.slice(0, filter.limit);
+  }
+
+  async statsLlmCalls(filter: LlmCallStatsFilter): Promise<LlmCallStatsGroup[]> {
+    await this._ensureInit();
+    const docs = await this._queryAllDocs(
+      this.llmCallsCollection, this.llmCallFilter(filter, filter.endTimeMs), LLM_CALL_STATS_FIELDS,
+      LLM_CALL_STATS_MAX_ROWS, [{ fieldName: "created_at_ms", direction: "desc" }],
+    );
+    return aggregateLlmCalls(docs.map((d) => this.llmCallFromDoc(d)), filter.groupBy);
   }
 
   async getMemoryGenerationRef(layer: MemoryGenerationLayer, memoryId: string): Promise<MemoryGenerationRefRecord | null> {

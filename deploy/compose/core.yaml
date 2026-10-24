@@ -6,6 +6,15 @@ server:
 data:
   baseDir: /data/tdai-memory
 memory:
+  # LLM call log: every failed LLM call of every stage (and every scope-judge call) is
+  # stored with its error kind, HTTP status, provider error code and a redacted body excerpt.
+  # One switch for all of it; the environment variable TDAI_LLM_CALL_LOG_ENABLED overrides it.
+  # Read the records with POST /v3/llm-call/list and /v3/llm-call/stats.
+  # llmCallLog:
+  #   enabled: true
+  #   retentionDays: 30
+  #   bodyExcerptBytes: 1024
+  #   recordSuccessStages: []     # stages whose successful calls are stored too
   # Team work-memory prompts for L1-L3 (facts, tasks, methods, artifacts) instead of
   # personal-assistant prompts. L2/L3 are shared by every user of an agent in a team.
   promptMode: code

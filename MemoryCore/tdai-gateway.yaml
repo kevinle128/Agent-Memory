@@ -53,6 +53,15 @@ memory:
     enableDedup: true
     maxMemoriesPerSession: 20
 
+  # LLM call log: every failed LLM call of every stage (and every scope-judge call) is
+  # stored with its error kind, HTTP status, provider error code and a redacted body excerpt.
+  # One switch for all of it; the environment variable TDAI_LLM_CALL_LOG_ENABLED overrides it.
+  # Read the records with POST /v3/llm-call/list and /v3/llm-call/stats.
+  # llmCallLog:
+  #   enabled: true
+  #   retentionDays: 30
+  #   bodyExcerptBytes: 1024
+  #   recordSuccessStages: []     # stages whose successful calls are stored too
   persona:
     triggerEveryN: 50
     maxScenes: 15

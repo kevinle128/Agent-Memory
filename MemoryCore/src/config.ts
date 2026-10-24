@@ -5,7 +5,10 @@
  *   capture, extraction, persona, pipeline, recall, embedding
  *
  * Minimal config (zero config): {} — all fields have sensible defaults.
+
  */
+
+import type { LlmCallLogConfig } from "./core/report/llm-call-recorder.js";
 
 // ============================
 // Type definitions
@@ -380,6 +383,8 @@ export interface MemoryTdaiConfig {
    */
   llm: StandaloneLLMOverrideConfig;
   offload: OffloadConfig;
+  /** LLM call log: failed LLM calls (and judge successes) are recorded in the store. */
+  llmCallLog: LlmCallLogConfig;
   /**
    * Optional Skill module config. Pass-through to `resolveSkillConfig()` at
    * the host wiring layer; defaults are applied there. When absent, the
@@ -594,6 +599,15 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
     cleanTime,
   };
 
+  // --- LLM call log ---
+  const callLogGroup = obj(c, "llmCallLog");
+  const llmCallLog: LlmCallLogConfig = {
+    enabled: bool(callLogGroup, "enabled") ?? true,
+    recordSuccessStages: strArray(callLogGroup, "recordSuccessStages") ?? [],
+    bodyExcerptBytes: Math.max(0, Math.min(num(callLogGroup, "bodyExcerptBytes") ?? 1024, 8192)),
+    retentionDays: Math.max(1, num(callLogGroup, "retentionDays") ?? 30),
+  };
+
   // --- Offload ---
   const offloadGroup = obj(c, "offload");
   const offloadBackendKey = optStr(offloadGroup, "backendApiKey");
@@ -755,6 +769,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
       };
     })(),
     offload,
+    llmCallLog,
     // Skill: passthrough — let the host wiring call resolveSkillConfig() with
     // ambient probes (TCVDB / COS / embedding / LLMRunner). We don't apply
     // defaults here so the resolver remains the single source of truth.

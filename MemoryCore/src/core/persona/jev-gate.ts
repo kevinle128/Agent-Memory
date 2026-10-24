@@ -57,6 +57,29 @@ export interface L3JevExecutionContext {
   userId?: string;
   agentId?: string;
   sessionId?: string;
+  /**
+   * Manual regeneration. The run skips the trigger and the JEV gate, backs up
+   * the current document and rewrites it from all scenes. With `projectHash`
+   * only that project document is rewritten; without it only the user-global
+   * document is.
+   */
+  forceRegenerate?: { reason: string; projectHash?: string; generationId?: string };
+  /** Called with the key of the backup a forced run made, or null when there was no document to copy. */
+  onBackupMade?: (backupKey: string | null) => void;
+  /** Called once per generator run with its result, before the runner moves on. */
+  onGenerationSettled?: (report: L3GenerationReport) => void;
+}
+
+export interface L3GenerationReport {
+  scope: "user-global" | "project";
+  projectHash?: string;
+  outcome: "generated" | "unchanged" | "failed" | "judge_failed" | "skipped";
+  /** Set when outcome is "skipped". */
+  skippedReason?: string;
+  generationId?: string;
+  scopeCheck?: import("../memory-generation-log/types.js").MemoryGenerationScopeCheck;
+  /** Key of the backup made before a forced run; null when there was nothing to copy. */
+  backupKey?: string | null;
 }
 
 export interface JevGateResult {

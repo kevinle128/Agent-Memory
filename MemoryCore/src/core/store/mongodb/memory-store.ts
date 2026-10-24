@@ -73,6 +73,12 @@ import type {
 } from "../../memory-prompt/types.js";
 import { DEFAULT_ISOLATION_ID } from "../isolation.js";
 import { mongoSearchScoreToScore } from "../tokenize.js";
+import {
+  type LlmCallListFilter,
+  type LlmCallRecord,
+  type LlmCallStatsFilter,
+  type LlmCallStatsGroup,
+} from "../../report/llm-call-types.js";
 import { COLLECTIONS } from "./collections.js";
 import {
   MEMORY_SEARCH_INDEX,
@@ -203,6 +209,12 @@ export class MongoMemoryStore implements IMemoryStore {
       ]),
       db.collection(COLLECTIONS.MEMORY_GENERATION_REFS).createIndexes([
         { key: { layer: 1, memory_id: 1 }, unique: true },
+      ]),
+      db.collection(COLLECTIONS.LLM_CALLS).createIndexes([
+        { key: { instance_id: 1, created_at_ms: -1 } },
+        { key: { team_id: 1, agent_id: 1, created_at_ms: -1 } },
+        { key: { stage: 1, created_at_ms: -1 } },
+        { key: { generation_id: 1 } },
       ]),
     ]);
   }
@@ -945,6 +957,85 @@ export class MongoMemoryStore implements IMemoryStore {
     const doc = await coll.findOne({ _id: id } as never);
     if (!doc || String(doc.memory_id ?? "") !== memoryId || doc.layer !== layer) return null;
     return this.generationRefFromDoc(doc as Record<string, unknown>, layer, memoryId);
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // LLM call log
+  // ─────────────────────────────────────────────────────────
+
+  async insertLlmCall(record: LlmCallRecord): Promise<void> {
+    const coll = await this.coll(COLLECTIONS.LLM_CALLS);
+    const { id, ...rest } = record;
+    await coll.replaceOne({ _id: id } as never, { _id: id, ...rest } as never, { upsert: true });
+  }
+
+  async pruneLlmCalls(olderThanMs: number): Promise<number> {
+    const coll = await this.coll(COLLECTIONS.LLM_CALLS);
+    return (await coll.deleteMany({ created_at_ms: { $lt: olderThanMs } } as never)).deletedCount ?? 0;
+  }
+
+  private llmCallQuery(f: Partial<LlmCallListFilter> & { startTimeMs: number; endTimeMs: number }): Record<string, unknown> {
+    const query: Record<string, unknown> = { created_at_ms: { $gte: f.startTimeMs, $lte: f.endTimeMs } };
+    if (f.instanceId) query.instance_id = f.instanceId;
+    if (f.stage) query.stage = f.stage;
+    if (f.teamId) query.team_id = f.teamId;
+    if (f.agentId) query.agent_id = f.agentId;
+    if (f.outcome) query.outcome = f.outcome;
+    if (f.errorKind) query.error_kind = f.errorKind;
+    if (f.generationId) query.generation_id = f.generationId;
+    return query;
+  }
+
+  async listLlmCalls(filter: LlmCallListFilter): Promise<LlmCallRecord[]> {
+    const coll = await this.coll(COLLECTIONS.LLM_CALLS);
+    const query = this.llmCallQuery(filter);
+    if (filter.before) {
+      const { createdAtMs, id } = filter.before;
+      query.$and = [{ $or: [{ created_at_ms: { $lt: createdAtMs } }, { created_at_ms: createdAtMs, _id: { $lt: id } }] }];
+    }
+    const docs = await coll.find(query as never).sort({ created_at_ms: -1, _id: -1 }).limit(filter.limit).toArray();
+    const str = (v: unknown) => String(v ?? "");
+    const num = (v: unknown) => Number(v ?? 0);
+    return docs.map((doc) => {
+      const d = doc as Record<string, unknown>;
+      return {
+        id: str(d._id), instance_id: str(d.instance_id), created_at_ms: num(d.created_at_ms),
+        finished_at_ms: num(d.finished_at_ms), latency_ms: num(d.latency_ms), stage: str(d.stage),
+        trace_name: str(d.trace_name), model: str(d.model), team_id: str(d.team_id), agent_id: str(d.agent_id),
+        user_id: str(d.user_id), session_id: str(d.session_id), project_hash: str(d.project_hash),
+        generation_id: str(d.generation_id), outcome: d.outcome as LlmCallRecord["outcome"],
+        timeout_ms: num(d.timeout_ms), prompt_chars: num(d.prompt_chars), error_kind: str(d.error_kind),
+        error_class: str(d.error_class), http_status: num(d.http_status),
+        provider_error_type: str(d.provider_error_type), provider_error_code: str(d.provider_error_code),
+        retry_after_ms: num(d.retry_after_ms), sdk_attempts: num(d.sdk_attempts),
+        error_message: str(d.error_message), response_excerpt: str(d.response_excerpt),
+        verdict: str(d.verdict), reply: str(d.reply), reply_truncated: d.reply_truncated === true,
+      };
+    });
+  }
+
+  async statsLlmCalls(filter: LlmCallStatsFilter): Promise<LlmCallStatsGroup[]> {
+    const coll = await this.coll(COLLECTIONS.LLM_CALLS);
+    const orNone = (field: string) => ({ $cond: [{ $in: [`$${field}`, ["", null]] }, "none", `$${field}`] });
+    const key: Record<string, unknown> = {
+      error_kind: orNone("error_kind"),
+      http_status: { $cond: [{ $eq: [{ $ifNull: ["$http_status", 0] }, 0] }, "none", { $toString: "$http_status" }] },
+      provider_error_code: orNone("provider_error_code"),
+      stage: orNone("stage"),
+      model: orNone("model"),
+      outcome: "$outcome",
+      day: { $dateToString: { format: "%Y-%m-%d", date: { $toDate: "$created_at_ms" } } },
+    };
+    const groups = await coll.aggregate([
+      { $match: this.llmCallQuery(filter) },
+      { $sort: { created_at_ms: -1, _id: -1 } },
+      { $group: { _id: key[filter.groupBy], count: { $sum: 1 }, first: { $min: "$created_at_ms" }, last: { $max: "$created_at_ms" }, example: { $first: "$_id" } } },
+      { $sort: { count: -1, _id: 1 } },
+    ]).toArray();
+    return groups.map((g) => ({
+      key: String(g._id), count: Number(g.count), first_seen_ms: Number(g.first),
+      last_seen_ms: Number(g.last), example_id: String(g.example),
+    }));
   }
 
   // ─────────────────────────────────────────────────────────

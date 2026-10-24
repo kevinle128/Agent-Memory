@@ -54,11 +54,13 @@ import {
 import { SceneExtractor } from "../core/scene/scene-extractor.js";
 import { PersonaTrigger } from "../core/persona/persona-trigger.js";
 import { PersonaGenerator } from "../core/persona/persona-generator.js";
+import { backupPersonaFile } from "../core/persona/persona-backup.js";
 import {
   evaluateL3JevGate,
   JEV_PROMPT_VERSION,
   summarizeSceneDiff,
   type L3JevExecutionContext,
+  type L3GenerationReport,
   type L2SceneDiffDiagnostic,
 } from "../core/persona/jev-gate.js";
 import { emitJevDiagnostic } from "../core/persona/jev-diagnostics.js";
@@ -1487,7 +1489,16 @@ export function createL3Runner(opts: {
     });
     const l3Prompts = await resolveMemoryPrompts(vectorStore, l3PromptTargets);
 
-    type L3Outcome = "generated" | "unchanged" | "failed";
+    type L3Outcome = "generated" | "unchanged" | "failed" | "judge_failed";
+
+    const forced = context?.forceRegenerate;
+    const report = (r: L3GenerationReport): void => {
+      try {
+        context?.onGenerationSettled?.(r);
+      } catch (err) {
+        logger.warn(`${TAG} [L3] generation report callback failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
 
     const abortError = (): Error =>
       context?.signal?.reason instanceof Error
@@ -1521,6 +1532,8 @@ export function createL3Runner(opts: {
       personaBeforeHash?: string;
       scopeStartedAt: number;
       jevAddedLockMs: number;
+      /** Key of the backup a forced run made before it started. */
+      backupKey?: string | null;
     }): Promise<L3Outcome> => {
       const { scopeIsolation, dataDir, store, profileOptions, profileBaseline, gateId, projectHash, personaBeforeHash, scopeStartedAt, jevAddedLockMs } = a;
       const genResult = await a.generator.generateLocalPersona(a.generationReason);
@@ -1531,6 +1544,77 @@ export function createL3Runner(opts: {
       const checkpoint = new CheckpointManager(dataDir, logger, store, opts.checkpointLock);
       const cp = await checkpoint.read();
       const personaMarker = cp.total_processed;
+      const generationId = a.generator.generationId;
+      const scopeCheck = a.generator.scopeCheckSummary;
+      const settle = (outcome: L3GenerationReport["outcome"]): void => report({
+        scope: projectHash ? "project" : "user-global",
+        projectHash,
+        outcome,
+        generationId,
+        scopeCheck,
+        backupKey: a.backupKey,
+      });
+      const l3PromptRef = buildPromptGenerationRef(a.resolvedL3Prompt, "l3");
+      // A run that wrote no profile change still gets a log when the scope
+      // check ran, so the log tells why the persona was kept or rejected.
+      const writeScopeOnlyLog = async (status: "succeeded" | "failed", error?: { code: string; message: string }): Promise<void> => {
+        if (!scopeCheck) return;
+        const finishedAt = Date.now();
+        const identity = buildGenerationLogIdentity("l3", finishedAt, undefined, status, generationId);
+        const log: MemoryGenerationLog = {
+          schema_version: 1,
+          log_id: identity.logId,
+          generation_id: identity.generationId,
+          instance_id: instanceId ?? "standalone",
+          layer: "l3",
+          status,
+          team_id: scopeIsolation.teamId,
+          agent_id: scopeIsolation.agentId,
+          user_id: scopeIsolation.userId,
+          session_id: scopeIsolation.sessionId,
+          prompt: l3PromptRef,
+          input_refs: a.inputSceneIds.map((recordId) => ({ layer: "l2" as const, record_id: recordId })),
+          output_refs: [],
+          model: cfg.persona.model,
+          prompt_mode: cfg.persona.promptMode,
+          started_at_ms: a.l3StartMs,
+          finished_at_ms: finishedAt,
+          latency_ms: finishedAt - a.l3StartMs,
+          ...(error ? { error_code: error.code, error_message: error.message } : {}),
+          scope_check: scopeCheck,
+        };
+        const rootStorage = storage ?? new StorageAdapter(new LocalStorageBackend(pluginDataDir));
+        await writeGenerationProvenanceBestEffort({
+          layer: "l3",
+          logger,
+          writeLog: () => new MemoryGenerationLogStore(rootStorage, instanceId ?? "standalone").write(log, identity.key),
+        });
+      };
+
+      if (genResult === "judge_failed") {
+        // The judge gave no verdict and the previous persona is back in place.
+        // Nothing is retried: the failure is recorded, and the threshold trigger
+        // decides the next run. A manual run keeps the normal schedule.
+        await checkpoint.dropPendingPersonaRun({ keepSchedule: !!forced });
+        logger.error(
+          `${TAG} [L3] Scope judge gave no verdict (${a.label}, kind=${scopeCheck?.error_kind ?? "unknown"}, ` +
+          `reason=${scopeCheck?.reason ?? "unknown"}); the previous persona was kept`,
+        );
+        await writeScopeOnlyLog("failed", {
+          code: "SCOPE_JUDGE_FAILED",
+          message: `The scope judge gave no verdict (${scopeCheck?.reason ?? "unknown"}); the previous persona was kept.`,
+        });
+        emitCheckpointDiagnostic({
+          logger, cfg, instanceId, context, gateId, scopeIsolation, projectHash,
+          generationResult: "failed", checkpointBefore: cp.last_persona_time,
+          checkpointAfter: cp.last_persona_time, advanceReason: "scope_judge_failed",
+          personaBeforeHash,
+          personaAfterHash: await readPersonaBodyHash(dataDir, store),
+          scopeStartedAt, jevAddedLockMs,
+        });
+        settle("judge_failed");
+        return "judge_failed";
+      }
 
       if (genResult === "failed") {
         emitCheckpointDiagnostic({
@@ -1541,6 +1625,7 @@ export function createL3Runner(opts: {
           personaAfterHash: await readPersonaBodyHash(dataDir, store),
           scopeStartedAt, jevAddedLockMs,
         });
+        settle("failed");
         return "failed";
       }
       if (genResult === "unchanged") {
@@ -1555,11 +1640,11 @@ export function createL3Runner(opts: {
           personaAfterHash: await readPersonaBodyHash(dataDir, store),
           scopeStartedAt, jevAddedLockMs,
         });
+        settle("unchanged");
         return "unchanged";
       }
 
       const l3FinishedAt = Date.now();
-      const l3PromptRef = buildPromptGenerationRef(a.resolvedL3Prompt, "l3");
       let changedProfiles = (await listLocalProfiles(dataDir, store, profileOptions))
         .filter((profile) => profileBaseline.get(profile.id)?.contentMd5 !== profile.contentMd5 || !profileBaseline.has(profile.id));
       if (vectorStore && supportsProfileSyncWrite(vectorStore)) {
@@ -1569,6 +1654,7 @@ export function createL3Runner(opts: {
       }
       if (changedProfiles.length === 0) {
         logger.debug?.(`${TAG} [L3] No changed Persona profiles, skipping generation provenance`);
+        await writeScopeOnlyLog("succeeded");
         await checkpoint.markPersonaGenerated(personaMarker);
         const checkpointAfterSync = await checkpoint.read();
         emitCheckpointDiagnostic({
@@ -1582,9 +1668,10 @@ export function createL3Runner(opts: {
           scopeStartedAt,
           jevAddedLockMs,
         });
+        settle("generated");
         return "generated";
       }
-      const l3Identity = buildGenerationLogIdentity("l3", l3FinishedAt, changedProfiles[0]?.id);
+      const l3Identity = buildGenerationLogIdentity("l3", l3FinishedAt, changedProfiles[0]?.id, "succeeded", generationId);
       const l3Provenance = buildGenerationProvenance(l3Identity, l3PromptRef);
       const rootStorage = storage ?? new StorageAdapter(new LocalStorageBackend(pluginDataDir));
       const l3Log: MemoryGenerationLog = {
@@ -1609,6 +1696,7 @@ export function createL3Runner(opts: {
         started_at_ms: a.l3StartMs,
         finished_at_ms: l3FinishedAt,
         latency_ms: l3FinishedAt - a.l3StartMs,
+        ...(scopeCheck ? { scope_check: scopeCheck } : {}),
       };
       const l3LogStore = new MemoryGenerationLogStore(rootStorage, instanceId ?? "standalone");
       await writeGenerationProvenanceBestEffort({
@@ -1639,6 +1727,7 @@ export function createL3Runner(opts: {
         jevAddedLockMs,
       });
       logger.info(`${TAG} [L3] Persona generation succeeded (${a.label})`);
+      settle("generated");
       return "generated";
     };
 
@@ -1667,7 +1756,10 @@ export function createL3Runner(opts: {
         storage: scopedStore,
       });
 
-      const triggerResult = await trigger.shouldGenerate();
+      // A manual regeneration skips the trigger and the JEV gate.
+      const triggerResult = forced
+        ? { should: true, reason: `manual regeneration: ${forced.reason}` }
+        : await trigger.shouldGenerate();
       let shouldGenerate = triggerResult.should;
       let generationReason = triggerResult.reason;
       let jevAddedLockMs = 0;
@@ -1739,6 +1831,7 @@ export function createL3Runner(opts: {
 
       if (!openclawConfig && !llmRunner) {
         logger.warn(`${TAG} [L3] No OpenClaw config and no LLM runner, skipping persona generation`);
+        report({ scope: "user-global", outcome: "skipped", skippedReason: "no LLM runner is configured" });
         return false;
       }
 
@@ -1748,6 +1841,7 @@ export function createL3Runner(opts: {
       const sceneIndex = await readSceneIndex(scopedDir, sceneStore);
       if (sceneIndex.length === 0) {
         logger.info(`${TAG} [L3] No scene files available for scope=${scope}, skipping (checkpoint unchanged)`);
+        report({ scope: "user-global", outcome: "skipped", skippedReason: "no scene files" });
         return true;
       }
 
@@ -1764,6 +1858,12 @@ export function createL3Runner(opts: {
           ? context.signal.reason
           : new Error(`${TAG} [L3] Task aborted before persona generation`);
       }
+      // A forced run keeps a copy of the document it is about to rewrite. If the
+      // copy cannot be made, the run stops before it changes anything.
+      const backupKey = forced
+        ? await backupPersonaFile({ storage: scopedStore, dataDir: scopedDir })
+        : undefined;
+      if (backupKey !== undefined) context?.onBackupMade?.(backupKey);
       logger.info(`${TAG} [L3] Starting persona generation: ${generationReason} (scope=${scope})`);
       // 反解 scope 拿回 teamId/userId/agentId/sessionId 给 langfuse trace 用。
       // 默认 scope ("global") 解不出维度，按空 isolation 处理。
@@ -1786,12 +1886,14 @@ export function createL3Runner(opts: {
         scopeJudge: scopeJudgeRunner,
         storage: sceneStore,
         traceContext: scopeIsolation,
+        forceFullRewrite: !!forced,
+        generationId: forced?.generationId,
       });
       const outcome = await settleGeneration({
         generator, generationReason, label: `scope=${scope}`, scopeIsolation,
         dataDir: scopedDir, store: scopedStore, profileOptions, profileBaseline,
         inputSceneIds: sceneIndex.map((scene) => scene.filename),
-        resolvedL3Prompt, l3StartMs, gateId, personaBeforeHash, scopeStartedAt, jevAddedLockMs,
+        resolvedL3Prompt, l3StartMs, gateId, personaBeforeHash, scopeStartedAt, jevAddedLockMs, backupKey,
       });
       if (outcome === "failed") throw new Error(`${TAG} [L3] Persona generation failed (scope=${scope})`);
       if (outcome === "generated") generatedAny = true;
@@ -1829,7 +1931,9 @@ export function createL3Runner(opts: {
         storage: projectStore,
         variant: "project",
       });
-      const triggerResult = await trigger.shouldGenerate();
+      const triggerResult = forced
+        ? { should: true, reason: `manual regeneration: ${forced.reason}` }
+        : await trigger.shouldGenerate();
       if (!triggerResult.should) {
         logger.debug?.(`${TAG} [L3] Project persona generation not needed (${label})`);
         if (diagnosticsOn) {
@@ -1851,6 +1955,7 @@ export function createL3Runner(opts: {
 
       if (!openclawConfig && !llmRunner) {
         logger.warn(`${TAG} [L3] No OpenClaw config and no LLM runner, skipping project persona generation (${label})`);
+        report({ scope: "project", projectHash, outcome: "skipped", skippedReason: "no LLM runner is configured" });
         return;
       }
 
@@ -1858,6 +1963,7 @@ export function createL3Runner(opts: {
       const sceneIndex = await readSceneIndex(projectDir, projectStore);
       if (sceneIndex.length === 0) {
         logger.info(`${TAG} [L3] No scene files available for project persona, skipping (checkpoint unchanged, ${label})`);
+        report({ scope: "project", projectHash, outcome: "skipped", skippedReason: "no scene files" });
         return;
       }
 
@@ -1869,6 +1975,10 @@ export function createL3Runner(opts: {
       }
 
       if (context?.signal?.aborted) throw abortError();
+      const backupKey = forced
+        ? await backupPersonaFile({ storage: projectStore, dataDir: projectDir })
+        : undefined;
+      if (backupKey !== undefined) context?.onBackupMade?.(backupKey);
       logger.info(`${TAG} [L3] Starting project persona generation: ${triggerResult.reason} (${label})`);
       const l3StartMs = Date.now();
       const generator = new PersonaGenerator({
@@ -1884,13 +1994,15 @@ export function createL3Runner(opts: {
         storage: projectStore,
         traceContext: scopeIsolation,
         variant: "project",
+        forceFullRewrite: !!forced,
+        generationId: forced?.generationId,
       });
       const outcome = await settleGeneration({
         generator, generationReason: triggerResult.reason, label, scopeIsolation,
         dataDir: projectDir, store: projectStore, profileOptions: projectProfileOptions, profileBaseline,
         // Row filenames of project scenes carry the project prefix.
         inputSceneIds: sceneIndex.map((scene) => `${projectSceneFilenamePrefix(projectHash)}${scene.filename}`),
-        resolvedL3Prompt, l3StartMs, projectHash, personaBeforeHash, scopeStartedAt, jevAddedLockMs: 0,
+        resolvedL3Prompt, l3StartMs, projectHash, personaBeforeHash, scopeStartedAt, jevAddedLockMs: 0, backupKey,
       });
       if (outcome === "failed") {
         logger.error(`${TAG} [L3] Project persona generation failed; the checkpoint is unchanged (${label})`);
@@ -1913,6 +2025,13 @@ export function createL3Runner(opts: {
         logger.warn(`${TAG} [L3] Could not list projects, skipping project personas (scope=${scope}): ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
+      if (forced?.projectHash) {
+        if (!projectHashes.includes(forced.projectHash)) {
+          report({ scope: "project", projectHash: forced.projectHash, outcome: "skipped", skippedReason: "project has no scene files" });
+          return;
+        }
+        projectHashes = [forced.projectHash];
+      }
       if (projectHashes.length === 0) return;
       const scopeIsolation = parseProfileIsolationScope(scope) ?? {};
       const resolvedL3Prompt = l3Prompts.get(memoryPromptResolveKey({
@@ -1926,7 +2045,8 @@ export function createL3Runner(opts: {
         try {
           await runProjectPersona({ scope, scopedDir, scopedStore, projectHash, scopeIsolation, resolvedL3Prompt });
         } catch (err) {
-          if (context?.signal?.aborted) throw err;
+          // A manual run has one caller waiting for the answer: tell it.
+          if (context?.signal?.aborted || forced) throw err;
           logger.error(
             `${TAG} [L3] Project persona run failed; other projects continue (scope=${scope}, project=${projectHash}): ` +
             `${err instanceof Error ? err.stack ?? err.message : String(err)}`,
@@ -1939,8 +2059,13 @@ export function createL3Runner(opts: {
       // A failed user-global run throws at once and skips the projects of the
       // scope: the task's LLM credit is reported when the runner returns, so
       // work done after a failure would not be billed.
+      if (forced?.projectHash) {
+        // Manual run of one project document: the user-global document is left alone.
+        await runProjectPersonas(scope);
+        continue;
+      }
       if (!(await runUserGlobalScope(scope))) return;
-      await runProjectPersonas(scope);
+      if (!forced) await runProjectPersonas(scope);
     }
 
     if (!generatedAny) {

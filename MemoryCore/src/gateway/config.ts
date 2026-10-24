@@ -668,6 +668,11 @@ export function loadGatewayConfig(overrides?: GatewayConfigOverrides): GatewayCo
     memoryCompatRaw.promptMode = topLevelPromptMode;
   }
   const memory = parseMemoryConfig(memoryCompatRaw);
+  // One switch for the LLM call log; the environment overrides the file.
+  const callLogEnv = env("TDAI_LLM_CALL_LOG_ENABLED");
+  if (callLogEnv !== undefined && callLogEnv !== "") {
+    memory.llmCallLog.enabled = !["false", "0", "off", "no"].includes(callLogEnv.trim().toLowerCase());
+  }
 
   // ── Standalone LLM override pass-through to MemoryTdaiConfig.llm ──
   // The gateway has its own top-level `llm` block (read above into the
@@ -1201,16 +1206,19 @@ function resolveCorsOrigins(serverConfig: Record<string, unknown>): string[] {
  * empty string, matching the behaviour of the previous simple YAML parser
  * so existing configs keep working after the switch to the full YAML lib.
  *
- * - Only whole-string matches (``"${VAR}"``) are substituted, preserving
+ * - Only whole-string matches (``"${VAR}"`` or ``"${VAR:-default}"``) are substituted, preserving
  *   types: numbers/booleans/null pass through unchanged.
  * - Arrays and nested objects are walked in-place (new arrays/objects are
  *   returned; the input is not mutated).
  */
-function expandEnvVars(value: unknown): unknown {
+export function expandEnvVars(value: unknown): unknown {
   if (typeof value === "string") {
-    const m = value.match(/^\$\{(\w+)\}$/);
+    // `${VAR}` or the shell form `${VAR:-default}`; the default applies when
+    // the variable is missing or empty.
+    const m = value.match(/^\$\{(\w+)(?::-([^}]*))?\}$/);
     if (m) {
-      return process.env[m[1]!] ?? "";
+      const v = process.env[m[1]!];
+      return v !== undefined && v !== "" ? v : (m[2] ?? "");
     }
     return value;
   }

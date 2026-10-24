@@ -24,10 +24,14 @@ import {
   USER_GLOBAL_REJECTED_MARKER,
   USER_GLOBAL_SCOPE_MARKER,
   checkUserGlobalPersona,
+  isTechnicalScopeFailure,
   readScopeState,
   stripScopeMarkers,
   type ScopeCheckResult,
+  type ScopeJudgeContext,
 } from "./user-global-scope.js";
+import { newGenerationId } from "../memory-generation-log/store.js";
+import type { MemoryGenerationScopeCheck } from "../memory-generation-log/types.js";
 
 const TAG = "[memory-tdai] [persona]";
 
@@ -43,6 +47,12 @@ export class PersonaGenerator {
   private traceContext: TraceContext | undefined;
   private scopeJudge: LLMRunner | undefined;
   private variant: PersonaVariant;
+  private model: string | undefined;
+  private forceFullRewrite: boolean;
+  /** Id of this run. Judge records and the L3 generation log carry it. */
+  readonly generationId: string;
+  /** Scope-check result of the last run; undefined for a project document or before a run. */
+  scopeCheckSummary: MemoryGenerationScopeCheck | undefined;
 
   constructor(opts: {
     dataDir: string;
@@ -78,8 +88,18 @@ export class PersonaGenerator {
      * and the file carries no scope marker.
      */
     variant?: PersonaVariant;
+    /** Id of this run; a new one is made when absent. */
+    generationId?: string;
+    /**
+     * Rewrite the persona from all scenes even when the current one is accepted.
+     * Used by a manual regeneration.
+     */
+    forceFullRewrite?: boolean;
   }) {
     this.dataDir = opts.dataDir;
+    this.model = opts.model;
+    this.generationId = opts.generationId ?? newGenerationId();
+    this.forceFullRewrite = opts.forceFullRewrite ?? false;
     this.logger = opts.logger;
     this.promptMode = opts.promptMode ?? "chat";
     this.memoryPrompt = opts.memoryPrompt;
@@ -108,8 +128,14 @@ export class PersonaGenerator {
 
   /**
    * Execute local persona generation without advancing checkpoint.
+   *
+   * Results: "generated" and "unchanged" move the checkpoint. "failed" is a
+   * generation error. "judge_failed" means the scope judge could not give a verdict
+   * (its one call failed): the previous persona file is back in place and
+   * nothing is marked. Nothing is retried.
    */
-  async generateLocalPersona(triggerReason?: string): Promise<"generated" | "unchanged" | "failed"> {
+  async generateLocalPersona(triggerReason?: string): Promise<"generated" | "unchanged" | "failed" | "judge_failed"> {
+    this.scopeCheckSummary = undefined;
     const startMs = Date.now();
     this.logger?.debug?.(`${TAG} Starting generation: reason="${triggerReason ?? "none"}"`);
 
@@ -139,7 +165,7 @@ export class PersonaGenerator {
       }
       if (existingRaw) {
         const body = stripScopeMarkers(stripSceneNavigation(existingRaw)).trim();
-        if (body && (isProject || readScopeState(existingRaw) === "accepted")) {
+        if (body && !this.forceFullRewrite && (isProject || readScopeState(existingRaw) === "accepted")) {
           existingPersona = body;
         } else if (body) {
           fullRewrite = true;
@@ -149,8 +175,15 @@ export class PersonaGenerator {
         `${TAG} Existing ${targetLabel}: ${existingPersona ? `${existingPersona.length} chars` : "empty"}` +
         (fullRewrite ? " (no accepted scope marker; full rewrite from all scenes)" : ""),
       );
-    } catch {
-      this.logger?.debug?.(`${TAG} No existing ${targetFile} file`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+        this.logger?.debug?.(`${TAG} No existing ${targetFile} file`);
+      } else {
+        // The file may exist. Going on would overwrite it unbacked, and a later
+        // restore would not know its bytes.
+        this.logger?.error(`${TAG} Could not read the existing ${targetFile}; stopping before any change: ${err instanceof Error ? err.message : String(err)}`);
+        return "failed";
+      }
     }
 
     // 2. Load scene index + identify changed scenes
@@ -261,7 +294,9 @@ export class PersonaGenerator {
     );
     if (!this.storage) {
       const path = await import("node:path");
-      await bm.backupFile(path.default.join(this.dataDir, targetFile), "persona", `offset${cp.total_processed}`, this.backupCount);
+      if (!(await this.newestLocalBackupEquals(existingRaw))) {
+        await bm.backupFile(path.default.join(this.dataDir, targetFile), "persona", `offset${cp.total_processed}`, this.backupCount);
+      }
     } else if (existingRaw) {
       await this.backupToStorage(existingRaw, `offset${cp.total_processed}`);
     }
@@ -286,8 +321,23 @@ export class PersonaGenerator {
     let personaText = first;
     let scope: ScopeCheckResult = { ok: true, leaks: [] };
     if (!isProject) {
-      scope = await checkUserGlobalPersona({ persona: personaText, sceneIndex: sceneHints, judge: this.scopeJudge! });
-      if (!scope.ok) {
+      // Only judge calls that reached the store are listed in the generation log.
+      const judgeRecordIds: string[] = [];
+      let judgeCalls = 0;
+      const runCheck = async (text: string): Promise<ScopeCheckResult> => {
+        const result = await checkUserGlobalPersona({
+          persona: text,
+          sceneIndex: sceneHints,
+          judge: this.scopeJudge!,
+          logger: this.logger,
+          context: this.judgeContext(),
+        });
+        if (result.reason !== "structural") judgeCalls++;
+        judgeRecordIds.push(...(result.callIds ?? []));
+        return result;
+      };
+      scope = await runCheck(personaText);
+      if (!scope.ok && !isTechnicalScopeFailure(scope)) {
         this.logger?.warn(`${TAG} ${targetFile} failed the user-global scope check (${describeScopeFailure(scope)}); retrying once`);
         const markerBeforeRetry = await readPersonaWriteMarker(this.dataDir, targetFile, this.storage);
         const retried = await this.writeAndRead({
@@ -299,9 +349,30 @@ export class PersonaGenerator {
         });
         if (retried !== null) {
           personaText = retried;
-          scope = await checkUserGlobalPersona({ persona: personaText, sceneIndex: sceneHints, judge: this.scopeJudge! });
+          scope = await runCheck(personaText);
         }
       }
+      const summary = (result: MemoryGenerationScopeCheck["result"]): MemoryGenerationScopeCheck => ({
+        result,
+        ...(scope.reason ? { reason: scope.reason } : {}),
+        ...(scope.leaks.length > 0 ? { leaks: scope.leaks.slice(0, 20).map((l) => l.slice(0, 200)) } : {}),
+        ...(scope.errorKind ? { error_kind: scope.errorKind } : {}),
+        judge_attempts: judgeCalls,
+        judge_record_ids: judgeRecordIds,
+      });
+      if (isTechnicalScopeFailure(scope)) {
+        // The judge gave no verdict, so the new text is neither accepted nor
+        // rejected. The model has already overwritten the file; put the old
+        // bytes back so an accepted persona stays injected. Nothing is retried.
+        this.scopeCheckSummary = summary("judge_failed");
+        this.logger?.error(
+          `${TAG} ${targetFile} scope judge gave no verdict (${describeScopeFailure(scope)}, kind=${scope.errorKind ?? "unknown"}); ` +
+          `keeping the previous ${targetLabel}`,
+        );
+        const restored = await this.restorePrevious(existingRaw, targetFile, personaFilePath);
+        return restored ? "judge_failed" : "failed";
+      }
+      this.scopeCheckSummary = summary(scope.ok ? "passed" : "rejected");
       if (scope.ok) {
         this.logger?.info(`${TAG} ${targetFile} passed the user-global scope check`);
       } else {
@@ -447,6 +518,55 @@ export class PersonaGenerator {
     return personaText;
   }
 
+  /** True when the newest copy in `.backup/persona/` has the same bytes as the current file. */
+  private async newestLocalBackupEquals(current: string | null): Promise<boolean> {
+    if (!current) return false;
+    try {
+      const fs = await import("node:fs/promises");
+      const path = await import("node:path");
+      const dir = path.default.join(this.dataDir, ".backup", "persona");
+      const names = (await fs.default.readdir(dir)).sort();
+      if (names.length === 0) return false;
+      return (await fs.default.readFile(path.default.join(dir, names[names.length - 1]), "utf-8")) === current;
+    } catch {
+      return false;
+    }
+  }
+
+  private judgeContext(): ScopeJudgeContext {
+    const t = this.traceContext;
+    return {
+      instanceId: this.instanceId,
+      teamId: t?.teamId,
+      agentId: t?.agentId,
+      userId: t?.userId,
+      sessionId: t?.sessionId,
+      generationId: this.generationId,
+      model: (this.scopeJudge as { modelName?: string } | undefined)?.modelName ?? this.model,
+    };
+  }
+
+  /**
+   * Put the L3 file back to the bytes it had before this run. When there was no
+   * file, remove the one the model wrote. Returns false when this fails.
+   */
+  private async restorePrevious(existingRaw: string | null, targetFile: string, personaFilePath: string): Promise<boolean> {
+    try {
+      if (this.storage) {
+        if (existingRaw) await this.storage.writeFile(targetFile, existingRaw);
+        else await this.storage.unlink(targetFile);
+      } else {
+        const fs = await import("node:fs/promises");
+        if (existingRaw) await fs.default.writeFile(personaFilePath, existingRaw, "utf-8");
+        else await fs.default.rm(personaFilePath, { force: true });
+      }
+      return true;
+    } catch (err) {
+      this.logger?.error(`${TAG} could not restore the previous ${targetFile}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   /**
    * Keep a copy of the current L3 file before the LLM overwrites it, in storage
    * mode (COS / row view). `.backup/` keys route to the non-profile backend.
@@ -456,6 +576,9 @@ export class PersonaGenerator {
     if (!this.storage) return;
     const dir = ".backup/persona/";
     try {
+      const before = (await this.storage.readdirNames(dir, ".md")).sort();
+      // Repeated runs must not push older, different copies out of the rotation.
+      if (before.length > 0 && (await this.storage.readFile(`${dir}${before[before.length - 1]}`)) === content) return;
       const stamp = new Date().toISOString().replace(/[:.]/g, "-");
       await this.storage.writeFile(`${dir}${stamp}-${tag}.md`, content);
       const names = (await this.storage.readdirNames(dir, ".md")).sort();

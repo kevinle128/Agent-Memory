@@ -30,6 +30,7 @@
  *   降级策略：无法区分 input/output 时，全按 input 费率（1.0）保守估算
  */
 
+import { LlmCallRecordingRunner, type LlmCallRecorderOptions } from "./llm-call-recorder.js";
 import type {
   LLMRunner,
   LLMRunParams,
@@ -197,6 +198,10 @@ export class MetricTrackingRunner implements LLMRunner {
     this.onCreditConsumed = onCreditConsumed;
   }
 
+  get modelName(): string | undefined {
+    return this.inner.modelName;
+  }
+
   async run(params: LLMRunParams): Promise<string> {
     // 0. 注入 instanceId（如果调用方没传，从 getInstanceId 回调获取）
     const enrichedParams = params.instanceId
@@ -343,12 +348,20 @@ export class MetricTrackingRunnerFactory implements LLMRunnerFactory {
   private readonly multiplier: number;
   private readonly onCreditConsumed?: OnCreditConsumed;
 
+  private readonly callLog?: LlmCallRecorderOptions;
+
+  /**
+   * @param callLog when given, every runner made here records failed LLM calls
+   *   (and the successes that ask for it) in the LLM call log.
+   */
   constructor(
     inner: LLMRunnerFactory,
     getInstanceId: () => string | undefined,
     multiplier: number = DEFAULT_MULTIPLIER,
     onCreditConsumed?: OnCreditConsumed,
+    callLog?: LlmCallRecorderOptions,
   ) {
+    this.callLog = callLog;
     this.inner = inner;
     this.getInstanceId = getInstanceId;
     this.multiplier = multiplier;
@@ -356,7 +369,10 @@ export class MetricTrackingRunnerFactory implements LLMRunnerFactory {
   }
 
   createRunner(opts?: LLMRunnerCreateOptions): LLMRunner {
-    const innerRunner = this.inner.createRunner(opts);
+    // The recorder sits under the credit tracker, which reads the inner runner's
+    // token usage and keeps the credit sum.
+    const created = this.inner.createRunner(opts);
+    const innerRunner = this.callLog ? new LlmCallRecordingRunner(created, this.callLog) : created;
     return new MetricTrackingRunner(innerRunner, this.getInstanceId, this.multiplier, this.onCreditConsumed);
   }
 }

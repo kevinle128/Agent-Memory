@@ -9,8 +9,9 @@
  *
  * States of persona.md:
  *   - accepted marker: passed both checks; the proxy injects it.
- *   - rejected marker: failed the checks; the proxy does not inject it, and
- *     the next regeneration waits for the normal trigger.
+ *   - rejected marker: the checks found project facts twice; the proxy does not
+ *     inject it, and the next regeneration waits for the normal trigger. A judge
+ *     that fails for a technical reason never produces this marker.
  *   - no marker: written before this check existed; it is regenerated from all
  *     scenes as soon as the L3 trigger runs.
  *
@@ -21,7 +22,10 @@
  *      product and tool names that no pattern can recognize.
  */
 
-import type { LLMRunner } from "../types.js";
+import { createHash } from "node:crypto";
+
+import { buildTraceParams, type LLMRunner, type LlmCallHints, type Logger } from "../types.js";
+import { classifyLlmError, classifyLlmReply, type LlmErrorKind } from "../report/llm-error-classifier.js";
 
 export const USER_GLOBAL_SCOPE_MARKER = "<!-- agent-memory:scope=user-global v1 -->";
 export const USER_GLOBAL_REJECTED_MARKER = "<!-- agent-memory:scope=user-global-rejected v1 -->";
@@ -141,36 +145,135 @@ export interface ScopeCheckResult {
   /** Strings that must be removed; empty when ok, or when the judge failed. */
   leaks: string[];
   /** Why the check failed; undefined when ok. */
-  reason?: "structural" | "judge-leaks" | "judge-unparseable" | "judge-error";
+  reason?: ScopeCheckFailureReason;
+  /** Specific cause when the judge call failed. */
+  errorKind?: LlmErrorKind;
+  /** Ids of the LLM call log records of the judge call; empty when it was not stored or not made. */
+  callIds?: string[];
+}
+
+export type ScopeCheckFailureReason =
+  | "structural"
+  | "judge-leaks"
+  | "judge-unparseable"
+  | "judge-error"
+  | "judge-timeout";
+
+/**
+ * True when the judge could not give a verdict (error, timeout, unusable
+ * reply). Such a result says nothing about the persona, so it must not be
+ * turned into a rejection.
+ */
+export function isTechnicalScopeFailure(result: Pick<ScopeCheckResult, "ok" | "reason">): boolean {
+  return !result.ok && (
+    result.reason === "judge-unparseable" ||
+    result.reason === "judge-error" ||
+    result.reason === "judge-timeout"
+  );
+}
+
+/** Who a judge call is recorded for. */
+export interface ScopeJudgeContext {
+  instanceId?: string;
+  teamId?: string;
+  agentId?: string;
+  userId?: string;
+  sessionId?: string;
+  /** Empty or absent for the user-global persona. */
+  projectHash?: string;
+  /** Id of the L3 generation run, shared with its generation log. */
+  generationId?: string;
+  model?: string;
+}
+
+const DEFAULT_JUDGE_TIMEOUT_MS = 60_000;
+
+function sha256Hex(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
 }
 
 /**
  * Run both checks on a persona body (marker and scene navigation already
  * removed). The structural check runs first, so a cheap failure skips the LLM.
+ *
+ * The judge is called once. A call that fails (error, timeout, reply that is
+ * not the expected JSON) is reported as a technical failure with its specific
+ * kind; it is never turned into a leak finding and never retried here. The
+ * call is stored by the LLM call log (success and failure alike) through the
+ * hints below; this function writes no record itself.
  */
 export async function checkUserGlobalPersona(opts: {
   persona: string;
   sceneIndex: SceneIndexHint[];
   judge: LLMRunner;
   timeoutMs?: number;
+  context?: ScopeJudgeContext;
+  logger?: Logger;
 }): Promise<ScopeCheckResult> {
   const structural = findStructuralLeaks(opts.persona);
   if (structural.length > 0) return { ok: false, leaks: structural, reason: "structural" };
 
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_JUDGE_TIMEOUT_MS;
+  const ctx = opts.context ?? {};
+  const { systemPrompt, prompt } = buildScopeJudgePrompt(opts.persona, opts.sceneIndex);
+  const traceParams = buildTraceParams("memory.persona-scope-check", {
+    teamId: ctx.teamId, userId: ctx.userId, agentId: ctx.agentId, sessionId: ctx.sessionId,
+  });
+  const tags = [...(traceParams.tags ?? []), ctx.projectHash ? `project:${ctx.projectHash}` : "scope:user-global"];
+  const callIds: string[] = [];
+  const startedMs = Date.now();
   let output: string;
+  let leaks: string[] | null;
+  const llmCall: LlmCallHints = {
+    generationId: ctx.generationId,
+    projectHash: ctx.projectHash,
+    teamId: ctx.teamId,
+    agentId: ctx.agentId,
+    recordSuccess: true,
+    annotate: (reply) => {
+      const parsed = parseJudgeLeaks(reply);
+      const unusable = classifyLlmReply(reply, parsed !== null);
+      return {
+        ...(unusable ? { errorKind: unusable } : {}),
+        verdict: {
+          outcome: parsed === null ? "unparseable" : parsed.length > 0 ? "leaks" : "pass",
+          leaks: parsed ?? [],
+          persona_sha256: sha256Hex(opts.persona),
+          persona_chars: opts.persona.length,
+          scene_index_count: opts.sceneIndex.length,
+        },
+      };
+    },
+    onRecorded: (id) => callIds.push(id),
+  };
   try {
-    const { systemPrompt, prompt } = buildScopeJudgePrompt(opts.persona, opts.sceneIndex);
     output = await opts.judge.run({
       systemPrompt,
       prompt,
       taskId: "persona-scope-check",
-      timeoutMs: opts.timeoutMs ?? 60_000,
+      timeoutMs,
+      ...traceParams,
+      tags,
+      ...(ctx.instanceId ? { instanceId: ctx.instanceId } : {}),
+      llmCall,
     });
-  } catch {
-    return { ok: false, leaks: [], reason: "judge-error" };
+    leaks = parseJudgeLeaks(output);
+  } catch (err) {
+    const failure = classifyLlmError(err, Date.now() - startedMs, timeoutMs);
+    opts.logger?.warn(
+      `[memory-tdai] [persona] scope judge call failed (kind=${failure.kind}, http=${failure.httpStatus || "-"}` +
+      `${failure.message ? `, ${failure.message.slice(0, 200)}` : ""})`,
+    );
+    return {
+      ok: false, leaks: [], callIds, errorKind: failure.kind,
+      reason: failure.kind === "timeout" ? "judge-timeout" : "judge-error",
+    };
   }
-  const leaks = parseJudgeLeaks(output);
-  if (leaks === null) return { ok: false, leaks: [], reason: "judge-unparseable" };
-  if (leaks.length > 0) return { ok: false, leaks, reason: "judge-leaks" };
-  return { ok: true, leaks: [] };
+  if (leaks === null) {
+    const kind = classifyLlmReply(output, false) ?? "unparseable";
+    opts.logger?.warn(`[memory-tdai] [persona] scope judge reply is not usable (kind=${kind})`);
+    return { ok: false, leaks: [], callIds, errorKind: kind, reason: "judge-unparseable" };
+  }
+  if (leaks.length > 0) return { ok: false, leaks, reason: "judge-leaks", callIds };
+  return { ok: true, leaks: [], callIds };
 }

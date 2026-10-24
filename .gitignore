@@ -142,3 +142,6 @@ z_config/
 
 # Local MCP config with tokens
 .mcp.json
+
+# Server-only Langfuse keys for MemoryCore
+deploy/compose/core-langfuse.env

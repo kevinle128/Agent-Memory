@@ -47,7 +47,7 @@ v3 接口按鉴权方式分四层（均需 `Authorization: Bearer <KERNEL_AUTH_T
 
 | 层 | 路由范围 | 额外鉴权 |
 |---|---|---|
-| 数据面 | `/v3/conversation·atomic·scenario·core/*`、`/v3/session/add`、`/v3/skill/*`、`/v3/knowledge/*`、`/v3/chat-memory/*`、`/v3/memory-prompt/*`、`/v3/memory-generation-log/*` | `x-tdai-service-id`（实例 ID） |
+| 数据面 | `/v3/conversation·atomic·scenario·core/*`、`/v3/session/add`、`/v3/skill/*`、`/v3/knowledge/*`、`/v3/chat-memory/*`、`/v3/memory-prompt/*`、`/v3/memory-generation-log/*`、`/v3/llm-call/*`、`/v3/persona/*` | `x-tdai-service-id`（实例 ID） |
 | 元数据面 | `/v3/meta/*` | `x-tdai-service-id` + `x-tdai-user-key`（用户 key，`auth/verify` 免 user-key） |
 | 内部运维面 | `/v3/internal/meta/*` | 仅 Bearer，**不解析** user-key |
 | 实例销毁 | `/v3/instance/destroy` | 仅 Bearer apiKey（v1 风格，运维接口） |
@@ -90,11 +90,12 @@ v3 接口按鉴权方式分四层（均需 `Authorization: Bearer <KERNEL_AUTH_T
 | Chat-Memory | 1 | `/v3/chat-memory/*` |
 | Memory-Prompt | 7 | `/v3/memory-prompt/*` |
 | Memory-Generation-Log | 2 | `/v3/memory-generation-log/*` |
+| LLM-Call 日志 + Persona 重生成 | 3 | `/v3/llm-call/*`、`/v3/persona/*` |
 | Meta 元数据 | 55 | `/v3/meta/*` |
 | Internal Meta | 4 | `/v3/internal/meta/*` |
 | Instance Destroy | 1 | `/v3/instance/destroy` |
 
-**合计 109 个接口。**
+**合计 112 个接口。**
 
 ---
 
@@ -935,6 +936,94 @@ upsert 知识明细（幂等）。
 **响应** `data`：日志对象。
 
 **错误**：`404`(MEMORY_GENERATION_LOG_NOT_FOUND)、`503`。
+
+---
+
+## 3.6A LLM-Call 日志与 Persona 重生成（3）
+
+### LLM-Call 日志（`llm_calls`）
+
+> Core 里**所有**经过 LLM runner 的调用都由同一个包装层记录：任何环节（L1 抽取/去重、L2 scene、L3 persona、persona 作用域 judge、skill 抽取等）的**失败调用**都会写一行；persona 作用域 judge 的**成功调用**也会写（带 verdict 与原始回复）。各调用点不自己写记录。
+> 存储：sqlite 表 / mongodb 集合 / tcvdb 集合 `llm_calls`（均为新增，按实例隔离，保留 30 天）。**不重试**：包装层只记录并原样重新抛出错误，各环节行为不变（AI SDK 自身的内部重试 `maxRetries` 未改动，其次数记在 `sdk_attempts`）。
+> **总开关**：`memory.llmCallLog.enabled`（默认 `true`），环境变量 `TDAI_LLM_CALL_LOG_ENABLED=true|false` 覆盖文件配置。关闭后任何环节都不写记录、不做清理；已有记录仍可经下面两个接口读取。可选子项：`retentionDays`(30)、`bodyExcerptBytes`(1024，上限 8192)、`recordSuccessStages`(额外记录成功调用的 stage 列表，默认空)。配置示例见 `tdai-gateway.yaml` 与 `deploy/compose/core.yaml` 的注释。
+> 不会存：prompt 原文、任何密钥（响应体与错误信息中的 Bearer/API key/长令牌会被脱敏）。
+>
+> **error_kind**：`timeout`(我们设的超时)、`rate_limit`(429 限速，读 Retry-After / x-ratelimit-reset)、`quota_exhausted`(402，或 429/403/400 且错误码/信息指向额度、账单、余额)、`overloaded`(529/503 或 overloaded_error)、`server_error`(其余 5xx)、`network`(ECONNREFUSED/ENOTFOUND/ECONNRESET/socket hang up/fetch failed)、`auth`(401，或非额度的 403)、`context_too_long`(400 且 context_length_exceeded / prompt is too long 等)、`bad_request`(其余 4xx)、`empty_reply` / `unparseable`(调用成功但回复为空/不是期望的 JSON，仅调用方能判断时)、`unknown`(保留 `error_class` 与 `error_message`)。
+
+**记录字段**
+
+| 字段 | 说明 |
+|---|---|
+| `id` | `llmc_…` |
+| `instance_id` | 所属实例 |
+| `created_at_ms` / `finished_at_ms` / `latency_ms` | 调用起止与耗时 |
+| `stage` / `trace_name` | 调用的 taskId（如 `l1-extraction`、`persona-generation`、`persona-scope-check`）与 Langfuse trace 名 |
+| `model` | 模型名 |
+| `team_id` / `agent_id` / `user_id` / `session_id` / `project_hash` | 归属（调用方带了才有） |
+| `generation_id` | 与 L3 生成日志的 `generation_id` 相同（judge 调用） |
+| `outcome` | `ok` / `error` |
+| `timeout_ms` / `prompt_chars` | 该次调用的超时与 prompt 字符数 |
+| `error_kind` / `error_class` / `http_status` | 错误类型、错误类名、HTTP 状态（无响应为 0） |
+| `provider_error_type` / `provider_error_code` | 供应商响应体里的 type / code |
+| `retry_after_ms` | 供应商要求的等待（0 为没给） |
+| `sdk_attempts` | AI SDK 内部尝试次数（0 为未知） |
+| `error_message` / `response_excerpt` | 脱敏、限长后的错误信息与响应体片段 |
+| `verdict` | 调用方的结论 JSON（judge：`{outcome, leaks, persona_sha256, persona_chars, scene_index_count}`） |
+| `reply` / `reply_truncated` | 记录成功调用与不可用回复时保存的原始回复（≤16 KiB；tcvdb ≤8 KiB） |
+
+> Langfuse：AI SDK 内部创建 span，Core 拿不到 trace id，因此记录 `trace_name`，judge 调用的 trace 带 `team:`、`agent:`、`scope:user-global`/`project:` 标签，可按名称+时间+标签跳转。
+
+### POST /v3/llm-call/list
+
+按 `created_at_ms` 倒序，游标分页，**按 `x-tdai-service-id` 限定实例**（默认近 7 天；只给 `generation_id` 时默认近 90 天）。
+
+**请求体**（均可选）：`stage`、`outcome`(`ok`|`error`)、`error_kind`、`team_id`、`agent_id`、`generation_id`、`start_time`、`end_time`（ISO 8601，范围 ≤90 天）、`limit`(默认50/上限200)、`cursor`(≤512)。
+
+**响应** `data`：`{ items, next_cursor? }`，item 为上表记录。
+
+**错误**：`400`(参数非法 / `INVALID_LLM_CALL_CURSOR`)、`503`(store 不支持)。
+
+### POST /v3/llm-call/stats
+
+聚合统计，用于周期性复盘哪些错误最常出现。
+
+**请求体**：`group_by`(`error_kind`(默认)|`http_status`|`provider_error_code`|`stage`|`model`|`day`|`outcome`)；可选 `stage`、`team_id`、`agent_id`、`start_time`、`end_time`（默认近 7 天，范围 ≤90 天）。
+
+**响应** `data`：`{ group_by, start_time, end_time, total, groups: [{ key, count, first_seen_ms, last_seen_ms, example_id }] }`，按 `count` 降序；没有该值的记录归入 `key="none"`（如成功调用没有 error_kind）。`day` 按 UTC 日期。`example_id` 是该组最新一条记录的 id，可用 list 接口按 `generation_id` 或时间窗取回详情。tcvdb 后端最多读 20000 条再在内存分组。
+
+**错误**：`400`、`503`。
+
+### persona 作用域 judge 与 L3 生成日志
+
+> user-global persona 写入前由 LLM judge 检查是否含项目专属内容。**每次检查只调用 judge 一次**，调用经 LLM-Call 日志记录（成功与失败都写）。
+> judge 失败（任何 `error_kind`，含超时/回复不可用）：恢复上一版 persona 原字节（原本没有则删除未检查的文件），**不写 rejected 标记，不设重试标志，不重试**；pending 记忆计数清零，由常规阈值触发下一次。只有 judge 或结构检查真的报出 leaks（并在重生成一次后仍有）才写 rejected 标记。
+> L3 生成日志（`/v3/memory-generation-log/*`）新增可选字段 `scope_check`：`{ result: "passed"|"rejected"|"judge_failed", reason?, error_kind?, leaks?, judge_attempts, judge_record_ids }`；`judge_record_ids` 是 `llm_calls` 的记录 id；`judge_failed` 的日志 `status="failed"`、`error_code="SCOPE_JUDGE_FAILED"`。
+
+### POST /v3/persona/regenerate
+
+手动对一个 agent 立即跑一次 L3（不等 50 条记忆阈值）。流程：先把当前 persona 文件复制到同一存储内的带时间戳备份（与最新一份字节相同则不新建，只保留最新 20 份），再跳过 trigger/JEV 门禁，按**全部 scene** 整篇重写（含 judge 检查）。
+
+**请求体**：`team_id`、`agent_id`（必填）；`reason`（必填，≤200）；`user_id?`；`project_hash?`（16 位小写 hex；给出则只重写该项目文档，否则只重写 user-global persona）；`timeout_ms?`（默认300000，范围1000–900000，仅是调用方等待上限，超时后任务继续运行）。
+
+**备份**：user-global 复制到 `.backup/persona-manual/persona-<UTC时间戳>.md`（相对该 agent 的 profile 存储）；项目文档在项目视图内同一相对路径（实际 key 为 `.backup/projects/<hash>/persona-manual/…`，原文件为 `project_personas/<hash>.md`）。该目录不被自动备份轮转清理，也不参与 profile 同步。备份失败则整次不执行。
+
+**并发**：与调度器的该 agent L2/L3 任务共用锁 `pipeline:{<instance>:<team>:<agent>}`；同 agent 已有手动或调度任务在跑时返回 `409`。
+
+**响应** `data`：
+
+| 字段 | 说明 |
+|---|---|
+| `status` | `completed`；等待超时则为 `running`（此时只有 `generation_id`、`backup_key`、`lookup`、`elapsed_ms`，用 `lookup` 指向的 list 接口按 `generation_id` 查 judge 调用） |
+| `scope` / `project_hash` | 目标文档 |
+| `generation_id` | 本次运行 ID，judge 调用记录与 L3 生成日志共用 |
+| `backup_key` | 备份 key；原本没有 persona 时为 `null` |
+| `outcome` | `pass`(通过，已写 accepted 标记) / `leaks`(重生成一次后仍有泄漏，已写 rejected 标记) / `technical_failure`(judge 没有结论，**已恢复上一版 persona**) / `generated`(项目文档，无作用域检查) / `unchanged` / `skipped`(见 `skipped_reason`) / `failed`(见 `error_message`) |
+| `leaks` | `outcome=leaks` 时的泄漏片段 |
+| `persona_kept` | `technical_failure` / `skipped` / `unchanged` 时为 `true`；`failed` 时为 `false` 仅表示未知 |
+| `scope_check` | `{ result, reason?, error_kind?, leaks?, judge_attempts, judge_record_ids }` |
+| `judge_record_ids` | 本次 judge 调用在 `llm_calls` 中的记录 id |
+
+**错误**：`400`、`409`(PERSONA_REGENERATION_BUSY)、`429`(额度用尽)、`503`(锁后端或 L3 运行器不可用)。
 
 ---
 

@@ -76,6 +76,13 @@ import {
   type MemoryGenerationRefRecord,
 } from "../../memory-generation-log/types.js";
 
+import type {
+  LlmCallListFilter,
+  LlmCallRecord,
+  LlmCallStatsFilter,
+  LlmCallStatsGroup,
+} from "../../report/llm-call-types.js";
+
 export type { L1RecordRow } from "../types.js";
 
 // ============================
@@ -955,6 +962,42 @@ export class VectorStore implements IMemoryStore {
       );
       CREATE INDEX IF NOT EXISTS idx_memory_generation_refs_memory
         ON memory_generation_refs(layer, memory_id);
+
+      CREATE TABLE IF NOT EXISTS llm_calls (
+        id TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL DEFAULT '',
+        created_at_ms INTEGER NOT NULL,
+        finished_at_ms INTEGER NOT NULL,
+        latency_ms INTEGER NOT NULL,
+        stage TEXT NOT NULL DEFAULT '',
+        trace_name TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        team_id TEXT NOT NULL DEFAULT '',
+        agent_id TEXT NOT NULL DEFAULT '',
+        user_id TEXT NOT NULL DEFAULT '',
+        session_id TEXT NOT NULL DEFAULT '',
+        project_hash TEXT NOT NULL DEFAULT '',
+        generation_id TEXT NOT NULL DEFAULT '',
+        outcome TEXT NOT NULL CHECK (outcome IN ('ok','error')),
+        timeout_ms INTEGER NOT NULL DEFAULT 0,
+        prompt_chars INTEGER NOT NULL DEFAULT 0,
+        error_kind TEXT NOT NULL DEFAULT '',
+        error_class TEXT NOT NULL DEFAULT '',
+        http_status INTEGER NOT NULL DEFAULT 0,
+        provider_error_type TEXT NOT NULL DEFAULT '',
+        provider_error_code TEXT NOT NULL DEFAULT '',
+        retry_after_ms INTEGER NOT NULL DEFAULT 0,
+        sdk_attempts INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT NOT NULL DEFAULT '',
+        response_excerpt TEXT NOT NULL DEFAULT '',
+        verdict TEXT NOT NULL DEFAULT '',
+        reply TEXT NOT NULL DEFAULT '',
+        reply_truncated INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_llm_calls_time ON llm_calls(instance_id, created_at_ms);
+      CREATE INDEX IF NOT EXISTS idx_llm_calls_scope ON llm_calls(team_id, agent_id, created_at_ms);
+      CREATE INDEX IF NOT EXISTS idx_llm_calls_stage ON llm_calls(stage, created_at_ms);
+      CREATE INDEX IF NOT EXISTS idx_llm_calls_generation ON llm_calls(generation_id);
     `);
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_memory_audit_time      ON memory_audit(updated_at_ms)");
 
@@ -3523,6 +3566,89 @@ export class VectorStore implements IMemoryStore {
     return (this.db.prepare(
       "SELECT * FROM memory_generation_refs WHERE generation_ref_id = ? AND layer = ? AND memory_id = ?",
     ).get(id, layer, memoryId) as unknown as MemoryGenerationRefRecord | undefined) ?? null;
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // LLM call log
+  // ─────────────────────────────────────────────────────────
+
+  insertLlmCall(r: LlmCallRecord): void {
+    this.db.prepare(`
+      INSERT INTO llm_calls
+        (id, instance_id, created_at_ms, finished_at_ms, latency_ms, stage, trace_name, model,
+         team_id, agent_id, user_id, session_id, project_hash, generation_id, outcome, timeout_ms,
+         prompt_chars, error_kind, error_class, http_status, provider_error_type, provider_error_code,
+         retry_after_ms, sdk_attempts, error_message, response_excerpt, verdict, reply, reply_truncated)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      r.id, r.instance_id, r.created_at_ms, r.finished_at_ms, r.latency_ms, r.stage, r.trace_name, r.model,
+      r.team_id, r.agent_id, r.user_id, r.session_id, r.project_hash, r.generation_id, r.outcome, r.timeout_ms,
+      r.prompt_chars, r.error_kind, r.error_class, r.http_status, r.provider_error_type, r.provider_error_code,
+      r.retry_after_ms, r.sdk_attempts, r.error_message, r.response_excerpt, r.verdict, r.reply, r.reply_truncated ? 1 : 0,
+    );
+  }
+
+  pruneLlmCalls(olderThanMs: number): number {
+    return Number(this.db.prepare("DELETE FROM llm_calls WHERE created_at_ms < ?").run(olderThanMs).changes);
+  }
+
+  private llmCallWhere(f: Pick<LlmCallListFilter, "instanceId" | "stage" | "teamId" | "agentId" | "startTimeMs" | "endTimeMs"> & Partial<LlmCallListFilter>): { sql: string; args: Array<string | number> } {
+    const where: string[] = ["created_at_ms >= ?", "created_at_ms <= ?"];
+    const args: Array<string | number> = [f.startTimeMs, f.endTimeMs];
+    const eq = (col: string, v: string | undefined) => { if (v) { where.push(`${col} = ?`); args.push(v); } };
+    eq("instance_id", f.instanceId); eq("stage", f.stage); eq("team_id", f.teamId); eq("agent_id", f.agentId);
+    eq("outcome", f.outcome); eq("error_kind", f.errorKind); eq("generation_id", f.generationId);
+    return { sql: where.join(" AND "), args };
+  }
+
+  listLlmCalls(filter: LlmCallListFilter): LlmCallRecord[] {
+    const { sql, args } = this.llmCallWhere(filter);
+    let full = sql;
+    if (filter.before) {
+      full += " AND (created_at_ms < ? OR (created_at_ms = ? AND id < ?))";
+      args.push(filter.before.createdAtMs, filter.before.createdAtMs, filter.before.id);
+    }
+    const rows = this.db.prepare(
+      `SELECT * FROM llm_calls WHERE ${full} ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
+    ).all(...args, filter.limit) as Array<Record<string, unknown>>;
+    const str = (v: unknown) => String(v ?? "");
+    const num = (v: unknown) => Number(v ?? 0);
+    return rows.map((row) => ({
+      id: str(row.id), instance_id: str(row.instance_id), created_at_ms: num(row.created_at_ms),
+      finished_at_ms: num(row.finished_at_ms), latency_ms: num(row.latency_ms), stage: str(row.stage),
+      trace_name: str(row.trace_name), model: str(row.model), team_id: str(row.team_id), agent_id: str(row.agent_id),
+      user_id: str(row.user_id), session_id: str(row.session_id), project_hash: str(row.project_hash),
+      generation_id: str(row.generation_id), outcome: row.outcome as LlmCallRecord["outcome"],
+      timeout_ms: num(row.timeout_ms), prompt_chars: num(row.prompt_chars), error_kind: str(row.error_kind),
+      error_class: str(row.error_class), http_status: num(row.http_status),
+      provider_error_type: str(row.provider_error_type), provider_error_code: str(row.provider_error_code),
+      retry_after_ms: num(row.retry_after_ms), sdk_attempts: num(row.sdk_attempts),
+      error_message: str(row.error_message), response_excerpt: str(row.response_excerpt),
+      verdict: str(row.verdict), reply: str(row.reply), reply_truncated: num(row.reply_truncated) === 1,
+    }));
+  }
+
+  statsLlmCalls(filter: LlmCallStatsFilter): LlmCallStatsGroup[] {
+    const key = {
+      error_kind: "COALESCE(NULLIF(error_kind,''),'none')",
+      http_status: "CASE WHEN http_status = 0 THEN 'none' ELSE CAST(http_status AS TEXT) END",
+      provider_error_code: "COALESCE(NULLIF(provider_error_code,''),'none')",
+      stage: "COALESCE(NULLIF(stage,''),'none')",
+      model: "COALESCE(NULLIF(model,''),'none')",
+      day: "strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch')",
+      outcome: "outcome",
+    }[filter.groupBy];
+    const { sql, args } = this.llmCallWhere(filter);
+    const rows = this.db.prepare(`
+      WITH f AS (SELECT id, created_at_ms, ${key} AS k FROM llm_calls WHERE ${sql})
+      SELECT k, COUNT(*) AS c, MIN(created_at_ms) AS first_seen, MAX(created_at_ms) AS last_seen,
+             (SELECT id FROM f f2 WHERE f2.k = f.k ORDER BY created_at_ms DESC, id DESC LIMIT 1) AS example_id
+      FROM f GROUP BY k ORDER BY c DESC, k ASC
+    `).all(...args) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      key: String(r.k), count: Number(r.c), first_seen_ms: Number(r.first_seen),
+      last_seen_ms: Number(r.last_seen), example_id: String(r.example_id),
+    }));
   }
 
   // ─────────────────────────────────────────────────────────

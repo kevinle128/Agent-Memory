@@ -148,6 +148,14 @@ interface ParkedTask {
 // PipelineWorker
 // ============================
 
+/**
+ * Lock key of the L2/L3 work of one agent. A manual persona regeneration takes
+ * the same key, so it cannot run beside a scheduled L2/L3 task of that agent.
+ */
+export function buildAgentPipelineLockKey(instanceId: string, teamId?: string, agentId?: string): string {
+  return `pipeline:{${instanceId}:${teamId || "_"}:${agentId || "_"}}`;
+}
+
 export class PipelineWorker {
   private backend: IStateBackend;
   private executor: TaskExecutor;
@@ -1171,16 +1179,12 @@ export class PipelineWorker {
         aid = aid || m[2];
       }
     }
-    tid = tid || "_";
-    aid = aid || "_";
-    const ns = `{${task.instanceId}:${tid}:${aid}}`;
-
     if (task.type === "L2" || task.type === "L3") {
       // agent 级锁：同 agent 的 L2/L3 互斥，避免共享目录撞写
-      return `pipeline:${ns}`;
+      return buildAgentPipelineLockKey(task.instanceId, tid, aid);
     }
     // L1 + flush 仍是 session 级
-    return `pipeline:${ns}:s:${task.sessionId}`;
+    return `${buildAgentPipelineLockKey(task.instanceId, tid, aid)}:s:${task.sessionId}`;
   }
 
   // ============================

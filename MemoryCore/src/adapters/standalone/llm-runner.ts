@@ -255,6 +255,10 @@ function createReadOnlyTools(_workspaceDir: string, _logger?: Logger) {
 export class StandaloneLLMRunner implements LLMRunner {
   private config: StandaloneLLMConfig;
   private model: string;
+
+  get modelName(): string {
+    return this.model;
+  }
   private enableTools: boolean;
   private stream: boolean;
   private logger?: Logger;

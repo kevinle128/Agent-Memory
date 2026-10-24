@@ -7,6 +7,7 @@ import { StorageAdapter } from "../storage/adapter.js";
 import { LocalStorageBackend } from "../storage/local-backend.js";
 import type { LLMRunParams, LLMRunner } from "../types.js";
 import { MAX_INLINED_SCENE_CHARS, PersonaGenerator } from "./persona-generator.js";
+import { CheckpointManager } from "../../utils/checkpoint.js";
 import { PersonaTrigger } from "./persona-trigger.js";
 import { USER_GLOBAL_REJECTED_MARKER, USER_GLOBAL_SCOPE_MARKER } from "./user-global-scope.js";
 
@@ -81,6 +82,47 @@ describe("PersonaTrigger scope migration", () => {
   });
 });
 
+describe("PersonaTrigger after a failed scope judge", () => {
+  const trigger = () => new PersonaTrigger({ dataDir: dir, interval: 50 });
+  const cp = (extra: Record<string, unknown>) => writeFileSync(
+    path.join(dir, ".metadata", "recall_checkpoint.json"),
+    JSON.stringify({ scenes_processed: 3, persona_judge_failed: true, memories_since_last_persona: 0, ...extra }),
+  );
+  const cpManager = () => new CheckpointManager(dir);
+
+  it("does not run again for cold start, recovery or scope migration below the threshold", async () => {
+    // Cold start: no persona yet.
+    cp({});
+    await expect(trigger().shouldGenerate()).resolves.toMatchObject({ should: false });
+    // Recovery: a persona existed, the body is empty now.
+    cp({ last_persona_time: "2026-10-24T00:00:00Z" });
+    writePersona("");
+    await expect(trigger().shouldGenerate()).resolves.toMatchObject({ should: false });
+    // Scope migration: the persona has no scope marker.
+    cp({});
+    writePersona(LEGACY_PERSONA);
+    await expect(trigger().shouldGenerate()).resolves.toMatchObject({ should: false });
+  });
+
+  it("runs again when the threshold is reached", async () => {
+    cp({ memories_since_last_persona: 50 });
+    writePersona(LEGACY_PERSONA);
+    await expect(trigger().shouldGenerate()).resolves.toMatchObject({ should: true });
+  });
+
+  it("a finished generation clears the mark and an automatic failure restarts the count", async () => {
+    cp({ memories_since_last_persona: 7, request_persona_update: true });
+    await cpManager().dropPendingPersonaRun({ keepSchedule: true });
+    expect(await cpManager().read()).toMatchObject({ persona_judge_failed: true, memories_since_last_persona: 7, request_persona_update: true });
+    await cpManager().dropPendingPersonaRun();
+    expect(await cpManager().read()).toMatchObject({ persona_judge_failed: true, memories_since_last_persona: 0, request_persona_update: false });
+    await cpManager().markPersonaGenerated(10);
+    expect((await cpManager().read()).persona_judge_failed).toBe(false);
+    writePersona(LEGACY_PERSONA);
+    await expect(trigger().shouldGenerate()).resolves.toMatchObject({ should: true });
+  });
+});
+
 describe("PersonaGenerator user-global scope", () => {
   it("rewrites a persona without marker from all scenes and does not show it to the model", async () => {
     writePersona(LEGACY_PERSONA);
@@ -140,16 +182,6 @@ describe("PersonaGenerator user-global scope", () => {
     await generator(runner, judge('{"leaks": ["bằng chứng"]}')).generateLocalPersona("migration");
 
     expect(runner.calls).toHaveLength(2);
-    expect(readPersona().startsWith(USER_GLOBAL_REJECTED_MARKER)).toBe(true);
-  });
-
-  it("rejects when the judge cannot answer", async () => {
-    writePersona(LEGACY_PERSONA);
-    const runner = writerRunner([CLEAN_PERSONA]);
-    const failingJudge: LLMRunner = { run: vi.fn(async () => { throw new Error("timeout"); }) };
-
-    await generator(runner, failingJudge).generateLocalPersona("migration");
-
     expect(readPersona().startsWith(USER_GLOBAL_REJECTED_MARKER)).toBe(true);
   });
 

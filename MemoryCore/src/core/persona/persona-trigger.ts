@@ -63,6 +63,13 @@ export class PersonaTrigger {
       return result;
     }
 
+    // After a run whose scope judge gave no verdict, only the threshold may
+    // start the next run. Otherwise the triggers below fire again on every L3
+    // pass while the judge keeps failing.
+    if (cp.persona_judge_failed) {
+      return this.thresholdOnly(cp.memories_since_last_persona, "after a failed scope judge");
+    }
+
     const hasSceneFiles = await this.hasSceneFiles();
     const hasPersonaBody = await this.hasPersonaBody();
     const hasGeneratedPersona = cp.last_persona_at > 0 || cp.last_persona_time !== "" || hasPersonaBody;
@@ -113,17 +120,20 @@ export class PersonaTrigger {
       return result;
     }
 
-    // Priority 4: Reached threshold
-    if (cp.memories_since_last_persona >= this.interval) {
+    return this.thresholdOnly(cp.memories_since_last_persona);
+  }
+
+  /** Priority 4: the number of new memories reached the threshold. */
+  private thresholdOnly(memoriesSince: number, note?: string): TriggerResult {
+    if (memoriesSince >= this.interval) {
       const result: TriggerResult = {
         should: true,
-        reason: `达到阈值: ${cp.memories_since_last_persona} >= ${this.interval}`,
+        reason: `达到阈值: ${memoriesSince} >= ${this.interval}`,
       };
-      this.logger?.debug?.(`${TAG} Trigger P4 (threshold): ${result.reason}`);
+      this.logger?.debug?.(`${TAG} Trigger P4 (threshold${note ? `, ${note}` : ""}): ${result.reason}`);
       return result;
     }
-
-    this.logger?.debug?.(`${TAG} No trigger conditions met`);
+    this.logger?.debug?.(`${TAG} No trigger conditions met${note ? ` (${note})` : ""}`);
     return { should: false, reason: "" };
   }
 

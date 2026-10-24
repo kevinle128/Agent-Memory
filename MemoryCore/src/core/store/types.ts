@@ -21,6 +21,7 @@ import type { Logger } from "../types.js";
 import type { IsolationFilter } from "./isolation.js";
 import type { MemoryPromptStore } from "../memory-prompt/types.js";
 import type { MemoryGenerationRefStore } from "../memory-generation-log/types.js";
+import type { LlmCallStore } from "../report/llm-call-types.js";
 
 // Re-export so consumers can import everything from types.ts
 export type { MemoryRecord, EmbeddingProviderInfo };
@@ -632,7 +633,7 @@ export interface AuditQueryFilter {
   offset?: number;
 }
 
-export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStore {
+export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStore, LlmCallStore {
   // ── Capabilities ───────────────────────────────────────────
 
   /**

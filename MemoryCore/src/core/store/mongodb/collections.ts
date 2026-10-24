@@ -19,6 +19,7 @@ export const COLLECTIONS = {
   MEMORY_PROMPT_SETTINGS: "memory_prompt_settings",
   MEMORY_PROMPT_SETTING_LOGS: "memory_prompt_setting_logs",
   MEMORY_GENERATION_REFS: "memory_generation_refs",
+  LLM_CALLS: "llm_calls",
   SKILLS: "skills",
   SKILL_CHANGE_PROPOSALS: "skill_change_proposals",
 } as const;

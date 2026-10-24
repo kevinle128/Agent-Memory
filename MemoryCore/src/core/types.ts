@@ -62,6 +62,23 @@ export interface RuntimeContext {
 // ============================
 
 /** Parameters for a single LLM execution. */
+/** What a caller can tell the LLM call log about one call. */
+export interface LlmCallHints {
+  generationId?: string;
+  projectHash?: string;
+  teamId?: string;
+  agentId?: string;
+  /** Record this call even when it succeeds. Failures are always recorded. */
+  recordSuccess?: boolean;
+  /**
+   * Looks at the reply of a call that did not throw. It can mark the reply as
+   * unusable (errorKind) and attach a verdict that is stored as JSON.
+   */
+  annotate?: (reply: string) => { errorKind?: "unparseable" | "empty_reply"; errorMessage?: string; verdict?: unknown } | undefined;
+  /** Called with the record id after the record was stored. */
+  onRecorded?: (id: string) => void;
+}
+
 export interface LLMRunParams {
   /** User-facing prompt (or combined prompt if no systemPrompt). */
   prompt: string;
@@ -110,6 +127,11 @@ export interface LLMRunParams {
    * tears down immediately to save tokens and avoid late writes.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Hints for the LLM call log (see report/llm-call-recorder.ts). The runner
+   * wrapper reads them; the runner itself ignores them.
+   */
+  llmCall?: LlmCallHints;
   /**
    * Langfuse trace name — 决定 Langfuse UI 上 trace 的 "Name" 字段。
    * 未传时保持向后兼容（Langfuse 会显示 Unnamed trace）。
@@ -177,6 +199,8 @@ export function buildTraceParams(traceName: string, ctx?: TraceContext): {
  * - `StandaloneLLMRunner`: direct OpenAI-compatible HTTP calls (Gateway / Hermes host)
  */
 export interface LLMRunner {
+  /** Name of the model the runner calls, when it knows one. Used for traces only. */
+  readonly modelName?: string;
   /**
    * Execute a prompt and return the LLM's text output.
    *

@@ -133,7 +133,7 @@ describe("checkUserGlobalPersona", () => {
 
   it("passes a clean persona when the judge finds no leak", async () => {
     const judge = judgeReturning('{"leaks": []}');
-    await expect(checkUserGlobalPersona({ persona: CLEAN_PERSONA, sceneIndex: scenes, judge })).resolves.toEqual({
+    await expect(checkUserGlobalPersona({ persona: CLEAN_PERSONA, sceneIndex: scenes, judge })).resolves.toMatchObject({
       ok: true,
       leaks: [],
     });
@@ -149,19 +149,22 @@ describe("checkUserGlobalPersona", () => {
   it("fails with the judge's leaks for names no pattern can see", async () => {
     const judge = judgeReturning('{"leaks": ["Remotion"]}');
     const result = await checkUserGlobalPersona({ persona: "- Thích dựng video bằng Remotion", sceneIndex: scenes, judge });
-    expect(result).toEqual({ ok: false, leaks: ["Remotion"], reason: "judge-leaks" });
+    expect(result).toMatchObject({ ok: false, leaks: ["Remotion"], reason: "judge-leaks" });
+    expect(judge.run).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when the judge reply is not JSON", async () => {
-    const result = await checkUserGlobalPersona({ persona: CLEAN_PERSONA, sceneIndex: scenes, judge: judgeReturning("ok") });
+    const result = await checkUserGlobalPersona({
+      persona: CLEAN_PERSONA, sceneIndex: scenes, judge: judgeReturning("ok"),
+    });
     expect(result).toMatchObject({ ok: false, reason: "judge-unparseable" });
   });
 
-  it("fails closed when the judge throws", async () => {
+  it("reports a technical failure when the judge keeps throwing", async () => {
     const result = await checkUserGlobalPersona({
       persona: CLEAN_PERSONA,
       sceneIndex: scenes,
-      judge: judgeReturning(new Error("timeout")),
+      judge: judgeReturning(new Error("connection reset")),
     });
     expect(result).toMatchObject({ ok: false, reason: "judge-error" });
   });

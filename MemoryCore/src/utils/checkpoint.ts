@@ -155,6 +155,14 @@ export interface Checkpoint {
   request_persona_update: boolean;
   persona_update_reason: string;
   memories_since_last_persona: number;
+  /**
+   * True after a run whose scope judge gave no verdict. The persona triggers
+   * that do not depend on new memories (cold start, recovery, scope migration,
+   * first scene) wait for the threshold while this is set, so a judge that
+   * keeps failing does not start a new generation on every L3 pass. A finished
+   * generation clears it.
+   */
+  persona_judge_failed: boolean;
   scenes_processed: number;
 
   // ═══ Per-session split state ═══
@@ -210,6 +218,7 @@ const DEFAULT_CHECKPOINT: Checkpoint = {
   request_persona_update: false,
   persona_update_reason: "",
   memories_since_last_persona: 0,
+  persona_judge_failed: false,
   scenes_processed: 0,
   runner_states: {},
   pipeline_states: {},
@@ -589,8 +598,29 @@ export class CheckpointManager {
       cp.last_persona_at = totalProcessed;
       cp.last_persona_time = new Date().toISOString();
       cp.memories_since_last_persona = 0;
+      cp.persona_judge_failed = false;
       cp.request_persona_update = false;
       cp.persona_update_reason = "";
+    });
+  }
+
+  /**
+   * A run ended without a verdict from the scope judge and kept the previous
+   * persona. Mark the failure so that only the threshold trigger can start the
+   * next run. The persona time stays: the scenes of this run are still newer
+   * than the persona that was kept.
+   *
+   * An automatic run also drops the pending request and restarts the memory
+   * count. A manual run (`keepSchedule`) leaves both, so a failed manual call
+   * does not move the normal schedule.
+   */
+  async dropPendingPersonaRun(opts: { keepSchedule?: boolean } = {}): Promise<void> {
+    await this.mutate((cp) => {
+      cp.persona_judge_failed = true;
+      if (opts.keepSchedule) return;
+      cp.request_persona_update = false;
+      cp.persona_update_reason = "";
+      cp.memories_since_last_persona = 0;
     });
   }
 
@@ -887,3 +917,4 @@ export class CheckpointManager {
   }
 
 }
+
