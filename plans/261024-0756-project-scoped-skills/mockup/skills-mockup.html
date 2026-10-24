@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mockup · Project-scoped skills · Memory Hub</title>
+<!--
+  Static, self-contained mockup. No network, no external fonts.
+  Tokens below copy the resolved values of tea-component default-light theme
+  (node_modules/tea-component/dist/themes/default-light.css + default-pack.css)
+  and the Panel overrides in MemoryPanel/web/src/index.css / tea-override.css.
+  Navigate with the dark strip at the top or with URL hashes:
+    #list  #detail  #version:4  #dialogs  #proposals  #proposal:p1  #new  #cc
+-->
+<style>
+:root{
+  /* palette (tea default-light) */
+  --tea-color-palette-bluegray-1:#f2f4f8; --tea-color-palette-bluegray-2:#e9ecf1;
+  --tea-color-palette-bluegray-3:#e6e9ef; --tea-color-palette-bluegray-4:#d6dbe3;
+  --tea-color-palette-blue-1:#e3ecff; --tea-color-palette-blue-2:#d4e3fc;
+  --tea-color-palette-blue-7:#266fe8; --tea-color-palette-blue-8:#0052d9;
+  --tea-color-palette-green-1:#e0f7eb; --tea-color-palette-green-8:#0cbf5b;
+  --tea-color-palette-orange-1:#ffeddf; --tea-color-palette-orange-8:#ff7800;
+  --tea-color-palette-red-1:#fce8e8; --tea-color-palette-red-8:#f64041;
+  /* semantic tokens (same names as the product CSS) */
+  --tea-color-bg-page-default:var(--tea-color-palette-bluegray-1);
+  --tea-color-bg-primary-default:#fff;
+  --tea-color-bg-secondary-default:var(--tea-color-palette-bluegray-1);
+  --tea-color-bg-secondary-hover:var(--tea-color-palette-bluegray-2);
+  --tea-color-bg-tertiary-default:var(--tea-color-palette-bluegray-2);
+  --tea-color-bg-brand-default:var(--tea-color-palette-blue-8);
+  --tea-color-bg-brand-hover:var(--tea-color-palette-blue-7);
+  --tea-color-bg-brand-lighten-default:var(--tea-color-palette-blue-1);
+  --tea-color-text-primary:rgba(0,0,0,.9);
+  --tea-color-text-secondary:rgba(0,0,0,.7);
+  --tea-color-text-tertiary:rgba(0,0,0,.5);
+  --tea-color-text-brand-default:var(--tea-color-palette-blue-8);
+  --tea-color-text-link-default:var(--tea-color-palette-blue-8);
+  --tea-color-text-on-bg-brand-default:rgba(255,255,255,.9);
+  --tea-color-text-success-default:#0a9e4c; /* green-8 darkened for 4.5:1 text contrast */
+  --tea-color-text-warning-default:#c25a00; /* orange-8 darkened for 4.5:1 text contrast */
+  --tea-color-text-error-default:#d42a2b;
+  --tea-color-border-primary-default:var(--tea-color-palette-bluegray-3);
+  --tea-color-border-secondary-default:var(--tea-color-palette-bluegray-2);
+  --tea-color-border-brand-default:var(--tea-color-palette-blue-8);
+  --tea-shadow-xs:0 1px 4px 0 rgba(0,0,0,.05);
+  --tea-shadow-sm:0 2px 12px 0 rgba(0,0,0,.08);
+  --tea-shadow-md:0 2px 24px -1px rgba(0,0,0,.10),0 2px 12px -2px rgba(0,0,0,.05);
+  --tea-form-height-default:30px;
+  --font-mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  --mock-strip:#1f2329; --mock-note:#fffbe8; --mock-note-border:#f0dc9a;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{font-family:Roboto,'San Francisco','Helvetica Neue',Helvetica,Arial,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  font-size:14px;line-height:1.5;background:var(--tea-color-bg-page-default);color:var(--tea-color-text-primary);
+  -webkit-font-smoothing:antialiased;display:flex;flex-direction:column;overflow:hidden}
+button{font:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--tea-color-border-brand-default);outline-offset:2px}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--tea-color-text-tertiary)}
+.weak{color:var(--tea-color-text-secondary)}
+
+/* ===== Mockup chrome (NOT product UI) ===== */
+.mock-strip{flex:0 0 auto;display:flex;align-items:center;gap:6px;height:40px;padding:0 12px;background:var(--mock-strip);color:#d8dce3;font-size:12px;overflow-x:auto}
+.mock-strip b{color:#fff;font-weight:600;margin-right:8px;white-space:nowrap}
+.mock-strip button{border:1px solid #3a404a;background:transparent;color:#d8dce3;height:26px;padding:0 10px;border-radius:13px;white-space:nowrap}
+.mock-strip button:hover{background:#2c323b}
+.mock-strip button.on{background:#fff;color:#1f2329;border-color:#fff}
+.mock-strip .sp{flex:1}
+.mock-wrap{flex:1;min-height:0;min-width:0;display:flex;overflow:hidden}
+.app{flex:1;min-width:0;display:flex;flex-direction:column;position:relative;overflow:hidden}
+.notes{flex:0 0 320px;background:var(--mock-note);border-left:1px solid var(--mock-note-border);display:flex;flex-direction:column;transition:flex-basis .2s}
+.notes.collapsed{flex-basis:36px}
+.notes-head{display:flex;align-items:center;gap:8px;height:40px;padding:0 8px 0 14px;border-bottom:1px solid var(--mock-note-border);font-weight:600;font-size:13px;color:#5c4a00}
+.notes-head span{flex:1;white-space:nowrap;overflow:hidden}
+.notes-toggle{border:0;background:transparent;width:24px;height:24px;color:#5c4a00;font-size:16px;line-height:1}
+.notes.collapsed .notes-head span,.notes.collapsed .notes-body{display:none}
+.notes.collapsed .notes-head{padding:0 6px;justify-content:center}
+.notes-body{padding:12px 14px;overflow-y:auto;font-size:13px;line-height:1.6;color:#3d3300}
+.notes-body ol{margin:0;padding-left:20px}
+.notes-body li{margin-bottom:10px}
+.notes-body code{font-family:var(--font-mono);font-size:12px;background:#fff3c2;padding:0 3px}
+.notes-foot{margin-top:12px;padding-top:10px;border-top:1px dashed var(--mock-note-border);font-size:12px;color:#7a6a2a}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* ===== Global header (GlobalHeader/style.css) ===== */
+.gh{display:flex;align-items:center;justify-content:space-between;height:48px;padding:0 16px;background:#fff;border-bottom:1px solid var(--tea-color-border-primary-default);flex-shrink:0}
+.gh-left,.gh-right{display:flex;align-items:center}
+.gh-left{gap:12px}.gh-right{gap:16px}
+.gh-brand{display:flex;align-items:center;gap:8px}
+.gh-brand img{width:22px;height:22px;border-radius:4px}
+.gh-brand span{font-size:14px;font-weight:600}
+.team-pill{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 8px 0 4px;border:1px solid var(--tea-color-border-primary-default);border-radius:6px;background:#fff}
+.team-av{width:24px;height:24px;border-radius:4px;background:var(--tea-color-bg-brand-lighten-default);color:var(--tea-color-text-brand-default);display:grid;place-items:center;font-size:12px;font-weight:600}
+.team-txt{display:flex;flex-direction:column;line-height:1.15;text-align:left}
+.team-txt b{font-size:12px;font-weight:500}.team-txt i{font-style:normal;font-size:11px;color:var(--tea-color-text-tertiary);font-family:var(--font-mono)}
+.gh-guide{padding:4px 10px;border:0;border-radius:6px;background:transparent;color:var(--tea-color-text-secondary);font-size:13px}
+.gh-icon{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border:0;border-radius:6px;background:transparent;color:var(--tea-color-text-secondary)}
+.gh-guide:hover,.gh-icon:hover,.gh-user:hover{background:var(--tea-color-bg-secondary-hover)}
+.gh-user{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;border:0;border-radius:6px;background:transparent}
+.gh-av{width:26px;height:26px;border-radius:50%;background:var(--tea-color-bg-brand-default);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600}
+.gh-user span:last-child{font-size:12px;font-weight:500}
+
+/* ===== Layout: sider + content ===== */
+.body{flex:1;min-height:0;display:flex}
+.sider{width:200px;flex:0 0 200px;background:#fff;border-right:1px solid var(--tea-color-border-primary-default);padding-top:8px;overflow-y:auto}
+.menu-label{padding:14px 8px 6px 20px;font-size:12px;color:var(--tea-color-text-tertiary)}
+.menu-item{display:flex;align-items:center;gap:8px;height:36px;margin:2px 8px;padding:0 12px;border-radius:6px;color:var(--tea-color-text-primary);font-size:14px;cursor:default;white-space:nowrap}
+.menu-item:hover{background:var(--tea-color-bg-secondary-default)}
+.menu-item.sel{background:var(--tea-color-bg-brand-default);color:var(--tea-color-text-on-bg-brand-default)}
+.menu-item svg{flex-shrink:0}
+.content{flex:1;min-width:0;display:flex;flex-direction:column}
+.tabbar{display:flex;align-items:center;height:36px;padding:0 8px;background:#fff;border-bottom:1px solid var(--tea-color-border-primary-default);flex-shrink:0}
+.tab{display:flex;align-items:center;gap:4px;height:32px;padding:0 12px;font-size:12px;color:var(--tea-color-text-secondary);border-bottom:2px solid transparent}
+.tab.on{color:var(--tea-color-text-primary);font-weight:500;border-bottom-color:var(--tea-color-border-brand-default)}
+.cbody{flex:1;min-height:0;overflow-y:auto;padding:16px;background:var(--tea-color-bg-page-default);scrollbar-gutter:stable}
+.page{display:flex;flex-direction:column;gap:16px;min-height:100%}
+
+/* ===== Tea-like primitives ===== */
+.card{background:#fff;border:1px solid var(--tea-color-border-primary-default);box-shadow:var(--tea-shadow-xs)}
+.card-pad{padding:16px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:4px;height:30px;min-width:24px;padding:0 16px;border:1px solid var(--tea-color-palette-bluegray-4);background:#fff;color:var(--tea-color-text-primary);font-size:12px;white-space:nowrap;border-radius:0}
+.btn:hover{border-color:var(--tea-color-border-brand-default);color:var(--tea-color-text-brand-default)}
+.btn:active{transform:scale(.97)}
+.btn.primary{background:var(--tea-color-bg-brand-default);border-color:var(--tea-color-bg-brand-default);color:#fff}
+.btn.primary:hover{background:var(--tea-color-bg-brand-hover);border-color:var(--tea-color-bg-brand-hover);color:#fff}
+.btn.danger{background:var(--tea-color-palette-red-8);border-color:var(--tea-color-palette-red-8);color:#fff}
+.btn.danger:hover{background:#ff5a5b;border-color:#ff5a5b;color:#fff}
+.btn[disabled]{opacity:.45;cursor:not-allowed;transform:none}
+.btn[disabled]:hover{border-color:var(--tea-color-palette-bluegray-4);color:var(--tea-color-text-primary)}
+.btn.primary[disabled]:hover{background:var(--tea-color-bg-brand-default);color:#fff}
+.btn.sm{height:24px;padding:0 10px}
+.link{border:0;background:none;padding:0;color:var(--tea-color-text-link-default);font-size:12px;white-space:nowrap}
+.link:hover{text-decoration:underline}
+.link[disabled]{color:var(--tea-color-text-tertiary);cursor:not-allowed;text-decoration:none}
+.seg{display:inline-flex}
+.seg button{height:30px;padding:0 14px;border:1px solid var(--tea-color-palette-bluegray-4);background:#fff;font-size:12px;color:var(--tea-color-text-primary);margin-left:-1px}
+.seg button:first-child{margin-left:0}
+.seg button.on{border-color:var(--tea-color-border-brand-default);color:var(--tea-color-text-brand-default);position:relative;z-index:1;background:var(--tea-color-bg-brand-lighten-default)}
+.sel-box{height:30px;padding:0 28px 0 10px;border:1px solid var(--tea-color-palette-bluegray-4);background:#fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23777' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") no-repeat right 8px center;font-size:12px;color:var(--tea-color-text-primary);-webkit-appearance:none;appearance:none;border-radius:0;min-width:150px}
+.input{height:30px;padding:0 10px;border:1px solid var(--tea-color-palette-bluegray-4);background:#fff;font-size:12px;border-radius:0;width:100%}
+.input:focus,.sel-box:focus,textarea:focus{border-color:var(--tea-color-border-brand-default);box-shadow:0 0 0 3px color-mix(in srgb,var(--tea-color-bg-brand-default) 10%,transparent);outline:none}
+textarea.input{height:auto;padding:8px 10px;font-family:var(--font-mono);line-height:1.6;resize:vertical}
+.search{position:relative;flex:1 1 180px;min-width:160px}
+.search svg{position:absolute;left:9px;top:8px;color:var(--tea-color-text-tertiary)}
+.search .input{padding-left:30px}
+.tag{display:inline-flex;align-items:center;gap:3px;height:20px;padding:0 6px;font-size:11px;line-height:18px;border:1px solid transparent;white-space:nowrap;font-weight:500}
+.tag-blue{background:var(--tea-color-bg-brand-lighten-default);color:var(--tea-color-text-brand-default);border-color:var(--tea-color-palette-blue-2)}
+.tag-global{background:#eef0ff;color:#3d3fbf;border-color:#d6d8fb}
+.tag-project{background:var(--tea-color-palette-green-1);color:#0a7a3c;border-color:#bfe9d1}
+.tag-gray{background:var(--tea-color-bg-secondary-default);color:var(--tea-color-text-secondary);border-color:var(--tea-color-border-primary-default)}
+.tag-orange{background:var(--tea-color-palette-orange-1);color:var(--tea-color-text-warning-default);border-color:#ffd6b5}
+.tag-red{background:var(--tea-color-palette-red-1);color:var(--tea-color-text-error-default);border-color:#f9c9c9}
+.tag-green{background:var(--tea-color-palette-green-1);color:var(--tea-color-text-success-default);border-color:#bfe9d1}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--tea-color-text-secondary);white-space:nowrap}
+.chip::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.7}
+.chip.o-extracted{color:#7a4fd0}.chip.o-manual{color:#0a6fb0}.chip.o-template{color:#8a6d00}
+.chip.o-extracted,.chip.o-manual,.chip.o-template{font-weight:500}
+.ver-tag{display:inline-flex;align-items:center;height:20px;padding:0 5px;font-size:11px;font-variant-numeric:tabular-nums;background:var(--tea-color-bg-brand-lighten-default);color:var(--tea-color-text-brand-default);border:1px solid var(--tea-color-palette-blue-2);flex-shrink:0}
+.alert{display:flex;gap:8px;padding:10px 12px;font-size:12px;line-height:1.6;border:1px solid}
+.alert-info{background:var(--tea-color-bg-brand-lighten-default);border-color:var(--tea-color-palette-blue-2);color:var(--tea-color-text-primary)}
+.alert-warn{background:var(--tea-color-palette-orange-1);border-color:#ffd6b5;color:var(--tea-color-text-primary)}
+.alert-err{background:var(--tea-color-palette-red-1);border-color:#f9c9c9;color:var(--tea-color-text-primary)}
+.alert svg{flex-shrink:0;margin-top:2px}
+.label{font-size:12px;color:var(--tea-color-text-secondary);margin-bottom:4px;display:block}
+.req::after{content:' *';color:var(--tea-color-text-error-default)}
+.err-text{font-size:12px;color:var(--tea-color-text-error-default);margin-top:4px}
+
+/* ===== AssetPageHeader ===== */
+.aph-main{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+.aph-title{margin:0;font-size:16px;font-weight:600;line-height:24px}
+.aph-right,.aph-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.aph-right{gap:16px}
+.aph-sub{margin-top:8px;font-size:12px;color:var(--tea-color-text-tertiary)}
+.aph-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--tea-color-border-secondary-default)}
+.f-label{font-size:12px;color:var(--tea-color-text-tertiary);margin-left:4px}
+.pending-link{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;border:1px solid #ffd6b5;background:var(--tea-color-palette-orange-1);color:var(--tea-color-text-warning-default);font-size:12px;font-weight:500;margin-left:auto}
+.pending-link:hover{border-color:var(--tea-color-palette-orange-8)}
+.pending-dot{width:6px;height:6px;border-radius:50%;background:var(--tea-color-palette-orange-8)}
+
+/* ===== Split layout + AssetListPanel ===== */
+.split{display:grid;grid-template-columns:360px 6px minmax(0,1fr);flex:1;min-height:560px}
+.resizer{display:flex;justify-content:center}.resizer i{width:2px;height:100%;background:var(--tea-color-border-primary-default);border-radius:2px}
+.alp{height:100%;padding:16px;border:1px solid var(--tea-color-border-primary-default);border-radius:6px;background:#fff;box-shadow:var(--tea-shadow-xs);display:flex;flex-direction:column;min-height:0}
+.alp-head{display:flex;justify-content:space-between;align-items:center;min-height:28px;padding-bottom:8px;margin-bottom:4px;border-bottom:1px solid var(--tea-color-border-secondary-default)}
+.alp-title{font-size:13px;font-weight:600}.alp-count{font-size:12px;color:var(--tea-color-text-tertiary)}
+.alp-items{list-style:none;margin:0;padding:0;overflow-y:auto;flex:1}
+.alp-item{border-bottom:1px solid var(--tea-color-border-secondary-default)}
+.alp-item:last-child{border-bottom:0}
+.alp-btn{display:block;width:100%;text-align:left;border:0;background:none;padding:12px;color:inherit}
+.alp-btn:hover{background:var(--tea-color-bg-secondary-default)}
+.alp-item.sel .alp-btn{background:var(--tea-color-bg-brand-lighten-default)}
+.alp-row{display:flex;align-items:center;gap:8px;min-height:22px}
+.alp-name{font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.alp-id{display:block;margin-top:4px;font-size:11px;font-family:var(--font-mono);color:var(--tea-color-text-tertiary)}
+.alp-badges{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:6px}
+.alp-time{margin-left:auto;font-size:12px;color:var(--tea-color-text-secondary);white-space:nowrap}
+.alp-badge{font-size:12px;color:var(--tea-color-text-secondary);display:inline-flex;align-items:center;gap:3px}
+.alp-badge.you{color:var(--tea-color-text-brand-default);font-weight:500}
+.alp-empty{padding:48px 12px;text-align:center;font-size:13px;color:var(--tea-color-text-tertiary)}
+.pend-mini{font-size:11px;color:var(--tea-color-text-warning-default);font-weight:500}
+
+/* ===== Skill detail card ===== */
+.sd{height:100%;display:flex;flex-direction:column;min-height:0}
+.sd-head{padding:16px 16px 12px;border-bottom:1px solid var(--tea-color-border-primary-default)}
+.sd-head-main{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.sd-name{font-family:var(--font-mono);font-size:14px;font-weight:600;word-break:break-all}
+.sd-id{font-family:var(--font-mono);font-size:11px;color:var(--tea-color-text-tertiary);margin-top:3px}
+.sd-desc{margin-top:4px;font-size:12px;color:var(--tea-color-text-secondary)}
+.sd-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px}
+.sd-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.sd-scroll{flex:1;overflow-y:auto;padding:16px}
+.sec+.sec{margin-top:20px}
+.sec-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.sec-title{font-size:12px;font-weight:600;color:var(--tea-color-text-secondary)}
+.whatsnew{border:1px solid var(--tea-color-palette-blue-2);background:linear-gradient(180deg,#f3f7ff,#fff);padding:12px 14px}
+.whatsnew-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;font-weight:600}
+.whatsnew-h .muted{font-weight:400;font-size:12px}
+.sum{list-style:none;margin:8px 0 0;padding:0;font-size:13px;line-height:1.6}
+.sum li{display:flex;gap:8px;align-items:baseline}
+.sum .k{font-family:var(--font-mono);font-weight:700;width:12px;flex-shrink:0;text-align:center}
+.sum .k.add{color:var(--tea-color-text-success-default)}.sum .k.chg{color:var(--tea-color-text-brand-default)}.sum .k.del{color:var(--tea-color-text-error-default)}.sum .k.rst{color:#7a4fd0}
+.sum-by{margin-top:6px;font-size:11px;color:var(--tea-color-text-tertiary)}
+.md{font-size:13px;line-height:1.6;padding:12px 14px;border:1px solid var(--tea-color-border-primary-default);background:#fff}
+.md h1{font-size:16px;margin:0 0 8px}.md h2{font-size:13px;margin:12px 0 4px}
+.md p{margin:4px 0}.md ul,.md ol{margin:4px 0;padding-left:20px}
+.md code{font-family:var(--font-mono);font-size:12px;background:var(--tea-color-bg-secondary-default);padding:0 3px}
+.fm{margin:0 0 8px;padding:8px 12px;background:var(--tea-color-bg-secondary-default);border:1px solid var(--tea-color-border-primary-default);font-family:var(--font-mono);font-size:12px;white-space:pre-wrap}
+
+/* ===== Table ===== */
+.tbl{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px;border:1px solid var(--tea-color-border-primary-default)}
+.tbl th{text-align:left;font-weight:500;color:var(--tea-color-text-secondary);background:#fff;padding:9px 10px;border-bottom:1px solid var(--tea-color-border-primary-default);white-space:nowrap}
+.tbl td{padding:10px;border-bottom:1px solid var(--tea-color-border-secondary-default);vertical-align:top}
+.tbl tbody.vrow{cursor:pointer}
+.tbl tbody.vrow td{border-bottom:0}
+.tbl tbody.vrow tr.sumrow td{padding-top:0;padding-bottom:12px;border-bottom:1px solid var(--tea-color-border-primary-default)}
+.tbl tbody.vrow:hover td{background:var(--tea-color-bg-secondary-default)}
+.tbl tbody.vrow.cur td{background:#f7faff}
+.tbl tbody.vrow.cur:hover td{background:#eef4ff}
+.sum-label{display:block;font-size:11px;font-weight:600;color:var(--tea-color-text-tertiary);margin-bottom:2px}
+.sum-foot{display:flex;gap:12px;align-items:center;margin-top:4px}
+.tbl tr.row{cursor:pointer}
+.tbl tr.row:hover td{background:var(--tea-color-bg-secondary-default)}
+.tbl tr.cur td{background:#f7faff}
+.tbl tr.row.cur:hover td{background:#eef4ff}
+.v-label{font-family:var(--font-mono);display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+.v-cur{color:var(--tea-color-text-link-default);font-family:inherit;font-size:11px;font-weight:500}
+.td-sum .sum{margin:0;font-size:12px}
+.td-sum .sum li.more{display:none}
+.td-sum.open .sum li.more{display:flex}
+.expand{border:0;background:none;padding:0;margin-top:2px;font-size:11px;color:var(--tea-color-text-link-default)}
+.acts{display:flex;flex-direction:column;gap:4px;align-items:flex-start}
+
+/* ===== Version / proposal detail ===== */
+.crumbs{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--tea-color-text-tertiary)}
+.crumbs a{color:var(--tea-color-text-link-default);text-decoration:none;cursor:pointer}
+.crumbs a:hover{text-decoration:underline}
+.vd-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap}
+.vd-title{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin-top:12px;font-size:12px}
+.kv dt{color:var(--tea-color-text-tertiary)}.kv dd{margin:0}
+.diff-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.diff-stat{font-size:12px;margin-left:auto}
+.diff-stat .a{color:var(--tea-color-text-success-default);font-weight:600}.diff-stat .r{color:var(--tea-color-text-error-default);font-weight:600}
+.diff{border:1px solid var(--tea-color-border-primary-default);font-family:var(--font-mono);font-size:12px;line-height:1.65;overflow-x:auto;background:#fff}
+.diff table{border-collapse:collapse;width:100%}
+.diff td{padding:0 8px;white-space:pre-wrap;word-break:break-word;vertical-align:top}
+.diff td.n{width:1%;min-width:34px;text-align:right;color:var(--tea-color-text-tertiary);user-select:none;background:var(--tea-color-bg-secondary-default);border-right:1px solid var(--tea-color-border-secondary-default);white-space:nowrap}
+.diff td.s{width:14px;padding:0 2px 0 6px;user-select:none;font-weight:700}
+.diff tr.add td{background:#e6f7ec}.diff tr.add td.n{background:#d2f0dc}.diff tr.add td.s{color:#0a7a3c}
+.diff tr.del td{background:#fdecec}.diff tr.del td.n{background:#f9d9d9}.diff tr.del td.s{color:#c22a2b}
+.diff tr.hunk td{background:var(--tea-color-bg-brand-lighten-default);color:var(--tea-color-text-brand-default)}
+.diff .side{display:grid;grid-template-columns:1fr 1fr}
+.diff .side>div+div{border-left:1px solid var(--tea-color-border-primary-default)}
+.diff .empty td{background:repeating-linear-gradient(-45deg,#fafbfc,#fafbfc 4px,#f2f4f8 4px,#f2f4f8 8px)}
+
+/* ===== Proposals ===== */
+.prop{border:1px solid var(--tea-color-border-primary-default);background:#fff;padding:14px 16px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px 16px}
+.prop+.prop{margin-top:12px}
+.prop.stale{background:#fffdfb;border-color:#ffd6b5}
+.prop.done{opacity:.75}
+.prop-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.prop-name{font-family:var(--font-mono);font-weight:600;font-size:14px}
+.prop-meta{display:flex;gap:16px;flex-wrap:wrap;margin-top:6px;font-size:12px;color:var(--tea-color-text-secondary)}
+.prop-meta b{font-weight:500;color:var(--tea-color-text-tertiary)}
+.prop-reason{margin-top:8px;font-size:13px}
+.prop-acts{display:flex;flex-direction:column;gap:8px;align-items:stretch;min-width:120px}
+.prop-stale{grid-column:1/-1}
+
+/* ===== Modal (tea-dialog: 550px, padding 25px) ===== */
+.mask{position:absolute;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;gap:24px;padding:24px;z-index:50;flex-wrap:wrap;overflow-y:auto}
+.dlg{width:550px;max-width:100%;background:#fff;box-shadow:var(--tea-shadow-sm);padding:25px;position:relative}
+.dlg-x{position:absolute;right:16px;top:16px;border:0;background:none;color:var(--tea-color-text-tertiary);width:24px;height:24px}
+.dlg-cap{font-size:16px;font-weight:600;margin:0 30px 16px 0;line-height:24px}
+.dlg-body{font-size:12px;line-height:1.7;color:var(--tea-color-text-secondary)}
+.dlg-body p{margin:0 0 10px}
+.dlg-body ul{margin:0 0 10px;padding-left:18px}
+.dlg-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+.dlg-tag{position:absolute;top:-22px;left:0;font-size:11px;color:#fff;background:rgba(0,0,0,.55);padding:1px 8px}
+.ba{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;margin:4px 0 12px}
+.ba>div{border:1px solid var(--tea-color-border-primary-default);background:var(--tea-color-bg-secondary-default);padding:8px 10px;font-size:12px;color:var(--tea-color-text-primary)}
+.ba>div small{display:block;color:var(--tea-color-text-tertiary);font-size:11px}
+.field{margin-bottom:14px}
+.radio-row{display:flex;gap:20px;flex-wrap:wrap}
+.radio{display:flex;align-items:flex-start;gap:6px;font-size:12px;color:var(--tea-color-text-primary);cursor:pointer}
+.radio input{margin:2px 0 0;accent-color:var(--tea-color-bg-brand-default)}
+.radio small{display:block;color:var(--tea-color-text-tertiary);font-size:11px}
+.check{display:flex;gap:6px;align-items:flex-start;font-size:12px;color:var(--tea-color-text-primary)}
+.check input{accent-color:var(--tea-color-bg-brand-default);margin-top:3px}
+
+/* ===== Toast (sonner-like) ===== */
+.toast{position:absolute;right:20px;bottom:20px;background:#fff;border:1px solid var(--tea-color-border-primary-default);box-shadow:var(--tea-shadow-md);padding:10px 14px;font-size:13px;display:none;align-items:center;gap:8px;z-index:80;max-width:420px}
+.toast.show{display:flex}
+
+/* ===== Claude Code terminal ===== */
+.term-wrap{display:flex;flex-direction:column;gap:12px;max-width:980px}
+.term{background:#1b1d22;color:#d7dae0;font-family:var(--font-mono);font-size:13px;line-height:1.6;border:1px solid #2b2f36;box-shadow:var(--tea-shadow-sm)}
+.term-bar{display:flex;align-items:center;gap:6px;height:30px;padding:0 12px;background:#24272e;border-bottom:1px solid #2b2f36;font-size:12px;color:#8b93a1}
+.term-bar i{width:11px;height:11px;border-radius:50%;display:inline-block}
+.term-bar .t{margin-left:10px}
+.term-body{padding:14px 18px}
+.t-dim{color:#7d8592}.t-or{color:#d98e5a}.t-bl{color:#7fb4ff}.t-gr{color:#7ed09a}.t-rd{color:#f08a8a}.t-pu{color:#c3a6ff}.t-wh{color:#fff}.t-b{font-weight:700}
+.t-box{border:1px solid #3a3f48;border-radius:6px;padding:10px 14px;margin:10px 0}
+.t-tabs{display:flex;gap:14px;margin-bottom:8px;color:#8b93a1}
+.t-tabs .on{color:#1b1d22;background:#d98e5a;padding:0 6px}
+.t-opt{display:flex;gap:10px;padding:1px 4px;cursor:pointer;border-radius:3px}
+.t-opt:hover{background:#262a31}
+.t-opt .cur{width:12px;color:#d98e5a}
+.t-opt.on .lbl{color:#d98e5a;font-weight:700}
+.t-opt .desc{color:#7d8592}
+.t-prompt{border:1px solid #3a3f48;border-radius:6px;padding:4px 10px;margin-top:10px;color:#8b93a1}
+.cc-switch{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--tea-color-text-secondary);flex-wrap:wrap}
+
+@media (max-width:1100px){.split{grid-template-columns:minmax(0,1fr)}.resizer{display:none}.alp{min-height:360px}}
+@media (max-width:760px){.sider{display:none}.notes{position:absolute;right:0;top:40px;bottom:0;z-index:90}.prop{grid-template-columns:1fr}.prop-acts{flex-direction:row;flex-wrap:wrap}}
+</style>
+</head>
+<body>
+
+<nav class="mock-strip" aria-label="Mockup screens">
+  <b>MOCKUP · Project-scoped skills</b>
+  <button data-go="list">1 · Skills list</button>
+  <button data-go="detail">2 · Detail &amp; history</button>
+  <button data-go="dialogs">3 · Rollback / Promote</button>
+  <button data-go="proposals">4 · Pending proposals</button>
+  <button data-go="new">5 · New Skill</button>
+  <button data-go="cc">6 · Claude Code session</button>
+  <span class="sp"></span>
+  <span style="white-space:nowrap;color:#8b93a1">Times: Asia/Saigon (GMT+7) · not product UI</span>
+</nav>
+
+<div class="mock-wrap">
+  <div class="app">
+    <header class="gh">
+      <div class="gh-left">
+        <div class="gh-brand"><img alt="Memory Hub" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAsCAYAAAAXb/p7AAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAKKADAAQAAAABAAAALAAAAACPZsBsAAAJQUlEQVRYCe1Ye2wUxxmfx+7t2ecz+AXGLrGPYIxNm5pHQI0pxjyMQhJw/ohRm1QoUptUrUgqqrZJEM2pLWrUNihFVas2aqRETVPZgaRAo4iHgSJoaUOowQ+QMRjbuQRsY7jz2Xe7OzP9Zu293N3euWfR8keVPd3N3Mx83/ebb77XDkKfPf/nGsBT7e/kwV/nFemBFcjQH+CmUY4E0gTmGB4Bj8kJva1gclmoOR94NO1C2cPPj3R3v6exzrPlJBJZYgpjEWeslCCWBbRYwAcjDGR4WBCtDWueE5Wls67gZU8b6XCkBHj+zefyKBVNCo88wwQvR5wEEEEBwVGUEAkOgTxO4NeDGJ+DKc4XiA5gQtuAYTHM12DEmcnZJxSRIaA1kIUOI0mMBcvjCPkUShWuqO8KRX253azpampqYslAHQDPvfVcuUaMnZSxTSZHezWP91U6c02Hr74+kkws/7e98YZH9VypxMb4ZmHq60C7V7E7u1lzz/lHb3b1UH19vemg8wtyYfEvi1T9+kbKxp8RiKhIdf9ADbqO+p70J8hJAHjhrR1zVRzdwY3oWqrlfr+y6SfvItivQ0CaAdCOxU+aQJoljuH+A7tLw7f7XhYUfV4Q93eqZrmP43p/bFNwTBNPR7M/R8HGg8yMruWqd2dl0653pgNOcpHApgNO0sx9ZPtHhrfoWbDNPmFEv3XxenCeHLefGMDx8G0fM41HEaati7bsarEX3I32C5t3XBdYewUhvoBjsry/eXeWLdcC2L1nm+bJUisQYsVczX4btOAwVpvgf9UqS1edAC1eAi9aHoxcK7LlWAD1YsXDmZiHOArR3KJ2e/JuthUVG6Pg3+3CNMvA13Nt2ZNHrLjAqmeA5oKFmitkT97tFmNykyCRbWDmsmUrsqOY3IwIFqGCZ0WjWmzSXpRJu2nTJu/g4GCVdJKcnJzOQ4cOhTOhi18jBJ8BWjQIVxK92Ov1jlGCB8AN84PBq/PjiTLp+/1+pbOz84n+/v698G3u7e39ihzLhNZec+zYMQXC1EKOyIDiwkF73Drikkf841ioXYiQMI+EN9mTmbaBQABzznMZZ/I70zTNAqCdNJ/MuBQPnVgO2WkR5MIzen7poE1lMxHEpD1UUf6iUNHY1byzzl6QSXvt2rVCn8/XVjy7+OdFhUU/Ki8vfxs0qGdCK9d0HflVgdBvfRdssFdn4vQXN3wvZh42QFS19afD0Yi6lxPSaURHnu0/3RyLRVMJWrdu3T060peD7V3fvXv3S/PmzXvf7XbTqWiS58SNvi1wAj7sUn8jxscux8/HAMrBLFW/iZg4B7Eoyz0Y+o82tHr16s8xxmqQjgZWrlzZJvPu2NiYKxqNznjqqaVqvKCp+lBHzMRge3xcDyx7+ncJlU0CQALWSQnUKxhzkeudMp+uX19bAkJrwLADdXV15+BIoUCBUM+YDFNKb29BnvyfyUOIrI8wVVNsKUlLo1AVQUgkCbgdMtauXTs7GjVqFIXcKCgoiIGTC1VVHYJvjmKaGZmIxVyWmGlEphmWZDFHsnjYP3CshaC1JaDom6tWrfqwpaUlIS3Onz8/OjIykvfR8DBMr4L0mcEDNSZksZRPkgZzQNFRTJyLyZo1a+YwFr1P0zThcrn6wBG64VhjAdXm3traWhsMB/1MZythzWsrVqzwnzlzZsCeT9umUVUSQCB3gkOLaxcXRyKRetDaUDAYdENrnjp1KmUYkTUhRRQx+MDBqbChFJaVCFNalDwGk/GE+lSucuCGgm6i6ozjkSWyVPAbvbo676+U0iGMzZy46YQumMCZ0tLSH5eUlGwtKyt7HdJe5YYNGxaBth2ybEIulQJfhRKHYzqIMAN8FoVNbnnmiKLQUPv5wW8CQF9+/uzbn84m9np6eorBcYYgcL8Dx92q63onaLLyn387Wbtt2+O5X33zZN6D2/Zo8VScO3QSm04COGpNJG8DbCg4a1bJIUzpq5C3/w5C721oaFgY4zLZmdRSrmEYCJxnTA4fOXKkD2z2sKh6OLTf4//h+21Lzp73fuOVqh3jZfH0yTLtuSSAcHIwgq0wE6sZrbXSW8HuQgcPHuwGe+yBfFsBWaTKZiTbs2fP5oOG1ShCMtnHrHn//v2htplP5g+hsvtv8WzfzYhr621OFj/m77AqJ/mm6DC+ScZJAGEURiZ2kzrMSLrjx49fBiAXIShXxGsSssgs0C7OUdUbk/yRLMMaN66vufeTA4VuZAYpIHFRFNAQGUYdHVaIgswAsdemSGydw7Bv/unmE1fH/Tt8+HC3oihdcJwLGhpWL5TeCx4rE9Go1FhjY+NM0PDK0dHRxlFdFBZc2Xe8JJu+UOYyvl3hjW4tLlI+aGmZfA8Gm2cxfccJga4jzHAQRKztJB5xItnEPwkSQDCXS/HV1tYuA2fQCwsL2x96aMOXQ6HQPbCBPjCFA+ArtyyKQ5rU7AUnL4kOvglZeGKVA6CFzRmOnDwnRwDk1QULFjSAXe6EikSBOPnb6urqP9y6NfAvabNpCeMmZKaDGwjIk041Oo6YsMxfuqUMcJ6J4gJUAM7FAGigqqrqcqbgJA+CqQBHkV3H49SgApiNdE7voEfyPgWCc3M4HO4xkYk8mudDCDdOVThJYyPSrFLDS2GD0v74NF+LwauljR2NSZxmR6FwneTI6hNMHEdsCjjjzBU4TSipl3O4pZIpNtVsAkBu6nCHA+rDnPaZI9Mq21Mxz3RMIEHT1VsJAE3FG2Gc3IDBguzQx3MzFXAn6yB+EriDnM8RHWaMWOkxnl8CwOrHXgwriLcjoRg8EvwavJuks914HnfU79j3Yh0UJ/dTQk/TXPV6MrMEgBCOhExhcEf7J0XwLZf27dh+8c+/9yYT/Xf+C9LV/Hydoo/+ghClixN8dOHmnzniZkoNXfqjvxCR8Ne5EdkOSfJjpNJWgpSAIJRZWoW8RBTbqBnkABlmYa9wXhK83LUJV8Qyvsm0yU3TkiOLAhiGygCuOARbCrMPMIxPwo3sC1WP7uqQCkrefEqAclH3e3s0fWywxmWOP2Ey9iXwM3g1nKwj4rhgCLAyDyPZMLhZgQ+8dGEC0GA3sZWCx/pwpY3BG+klhLS9JhcH73v8pZHYwqROWoDx6ywACNR0hw+UY5a8UGipqK/HaSLfHQr5jDxJA/8GWX7Zjsr796MAAAAASUVORK5CYII="><span>Memory Hub</span></div>
+        <button class="team-pill" type="button"><span class="team-av">D</span><span class="team-txt"><b>default-team</b><i>team-f0bzqawutx</i></span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
+      </div>
+      <div class="gh-right">
+        <button class="gh-guide" type="button">Guide</button>
+        <button class="gh-guide" type="button">English
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></button>
+        <button class="gh-icon" type="button" aria-label="Settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+        <button class="gh-user" type="button"><span class="gh-av">A</span><span>admin</span></button>
+      </div>
+    </header>
+    <div class="body">
+      <aside class="sider" id="sider"></aside>
+      <div class="content">
+        <div class="tabbar" id="tabbar"></div>
+        <div class="cbody"><main class="page" id="page"></main></div>
+      </div>
+    </div>
+    <div id="overlay"></div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </div>
+
+  <aside class="notes" id="notes" aria-label="Annotations">
+    <div class="notes-head"><span id="notes-title">Ghi chú</span>
+      <button class="notes-toggle" id="notes-toggle" type="button" aria-label="Collapse annotations" aria-expanded="true">&rsaquo;</button></div>
+    <div class="notes-body" id="notes-body"></div>
+  </aside>
+</div>
+
+<script>
+/* ---------- icons ---------- */
+const I = {
+  dash:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
+  user:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>',
+  group:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3.5"/><path d="M2 20c0-3.5 3-5.5 7-5.5s7 2 7 5.5"/><circle cx="17" cy="9" r="2.5"/><path d="M17 14c3 0 5 1.6 5 4.5"/></svg>',
+  lock:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="11" width="16" height="10" rx="1"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  pool:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3l4 4-4 4"/><path d="M3 7h18"/><path d="M7 21l-4-4 4-4"/><path d="M21 17H3"/></svg>',
+  books:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h5v16H4zM10 4h5v16h-5z"/><path d="M16 5l4-1 3 15-4 1z"/></svg>',
+  code:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg>',
+  tools:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/></svg>',
+  chat:'<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v11H9l-5 4z"/></svg>',
+  search:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
+  info:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0052d9" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>',
+  warn:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c25a00" stroke-width="2"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></svg>',
+  ok:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0a9e4c" stroke-width="2.4"><path d="M5 12l5 5 9-10"/></svg>',
+  person:'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>',
+  close:'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+};
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+/* ---------- sample data ---------- */
+const PROJECTS = [
+  {name:'kevinle128/paseo', local:false},
+  {name:'kevinle128/agent-memory', local:false},
+  {name:'operator-master', local:true},
+];
+const L = a => a.join('\n');
+const FM = (n,d) => ['---','name: '+n,'description: '+d,'---'];
+
+const PASEO_DESC = 'Gate computer-use spikes in paseo behind an explicit go/no-go check.';
+const PASEO_V1 = L([...FM('paseo-computer-use-gating',PASEO_DESC),
+  '# Computer-use gating (paseo)','','## When to use','Before starting any computer-use spike in the paseo repo.','',
+  '## Steps','1. Read the spike goal in the task card.','2. Run the spike in a scratch branch, max 15 minutes.','3. Record the result in the task card.','',
+  '## Pass / fail','- Pass if it works.','- Fail otherwise.','',
+  '## Notes','- On macOS 13, screen capture needs a restart after granting access.']);
+const PASEO_V2 = L([...FM('paseo-computer-use-gating',PASEO_DESC),
+  '# Computer-use gating (paseo)','','## When to use','Before starting any computer-use spike in the paseo repo.','',
+  '## Steps','1. Read the spike goal in the task card.','2. Run the spike in a scratch branch, max 15 minutes.','3. Record the result in the task card.','',
+  '## Pass / fail','- Pass: the goal is done with no manual click.','- Fail: anything else.','',
+  '## Notes','- On macOS 13, screen capture needs a restart after granting access.','',
+  '## See also','- docs/adr/0007-computer-use.md']);
+const PASEO_V4 = L([...FM('paseo-computer-use-gating',PASEO_DESC),
+  '# Computer-use gating (paseo)','','## When to use','Before starting any computer-use spike in the paseo repo.','',
+  '## Steps','1. Read the spike goal in the task card.','2. Verify TCC permission (Screen Recording + Accessibility) for the terminal before the spike.','3. Run the spike in a scratch branch, max 15 minutes.','4. Record the result in the task card.','',
+  '## Pass / fail','- Pass: the agent completes the goal without a manual click, in 15 minutes or less.','- Fail: any permission prompt, manual step, or timeout. Stop and record why.','',
+  '## Notes','- If TCC permission is missing, stop and ask the user. Do not open System Settings automatically.']);
+
+const DFT_DESC = 'Find and fix flaky tests without hiding real failures.';
+const DFT_V2 = L([...FM('debug-flaky-tests',DFT_DESC),
+  '# Debug flaky tests','','## Steps','1. Re-run the failing test alone 20 times.','2. If it fails at least once, mark it flaky.','3. Raise the global test timeout to 30s and re-run.','4. Find the shared state or timing cause and fix it.','',
+  '## Quarantine','- Quarantine a test when it keeps failing.']);
+const DFT_V1 = DFT_V2.replace('# Debug flaky tests','# Debug flaky tests (agent-memory)');
+const DFT_PROP = L([...FM('debug-flaky-tests',DFT_DESC),
+  '# Debug flaky tests','','## Steps','1. Re-run the failing test alone 20 times.','2. If it fails at least once, mark it flaky.','3. Pin the random seed (for example `--sequence.seed=1234`) and re-run to make the failure repeatable.','4. Find the shared state or timing cause and fix it.','',
+  '## Quarantine','- Quarantine a test only when it fails 3 or more times in 20 runs, and open an issue with the seed.']);
+
+const CR_DESC = 'Review a change for correctness, safety and scope before merge.';
+const CR_V1 = L([...FM('code-review',CR_DESC),'# Code review','','## Checklist','- The change does what the task asks.','- Tests cover the new behavior.','- No secrets in the diff.']);
+const CR_V2 = L([...FM('code-review',CR_DESC),'# Code review','','## Checklist','- The change does what the task asks, and nothing more.','- Tests cover the new behavior.','- No secrets in the diff.','- Public contracts stay compatible.']);
+const CR_PROP = L([...FM('code-review',CR_DESC),'# Code review','','## Checklist','- The change does what the task asks.','- Tests cover the new behavior.','- No secrets in the diff.','- Every migration has a rollback step.']);
+
+const AD_DESC = 'Write API docs from handlers and schemas.';
+const AD_V1 = L([...FM('api-docs',AD_DESC),'# API docs','','## Steps','1. List each route with method and path.','2. Document request fields from the schema.','3. Add one example request and response.']);
+const AD_PROP = L([...FM('api-docs',AD_DESC),'# API docs','','## Steps','1. List each route with method and path.','2. Document request fields from the schema.','3. Add one example request and response.','4. Document the error response shape `{code, message, request_id}` and list the error codes of the route.']);
+
+const S = (k,t) => ({k,t}); // k: add | chg | del | rst
+const SKILLS = [
+  {id:'skl-7Qm2pAseo41X', name:'paseo-computer-use-gating', desc:PASEO_DESC, scope:'project', project:'kevinle128/paseo', origin:'extracted', version:4, updated:'2026-10-23 16:42', owner:'admin',
+   versions:[
+    {v:4, date:'2026-10-23 16:42', source:'extracted', reason:'A session hit a TCC prompt mid-spike; a permission pre-check prevents it.', approver:'system', session:'a81c03fe', by:'extractor', sumBy:'extractor',
+     content:PASEO_V4, summary:[S('add','Added a step to verify TCC permission before the spike (and a stop rule when it is missing)'),S('chg','Clarified the pass/fail criteria'),S('del','Removed outdated macOS 13 note')]},
+    {v:3, date:'2026-10-21 10:15', source:'rollback', reason:'The v2 wording dropped the 15-minute limit from the pass rule.', approver:'admin', by:'admin', sumBy:'generated', from:1,
+     content:PASEO_V1, summary:[S('rst','Restored content of v1 (rollback by admin)')]},
+    {v:2, date:'2026-10-19 09:03', source:'manual', reason:'Make the pass/fail rule testable and link the ADR.', approver:'admin', by:'admin', sumBy:'admin',
+     content:PASEO_V2, summary:[S('chg','Clarified the pass/fail criteria wording'),S('add','Added a "See also" link to ADR 0007')]},
+    {v:1, date:'2026-10-15 14:27', source:'extracted', reason:'Repeated gating steps across 3 paseo sessions.', approver:'system', session:'3f1e7a20', by:'extractor', sumBy:'extractor',
+     content:PASEO_V1, summary:[S('add','Created the skill from session 3f1e7a20'),S('add','Added steps, pass/fail rule and a macOS 13 note')]},
+   ]},
+  {id:'skl-K3vAgMemCln9', name:'agent-memory-safe-cleanup', desc:'Clean memory data on a copy first, then apply in small batches.', scope:'project', project:'kevinle128/agent-memory', origin:'extracted', version:3, updated:'2026-10-22 21:08', owner:'admin'},
+  {id:'skl-P8rlsChkPas2', name:'paseo-release-checklist', desc:'Steps to cut a paseo desktop release.', scope:'project', project:'kevinle128/paseo', origin:'manual', version:2, updated:'2026-10-20 11:30', owner:'admin'},
+  {id:'skl-O2msSubSync7', name:'operator-master-submodule-sync', desc:'Sync submodules in operator-master without losing local commits.', scope:'project', project:'operator-master', origin:'extracted', version:1, updated:'2026-10-19 18:55', owner:'admin'},
+  {id:'skl-D4ftGlb0b1Pr', name:'debug-flaky-tests', desc:DFT_DESC, scope:'global', origin:'manual', promotedFrom:'kevinle128/agent-memory', version:2, updated:'2026-10-22 09:12', owner:'admin',
+   versions:[
+    {v:2, date:'2026-10-22 09:12', source:'promotion', reason:'Useful in every repo, not only agent-memory.', approver:'admin', by:'admin', sumBy:'generated',
+     content:DFT_V2, summary:[S('chg','Promoted from project kevinle128/agent-memory to Global (origin: Manual)'),S('chg','Removed the project name from the title')]},
+    {v:1, date:'2026-10-16 15:40', source:'extracted', reason:'Same retry loop seen in 2 agent-memory sessions.', approver:'system', session:'71d2b9c4', by:'extractor', sumBy:'extractor',
+     content:DFT_V1, summary:[S('add','Created the skill from session 71d2b9c4')]},
+   ]},
+  {id:'skl-Tc0deRvw00a1', name:'code-review', desc:CR_DESC, scope:'global', origin:'template', version:2, updated:'2026-10-12 08:00', owner:'admin',
+   versions:[
+    {v:2, date:'2026-10-12 08:00', source:'manual', reason:'Keep reviews scoped and protect public contracts.', approver:'admin', by:'admin', sumBy:'admin', content:CR_V2, summary:[S('chg','Scope check: "and nothing more"'),S('add','Added public-contract check')]},
+    {v:1, date:'2026-10-02 10:00', source:'template', reason:'Template skill.', approver:'admin', by:'admin', sumBy:'generated', content:CR_V1, summary:[S('add','Created from template')]},
+   ]},
+  {id:'skl-Tunit7est0a2', name:'unit-test', desc:'Write focused unit tests for one behavior at a time.', scope:'global', origin:'template', version:1, updated:'2026-10-02 10:00', owner:'admin'},
+  {id:'skl-Tap1d0cs0a3', name:'api-docs', desc:AD_DESC, scope:'global', origin:'template', version:1, updated:'2026-10-02 10:00', owner:'admin',
+   versions:[{v:1, date:'2026-10-02 10:00', source:'template', reason:'Template skill.', approver:'admin', by:'admin', sumBy:'generated', content:AD_V1, summary:[S('add','Created from template')]}]},
+];
+const PROPOSALS = [
+  {id:'p1', skill:'debug-flaky-tests', session:'9c8ad33a', reason:'Two sessions re-ran a flaky Vitest suite without a fixed seed, so the failure could not be reproduced.', base:2, current:2, created:'2026-10-24 07:41', status:'pending',
+   from:DFT_V2, to:DFT_PROP, summary:[S('add','Added a step to pin the random seed before re-running'),S('chg','Clarified when to quarantine a test (3 or more failures in 20 runs)'),S('del','Removed advice to raise the global timeout')]},
+  {id:'p2', skill:'api-docs', session:'e15c0a92', reason:'Sessions kept asking how errors are returned by the gateway.', base:1, current:1, created:'2026-10-23 20:17', status:'pending',
+   from:AD_V1, to:AD_PROP, summary:[S('add','Added a step to document the error response shape and error codes')]},
+  {id:'p3', skill:'code-review', session:'4b77d1e0', reason:'A review missed a migration without a rollback step.', base:1, current:2, created:'2026-10-11 17:52', status:'stale',
+   from:CR_V1, to:CR_PROP, summary:[S('add','Added a check that every migration has a rollback step')]},
+];
+const SOURCE = {extracted:'Extracted', manual:'Manual', rollback:'Rollback', promotion:'Promotion', template:'Template'};
+const ORIGIN = {extracted:'Extracted', manual:'Manual', template:'Template'};
+
+/* generic history for skills without a hand-written one */
+function versionsOf(s){
+  if (s.versions) return s.versions;
+  const out=[];
+  for (let v=s.version; v>=1; v--){
+    const body = L([...FM(s.name,s.desc),'# '+s.name,'','## Steps','1. '+s.desc, ...(v>1?['2. Check the result before you report.']:[])]);
+    out.push({v, date:v===s.version?s.updated:'2026-10-1'+v+' 10:00', source:v===1?(s.origin==='template'?'template':s.origin):'extracted',
+      reason:v===1?'Initial version.':'Follow-up from a later session.', approver:(s.origin==='manual'&&v===1)||s.origin==='template'?'admin':'system',
+      session:'5e0'+v+'aa12', by:v===1&&s.origin!=='extracted'?'admin':'extractor', sumBy:v===1&&s.origin!=='extracted'?'admin':'extractor', content:body,
+      summary:v===1?[S('add','Created the skill')]:[S('add','Added a step to check the result before reporting')]});
+  }
+  s.versions=out; return out;
+}
+const pendingCount = () => PROPOSALS.filter(p=>p.status==='pending').length;
+const skillByName = n => SKILLS.find(s=>s.name===n);
+
+/* ---------- state ---------- */
+const st = {screen:'list', selected:'paseo-computer-use-gating', scope:'all', project:'', origin:'', q:'', tab:'fixed',
+  vd:4, cmp:null, view:'unified', prop:'p1', cc:0, ccAnswered:null, newScope:'project', newProject:'', newErr:false, notesOpen:true};
+
+/* ---------- small renderers ---------- */
+function scopeBadge(s){
+  if (s.scope==='global') return '<span class="tag tag-global" title="Injected into every session of this agent">Global</span>';
+  const p = PROJECTS.find(x=>x.name===s.project);
+  return '<span class="tag tag-project" title="Injected only when the session works in this project">Project · '+esc(s.project)+'</span>'+(p&&p.local?'<span class="muted" style="font-size:11px">(local, no remote)</span>':'');
+}
+const originChip = o => '<span class="chip o-'+o+'">'+ORIGIN[o]+'</span>';
+function sumList(items, cls){
+  const sym={add:'+',chg:'~',del:'−',rst:'↺'};
+  return '<ul class="sum">'+items.map((x,i)=>'<li class="'+(cls&&i>=2?'more':'')+'"><span class="k '+x.k+'" aria-hidden="true">'+sym[x.k]+'</span><span>'+esc(x.t)+'</span></li>').join('')+'</ul>';
+}
+function sumByText(v){
+  if (v.sumBy==='extractor') return 'Summary written by the extractor';
+  if (v.sumBy==='generated') return 'Summary generated by the system';
+  return 'Summary written by '+v.sumBy;
+}
+const approverText = v => v.approver==='system'
+  ? '<span class="weak">system</span> <span class="muted">(auto-applied)</span>'
+  : '<span class="alp-badge you">'+I.person+' '+esc(v.approver)+'</span>';
+function sourceTag(src){
+  const m={extracted:'tag-gray',manual:'tag-blue',rollback:'tag-orange',promotion:'tag-global',template:'tag-gray'};
+  return '<span class="tag '+m[src]+'">'+SOURCE[src]+'</span>';
+}
+function md(src){
+  const lines=src.split('\n'); let i=0, fm=[];
+  if (lines[0]==='---'){ i=1; while(i<lines.length&&lines[i]!=='---'){fm.push(lines[i]);i++;} i++; }
+  let h='', list=null;
+  const inline = t => esc(t).replace(/`([^`]+)`/g,'<code>$1</code>');
+  const close=()=>{ if(list){h+='</'+list+'>';list=null;} };
+  for(;i<lines.length;i++){
+    const l=lines[i];
+    if(/^# /.test(l)){close();h+='<h1>'+inline(l.slice(2))+'</h1>';}
+    else if(/^## /.test(l)){close();h+='<h2>'+inline(l.slice(3))+'</h2>';}
+    else if(/^\d+\. /.test(l)){ if(list!=='ol'){close();h+='<ol>';list='ol';} h+='<li>'+inline(l.replace(/^\d+\. /,''))+'</li>'; }
+    else if(/^- /.test(l)){ if(list!=='ul'){close();h+='<ul>';list='ul';} h+='<li>'+inline(l.slice(2))+'</li>'; }
+    else if(l.trim()===''){close();}
+    else {close();h+='<p>'+inline(l)+'</p>';}
+  }
+  close();
+  return (fm.length?'<pre class="fm">'+esc(fm.join('\n'))+'</pre>':'')+'<div class="md">'+h+'</div>';
+}
+
+/* line diff (LCS) */
+function diffLines(a,b){
+  const A=a.split('\n'), B=b.split('\n'), n=A.length, m=B.length;
+  const d=Array.from({length:n+1},()=>new Array(m+1).fill(0));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)d[i][j]=A[i]===B[j]?d[i+1][j+1]+1:Math.max(d[i+1][j],d[i][j+1]);
+  const out=[]; let i=0,j=0;
+  while(i<n&&j<m){ if(A[i]===B[j]){out.push({t:'eq',a:i+1,b:j+1,s:A[i]});i++;j++;} else if(d[i+1][j]>=d[i][j+1]){out.push({t:'del',a:i+1,s:A[i]});i++;} else {out.push({t:'add',b:j+1,s:B[j]});j++;} }
+  while(i<n){out.push({t:'del',a:i+1,s:A[i]});i++;} while(j<m){out.push({t:'add',b:j+1,s:B[j]});j++;}
+  return out;
+}
+function renderDiff(a,b,mode){
+  const rows=diffLines(a,b);
+  const add=rows.filter(r=>r.t==='add').length, del=rows.filter(r=>r.t==='del').length;
+  const stat='<span class="diff-stat"><span class="a">+'+add+'</span> &nbsp;<span class="r">−'+del+'</span> lines</span>';
+  // collapse long unchanged runs (keep 2 lines of context)
+  const keep=rows.map((r,k)=>r.t!=='eq'||rows.slice(Math.max(0,k-2),k+3).some(x=>x.t!=='eq'));
+  if (mode==='side'){
+    const L2=[],R2=[]; let k=0, skipped=false;
+    while(k<rows.length){
+      if(!keep[k]){ if(!skipped){L2.push({h:1});R2.push({h:1});skipped=true;} k++; continue; }
+      skipped=false;
+      if(rows[k].t==='eq'){L2.push(rows[k]);R2.push(rows[k]);k++;continue;}
+      const dels=[],adds=[]; while(k<rows.length&&rows[k].t==='del'){dels.push(rows[k]);k++;} while(k<rows.length&&rows[k].t==='add'){adds.push(rows[k]);k++;}
+      const mx=Math.max(dels.length,adds.length);
+      for(let x=0;x<mx;x++){L2.push(dels[x]||{e:1});R2.push(adds[x]||{e:1});}
+    }
+    const col=(arr,side)=>'<table>'+arr.map(r=>{
+      if(r.h) return '<tr class="hunk"><td class="n"></td><td class="s"></td><td>⋯ unchanged lines</td></tr>';
+      if(r.e) return '<tr class="empty"><td class="n"></td><td class="s"></td><td></td></tr>';
+      const c=r.t==='eq'?'':(r.t), sign=r.t==='add'?'+':r.t==='del'?'−':' ';
+      return '<tr class="'+c+'"><td class="n">'+(side==='a'?(r.a||''):(r.b||''))+'</td><td class="s">'+sign+'</td><td>'+esc(r.s)+'</td></tr>';
+    }).join('')+'</table>';
+    return {stat, html:'<div class="diff"><div class="side"><div>'+col(L2,'a')+'</div><div>'+col(R2,'b')+'</div></div></div>'};
+  }
+  let h='', skipped=false;
+  rows.forEach((r,k)=>{
+    if(!keep[k]){ if(!skipped){h+='<tr class="hunk"><td class="n"></td><td class="n"></td><td class="s"></td><td>⋯ unchanged lines</td></tr>';skipped=true;} return; }
+    skipped=false;
+    const sign=r.t==='add'?'+':r.t==='del'?'−':' ';
+    h+='<tr class="'+(r.t==='eq'?'':r.t)+'"><td class="n">'+(r.a||'')+'</td><td class="n">'+(r.b||'')+'</td><td class="s">'+sign+'</td><td>'+esc(r.s)+'</td></tr>';
+  });
+  return {stat, html:'<div class="diff"><table>'+h+'</table></div>'};
+}
+
+/* ---------- shell ---------- */
+function renderShell(){
+  const m=(ic,t,sel)=>'<div class="menu-item'+(sel?' sel':'')+'">'+ic+'<span>'+t+'</span></div>';
+  document.getElementById('sider').innerHTML =
+    m(I.dash,'Task Board') +
+    '<div class="menu-label">Organization</div>'+m(I.user,'Members')+m(I.group,'Agents')+m(I.lock,'API Key')+m(I.pool,'Subscription Pool')+
+    '<div class="menu-label">Asset Management</div>'+m(I.books,'Wiki Knowledge Base')+m(I.code,'Code_Graph')+m(I.tools,'Skills',true)+m(I.chat,'Chat_Memory');
+  document.getElementById('tabbar').innerHTML =
+    '<div class="tab"><span class="weak">'+I.dash+'</span>Task Board</div><div class="tab on">'+I.tools+'Skills</div>';
+}
+
+/* ---------- page header + list (shared by list/detail) ---------- */
+function pageHeader(){
+  const pc=pendingCount();
+  return '<section class="card card-pad">'+
+    '<div class="aph-main"><h2 class="aph-title">Skill Asset Management</h2>'+
+      '<div class="aph-right">'+
+        '<div class="seg" role="tablist"><button class="'+(st.tab==='team'?'on':'')+'" data-act="tab:team">Team Assets</button><button class="'+(st.tab==='fixed'?'on':'')+'" data-act="tab:fixed">Agent Assets</button></div>'+
+        '<select class="sel-box" aria-label="Agent" style="min-width:220px"><option>default-agent-admin（agt-f0bzvpye01）</option></select>'+
+        '<div class="aph-actions"><button class="btn" data-act="export">Export Skill</button><button class="btn" data-act="import">Import Skill</button>'+
+        '<button class="btn primary" data-act="new">+ New Skill</button></div>'+
+      '</div></div>'+
+    '<div class="aph-sub">default-team · '+SKILLS.length+' Skills · Global and project skills of this agent</div>'+
+    '<div class="aph-filters">'+
+      '<span class="f-label">Scope</span><div class="seg">'+['all','global','project'].map(v=>'<button class="'+(st.scope===v?'on':'')+'" data-act="scope:'+v+'">'+({all:'All',global:'Global',project:'Project'})[v]+'</button>').join('')+'</div>'+
+      '<span class="f-label">Project</span><select class="sel-box" id="f-project" aria-label="Project" '+(st.scope==='global'?'disabled':'')+'><option value="">All projects</option>'+
+        PROJECTS.map(p=>'<option value="'+p.name+'" '+(st.project===p.name?'selected':'')+'>'+p.name+(p.local?' (local, no remote)':'')+'</option>').join('')+'</select>'+
+      '<span class="f-label">Origin</span><select class="sel-box" id="f-origin" aria-label="Origin" style="min-width:120px"><option value="">All</option>'+
+        Object.keys(ORIGIN).map(o=>'<option value="'+o+'" '+(st.origin===o?'selected':'')+'>'+ORIGIN[o]+'</option>').join('')+'</select>'+
+      '<label class="search">'+I.search+'<input class="input" id="f-q" type="search" placeholder="Search skill name or description" value="'+esc(st.q)+'" aria-label="Search skills"></label>'+
+      (pc?'<button class="pending-link" data-go="proposals"><span class="pending-dot"></span>'+pc+' pending changes &rsaquo;</button>':'')+
+    '</div></section>';
+}
+function filtered(){
+  return SKILLS.filter(s=>{
+    if(st.scope!=='all'&&s.scope!==st.scope) return false;
+    if(st.project&&s.scope==='project'&&s.project!==st.project) return false;
+    if(st.project&&st.scope==='project'&&s.scope!=='project') return false;
+    if(st.project&&st.scope==='all'&&s.scope==='global') return true;
+    if(st.origin&&s.origin!==st.origin) return false;
+    if(st.q&&!(s.name+' '+s.desc).toLowerCase().includes(st.q.toLowerCase())) return false;
+    return true;
+  });
+}
+function listPanel(){
+  const items=filtered();
+  return '<div class="alp"><div class="alp-head"><span class="alp-title">Agent Assets<span class="muted" style="font-weight:400"> · default-agent-admin</span></span><span class="alp-count">'+items.length+' items</span></div>'+
+    (items.length?'<ul class="alp-items">'+items.map(s=>{
+      const pend=PROPOSALS.filter(p=>p.skill===s.name&&p.status==='pending').length;
+      return '<li class="alp-item'+(s.name===st.selected?' sel':'')+'"><button class="alp-btn" data-act="pick:'+s.name+'">'+
+        '<div class="alp-row"><span class="ver-tag" title="Current version: v'+s.version+'">v'+s.version+'</span><span class="alp-name">'+esc(s.name)+'</span>'+(pend?'<span class="pend-mini">● '+pend+' pending</span>':'')+'</div>'+
+        '<span class="alp-id">'+s.id+'</span>'+
+        '<div class="alp-badges">'+scopeBadge(s)+originChip(s.origin)+(s.promotedFrom?'<span class="muted" style="font-size:11px">promoted from project</span>':'')+'</div>'+
+        '<div class="alp-badges"><span class="alp-badge you">'+I.person+' admin (you)</span><span class="alp-time">'+s.updated+'</span></div>'+
+      '</button></li>';}).join('')+'</ul>':'<div class="alp-empty">No skills match the filters.</div>')+
+  '</div>';
+}
+
+/* ---------- screen 1: list ---------- */
+function scrList(){
+  return pageHeader()+'<div class="split"><div>'+listPanel()+'</div><div class="resizer"><i></i></div><div>'+detailCard(skillByName(st.selected),true)+'</div></div>';
+}
+
+/* ---------- screen 2: detail + history ---------- */
+function detailCard(s, compact){
+  const vs=versionsOf(s), cur=vs[0];
+  const promote = s.scope==='project'
+    ? '<button class="btn" data-act="promote">Promote to Global</button>'
+    : '';
+  const head='<div class="sd-head"><div class="sd-head-main"><div style="min-width:0">'+
+      '<div class="sd-name">'+esc(s.name)+'</div><div class="sd-id">'+s.id+'</div><div class="sd-desc">'+esc(s.desc)+'</div>'+
+      '<div class="sd-meta">'+scopeBadge(s)+originChip(s.origin)+'<span class="ver-tag">v'+s.version+' current</span>'+
+        (s.promotedFrom?'<span class="muted" style="font-size:11px">Promoted from project '+esc(s.promotedFrom)+' · extractor can only propose changes</span>':'')+
+        (s.scope==='project'?'<span class="muted" style="font-size:11px">Extractor changes apply automatically</span>':'')+
+      '</div></div>'+
+      '<div class="sd-actions"><button class="btn primary">Edit</button><button class="btn">Add file</button>'+promote+'</div></div></div>';
+  const whatsnew='<div class="sec"><div class="whatsnew"><div class="whatsnew-h">v'+cur.v+' · What\'s new '+sourceTag(cur.source)+'<span class="muted">'+cur.date+' · approved by '+(cur.approver==='system'?'system (auto-applied)':esc(cur.approver))+'</span>'+
+      '<button class="link" style="margin-left:auto" data-act="vd:'+cur.v+'">View details &amp; diff &rsaquo;</button></div>'+
+      sumList(cur.summary)+'<div class="sum-by">'+sumByText(cur)+' · stored with v'+cur.v+'</div></div></div>';
+  const body='<div class="sec"><div class="sec-head"><span class="sec-title">Body</span></div>'+md(cur.content)+'</div>';
+  const hist='<div class="sec" id="history"><div class="sec-head"><span class="sec-title">Version history ('+vs.length+')</span><span class="muted" style="font-size:11px">Click a row to see the diff · times in Asia/Saigon</span></div>'+
+    '<table class="tbl"><thead><tr><th style="width:96px">Version</th><th style="width:132px">Date (Asia/Saigon)</th><th style="width:104px">Source</th><th>Approved by</th><th style="width:150px">Actions</th></tr></thead>'+
+    vs.map(v=>{
+      const isCur=v.v===s.version;
+      return '<tbody class="vrow'+(isCur?' cur':'')+'" data-act="vd:'+v.v+'" tabindex="0">'+
+        '<tr><td><span class="v-label">v'+v.v+(isCur?'<span class="v-cur">(Current)</span>':'')+'</span></td>'+
+        '<td style="white-space:nowrap">'+v.date+'</td>'+
+        '<td>'+sourceTag(v.source)+(v.source==='rollback'?' <span class="muted" style="font-size:11px">from v'+v.from+'</span>':'')+'</td>'+
+        '<td>'+approverText(v)+'</td>'+
+        '<td><div class="acts"><button class="link" data-act="vd:'+v.v+'">View details</button>'+
+          (isCur?'<span class="muted" style="font-size:11px">Current version</span>':'<button class="link" data-act="rollback:'+v.v+'">Rollback to this version</button>')+
+        '</div></td></tr>'+
+        '<tr class="sumrow"><td colspan="5" class="td-sum" id="sum-'+v.v+'"><span class="sum-label">What\'s improved</span>'+sumList(v.summary,true)+
+          '<div class="sum-foot">'+(v.summary.length>2?'<button class="expand" data-act="expand:'+v.v+'">Show all ('+v.summary.length+')</button>':'')+'<span class="sum-by" style="margin:0">'+sumByText(v)+'</span></div></td></tr>'+
+      '</tbody>';}).join('')+
+    '</table></div>';
+  return '<div class="card sd">'+head+'<div class="sd-scroll">'+whatsnew+(compact?body:hist+body)+'</div></div>';
+}
+function scrDetail(){
+  const s=skillByName(st.selected);
+  return pageHeader()+'<div class="split"><div>'+listPanel()+'</div><div class="resizer"><i></i></div><div>'+detailCard(s,false)+'</div></div>';
+}
+
+/* ---------- screen 2b: version detail (diff lives only here) ---------- */
+function scrVersion(){
+  const s=skillByName(st.selected), vs=versionsOf(s), v=vs.find(x=>x.v===st.vd)||vs[0];
+  const prev=vs.find(x=>x.v===v.v-1);
+  const cmpV = st.cmp!=null ? vs.find(x=>x.v===st.cmp) : prev;
+  const isCur=v.v===s.version;
+  const d = cmpV ? renderDiff(cmpV.content, v.content, st.view) : null;
+  return '<nav class="crumbs"><a data-go="list">Skills</a>/<a data-go="detail">'+esc(s.name)+'</a>/<a data-go="detail">Version history</a>/<span>v'+v.v+'</span></nav>'+
+  '<section class="card card-pad"><div class="vd-head"><div>'+
+      '<div class="vd-title"><span class="mono">'+esc(s.name)+'</span><span class="ver-tag">v'+v.v+(isCur?' current':'')+'</span>'+sourceTag(v.source)+scopeBadge(s)+'</div>'+
+      '<dl class="kv"><dt>Reason</dt><dd>'+esc(v.reason)+'</dd><dt>Changed by</dt><dd>'+(v.by==='extractor'?'extractor · session <span class="mono">'+v.session+'</span>':esc(v.by))+'</dd>'+
+      '<dt>Approved by</dt><dd>'+approverText(v)+'</dd><dt>Time</dt><dd>'+v.date+' <span class="muted">(Asia/Saigon)</span></dd>'+
+      (v.source==='rollback'?'<dt>Restored from</dt><dd>v'+v.from+'</dd>':'')+'</dl></div>'+
+    '<div class="sd-actions"><button class="btn" data-go="detail">Back to history</button>'+
+      '<button class="btn primary" data-act="rollback:'+v.v+'" '+(isCur?'disabled title="This is the current version"':'')+'>Rollback to this version</button></div></div></section>'+
+  '<section class="card card-pad"><div class="sec-head"><span class="sec-title">What\'s improved in v'+v.v+'</span><span class="muted" style="font-size:11px">'+sumByText(v)+' · stored with this version</span></div>'+sumList(v.summary)+'</section>'+
+  '<section class="card card-pad"><div class="diff-bar"><span class="sec-title">Changes</span>'+
+      '<span class="f-label">Compare</span><span class="mono" style="font-size:12px">v'+v.v+'</span><span class="muted">with</span>'+
+      '<select class="sel-box" id="cmp" aria-label="Compare with version" style="min-width:170px">'+
+        vs.filter(x=>x.v!==v.v).map(x=>'<option value="'+x.v+'" '+(cmpV&&cmpV.v===x.v?'selected':'')+'>v'+x.v+(prev&&x.v===prev.v?' (previous)':'')+(x.v===s.version?' (current)':'')+'</option>').join('')+'</select>'+
+      '<div class="seg" style="margin-left:8px"><button class="'+(st.view==='unified'?'on':'')+'" data-act="view:unified">Unified</button><button class="'+(st.view==='side'?'on':'')+'" data-act="view:side">Side by side</button></div>'+
+      (d?d.stat:'')+'</div>'+
+    (d?d.html:'<div class="alert alert-info">'+I.info+'<span>v1 is the first version. Choose another version to compare.</span></div>')+
+  '</section>';
+}
+
+/* ---------- screen 3: dialogs ---------- */
+function rollbackDlg(target, tag){
+  const s=skillByName(st.selected), vs=versionsOf(s), t=vs.find(x=>x.v===target), next=s.version+1;
+  return '<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="rb-cap">'+(tag?'<span class="dlg-tag">Opened from “Rollback to this version”</span>':'')+
+    '<button class="dlg-x" data-act="close" aria-label="Close">'+I.close+'</button>'+
+    '<h3 class="dlg-cap" id="rb-cap">Rollback “'+esc(s.name)+'” to v'+target+'?</h3>'+
+    '<div class="dlg-body"><div class="ba"><div><small>Current</small>v'+s.version+' · '+SOURCE[vs[0].source]+'</div><span class="muted">→</span><div><small>New version</small>v'+next+' · Rollback</div></div>'+
+    '<div class="alert alert-info" style="margin-bottom:12px">'+I.info+'<span>Rollback creates a new version <b>v'+next+'</b> with the content of <b>v'+target+'</b>; history is kept. v'+(target+1)+'–v'+s.version+' stay in the version history.</span></div>'+
+    '<span class="label">Summary stored with v'+next+' (generated)</span>'+sumList([S('rst','Restored content of v'+target+' (rollback by admin)')])+
+    '<div class="field" style="margin-top:12px"><label class="label req" for="rb-reason">Reason</label><input class="input" id="rb-reason" value="Restore the testable pass/fail wording from v2"></div>'+
+    '<p class="muted" style="margin:0">Approved by: admin (you). The change applies now because you made it.</p></div>'+
+    '<div class="dlg-foot"><button class="btn primary" data-act="do-rollback:'+target+'">Rollback to v'+target+'</button><button class="btn" data-act="close">Cancel</button></div></div>';
+}
+function promoteDlg(tag){
+  const s=skillByName(st.selected);
+  return '<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="pr-cap">'+(tag?'<span class="dlg-tag">Opened from “Promote to Global”</span>':'')+
+    '<button class="dlg-x" data-act="close" aria-label="Close">'+I.close+'</button>'+
+    '<h3 class="dlg-cap" id="pr-cap">Promote “'+esc(s.name)+'” to Global?</h3>'+
+    '<div class="dlg-body"><div class="ba"><div><small>Now</small>Project · '+esc(s.project||'')+' · '+ORIGIN[s.origin]+'</div><span class="muted">→</span><div><small>After</small>Global · Manual · v'+(s.version+1)+' (Promotion)</div></div>'+
+    '<div class="alert alert-warn" style="margin-bottom:12px">'+I.warn+'<div><ul style="margin:0;padding-left:16px">'+
+      '<li>The skill becomes <b>global for all projects of this agent</b> (default-agent-admin), not only '+esc(s.project||'')+'.</li>'+
+      '<li>The extractor will <b>no longer edit it automatically</b>. You manage it from now on.</li>'+
+      '<li>Changes to global skills <b>need approval</b>: the extractor can only propose them (Panel or Claude Code form).</li>'+
+      '<li>Check the content for project-only paths or names before you promote.</li></ul></div></div>'+
+    '<label class="check"><input type="checkbox" id="pr-ok"> I checked that the content is valid for every project.</label></div>'+
+    '<div class="dlg-foot"><button class="btn primary" id="pr-btn" data-act="do-promote" disabled>Promote to Global</button><button class="btn" data-act="close">Cancel</button></div></div>';
+}
+function scrDialogs(){ return scrDetail(); }
+
+/* ---------- screen 4: proposals ---------- */
+function scrProposals(){
+  const pc=pendingCount();
+  return '<nav class="crumbs"><a data-go="list">Skills</a>/<span>Pending changes</span></nav>'+
+  '<section class="card card-pad"><div class="aph-main"><h2 class="aph-title">Pending changes to global skills</h2>'+
+    '<div class="aph-actions"><select class="sel-box" aria-label="Status"><option>All statuses</option><option>Pending</option><option>Stale</option></select><button class="btn" data-go="list">Back to Skills</button></div></div>'+
+    '<div class="aph-sub">'+pc+' pending · 1 stale · Proposed by the extractor. Project skills do not appear here: their changes apply automatically.</div></section>'+
+  '<section class="card card-pad">'+PROPOSALS.map(p=>{
+    const s=skillByName(p.skill), stale=p.status==='stale', done=p.status==='approved'||p.status==='rejected';
+    const stTag = stale?'<span class="tag tag-orange">Stale</span>':p.status==='pending'?'<span class="tag tag-blue">Pending</span>':p.status==='approved'?'<span class="tag tag-green">Approved</span>':'<span class="tag tag-red">Rejected</span>';
+    return '<article class="prop'+(stale?' stale':'')+(done?' done':'')+'"><div>'+
+      '<div class="prop-h"><span class="prop-name">'+esc(p.skill)+'</span>'+scopeBadge(s)+originChip(s.origin)+stTag+'</div>'+
+      '<div class="prop-meta"><span><b>Proposed by</b> extractor · session <span class="mono">'+p.session+'</span></span><span><b>Base version</b> v'+p.base+(stale?' <span style="color:var(--tea-color-text-warning-default)">(current v'+p.current+')</span>':' (current)')+'</span><span><b>Created</b> '+p.created+'</span></div>'+
+      '<div class="prop-reason"><span class="muted">Reason:</span> '+esc(p.reason)+'</div>'+
+      '<div style="margin-top:8px"><span class="label" style="margin:0">What this change brings (v'+p.base+' → proposed)</span>'+sumList(p.summary)+'</div></div>'+
+      '<div class="prop-acts">'+
+        '<button class="btn primary" data-act="approve:'+p.id+'" '+(p.status!=='pending'?'disabled':'')+'>Approve</button>'+
+        '<button class="btn" data-act="reject:'+p.id+'" '+(p.status!=='pending'?'disabled':'')+'>Reject</button>'+
+        '<button class="link" style="align-self:center;margin-top:2px" data-act="pd:'+p.id+'">View diff</button></div>'+
+      (stale?'<div class="prop-stale alert alert-warn">'+I.warn+'<span><b>Cannot apply.</b> The skill changed after this proposal (base v'+p.base+', now v'+p.current+'). Approving would overwrite a newer change, so Approve is disabled. The extractor can propose again from v'+p.current+'.</span></div>':'')+
+      (p.status==='approved'?'<div class="prop-stale alert alert-info">'+I.ok+'<span>Applied as v'+(p.base+1)+' · approved by admin · just now.</span></div>':'')+
+    '</article>';}).join('')+'</section>';
+}
+/* ---------- screen 4b: proposal detail (same layout as version detail) ---------- */
+function scrProposal(){
+  const p=PROPOSALS.find(x=>x.id===st.prop), s=skillByName(p.skill), stale=p.status==='stale';
+  const d=renderDiff(p.from,p.to,st.view);
+  return '<nav class="crumbs"><a data-go="list">Skills</a>/<a data-go="proposals">Pending changes</a>/<span>'+esc(p.skill)+' · proposal</span></nav>'+
+  '<section class="card card-pad"><div class="vd-head"><div>'+
+      '<div class="vd-title"><span class="mono">'+esc(p.skill)+'</span><span class="ver-tag">v'+p.base+' → proposed v'+(p.base+1)+'</span>'+(stale?'<span class="tag tag-orange">Stale</span>':'<span class="tag tag-blue">'+(p.status[0].toUpperCase()+p.status.slice(1))+'</span>')+scopeBadge(s)+'</div>'+
+      '<dl class="kv"><dt>Reason</dt><dd>'+esc(p.reason)+'</dd><dt>Proposed by</dt><dd>extractor · session <span class="mono">'+p.session+'</span></dd>'+
+      '<dt>Approver</dt><dd><span class="muted">Waiting · will be the signed-in user (admin)</span></dd><dt>Created</dt><dd>'+p.created+' <span class="muted">(Asia/Saigon)</span></dd>'+
+      '<dt>Base version</dt><dd>v'+p.base+(stale?' · current is v'+p.current:' · still current')+'</dd></dl></div>'+
+    '<div class="sd-actions"><button class="btn" data-go="proposals">Back to list</button>'+
+      '<button class="btn" data-act="reject:'+p.id+'" '+(p.status!=='pending'?'disabled':'')+'>Reject</button>'+
+      '<button class="btn primary" data-act="approve:'+p.id+'" '+(p.status!=='pending'?'disabled':'')+'>Approve</button></div></div></section>'+
+  '<section class="card card-pad"><div class="sec-head"><span class="sec-title">What this change brings</span><span class="muted" style="font-size:11px">Summary written by the extractor · stored with the proposal</span></div>'+sumList(p.summary)+'</section>'+
+  '<section class="card card-pad"><div class="diff-bar"><span class="sec-title">Changes</span><span class="f-label">Compare</span><span class="mono" style="font-size:12px">proposed</span><span class="muted">with</span><span class="mono" style="font-size:12px">v'+p.base+' (base)</span>'+
+    '<div class="seg" style="margin-left:8px"><button class="'+(st.view==='unified'?'on':'')+'" data-act="view:unified">Unified</button><button class="'+(st.view==='side'?'on':'')+'" data-act="view:side">Side by side</button></div>'+d.stat+'</div>'+d.html+'</section>';
+}
+
+/* ---------- screen 5: new skill ---------- */
+function newDlg(){
+  const proj=st.newScope==='project';
+  return '<div class="dlg" role="dialog" aria-modal="true" aria-labelledby="new-cap" style="width:620px">'+
+    '<button class="dlg-x" data-act="close" aria-label="Close">'+I.close+'</button><h3 class="dlg-cap" id="new-cap">New Skill</h3>'+
+    '<div class="dlg-body">'+
+      '<div class="field"><label class="label">Owner Agent</label><select class="sel-box" style="width:100%"><option>default-agent-admin（agt-f0bzvpye01）</option></select></div>'+
+      '<div class="field"><label class="label req" for="n-name">Name</label><input class="input mono" id="n-name" value="agent-memory-release-notes"></div>'+
+      '<div class="field"><label class="label req" for="n-desc">Description</label><input class="input" id="n-desc" value="Write release notes from merged PRs since the last tag."></div>'+
+      '<div class="field"><span class="label req">Scope</span><div class="radio-row">'+
+        '<label class="radio"><input type="radio" name="sc" value="global" '+(!proj?'checked':'')+' data-act="nscope:global"><span>Global<small>Injected into every session of this agent</small></span></label>'+
+        '<label class="radio"><input type="radio" name="sc" value="project" '+(proj?'checked':'')+' data-act="nscope:project"><span>Project<small>Injected only in sessions of the chosen project</small></span></label></div></div>'+
+      (proj?'<div class="field"><label class="label req" for="n-proj">Project</label><select class="sel-box" id="n-proj" style="width:100%;'+(st.newErr?'border-color:var(--tea-color-text-error-default)':'')+'"><option value="">Select a project</option>'+
+        PROJECTS.map(p=>'<option value="'+p.name+'" '+(st.newProject===p.name?'selected':'')+'>'+p.name+(p.local?' (local, no remote)':'')+'</option>').join('')+'</select>'+
+        (st.newErr?'<div class="err-text">Project is required when Scope is Project.</div>':'<div class="muted" style="font-size:11px;margin-top:4px">Projects come from sessions that the hook linked to a repo (owner/repo of origin, or the folder name).</div>')+'</div>':'')+
+      '<div class="field"><label class="label req" for="n-body">Content (SKILL.md)</label><textarea class="input" id="n-body" rows="7">'+esc(L(['# Release notes','','## Steps','1. List PRs merged since the last tag.','2. Group them as Features, Fixes, Chores.','3. Link each item to its PR.']))+'</textarea></div>'+
+      '<div class="alert alert-info">'+I.info+'<span>Automatic extraction only creates <b>project</b> skills. Global skills are created only by people, here or with “Promote to Global”.</span></div>'+
+    '</div><div class="dlg-foot"><button class="btn primary" data-act="create">Create</button><button class="btn" data-act="close">Cancel</button></div></div>';
+}
+function scrNew(){ return scrList(); }
+
+/* ---------- screen 6: Claude Code ---------- */
+function scrCC(){
+  const p=PROPOSALS[0];
+  const opts=[['Approve','Apply now as v3; you are recorded as approver'],['Reject','Discard this proposal'],['Later','Keep it pending; not asked again in this session'],['Type something.','']];
+  const sym={add:'+',chg:'~',del:'−'}, col={add:'t-gr',chg:'t-bl',del:'t-rd'};
+  const ans=st.ccAnswered==null?0:st.ccAnswered;
+  const after =
+    '<div style="margin-top:10px"><span class="t-wh">●</span> <span class="t-dim">User answered Claude\'s questions:</span><br>&nbsp;&nbsp;<span class="t-dim">⎿</span> · Apply suggested change to global skill `debug-flaky-tests`? → <span class="t-or">'+opts[ans][0]+'</span></div>'+
+    '<div style="margin-top:6px"><span class="t-dim">&nbsp;&nbsp;⎿</span> '+(ans===0?'<span class="t-gr">Memory Hub: debug-flaky-tests updated to v3 · approved by admin</span>':ans===1?'<span class="t-rd">Memory Hub: proposal rejected · debug-flaky-tests stays at v2</span>':ans===2?'<span class="t-dim">Memory Hub: kept pending · you will not be asked again in this session (also on Panel → Skills → Pending changes)</span>':'<span class="t-dim">Memory Hub: answer not recognized · proposal kept pending</span>')+'</div>'+
+    '<div style="margin-top:10px" class="t-dim">— continuing with your original prompt —</div>'+
+    '<div style="margin-top:6px"><span class="t-or">&gt;</span> fix the flaky upload test in MemoryCore</div>'+
+    '<div style="margin-top:6px"><span class="t-wh">●</span> I\'ll start by re-running <span class="t-bl">upload.test.ts</span> in isolation'+(ans===0?' with a pinned seed, as the updated skill says.':'.')+'</div>'+
+    '<div><span class="t-dim">&nbsp;&nbsp;⎿</span> <span class="t-gr">Bash</span>(npx vitest run src/upload.test.ts'+(ans===0?' --sequence.seed=1234':'')+' --repeat 20)</div>';
+  return '<nav class="crumbs"><span>Claude Code session preview</span><span class="muted">· rendered by Claude Code; the form comes from MemoryProxy</span></nav>'+
+  '<div class="term-wrap">'+
+  '<div class="cc-switch"><b style="color:var(--tea-color-text-primary)">Request 1</b><span>· proxy answers the main request with the AskUserQuestion form (click an option or use ↑/↓)</span></div>'+
+  '<div class="term" role="img" aria-label="Claude Code terminal showing the skill approval question"><div class="term-bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span class="t">claude — ~/work/Agent-Memory — main request</span></div><div class="term-body">'+
+    '<div><span class="t-or">✻</span> <span class="t-wh t-b">Welcome to Claude Code</span> <span class="t-dim">· cwd ~/work/Agent-Memory · project kevinle128/agent-memory</span></div>'+
+    '<div style="margin-top:10px"><span class="t-or">&gt;</span> fix the flaky upload test in MemoryCore</div>'+
+    '<div style="margin-top:10px"><span class="t-wh">●</span> <span class="t-b">User questions</span> <span class="t-dim">(AskUserQuestion)</span></div>'+
+    ('<div class="t-box"><div class="t-tabs"><span>←</span><span class="on">☐ Skill review</span><span>✔ Submit</span><span>→</span></div>'+
+      '<div class="t-wh t-b">Memory Hub · suggested change to a global skill</div>'+
+      '<div style="margin-top:6px" class="t-wh">Apply suggested change to global skill <span class="t-bl">`debug-flaky-tests`</span>?</div>'+
+      '<div class="t-dim" style="margin-top:4px">Reason: '+esc(p.reason)+'</div>'+
+      '<div class="t-dim">Proposed by extractor · session '+p.session+' · base v2 → v3 · +2 −2 lines</div>'+
+      '<div style="margin-top:6px">What this change brings:</div>'+
+      p.summary.map(x=>'<div>&nbsp;&nbsp;<span class="'+col[x.k]+' t-b">'+sym[x.k]+'</span> '+esc(x.t)+'</div>').join('')+
+      '<div style="margin-top:8px">'+opts.map((o,i)=>'<div class="t-opt'+(st.cc===i?' on':'')+'" data-act="ccsel:'+i+'"><span class="cur">'+(st.cc===i?'❯':'')+'</span><span class="lbl">'+(i+1)+'. '+o[0]+'</span>'+(o[1]?'<span class="desc">'+o[1]+'</span>':'')+'</div>').join('')+'</div>'+
+      '<div class="t-dim" style="margin-top:8px">Enter to select · ↑/↓ to navigate · Esc to cancel</div></div>')+
+  '</div></div>'+
+  '<div class="cc-switch" style="margin-top:4px"><b style="color:var(--tea-color-text-primary)">Request 2</b><span>· next request carries the answer; proxy calls Core, then forwards the original prompt. Preview answer:</span><div class="seg">'+['Approve','Reject','Later','Other (unreadable)'].map((t,i)=>'<button class="'+(ans===i?'on':'')+'" data-act="cc:'+i+'">'+t+'</button>').join('')+'</div></div>'+
+  '<div class="term" role="img" aria-label="Claude Code terminal after the answer"><div class="term-bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span class="t">claude — ~/work/Agent-Memory — main request</span></div><div class="term-body">'+
+    '<div class="t-dim">… form above answered</div>'+
+    after+
+    '<div class="t-prompt">&gt; <span class="t-dim"></span></div>'+
+    '<div class="t-dim" style="font-size:11px;margin-top:4px">&nbsp;? for shortcuts</div>'+
+  '</div></div></div>';
+}
+
+/* ---------- annotations (Vietnamese) ---------- */
+const SUMMARY_NOTE='Tóm tắt "What\'s improved" được tạo lúc sửa và lưu cùng phiên bản (bộ trích xuất bắt buộc ghi; sửa tay thì người dùng nhập hoặc hệ thống tạo), không tính lại mỗi lần xem.';
+const NOTES={
+  list:['Màn hình 1 · Danh sách skill',[
+    'Nhãn <code>Global</code>: skill toàn cục, inject vào mọi session của agent. Nhãn <code>Project · owner/repo</code>: chỉ inject khi session đang làm đúng dự án đó (dự án lấy từ báo cáo của hook). Không biết dự án thì session chỉ nhận skill toàn cục.',
+    'Origin: <code>Extracted</code> do bộ trích xuất tạo, luôn là skill dự án; <code>Manual</code> do người dùng tạo hoặc đã chuyển thành toàn cục; <code>Template</code> là skill mẫu (code-review, unit-test, api-docs).',
+    'Repo không có remote hiện bằng tên thư mục gốc, ví dụ <code>operator-master</code> (local, no remote). Fork và repo gốc là hai dự án riêng.',
+    'Nút "2 pending changes" đếm đề xuất sửa skill toàn cục đang chờ duyệt (không đếm đề xuất Stale); bấm để mở màn hình 4.']],
+  detail:['Màn hình 2 · Chi tiết và lịch sử phiên bản',[
+    'Skill dự án: thay đổi của bộ trích xuất được tự áp dụng, cột Approved by ghi <code>system (auto-applied)</code>. Sửa tay, rollback, chuyển thành toàn cục: áp dụng ngay, người duyệt là chính người thao tác.',
+    SUMMARY_NOTE,
+    'Danh sách lịch sử không hiện diff. Bấm một dòng (hoặc "View details") để mở chi tiết phiên bản, ở đó mới có diff và nút rollback.',
+    'Rollback không xóa lịch sử: tạo phiên bản mới chép nội dung phiên bản cũ. Ví dụ v3 là rollback về nội dung v1, v2 vẫn còn.']],
+  version:['Chi tiết phiên bản (mở từ màn hình 2)',[
+    'Phần đầu: phiên bản, nguồn sửa, lý do, người sửa, người duyệt, thời điểm (Asia/Saigon).',
+    'Tóm tắt nằm trên diff để đọc nhanh trước khi xem từng dòng. '+SUMMARY_NOTE,
+    'Diff mặc định so với phiên bản liền trước; chọn được phiên bản khác ở ô "Compare with". Dòng thêm màu xanh, dòng xóa màu đỏ.',
+    'Không rollback về phiên bản hiện tại (nút bị tắt).']],
+  dialogs:['Màn hình 3 · Xác nhận Rollback và Promote',[
+    'Rollback về v2 tạo <code>v5</code> với nội dung của v2; v3 và v4 vẫn nằm trong lịch sử. Nguồn: <code>Rollback</code>, tóm tắt do hệ thống tạo: "Restored content of v2 (rollback by admin)".',
+    'Promote to Global: <code>scope = global</code>, <code>origin = manual</code>, ghi một phiên bản nguồn <code>Promotion</code>. Skill được inject cho mọi dự án của agent.',
+    'Sau khi promote, bộ trích xuất không tự sửa nữa; nó chỉ được đề xuất và đề xuất phải được duyệt (Panel hoặc form trong Claude Code).',
+    'Hai hộp thoại hiện cùng lúc chỉ để xem mockup; trong sản phẩm mỗi lần mở một hộp.']],
+  proposals:['Màn hình 4 · Đề xuất chờ duyệt (skill toàn cục)',[
+    'Chỉ skill toàn cục có đề xuất chờ duyệt. Đề xuất cho skill dự án được áp dụng ngay nên không xuất hiện ở đây.',
+    'Mỗi đề xuất có lý do và tóm tắt "What this change brings" để người dùng biết thay đổi mang lại gì trước khi duyệt.',
+    'Đề xuất ghi <code>base_version</code>. Lúc duyệt, nếu phiên bản hiện tại khác base thì chuyển <code>Stale</code> và không áp dụng (khóa lạc quan), tránh ghi đè thay đổi mới hơn.',
+    'Panel dùng cùng API duyệt/từ chối của Core với proxy, cho client không có <code>AskUserQuestion</code>. Người duyệt lấy từ phiên đăng nhập. "View diff" mở cùng bố cục với chi tiết phiên bản.']],
+  proposal:['Chi tiết đề xuất (mở từ "View diff")',[
+    'Cùng bố cục với chi tiết phiên bản: phần đầu, tóm tắt, rồi diff giữa base và nội dung đề xuất.',
+    'Duyệt tạo phiên bản mới (ví dụ v3), nguồn <code>Extracted</code>, người duyệt là user đang đăng nhập. Từ chối giữ nguyên skill.',
+    'Tóm tắt do bộ trích xuất ghi lúc tạo đề xuất và được chép sang phiên bản khi duyệt.']],
+  new:['Màn hình 5 · Tạo skill mới',[
+    'Chọn phạm vi Global hoặc Project. Chọn Project thì bắt buộc chọn dự án; bấm Create khi chưa chọn sẽ báo lỗi.',
+    'Trích xuất tự động chỉ tạo skill dự án; hệ thống không bao giờ tự tạo skill toàn cục.',
+    'Danh sách dự án do Core cung cấp từ dữ liệu đã gắn dự án (hash và tên <code>owner/repo</code>).',
+    'Trùng tên với skill ở phạm vi khác thì Core trả mã lỗi riêng.']],
+  cc:['Màn hình 6 · Form duyệt trong Claude Code',[
+    'Proxy chỉ hỏi ở request <code>main</code> của Claude Code có tool <code>AskUserQuestion</code>; không hỏi ở fork, subagent, request phụ, hoặc khi đang có form khác (khởi tạo session).',
+    'Mỗi lần hỏi một đề xuất, có lý do và tóm tắt thay đổi; có giới hạn tần suất. Lựa chọn "Type something." là ô "Other" có sẵn của Claude Code; câu trả lời không đọc được thì giữ pending.',
+    '"Later" giữ pending và không hỏi lại trong session; vẫn duyệt được trên Panel.',
+    'Sau khi trả lời, proxy chuyển tiếp nguyên prompt gốc của người dùng. Request 2 minh họa từng nhánh (Approve, Reject, Later, Other); "Other" không đọc được thì giữ pending.']],
+};
+const SCREEN_GROUP={list:'list',detail:'detail',version:'detail',dialogs:'dialogs',proposals:'proposals',proposal:'proposals',new:'new',cc:'cc'};
+
+/* ---------- render ---------- */
+function render(){
+  const page=document.getElementById('page'), ov=document.getElementById('overlay');
+  ov.innerHTML='';
+  const scr=st.screen;
+  page.innerHTML = ({list:scrList,detail:scrDetail,version:scrVersion,dialogs:scrDialogs,proposals:scrProposals,proposal:scrProposal,new:scrNew,cc:scrCC})[scr]();
+  if (scr==='dialogs') ov.innerHTML='<div class="mask">'+rollbackDlg(2,true)+promoteDlg(true)+'</div>';
+  if (scr==='new') ov.innerHTML='<div class="mask">'+newDlg()+'</div>';
+  document.querySelectorAll('.mock-strip button[data-go]').forEach(b=>b.classList.toggle('on',b.dataset.go===SCREEN_GROUP[scr]));
+  const n=NOTES[scr]; document.getElementById('notes-title').textContent='Ghi chú · '+n[0];
+  document.getElementById('notes-body').innerHTML='<ol>'+n[1].map(x=>'<li>'+x+'</li>').join('')+'</ol><div class="notes-foot">Mockup tĩnh theo plan 261024-0756-project-scoped-skills (Giai đoạn 4b, 5). Dữ liệu là mẫu.</div>';
+  bindInputs();
+}
+function go(screen){
+  st.screen=screen;
+  const h = screen==='version'?'version:'+st.vd : screen==='proposal'?'proposal:'+st.prop : screen;
+  if (location.hash.slice(1)!==h) history.replaceState(null,'','#'+h);
+  render();
+  document.querySelector('.cbody').scrollTop=0;
+}
+function fromHash(){
+  const h=decodeURIComponent(location.hash.slice(1)||'list');
+  const [k,arg]=h.split(':');
+  if (k==='version'){ st.vd=+arg||4; st.cmp=null; }
+  if (k==='proposal'){ st.prop=arg||'p1'; }
+  if (k==='detail'||k==='dialogs'||k==='version') st.selected='paseo-computer-use-gating';
+  st.screen = NOTES[k]?k:'list';
+  render();
+}
+function toast(html){ const t=document.getElementById('toast'); t.innerHTML=html; t.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),2600); }
+function bindInputs(){
+  const fp=document.getElementById('f-project'); if(fp) fp.onchange=e=>{st.project=e.target.value;render();};
+  const fo=document.getElementById('f-origin'); if(fo) fo.onchange=e=>{st.origin=e.target.value;render();};
+  const fq=document.getElementById('f-q'); if(fq) fq.oninput=e=>{st.q=e.target.value;const pos=e.target.selectionStart;render();const n=document.getElementById('f-q');n.focus();n.setSelectionRange(pos,pos);};
+  const cmp=document.getElementById('cmp'); if(cmp) cmp.onchange=e=>{st.cmp=+e.target.value;render();};
+  const np=document.getElementById('n-proj'); if(np) np.onchange=e=>{st.newProject=e.target.value;st.newErr=false;render();};
+  const pr=document.getElementById('pr-ok'); if(pr) pr.onchange=e=>{document.getElementById('pr-btn').disabled=!e.target.checked;};
+}
+document.addEventListener('click',e=>{
+  const g=e.target.closest('[data-go]'); if(g){ e.preventDefault(); go(g.dataset.go); return; }
+  const a=e.target.closest('[data-act]'); if(!a) return;
+  const [k,v]=a.dataset.act.split(':');
+  const ov=document.getElementById('overlay');
+  switch(k){
+    case 'tab': st.tab=v; render(); break;
+    case 'scope': st.scope=v; if(v==='global') st.project=''; render(); break;
+    case 'pick': st.selected=v; go(st.screen==='list'?'list':'detail'); break;
+    case 'vd': e.stopPropagation(); st.vd=+v; st.cmp=null; go('version'); break;
+    case 'expand': e.stopPropagation(); { const td=document.getElementById('sum-'+v); td.classList.toggle('open'); a.textContent=td.classList.contains('open')?'Show less':'Show all'; } break;
+    case 'view': st.view=v; render(); break;
+    case 'rollback': e.stopPropagation(); ov.innerHTML='<div class="mask">'+rollbackDlg(+v,false)+'</div>'; bindInputs(); break;
+    case 'promote': ov.innerHTML='<div class="mask">'+promoteDlg(false)+'</div>'; bindInputs(); break;
+    case 'new': go('new'); break;
+    case 'import': case 'export': toast(I.info+'<span>Existing action, unchanged by this plan.</span>'); break;
+    case 'close': ov.innerHTML=''; if(st.screen==='dialogs') go('detail'); if(st.screen==='new') go('list'); break;
+    case 'do-rollback': ov.innerHTML=''; toast(I.ok+'<span>Created v5 with the content of v'+v+'. History is kept.</span>'); if(st.screen==='dialogs') go('detail'); break;
+    case 'do-promote': ov.innerHTML=''; toast(I.ok+'<span>Promoted to Global as v5 (Promotion). Origin is now Manual.</span>'); if(st.screen==='dialogs') go('detail'); break;
+    case 'nscope': st.newScope=v; st.newErr=false; render(); break;
+    case 'create': if(st.newScope==='project'&&!st.newProject){ st.newErr=true; render(); } else { toast(I.ok+'<span>Skill created as '+(st.newScope==='global'?'Global':'Project · '+esc(st.newProject))+' · v1 (Manual).</span>'); go('list'); } break;
+    case 'approve': case 'reject': { const p=PROPOSALS.find(x=>x.id===v); p.status=k==='approve'?'approved':'rejected'; toast((k==='approve'?I.ok+'<span>Approved · '+p.skill+' is now v'+(p.base+1)+' · approved by admin</span>':I.info+'<span>Rejected · '+p.skill+' stays at v'+p.base+'</span>')); render(); } break;
+    case 'pd': st.prop=v; go('proposal'); break;
+    case 'ccsel': st.cc=+v; st.ccAnswered=+v; render(); break;
+    case 'cc': st.ccAnswered=+v; st.cc=+v; render(); break;
+  }
+});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Enter'){ const r=e.target.closest&&e.target.closest('tbody.vrow'); if(r){ r.click(); } }
+  if(st.screen==='cc'){
+    if(e.key==='ArrowDown'){st.cc=Math.min(3,st.cc+1);st.ccAnswered=st.cc;render();} if(e.key==='ArrowUp'){st.cc=Math.max(0,st.cc-1);st.ccAnswered=st.cc;render();}
+  }
+  if(e.key==='Escape'){ document.getElementById('overlay').innerHTML=''; }
+});
+document.getElementById('notes-toggle').onclick=()=>{
+  st.notesOpen=!st.notesOpen; const n=document.getElementById('notes'), b=document.getElementById('notes-toggle');
+  n.classList.toggle('collapsed',!st.notesOpen); b.innerHTML=st.notesOpen?'&rsaquo;':'&lsaquo;'; b.setAttribute('aria-expanded',st.notesOpen);
+  b.setAttribute('aria-label',st.notesOpen?'Collapse annotations':'Expand annotations');
+};
+window.addEventListener('hashchange',fromHash);
+renderShell(); fromHash();
+</script>
+</body>
+</html>
