@@ -25,3 +25,17 @@
   - Test: Core 829/829, Proxy 501/501, tsc sạch. E2E local (`MemoryCore/scripts/qa/skill-project-read-e2e.sh`): 7/7, gồm hai phiên Claude Code thật (repo dự án A nhận skill toàn cục và skill dự án A; ngoài git chỉ nhận skill toàn cục; skill dự án B không xuất hiện ở listing, search, get, inject). E2E các giai đoạn trước: 5/5, 10/10, 2/2.
   - Review độc lập: không có lỗi chặn với cấu hình mặc định. Đã sửa: đường `selection` (khi bật) và `versions` cũng lọc theo dự án; Proxy từ chối `files/read`, `files/download`, `versions` khi Core cũ không trả lại phạm vi; ghi theo id vào skill của dự án khác bị từ chối; bridge bỏ `source_session_id` do model gửi; cảnh báo khi quét quá 5000 skill.
   - Production dùng giá trị mặc định (`selection` tắt, `allowLlmWrite` tắt, `profileScopeMode` scoped), đã kiểm tra trong `/data/config.yaml` của proxy.
+- Giai đoạn 5 (giao diện Hub): Core `cdec2046` (route `promote`, `settings`), Hub `e84be0a5`.
+  - E2E trên trình duyệt thật (`MemoryPanel/scripts/qa/hub-skills-e2e.mjs`, Playwright, Core local có dữ liệu thật): nhãn và bộ lọc; danh sách đề xuất, duyệt áp dụng ngay (v2), Stale chỉ có Từ chối; màn Version history, so sánh, hộp rollback bắt nhập lý do; Promote to Global (thành v2 toàn cục); New Skill báo cả hai lỗi. Sửa thêm 5 điểm sau lần chạy đầu (số phiên bản ở danh sách, lịch sử bị cắt, tên người dùng, nút duyệt ở trang chi tiết đề xuất, lỗi thiếu dự án). Panel 147/147, Core 832/832.
+- Deploy production (Proxy, rồi Core, rồi Hub; bản `e84be0a`, Core sau đó `1cc3073`):
+  - Sao lưu trước khi ghi: `~/backups/agent-memory-core-data-20261024-132714-before-project-skills.tgz` (kiểm tra mở được, 368 dòng skill, `quick_check ok`). Chạy migration trên bản sao trước: 59 ms, chạy lại không lỗi.
+  - Core: migration thêm cột skill thành công; không có lỗi, không có 401.
+  - Hai phiên Claude Code thật trên production: ngoài git `project=none`; trong repo `kevinle128/agent-memory` (`db73c988534bc1c8`).
+- Giai đoạn 7 (dữ liệu production), tôi tự làm trong session chính:
+  - Sao lưu lần hai ngay trước khi ghi: `~/backups/agent-memory-core-data-20261024-135128-before-legacy-skill-cleanup.tgz` (kiểm tra mở được).
+  - Script `MemoryCore/scripts/ops/clean-legacy-skills.mjs` (qua API Core, lô 10, kiểm tra sức khỏe sau mỗi lô, dừng khi lỗi hoặc một lệnh quá 2 giây, chạy lại an toàn). Chạy thử trên Core local dùng bản sao dữ liệu production: 145 lệnh, chậm nhất 71 ms; chạy lại là không làm gì.
+  - Lần chạy production đầu dừng ngay ở lệnh `mark-template` vì Core production chưa có route này (tôi thêm sau khi deploy). Chỉ một template đã được khôi phục, không có gì bị xóa. Đã deploy Core `1cc3073` rồi chạy lại.
+  - Kết quả: khôi phục 1 template bị bộ trích xuất sửa (`code-review` của `agt-i8qeikc0ee`, về nội dung gốc 925 ký tự); đánh dấu 18 template là `global/template`; xóa 126 skill trích xuất cũ (con số trong plan là 112; đã tăng do trích xuất ngày 23-24). 144 lệnh, chậm nhất 170 ms, không có 401, Core healthy, token đã xóa khỏi container.
+  - Trạng thái cuối: 18 skill, đều `global/template`; 18 asset.
+  - Kiểm chứng trên production (log proxy và Langfuse): phiên ngoài git không có khối dự án, không có skill; phiên trong repo có khối dự án gắn nhãn `kevinle128/agent-memory`, không có skill (agent chính chưa có skill dự án). Không phiên nào thấy skill của dự án khác.
+  - Ghi nhận: `source_type` của asset template vẫn là `extracted` (Hub đọc `origin` của skill nên giao diện đúng).
