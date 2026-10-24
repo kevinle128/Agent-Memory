@@ -80,7 +80,9 @@ ok()  { echo "PASS $1"; pass=$((pass + 1)); }
 bad() { echo "FAIL $1"; fail=$((fail + 1)); }
 
 # Proxy log lines written since the given line count.
-log_since() { tail -n +"$(($1 + 1))" "$PROXY_LOG"; }
+# `|| true`: a reader such as `grep -q` may stop early; the SIGPIPE of tail
+# must not fail the pipeline under pipefail.
+log_since() { tail -n +"$(($1 + 1))" "$PROXY_LOG" || true; }
 
 l0_project() {
   docker exec "$MONGO_CONTAINER" mongosh --quiet tdai_memory --eval \

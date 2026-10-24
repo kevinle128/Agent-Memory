@@ -77,7 +77,9 @@ wait_pane() {
 }
 
 # Proxy log lines written since the line count in $1.
-log_since() { tail -n +"$(($1 + 1))" "$PROXY_LOG"; }
+# `|| true`: a reader such as `grep -q` may stop early; the SIGPIPE of tail
+# must not fail the pipeline under pipefail.
+log_since() { tail -n +"$(($1 + 1))" "$PROXY_LOG" || true; }
 log_mark() { wc -l < "$PROXY_LOG"; }
 # wait_log MARK REGEX SECONDS: wait until a proxy log line since MARK matches REGEX.
 wait_log() {
@@ -287,8 +289,8 @@ tmux kill-session -t "$S" 2>/dev/null
 make_omp_home e
 M="$(log_mark)"
 (cd "$WORK/e/proj" && env $(omp_env e) timeout 90 omp -p --model "am-proxy/$OMP_MODEL" "$QUESTION" </dev/null >/dev/null 2>&1)
-sleep 1
-log_since "$M" | grep -q 'FORWARD upstream=.*chat/completions' && ok "O2 omp -p reached the upstream" || bad "O2 omp -p request not forwarded"
+# A remote proxy log can arrive late, so wait for the line instead of reading once.
+wait_log "$M" 'FORWARD upstream=.*chat/completions' 20 && ok "O2 omp -p reached the upstream" || bad "O2 omp -p request not forwarded"
 [[ "$(log_since "$M" | grep -c 'agent=pi answered locally')" -eq 0 ]] && ok "O2 omp -p not gated" || bad "O2 omp -p gated"
 [[ ! -e "$WORK/e/home/.omp/agent/extensions/agent-memory.ts" ]] && ok "O2 omp -p did not install the extension" || bad "O2 extension was installed"
 
