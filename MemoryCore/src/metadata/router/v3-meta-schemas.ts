@@ -523,6 +523,25 @@ export const supportedAgentsSchema = z.object({}).catchall(z.unknown());
 
 export const instanceUpstreamInternalListSchema = z.object({}).catchall(z.unknown());
 
+// Source fields share one shape on create and update. Rule checks (name format, formats, agents)
+// live in the service so each failure has its own error code.
+const sourceModelEntrySchema = z.object({
+  id: z.string().min(1),
+  display_name: z.string(),
+  enabled: z.boolean(),
+  available: z.boolean(),
+  first_seen_at: z.string(),
+  last_seen_at: z.string(),
+});
+const upstreamSourceFields = {
+  source_name: z.string().optional(),
+  source_provider: z.string().optional(),
+  source_formats: z.array(z.string()).optional(),
+  source_agents: z.array(z.string().min(1)).optional(),
+  source_enabled: z.boolean().optional(),
+  source_models: z.array(sourceModelEntrySchema).optional(),
+};
+
 // ── B 类:conversation groups ──
 
 /** B1 groups/list */
@@ -532,13 +551,15 @@ export const upstreamGroupsListSchema = z.object({}).catchall(z.unknown());
 export const upstreamGroupsCreateSchema = z.object({
   group_type: z.literal("custom"),
   name: z.string().min(1),
-  agents: z.array(z.string().min(1)).min(1),
+  // May be empty for a group that only serves as a model source; the service checks that case.
+  agents: z.array(z.string().min(1)),
   enabled: z.boolean().optional(),
   mode: z.enum(["custom_unified", "custom_passthrough"]),
   base_url: z.string().min(1),
   api_key: z.string().optional(),
   model_id: z.string().optional(),
   description: z.string().optional(),
+  ...upstreamSourceFields,
 });
 
 /** B3 groups/update: PATCH; default 只能改 agents/enabled(其他字段传值 → immutable error) */
@@ -554,6 +575,28 @@ export const upstreamGroupsUpdateSchema = z.object({
   api_key: z.string().optional(),
   model_id: z.string().optional(),
   description: z.string().optional(),
+  ...upstreamSourceFields,
+});
+
+/** groups/view: key-free group list for any signed-in user */
+export const upstreamGroupsViewSchema = z.object({}).catchall(z.unknown());
+
+/** groups/suggest-source-name */
+export const upstreamSuggestSourceNameSchema = z.object({
+  kind: z.enum(["subscription", "api"]),
+  provider: z.string(),
+});
+
+/** groups/source-models/update: tick models on or off */
+export const upstreamSourceModelsUpdateSchema = z.object({
+  group_id: z.string().min(1),
+  models: z.array(z.object({ id: z.string().min(1), enabled: z.boolean() })).min(1),
+  expected_version: z.number().int().nonnegative().optional(),
+});
+
+/** groups/source-refresh */
+export const upstreamSourceRefreshSchema = z.object({
+  group_id: z.string().min(1),
 });
 
 /** B4 groups/toggle */
@@ -666,6 +709,10 @@ export const V3_SCHEMAS = {
   "/v3/meta/instance-upstream/groups/update": upstreamGroupsUpdateSchema,
   "/v3/meta/instance-upstream/groups/toggle": upstreamGroupsToggleSchema,
   "/v3/meta/instance-upstream/groups/delete": upstreamGroupsDeleteSchema,
+  "/v3/meta/instance-upstream/groups/view": upstreamGroupsViewSchema,
+  "/v3/meta/instance-upstream/groups/suggest-source-name": upstreamSuggestSourceNameSchema,
+  "/v3/meta/instance-upstream/groups/source-models/update": upstreamSourceModelsUpdateSchema,
+  "/v3/meta/instance-upstream/groups/source-refresh": upstreamSourceRefreshSchema,
   "/v3/meta/instance-upstream/extraction/get": upstreamExtractionGetSchema,
   "/v3/meta/instance-upstream/extraction/create": upstreamExtractionCreateSchema,
   "/v3/meta/instance-upstream/extraction/update": upstreamExtractionUpdateSchema,

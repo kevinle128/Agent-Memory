@@ -8,6 +8,7 @@ import { MongoClient } from "mongodb";
 import type { MongoMemoryServer } from "mongodb-memory-server";
 import { MongoMetadataStore } from "./mongodb-adapter.js";
 import { runMetadataStoreContract } from "./metadata-store.contract.js";
+import { runModelSourceServiceContract } from "./model-source.service.contract.js";
 
 function findMongod(): string | null {
   if (process.env.MONGOMS_SYSTEM_BINARY) return process.env.MONGOMS_SYSTEM_BINARY;
@@ -47,6 +48,20 @@ if (!mongodPath) {
       dbSeq += 1;
       // A standalone server has no transactions, so the store runs without them.
       return new MongoMetadataStore(client, `meta_store_${dbSeq}`, {
+        useTransactions: false,
+        ownsClient: false,
+      });
+    },
+    async (store) => {
+      await store.close();
+    },
+  );
+
+  runModelSourceServiceContract(
+    "mongodb",
+    async () => {
+      dbSeq += 1;
+      return new MongoMetadataStore(client, `meta_source_${dbSeq}`, {
         useTransactions: false,
         ownsClient: false,
       });

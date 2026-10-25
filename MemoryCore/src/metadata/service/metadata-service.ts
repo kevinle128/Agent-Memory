@@ -35,6 +35,13 @@ import {
   type MemorySystemUserConfig,
 } from "../system-user.js";
 import { resolveUserId } from "./resolve-user-id.js";
+import {
+  SourceRuleError,
+  resolveSourceWrite,
+  sentSourceKeys,
+  suggestSourceName,
+  type SourceInput,
+} from "./model-source-rules.js";
 import type { V3AuthContext } from "../router/auth.js";
 import { DEFAULT_INSTANCE_ID, DEFAULT_AUTH_PROVIDER } from "../constants.js";
 import {
@@ -2337,6 +2344,20 @@ export class MetadataService {
     };
   }
 
+  /** Source part of a pool group for the status view. `source_active` follows the pool switch. */
+  private toPoolSourceView(group: InstanceUpstreamConfigEntity): Record<string, unknown> {
+    return {
+      source_name: group.source_name,
+      source_provider: group.source_provider,
+      source_formats: group.source_formats,
+      source_agents: group.source_agents,
+      source_models: group.source_models,
+      source_models_fetched_at: group.source_models_fetched_at,
+      source_models_error: group.source_models_error,
+      source_active: Boolean(group.source_name) && group.enabled,
+    };
+  }
+
   private subscriptionPoolName(provider: SubscriptionProvider): string {
     return `${provider} subscription pool`;
   }
@@ -2388,6 +2409,7 @@ export class MetadataService {
             active_sessions: rows.reduce((n, a) => n + a.active_sessions, 0),
             earliest_reset,
           },
+          source: group ? this.toPoolSourceView(group) : null,
         };
       }),
     };
@@ -2756,12 +2778,21 @@ export class MetadataService {
       api_key?: string;
       model_id?: string;
       description?: string;
-    },
+    } & SourceInput,
     supportedAgents: SupportedAgent[],
   ): Promise<Record<string, unknown>> {
     this.assertGroupName(input.name);
-    this.assertAgents(input.agents, supportedAgents, "custom");
     this.assertModeForGroupType("custom", input.mode);
+    const source = await this.resolveGroupSource({
+      groupType: "custom",
+      mode: input.mode,
+      name: input.name.trim(),
+      agents: input.agents,
+      modelId: input.model_id ?? "",
+      input,
+      supportedAgents,
+    });
+    this.assertAgents(input.agents, supportedAgents, "custom", source.servesSourceAgents);
     if (input.mode === "subscription_pool") {
       if (input.base_url?.trim() || input.api_key?.trim()) {
         throw new MetadataError("POOL_REJECTS_UPSTREAM_CREDENTIALS", "a subscription pool group has no base_url or api_key");
@@ -2786,6 +2817,7 @@ export class MetadataService {
         api_key: input.api_key ?? "",
         model_id: input.model_id ?? "",
         description: input.description ?? "",
+        ...source.patch,
       });
       return this.toPublicGroup(row);
     } catch (e) {
@@ -2807,15 +2839,25 @@ export class MetadataService {
       model_id?: string;
       description?: string;
       expected_version?: number;
-    },
+    } & SourceInput,
     supportedAgents: SupportedAgent[],
   ): Promise<Record<string, unknown>> {
     if (input.group_type === "extraction") {
       throw new MetadataError("USE_EXTRACTION_ENDPOINT", "use /extraction/update for extraction row");
     }
+    let sourcePatch: SourceInput = {};
 
     // default 组的 immutable 字段守卫
     if (input.group_type === "default") {
+      await this.resolveGroupSource({
+        groupType: "default",
+        mode: "official",
+        name: "",
+        agents: input.agents ?? [],
+        modelId: "",
+        input,
+        supportedAgents,
+      });
       const rejected: string[] = [];
       if (input.name !== undefined) rejected.push("name");
       if (input.mode !== undefined) rejected.push("mode");
@@ -2835,10 +2877,29 @@ export class MetadataService {
     // custom 组字段校验(仅在传入时才校验)
     if (input.group_type === "custom") {
       if (input.name !== undefined) this.assertGroupName(input.name);
-      if (input.agents !== undefined) this.assertAgents(input.agents, supportedAgents, "custom");
       if (input.mode !== undefined) this.assertModeForGroupType("custom", input.mode);
       const existing = await this.store.getInstanceUpstreamGroup(input.group_id);
       const mode = input.mode ?? existing?.mode;
+      if (existing && mode) {
+        const agents = input.agents ?? existing.agents;
+        const source = await this.resolveGroupSource({
+          groupType: "custom",
+          mode,
+          existing,
+          name: (input.name?.trim() ?? existing.name),
+          agents,
+          modelId: input.model_id ?? existing.model_id,
+          input,
+          supportedAgents,
+        });
+        sourcePatch = source.patch;
+        // A pool legitimately has no agents while it is off, so only an agents change is checked there.
+        if (input.agents !== undefined || (mode !== "subscription_pool" && sentSourceKeys(input).length > 0)) {
+          this.assertAgents(agents, supportedAgents, "custom", source.servesSourceAgents);
+        }
+      } else if (input.agents !== undefined) {
+        this.assertAgents(input.agents, supportedAgents, "custom");
+      }
       if (mode === "subscription_pool") {
         const baseUrl = input.base_url !== undefined ? input.base_url : existing?.base_url ?? "";
         const apiKey = input.api_key !== undefined ? input.api_key : existing?.api_key ?? "";
@@ -2865,6 +2926,7 @@ export class MetadataService {
         api_key: input.api_key,
         model_id: input.model_id,
         description: input.description,
+        ...sourcePatch,
       });
       return this.toPublicGroup(row);
     } catch (e) {
@@ -3077,6 +3139,111 @@ export class MetadataService {
     return { deleted: ok };
   }
 
+  // ── Model sources ────────────────────────────────────────────────────
+
+  /** Check the source fields of a group write and return the fields to store. */
+  private async resolveGroupSource(params: {
+    groupType: GroupType;
+    mode: UpstreamMode;
+    existing?: InstanceUpstreamConfigEntity;
+    name: string;
+    agents: string[];
+    modelId: string;
+    input: SourceInput;
+    supportedAgents: SupportedAgent[];
+  }): Promise<{ patch: SourceInput; servesSourceAgents: boolean }> {
+    const needsNames = Boolean(params.input.source_name) && !params.existing?.source_name;
+    const takenNames = needsNames
+      ? await this.takenSourceNames(params.existing?.group_id)
+      : new Set<string>();
+    try {
+      return resolveSourceWrite({ ...params, takenNames });
+    } catch (e) {
+      throw e instanceof SourceRuleError ? new MetadataError(e.code, e.message, e.detail) : e;
+    }
+  }
+
+  private async takenSourceNames(exceptGroupId?: string): Promise<Set<string>> {
+    const groups = await this.store.listInstanceUpstreamGroups(undefined, []);
+    return new Set(
+      groups.filter((g) => g.source_name && g.group_id !== exceptGroupId).map((g) => g.source_name),
+    );
+  }
+
+  /** Propose a free source name for a new source: `sub-claude`, `sub-openai`, `api-<provider>`, then `-2`, `-3`. */
+  async suggestSourceName(input: { kind: "subscription" | "api"; provider: string }): Promise<{ source_name: string }> {
+    const taken = await this.takenSourceNames();
+    try {
+      return { source_name: suggestSourceName(input.kind, input.provider, taken) };
+    } catch (e) {
+      throw e instanceof SourceRuleError ? new MetadataError(e.code, e.message, e.detail) : e;
+    }
+  }
+
+  /**
+   * Groups for any signed-in user: custom groups except subscription pools, with no key field
+   * at all (not even a masked one), only whether a key is stored.
+   */
+  async listInstanceUpstreamGroupsView(): Promise<{ items: Record<string, unknown>[] }> {
+    const rows = await this.store.listInstanceUpstreamGroups(undefined, []);
+    const items = rows
+      .filter((r) => r.group_type === "custom" && r.mode !== "subscription_pool")
+      .map((r) => {
+        const { api_key_masked: _masked, ...rest } = this.toPublicGroup(r);
+        return { ...rest, api_key_configured: Boolean(r.api_key) };
+      });
+    return { items };
+  }
+
+  /** Tick models of a source on or off. Models are matched by their provider id. */
+  async updateSourceModels(input: {
+    group_id: string;
+    models: { id: string; enabled: boolean }[];
+    expected_version?: number;
+  }): Promise<Record<string, unknown>> {
+    const group = await this.requireSourceGroup(input.group_id);
+    const wanted = new Map(input.models.map((m) => [m.id, m.enabled]));
+    const known = new Set(group.source_models.map((m) => m.id));
+    const unknown = [...wanted.keys()].filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      throw new MetadataError("SOURCE_MODEL_NOT_FOUND", `unknown source models: ${unknown.join(",")}`, { unknown_models: unknown });
+    }
+    try {
+      const row = await this.store.updateInstanceUpstreamGroup({
+        group_id: group.group_id,
+        expected_group_type: "custom",
+        expected_version: input.expected_version,
+        source_models: group.source_models.map((m) => (wanted.has(m.id) ? { ...m, enabled: wanted.get(m.id)! } : m)),
+      });
+      return this.toPublicGroup(row);
+    } catch (e) {
+      throw this.translateUpstreamConflict(e);
+    }
+  }
+
+  /** Fetch the model list of a source. The fetch itself is not built yet. */
+  async refreshSourceModels(input: { group_id: string }): Promise<Record<string, unknown>> {
+    await this.requireSourceGroup(input.group_id);
+    throw new MetadataError("NOT_IMPLEMENTED", "fetching the model list of a source is not available yet");
+  }
+
+  private async requireSourceGroup(groupId: string): Promise<InstanceUpstreamConfigEntity> {
+    const group = await this.store.getInstanceUpstreamGroup(groupId);
+    if (!group || group.group_type === "extraction") {
+      throw new MetadataError("GROUP_NOT_FOUND", `group not found: ${groupId}`);
+    }
+    if (group.group_type !== "custom" || group.mode === "custom_passthrough") {
+      throw new MetadataError(
+        "SOURCE_MODE_NOT_ALLOWED",
+        "a custom_passthrough group forwards the client credential and cannot be a model source",
+      );
+    }
+    if (!group.source_name) {
+      throw new MetadataError("SOURCE_NOT_CONFIGURED", "the group has no source name yet");
+    }
+    return group;
+  }
+
   // ── 内部工具 ─────────────────────────────────────────────
 
   private assertGroupName(name: string): void {
@@ -3098,8 +3265,8 @@ export class MetadataService {
     }
   }
 
-  private assertAgents(agents: string[], supported: SupportedAgent[], groupType: GroupType): void {
-    if (groupType === "custom" && agents.length === 0) {
+  private assertAgents(agents: string[], supported: SupportedAgent[], groupType: GroupType, servesSourceAgents = false): void {
+    if (groupType === "custom" && agents.length === 0 && !servesSourceAgents) {
       throw new MetadataError("INVALID_AGENTS", "custom group must have at least 1 agent");
     }
     if (supported.length === 0) return; // 无 supported 列表时跳过枚举校验(仅 boot-time 极端情况)
@@ -3183,6 +3350,7 @@ export class MetadataService {
         version_mismatch: "WRITE_CONFLICT",
         default_already_exists: "CANNOT_CREATE_DEFAULT",
         extraction_already_exists: "EXTRACTION_ALREADY_CONFIGURED",
+        source_name_duplicate: "SOURCE_NAME_TAKEN",
       };
       const mapped = codeMap[e.reason] ?? e.reason;
       return new MetadataError(mapped, e.message, e.detail);

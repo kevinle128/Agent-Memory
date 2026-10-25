@@ -419,6 +419,23 @@ const routeTable: Record<string, Handler> = {
     return s.deleteInstanceUpstreamGroup(d, deps.getSupportedAgents());
   }),
 
+  // Model sources. `view` is read-only and key-free for any signed-in user; the rest are admin-only.
+  [`${V3_PREFIX}/instance-upstream/groups/view`]: bind(S.upstreamGroupsViewSchema, async (_d, _c, s) => {
+    return s.listInstanceUpstreamGroupsView();
+  }),
+  [`${V3_PREFIX}/instance-upstream/groups/suggest-source-name`]: bind(S.upstreamSuggestSourceNameSchema, async (d, c, s) => {
+    s.assertCanManageUsers(c);
+    return s.suggestSourceName(d);
+  }),
+  [`${V3_PREFIX}/instance-upstream/groups/source-models/update`]: bind(S.upstreamSourceModelsUpdateSchema, async (d, c, s) => {
+    s.assertCanManageUsers(c);
+    return s.updateSourceModels(d);
+  }),
+  [`${V3_PREFIX}/instance-upstream/groups/source-refresh`]: bind(S.upstreamSourceRefreshSchema, async (d, c, s) => {
+    s.assertCanManageUsers(c);
+    return s.refreshSourceModels(d);
+  }),
+
   // §6.C extraction/*
   //
   // 全部写入路径都传 supportedAgents 是为了兜底存量实例首个请求非 list 时的 seed
@@ -536,7 +553,10 @@ function mapErrorCode(code: string): number {
       return 404;
     case "EXTRACTION_ALREADY_CONFIGURED":
     case "WRITE_CONFLICT":
+    case "SOURCE_NAME_TAKEN":
       return 409;
+    case "NOT_IMPLEMENTED":
+      return 501;
     case "PERMISSION_DENIED":
       return 403;
     case "AGENTS_OVERLAP":
