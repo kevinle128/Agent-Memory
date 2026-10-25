@@ -1583,6 +1583,41 @@ export function runMetadataStoreContract(
           expect(refreshed.source_name).toBe("api-deepseek");
         });
 
+        it("updateGroupSourceModels merges against the latest row and touches only the fetch columns", async () => {
+          const row = await store.createInstanceUpstreamGroup(customInput("fetched", { agents: ["codex"], ...sourceFields() }));
+          const seen: string[][] = [];
+          const merged = await store.updateGroupSourceModels(row.group_id, (current) => {
+            seen.push(current.source_models.map((m) => m.id));
+            return {
+              source_models: [...current.source_models, model("added", false)],
+              source_models_fetched_at: "2026-10-26T00:00:00.000Z",
+              source_models_error: null,
+            };
+          });
+          expect(seen).toEqual([["deepseek-v4", "vendor/model-x"]]);
+          expect(merged.source_models.map((m) => m.id)).toEqual(["deepseek-v4", "vendor/model-x", "added"]);
+          expect(merged.source_models_fetched_at).toBe("2026-10-26T00:00:00.000Z");
+          expect(merged.source_models_error).toBeNull();
+          expect(merged.version).toBe(row.version + 1);
+          expect(merged).toMatchObject({
+            name: "fetched", agents: ["codex"], enabled: true, mode: "custom_unified", base_url: "https://x.example.com",
+            api_key: "sk-x", source_name: "api-deepseek", source_provider: "deepseek", source_agents: ["omp", "hermes"], source_enabled: true,
+          });
+
+          // A patch that names no field keeps the stored values; an error alone keeps the list and the fetch time.
+          const failed = await store.updateGroupSourceModels(row.group_id, () => ({ source_models_error: "provider returned 500" }));
+          expect(failed.source_models.map((m) => m.id)).toEqual(["deepseek-v4", "vendor/model-x", "added"]);
+          expect(failed.source_models_fetched_at).toBe("2026-10-26T00:00:00.000Z");
+          expect(failed.source_models_error).toBe("provider returned 500");
+          expect((await store.getInstanceUpstreamGroup(row.group_id))!.version).toBe(row.version + 2);
+        });
+
+        it("updateGroupSourceModels reports a missing group", async () => {
+          await expect(
+            (async () => store.updateGroupSourceModels("grp-missing", () => ({})))(),
+          ).rejects.toMatchObject({ reason: "group_not_found" });
+        });
+
         it("the store rejects a source name that another group already has", async () => {
           await store.createInstanceUpstreamGroup(customInput("first", { source_name: "api-one" }));
           // The SQLite store throws synchronously, so the call runs inside an async function.

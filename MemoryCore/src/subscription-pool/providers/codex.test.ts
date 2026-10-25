@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createCodexAdapter, parseCodexResetCredits, parseCodexUsage } from "./codex.js";
+import { createCodexAdapter, parseCodexModels, parseCodexResetCredits, parseCodexUsage } from "./codex.js";
 import { SubscriptionProviderError, type SubscriptionFetch } from "./types.js";
 
 function fakeJwt(payload: Record<string, unknown>): string {
@@ -262,5 +262,59 @@ describe("parseCodexResetCredits", () => {
     expect(credits?.credits).toEqual([expect.objectContaining({ id: "plan", usable_now: false, unavailable_reason: "not_supported_by_plan", expires_at: null })]);
     expect(parseCodexResetCredits({ nope: true }, 1, now)).toBeNull();
     expect(parseCodexResetCredits(null, 1, now)).toBeNull();
+  });
+});
+
+describe("codex model list", () => {
+  const MODELS = JSON.parse(readFileSync(new URL("./fixtures/codex-models.json", import.meta.url), "utf8"));
+
+  it("calls the Codex models endpoint with the account headers and the configured client version", async () => {
+    const calls: Captured[] = [];
+    const adapter = createCodexAdapter(fetchReturning(200, MODELS, calls));
+    await adapter.fetchModels("access-1", "acct-9", { codexClientVersion: "0.170.1" });
+
+    expect(calls[0].url).toBe("https://chatgpt.com/backend-api/codex/models?client_version=0.170.1");
+    expect(calls[0].init?.headers).toMatchObject({
+      authorization: "Bearer access-1",
+      "chatgpt-account-id": "acct-9",
+      originator: "codex_cli_rs",
+    });
+    expect(calls[0].init?.redirect).toBe("error");
+  });
+
+  it("falls back to the default client version", async () => {
+    const calls: Captured[] = [];
+    await createCodexAdapter(fetchReturning(200, MODELS, calls)).fetchModels("a", "b");
+    expect(calls[0].url).toBe("https://chatgpt.com/backend-api/codex/models?client_version=0.164.0");
+  });
+
+  it("keeps the 7 listed models and drops the hidden ones", async () => {
+    const models = await createCodexAdapter(fetchReturning(200, MODELS)).fetchModels("a", "b");
+    expect(models.map((m) => m.id)).toEqual([
+      "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+    ]);
+    expect(models[0].display_name).toBe("GPT-6.1 Sol");
+  });
+
+  it("keeps a model with no visibility and drops one the API cannot serve", () => {
+    expect(parseCodexModels({
+      models: [
+        { slug: "no-visibility" },
+        { slug: "api-off", visibility: "list", supported_in_api: false },
+        { slug: "hidden", visibility: "hide" },
+        { slug: "named", display_name: "Named One" },
+        { display_name: "no slug" },
+      ],
+    })).toEqual([
+      { id: "no-visibility", display_name: "no-visibility" },
+      { id: "named", display_name: "Named One" },
+    ]);
+    expect(parseCodexModels({})).toEqual([]);
+  });
+
+  it("raises a provider error when the call is refused", async () => {
+    const error = await createCodexAdapter(fetchReturning(403, { error: "forbidden" })).fetchModels("a", "b").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SubscriptionProviderError);
+    expect((error as SubscriptionProviderError).status).toBe(403);
   });
 });

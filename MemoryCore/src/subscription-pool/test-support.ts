@@ -71,6 +71,7 @@ export function fakeAdapter(partial: Partial<Omit<SubscriptionProviderAdapter, "
     exchangeCode: vi.fn<SubscriptionProviderAdapter["exchangeCode"]>(partial.exchangeCode ?? (async () => tokens())),
     refresh: vi.fn<SubscriptionProviderAdapter["refresh"]>(partial.refresh ?? (async () => tokens())),
     fetchUsage: vi.fn<SubscriptionProviderAdapter["fetchUsage"]>(partial.fetchUsage ?? (async () => usageReading())),
+    fetchModels: vi.fn<SubscriptionProviderAdapter["fetchModels"]>(partial.fetchModels ?? (async () => [])),
     redeemResetCredit: vi.fn<SubscriptionProviderAdapter["redeemResetCredit"]>(
       partial.redeemResetCredit ?? (async () => ({ outcome: "reset", resetApplied: true, message: null })),
     ),

@@ -56,6 +56,7 @@ import type {
   InstanceUpstreamConfigFilter,
   CreateInstanceUpstreamGroupInput,
   UpdateInstanceUpstreamGroupInput,
+  SourceModelsPatch,
   ToggleInstanceUpstreamGroupInput,
   DeleteInstanceUpstreamGroupInput,
   SupportedAgent,
@@ -290,6 +291,16 @@ export interface IMetadataStore {
    */
   updateInstanceUpstreamGroup(
     input: UpdateInstanceUpstreamGroupInput,
+  ): MaybePromise<InstanceUpstreamConfigEntity>;
+
+  /**
+   * Replace the fetched model list of a group. `merge` gets the stored group and returns the patch;
+   * the store runs it against the latest row, so a model tick made while a fetch ran is kept.
+   * Touches no other column. Raises group_not_found when the group is gone.
+   */
+  updateGroupSourceModels(
+    groupId: string,
+    merge: (current: InstanceUpstreamConfigEntity) => SourceModelsPatch,
   ): MaybePromise<InstanceUpstreamConfigEntity>;
 
   /** toggle enabled 快捷接口(是 update 的语法糖,同样支持 expected_version)。 */

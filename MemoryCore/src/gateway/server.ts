@@ -59,6 +59,7 @@ import { initObservabilityBackend } from "../core/report/factory.js";
 import type { ObservabilityConfig as CoreObservabilityConfig } from "../core/report/types.js";
 import { TracedTaskExecutor } from "../core/report/traced-task-executor.js";
 import { StorePool } from "../core/store/store-pool.js";
+import { apiRequestStorage } from "../api-trace/api-request-context.js";
 import { readSubscriptionPoolConfig } from "../subscription-pool/config.js";
 import { SubscriptionPoolScheduler } from "../subscription-pool/pool-scheduler.js";
 import { validateAndNormalizeRaw, SeedValidationError } from "../core/seed/input.js";
@@ -536,6 +537,13 @@ export class TdaiGateway {
       rawSvc.setConfigParamService(configSvc);
       rawSvc.setSubscriptionPoolHooks({
         onAccountChanged: (changedInstanceId, change) => this.subscriptionPoolScheduler?.syncAccount(changedInstanceId, change),
+        codexClientVersion: readSubscriptionPoolConfig().codexClientVersion,
+        // Detached: the first model list call must not delay the save that created the source.
+        onSourceAttached: (groupId) => {
+          void apiRequestStorage.exit(() => rawSvc.refreshSourceModels({ group_id: groupId })).catch((err) => {
+            this.logger.warn(`[model-source] first fetch failed instance=${instanceId} group=${groupId}: ${(err as { code?: string }).code ?? (err as Error).name}`);
+          });
+        },
       });
 
       // 归档 Agent 时连带清掉它的 chat_memory 内容（L0–L3 + 向量 + 文件）。

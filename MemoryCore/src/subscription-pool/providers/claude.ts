@@ -5,6 +5,7 @@ import {
   shortMessage,
   readProviderError,
   type ExchangedSubscriptionTokens,
+  type SourceModelReading,
   type SubscriptionCodeExchangeInput,
   type SubscriptionFetch,
   type SubscriptionProviderAdapter,
@@ -175,6 +176,23 @@ function tokensFrom(
   };
 }
 
+const MODELS_URL = "https://api.anthropic.com/v1/models";
+const MODELS_PAGE_LIMIT = 1000;
+/** Pages read at most; one page holds every model today. */
+const MODELS_MAX_PAGES = 10;
+
+/** Reads `data[].id` and `display_name` of one model list page. */
+export function parseClaudeModels(body: unknown): { models: SourceModelReading[]; hasMore: boolean; lastId: string | null } {
+  const page = asRecord(body);
+  const models: SourceModelReading[] = [];
+  for (const item of Array.isArray(page.data) ? page.data : []) {
+    const record = asRecord(item);
+    const id = firstText(record.id);
+    if (id) models.push({ id, display_name: firstText(record.display_name) ?? id });
+  }
+  return { models, hasMore: page.has_more === true, lastId: firstText(page.last_id) ?? models.at(-1)?.id ?? null };
+}
+
 const ORGANIZATIONS_URL = "https://api.anthropic.com/api/organizations";
 
 function apiHeaders(accessToken: string): Record<string, string> {
@@ -239,6 +257,32 @@ export function createClaudeAdapter(fetchImpl: SubscriptionFetch = fetch): Subsc
       if (!response.ok) throw await readProviderError(response);
       const body = await response.json();
       return { windows: parseClaudeUsage(body), resetCredits: parseClaudeResetCredits(body) };
+    },
+    async fetchModels(accessToken: string) {
+      const models = new Map<string, SourceModelReading>();
+      let afterId: string | null = null;
+      for (let page = 0; page < MODELS_MAX_PAGES; page++) {
+        const url = new URL(MODELS_URL);
+        url.searchParams.set("limit", String(MODELS_PAGE_LIMIT));
+        if (afterId) url.searchParams.set("after_id", afterId);
+        const response = await fetchImpl(url.toString(), {
+          headers: {
+            authorization: `Bearer ${accessToken}`,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": `claude-code-20250219,${OAUTH_BETA}`,
+            "anthropic-dangerous-direct-browser-access": "true",
+            accept: "application/json",
+          },
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok) throw await readProviderError(response);
+        const read = parseClaudeModels(await response.json());
+        for (const model of read.models) models.set(model.id, model);
+        if (!read.hasMore || !read.lastId || read.lastId === afterId) break;
+        afterId = read.lastId;
+      }
+      return [...models.values()];
     },
     async redeemResetCredit(accessToken: string, _providerAccountId: string, input) {
       // The redeem route is per organization, and the usage payload has no organization id.

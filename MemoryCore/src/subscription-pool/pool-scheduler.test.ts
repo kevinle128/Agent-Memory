@@ -168,7 +168,7 @@ describe("SubscriptionPoolScheduler", () => {
 
     expect(adapter.fetchUsage).not.toHaveBeenCalled();
     expect(adapter.refresh).not.toHaveBeenCalled();
-    expect(scheduler.pendingTimers().filter((entry) => entry.kind !== "usage-sweep")).toEqual([]);
+    expect(scheduler.pendingTimers().filter((entry) => entry.kind !== "usage-sweep" && entry.kind !== "source-models")).toEqual([]);
   });
 
   it("keeps the other timers running when an account disappears", async () => {

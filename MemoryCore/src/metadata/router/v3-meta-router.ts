@@ -555,8 +555,8 @@ function mapErrorCode(code: string): number {
     case "WRITE_CONFLICT":
     case "SOURCE_NAME_TAKEN":
       return 409;
-    case "NOT_IMPLEMENTED":
-      return 501;
+    case "SOURCE_DISABLED":
+      return 409;
     case "PERMISSION_DENIED":
       return 403;
     case "AGENTS_OVERLAP":

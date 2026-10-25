@@ -1,10 +1,12 @@
 import type { SubscriptionQuotaWindow, SubscriptionResetCredit, SubscriptionResetCredits } from "../../metadata/types.js";
+import { DEFAULT_CODEX_CLIENT_VERSION } from "../config.js";
 import {
   byExpiry,
   parseResetTime,
   shortMessage,
   readProviderError,
   type ExchangedSubscriptionTokens,
+  type SourceModelReading,
   type SubscriptionCodeExchangeInput,
   type SubscriptionFetch,
   type SubscriptionProviderAdapter,
@@ -15,6 +17,7 @@ const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const REDEEM_RESET_CREDIT_URL = `${RESET_CREDITS_URL}/consume`;
+const MODELS_URL = "https://chatgpt.com/backend-api/codex/models";
 const REDIRECT_URI = "http://localhost:1455/auth/callback";
 const SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke";
 
@@ -163,6 +166,24 @@ function tokensFrom(body: Record<string, unknown>, now: number, previousAccountI
   };
 }
 
+/**
+ * Models the Codex CLI offers: `visibility: "hide"` entries (internal ones such as the auto
+ * reviewer) and entries the API cannot serve are dropped. A missing field keeps the entry.
+ */
+export function parseCodexModels(body: unknown): SourceModelReading[] {
+  const list = body && typeof body === "object" ? (body as { models?: unknown }).models : undefined;
+  const models = new Map<string, SourceModelReading>();
+  for (const item of Array.isArray(list) ? list : []) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const id = typeof record.slug === "string" ? record.slug.trim() : "";
+    if (!id || record.visibility === "hide" || record.supported_in_api === false) continue;
+    const name = typeof record.display_name === "string" ? record.display_name.trim() : "";
+    models.set(id, { id, display_name: name || id });
+  }
+  return [...models.values()];
+}
+
 function apiHeaders(accessToken: string, providerAccountId: string): Record<string, string> {
   return {
     authorization: `Bearer ${accessToken}`,
@@ -217,6 +238,17 @@ export function createCodexAdapter(fetchImpl: SubscriptionFetch = fetch): Subscr
         resetCredits = null;
       }
       return { windows, resetCredits };
+    },
+    async fetchModels(accessToken: string, providerAccountId: string, options = {}) {
+      const url = new URL(MODELS_URL);
+      url.searchParams.set("client_version", options.codexClientVersion?.trim() || DEFAULT_CODEX_CLIENT_VERSION);
+      const response = await fetchImpl(url.toString(), {
+        headers: { ...apiHeaders(accessToken, providerAccountId), originator: "codex_cli_rs" },
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw await readProviderError(response);
+      return parseCodexModels(await response.json());
     },
     async redeemResetCredit(accessToken: string, providerAccountId: string, input) {
       const response = await fetchImpl(REDEEM_RESET_CREDIT_URL, {

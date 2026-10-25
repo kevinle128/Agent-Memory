@@ -770,6 +770,13 @@ export interface UpdateInstanceUpstreamGroupInput extends Partial<InstanceUpstre
   description?: string;
 }
 
+/** What a model list fetch changes on a group. A field that is `undefined` keeps its value. */
+export interface SourceModelsPatch {
+  source_models?: SourceModelEntry[];
+  source_models_fetched_at?: string | null;
+  source_models_error?: string | null;
+}
+
 /**
  * Input of `moveAgentBetweenUpstreamGroups`: take one agent out of some groups and put it into
  * another group (existing or new) in one transaction.

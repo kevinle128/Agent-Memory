@@ -1,0 +1,148 @@
+{
+  "models": [
+    {
+      "slug": "gpt-6.1-sol",
+      "display_name": "GPT-6.1 Sol",
+      "description": "",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 0,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-6-astra",
+      "display_name": "GPT-6 Astra",
+      "description": "",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-6-sol",
+      "display_name": "GPT-6 Sol",
+      "description": "",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 2,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-reserve",
+      "display_name": "GPT Reserve",
+      "description": "",
+      "visibility": "hide",
+      "supported_in_api": true,
+      "priority": 3,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-6-luna",
+      "display_name": "GPT-6 Luna",
+      "description": "",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 4,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-5.6-sol",
+      "display_name": "GPT-5.6 Sol",
+      "description": "",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 5,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-5.6-terra",
+      "display_name": "GPT-5.6 Terra",
+      "description": "",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 6,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-5.6-luna",
+      "display_name": "GPT-5.6 Luna",
+      "description": "",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 7,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    },
+    {
+      "slug": "codex-auto-review",
+      "display_name": "Codex Auto Review",
+      "description": "",
+      "visibility": "hide",
+      "supported_in_api": true,
+      "priority": 8,
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "high"
+        }
+      ]
+    }
+  ]
+}

@@ -315,3 +315,64 @@ describe("parseClaudeResetCredits", () => {
     expect(parseClaudeResetCredits(null, now)).toBeNull();
   });
 });
+
+describe("claude model list", () => {
+  const MODELS = fixture("claude-models.json");
+
+  it("calls the models endpoint with the plan token and the headers the CLI sends", async () => {
+    const calls: Captured[] = [];
+    const adapter = createClaudeAdapter(fetchReturning(200, MODELS, calls));
+    const models = await adapter.fetchModels("access-1", "unused");
+
+    expect(models).toHaveLength(14);
+    expect(models[0]).toEqual({ id: "claude-haiku-5-5", display_name: MODELS.data[0].display_name });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("https://api.anthropic.com/v1/models?limit=1000");
+    const headers = calls[0].init?.headers as Record<string, string>;
+    expect(headers).toMatchObject({
+      authorization: "Bearer access-1",
+      "anthropic-version": "2023-06-01",
+      "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+      "anthropic-dangerous-direct-browser-access": "true",
+    });
+    expect(calls[0].init?.redirect).toBe("error");
+    expect(calls[0].init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("reads the next page with after_id while has_more is true", async () => {
+    const calls: Captured[] = [];
+    const pages = [
+      { data: MODELS.data.slice(0, 10), has_more: true, last_id: MODELS.data[9].id },
+      { data: MODELS.data.slice(10), has_more: false, last_id: MODELS.data[13].id },
+    ];
+    const adapter = createClaudeAdapter(async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify(pages[calls.length - 1]), { status: 200 });
+    });
+    const models = await adapter.fetchModels("access-1", "unused");
+
+    expect(models.map((m) => m.id)).toEqual(MODELS.data.map((m: { id: string }) => m.id));
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://api.anthropic.com/v1/models?limit=1000",
+      `https://api.anthropic.com/v1/models?limit=1000&after_id=${MODELS.data[9].id}`,
+    ]);
+  });
+
+  it("stops when a page repeats its cursor", async () => {
+    let n = 0;
+    const adapter = createClaudeAdapter(async () => {
+      n += 1;
+      return new Response(JSON.stringify({ data: [{ id: "a" }], has_more: true, last_id: "a" }), { status: 200 });
+    });
+    expect((await adapter.fetchModels("t", "u")).map((m) => m.id)).toEqual(["a"]);
+    expect(n).toBe(2);
+  });
+
+  it("raises a provider error with the status when the token is refused", async () => {
+    const adapter = createClaudeAdapter(fetchReturning(401, { error: { type: "authentication_error", message: "bad token" } }));
+    const error = await adapter.fetchModels("access-secret", "u").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SubscriptionProviderError);
+    expect((error as SubscriptionProviderError).status).toBe(401);
+    expect((error as Error).message).not.toContain("access-secret");
+  });
+});

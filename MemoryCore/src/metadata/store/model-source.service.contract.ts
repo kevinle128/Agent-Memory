@@ -74,6 +74,13 @@ export function runModelSourceServiceContract(
       return { group_id: result.to.group_id };
     }
 
+    /** Makes the model list call of API-key sources answer with these ids, with no network. */
+    function useModelList(ids: string[]): void {
+      svc.setSubscriptionPoolHooks({
+        sourceFetch: async () => new Response(JSON.stringify({ data: ids.map((id) => ({ id })) }), { status: 200 }),
+      });
+    }
+
     const create = (input: ReturnType<typeof unified>) => svc.createInstanceUpstreamCustomGroup(input, AGENTS);
     const source = (name: string, extra: Record<string, unknown> = {}) =>
       create(unified(name, { source_name: name, source_agents: ["omp"], source_provider: "deepseek", ...extra }));
@@ -236,9 +243,13 @@ export function runModelSourceServiceContract(
           .rejects.toMatchObject({ code: "GROUP_NOT_FOUND" });
       });
 
-      it("reports refresh as not implemented, and refuses passthrough", async () => {
+      it("reads the model list on refresh, and refuses passthrough", async () => {
         const group = await source("api-refresh") as { group_id: string };
-        await expect(svc.refreshSourceModels({ group_id: group.group_id })).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
+        useModelList(["deepseek/v4", "plain"]);
+        const refreshed = await svc.refreshSourceModels({ group_id: group.group_id }) as { source_models: SourceModelEntry[]; source_models_error: string | null };
+        expect(refreshed.source_models.map((m) => [m.id, m.enabled, m.available])).toEqual([["deepseek/v4", false, true], ["plain", false, true]]);
+        expect(refreshed.source_models_error).toBeNull();
+        expect(JSON.stringify(refreshed)).not.toContain("sk-provider-secret-1234");
         const pass = await groupServing("cursor", "pass", "custom_passthrough");
         await expect(svc.refreshSourceModels({ group_id: pass.group_id })).rejects.toMatchObject({ code: "SOURCE_MODE_NOT_ALLOWED" });
       });
@@ -381,7 +392,10 @@ export function runModelSourceServiceContract(
 
         expect((await post("admin-key", "groups/create", { group_type: "custom", ...unified("api-route-2"), source_name: "api-route", source_agents: ["omp"] })).status).toBe(409);
         expect((await post("admin-key", "groups/update", { group_id: group.group_id, group_type: "custom", source_name: "renamed" })).status).toBe(400);
-        expect((await post("admin-key", "groups/source-refresh", { group_id: group.group_id })).status).toBe(501);
+        useModelList(["m1"]);
+        const refreshed = await post("admin-key", "groups/source-refresh", { group_id: group.group_id });
+        expect(refreshed.status).toBe(200);
+        expect((refreshed.body.data as { source_models: SourceModelEntry[] }).source_models.map((m) => m.id)).toEqual(["m1"]);
         const suggested = await post("admin-key", "groups/suggest-source-name", { kind: "api", provider: "route" });
         expect(suggested.body.data).toEqual({ source_name: "api-route-2" });
       });

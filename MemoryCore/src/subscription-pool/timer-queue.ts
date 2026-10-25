@@ -1,4 +1,4 @@
-export type PoolTimerKind = "refresh" | "reset-check" | "retry-usage" | "retry-refresh" | "usage-sweep";
+export type PoolTimerKind = "refresh" | "reset-check" | "retry-usage" | "retry-refresh" | "usage-sweep" | "source-models";
 
 export interface PoolTimerEntry {
   key: string;

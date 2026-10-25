@@ -120,7 +120,15 @@ import {
 } from "../subscription-pool/authorize-url.js";
 import { applyQuotaReport, type SubscriptionQuotaReport } from "../subscription-pool/quota-report.js";
 import { subscriptionAdapterFor, SUPPORTED_SUBSCRIPTION_PROVIDERS } from "../../subscription-pool/providers/index.js";
-import { SubscriptionProviderError, type SubscriptionProviderAdapter } from "../../subscription-pool/providers/types.js";
+import { SubscriptionProviderError, type SourceModelReading, type SubscriptionFetch, type SubscriptionProviderAdapter } from "../../subscription-pool/providers/types.js";
+import { DEFAULT_CODEX_CLIENT_VERSION } from "../../subscription-pool/config.js";
+import {
+  ModelCatalogError,
+  describeFetchError,
+  fetchApiSourceModels,
+  fetchPoolSourceModels,
+  mergeSourceModels,
+} from "../../subscription-pool/model-catalog.js";
 import {
   nextRetryDelayMs,
   refreshAccountTokens,
@@ -207,6 +215,12 @@ export interface SubscriptionAccountChange {
 export interface SubscriptionPoolHooks {
   adapterFor: (provider: SubscriptionProvider) => SubscriptionProviderAdapter | null;
   onAccountChanged?: (instanceId: string, change: SubscriptionAccountChange) => void;
+  /** Called after a group got its source name for the first time, so its models can be read. */
+  onSourceAttached?: (groupId: string) => void;
+  /** HTTP client of the model list call for API-key sources. */
+  sourceFetch?: SubscriptionFetch;
+  /** `client_version` of the ChatGPT model list call. */
+  codexClientVersion?: string;
 }
 
 /** Usage check failures that get a fast retry (after 1, 5 and 15 minutes). */
@@ -2819,6 +2833,7 @@ export class MetadataService {
         description: input.description ?? "",
         ...source.patch,
       });
+      this.notifySourceAttached(null, row);
       return this.toPublicGroup(row);
     } catch (e) {
       throw this.translateUpstreamConflict(e);
@@ -2846,6 +2861,7 @@ export class MetadataService {
       throw new MetadataError("USE_EXTRACTION_ENDPOINT", "use /extraction/update for extraction row");
     }
     let sourcePatch: SourceInput = {};
+    let before: InstanceUpstreamConfigEntity | null | undefined;
 
     // default 组的 immutable 字段守卫
     if (input.group_type === "default") {
@@ -2879,6 +2895,7 @@ export class MetadataService {
       if (input.name !== undefined) this.assertGroupName(input.name);
       if (input.mode !== undefined) this.assertModeForGroupType("custom", input.mode);
       const existing = await this.store.getInstanceUpstreamGroup(input.group_id);
+      before = existing;
       const mode = input.mode ?? existing?.mode;
       if (existing && mode) {
         const agents = input.agents ?? existing.agents;
@@ -2928,6 +2945,7 @@ export class MetadataService {
         description: input.description,
         ...sourcePatch,
       });
+      this.notifySourceAttached(before, row);
       return this.toPublicGroup(row);
     } catch (e) {
       throw this.translateUpstreamConflict(e);
@@ -3221,10 +3239,113 @@ export class MetadataService {
     }
   }
 
-  /** Fetch the model list of a source. The fetch itself is not built yet. */
+  /**
+   * Fetch the model list of a source now. A failed fetch is not an error for the caller: the last
+   * good list stays and the redacted reason is stored in `source_models_error`.
+   */
   async refreshSourceModels(input: { group_id: string }): Promise<Record<string, unknown>> {
-    await this.requireSourceGroup(input.group_id);
-    throw new MetadataError("NOT_IMPLEMENTED", "fetching the model list of a source is not available yet");
+    const group = await this.requireSourceGroup(input.group_id);
+    if (group.mode === "subscription_pool" && !group.enabled) {
+      throw new MetadataError("SOURCE_DISABLED", "the subscription pool is off, so its source is off");
+    }
+    return this.toPublicGroup(await this.fetchGroupSourceModels(group));
+  }
+
+  /** Read the model list of every enabled source. For the scheduler. One failing source does not stop the rest. */
+  async refreshAllSourceModels(): Promise<{ refreshed: number; failed: number }> {
+    const groups = await this.store.listInstanceUpstreamGroups(undefined, []);
+    let refreshed = 0;
+    let failed = 0;
+    for (const group of groups) {
+      // A passthrough group forwards the client credential, so it never has a model list to read.
+      if (group.group_type !== "custom" || !group.source_name || group.mode === "custom_passthrough") continue;
+      const open = group.mode === "subscription_pool" ? group.enabled : group.mode === "custom_unified" && group.source_enabled;
+      if (!open) continue;
+      try {
+        const row = await this.fetchGroupSourceModels(group);
+        if (row.source_models_error) failed += 1;
+        else refreshed += 1;
+      } catch (e) {
+        failed += 1;
+        this.logger.debug?.(`[model-source] refresh failed group=${group.group_id}: ${e instanceof Error ? e.name : "error"}`);
+      }
+    }
+    return { refreshed, failed };
+  }
+
+  private readonly sourceModelFetches = new Map<string, Promise<InstanceUpstreamConfigEntity>>();
+
+  /** One fetch per group at a time; a second caller waits for the first. */
+  private fetchGroupSourceModels(group: InstanceUpstreamConfigEntity): Promise<InstanceUpstreamConfigEntity> {
+    const running = this.sourceModelFetches.get(group.group_id);
+    if (running) return running;
+    const task = this.runSourceModelFetch(group).finally(() => this.sourceModelFetches.delete(group.group_id));
+    this.sourceModelFetches.set(group.group_id, task);
+    return task;
+  }
+
+  private async runSourceModelFetch(group: InstanceUpstreamConfigEntity): Promise<InstanceUpstreamConfigEntity> {
+    const isPool = group.mode === "subscription_pool";
+    let readings: SourceModelReading[] | null = null;
+    let failure = "";
+    try {
+      readings = isPool
+        ? await this.readPoolModels(group)
+        : await fetchApiSourceModels(group, this.subscriptionPoolHooks.sourceFetch);
+      if (readings.length === 0) throw new ModelCatalogError("provider returned an empty model list");
+    } catch (e) {
+      readings = null;
+      failure = describeFetchError(e, [group.api_key]);
+      this.logger.debug?.(`[model-source] fetch failed group=${group.group_id}: ${failure}`);
+    }
+    const now = new Date().toISOString();
+    // Subscription models start on; models of an API-key source start off, also when they appear later.
+    return this.store.updateGroupSourceModels(group.group_id, (current) => readings
+      ? {
+        source_models: mergeSourceModels(current.source_models, readings, isPool, now),
+        source_models_fetched_at: now,
+        source_models_error: null,
+      }
+      : { source_models_error: failure });
+  }
+
+  private async readPoolModels(group: InstanceUpstreamConfigEntity): Promise<SourceModelReading[]> {
+    const stored = (await this.store.listSubscriptionAccounts())
+      .filter((a) => a.group_id === group.group_id && a.enabled && a.status === "active");
+    // A token that is about to expire is renewed first, so the call does not start with a 401.
+    const accounts: SubscriptionAccountEntity[] = [];
+    for (const account of stored) {
+      let usable = account;
+      try {
+        usable = (await this.runSubscriptionTokenRefresh(account.account_id, { ifExpiresWithinMs: 60_000 })).account;
+      } catch {
+        // The fetch below reports a refused token.
+      }
+      accounts.push(usable);
+    }
+    const result = await fetchPoolSourceModels(accounts, {
+      adapterFor: this.subscriptionPoolHooks.adapterFor,
+      options: { codexClientVersion: this.subscriptionPoolHooks.codexClientVersion ?? DEFAULT_CODEX_CLIENT_VERSION },
+      refreshAfterUnauthorized: async (account) => {
+        const refreshed = await this.runSubscriptionTokenRefresh(account.account_id, { heldExpiresAt: account.token_expires_at });
+        return refreshed.failed ? null : refreshed.account;
+      },
+      onAccountError: (accountId, error) => {
+        this.logger.debug?.(`[model-source] account fetch failed account=${accountId} error=${error instanceof Error ? error.name : "error"}`);
+      },
+    });
+    if (result.succeeded === 0) throw result.lastError;
+    return result.models;
+  }
+
+  /** Tell the gateway a group became a source, so it reads the models without delaying the save. */
+  private notifySourceAttached(before: InstanceUpstreamConfigEntity | null | undefined, row: InstanceUpstreamConfigEntity): void {
+    if (!row.source_name || before?.source_name) return;
+    try {
+      this.subscriptionPoolHooks.onSourceAttached?.(row.group_id);
+    } catch (e) {
+      this.logger.debug?.(`[model-source] attach hook failed group=${row.group_id}: ${e instanceof Error ? e.name : "error"}`);
+    }
   }
 
   private async requireSourceGroup(groupId: string): Promise<InstanceUpstreamConfigEntity> {

@@ -69,6 +69,7 @@ import type {
   InstanceUpstreamConfigFilter,
   CreateInstanceUpstreamGroupInput,
   UpdateInstanceUpstreamGroupInput,
+  SourceModelsPatch,
   ToggleInstanceUpstreamGroupInput,
   DeleteInstanceUpstreamGroupInput,
   MoveAgentBetweenUpstreamGroupsInput,
@@ -1948,6 +1949,29 @@ export class MongoMetadataStore implements IMetadataStore {
       "version_mismatch",
       "concurrent write exceeded retry limit",
     );
+  }
+
+  async updateGroupSourceModels(
+    groupId: string,
+    merge: (current: InstanceUpstreamConfigEntity) => SourceModelsPatch,
+  ): Promise<InstanceUpstreamConfigEntity> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const current = await this.getInstanceUpstreamGroup(groupId);
+      if (!current) {
+        throw new InstanceUpstreamWriteConflictError("group_not_found", `group not found: ${groupId}`);
+      }
+      const patch = merge(current);
+      const setDoc: Document = { updated_at: nowIso() };
+      if (patch.source_models !== undefined) setDoc.source_models = patch.source_models;
+      if (patch.source_models_fetched_at !== undefined) setDoc.source_models_fetched_at = patch.source_models_fetched_at;
+      if (patch.source_models_error !== undefined) setDoc.source_models_error = patch.source_models_error;
+      const result = await this.col("meta_instance_upstream_config").updateOne(
+        { group_id: groupId, version: current.version } as Document,
+        { $set: setDoc, $inc: { version: 1 } },
+      );
+      if ((result.matchedCount ?? 0) === 1) return (await this.getInstanceUpstreamGroup(groupId))!;
+    }
+    throw new InstanceUpstreamWriteConflictError("version_mismatch", "concurrent write exceeded retry limit");
   }
 
   async toggleInstanceUpstreamGroup(

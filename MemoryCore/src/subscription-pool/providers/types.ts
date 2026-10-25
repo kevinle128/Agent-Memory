@@ -47,6 +47,17 @@ export interface RedeemResetCreditResult {
   message: string | null;
 }
 
+/** One model a provider lists for an account. `id` is the provider id. */
+export interface SourceModelReading {
+  id: string;
+  display_name: string;
+}
+
+export interface FetchModelsOptions {
+  /** Version the ChatGPT model list asks for. Ignored by Claude. */
+  codexClientVersion?: string;
+}
+
 export interface SubscriptionProviderAdapter {
   readonly provider: SubscriptionProvider;
   exchangeCode(input: SubscriptionCodeExchangeInput): Promise<ExchangedSubscriptionTokens>;
@@ -57,6 +68,8 @@ export interface SubscriptionProviderAdapter {
     providerAccountId: string,
     input: RedeemResetCreditInput,
   ): Promise<RedeemResetCreditResult>;
+  /** Models the plan of this account can use. Throws `SubscriptionProviderError` on a refused call. */
+  fetchModels(accessToken: string, providerAccountId: string, options?: FetchModelsOptions): Promise<SourceModelReading[]>;
 }
 
 export type SubscriptionFetch = (url: string, init?: RequestInit) => Promise<Response>;

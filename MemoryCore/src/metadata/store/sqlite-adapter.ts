@@ -71,6 +71,7 @@ import type {
   InstanceUpstreamConfigFilter,
   CreateInstanceUpstreamGroupInput,
   UpdateInstanceUpstreamGroupInput,
+  SourceModelsPatch,
   ToggleInstanceUpstreamGroupInput,
   DeleteInstanceUpstreamGroupInput,
   MoveAgentBetweenUpstreamGroupsInput,
@@ -2601,6 +2602,32 @@ export class SqliteMetadataStore implements IMetadataStore {
         input.group_id,
       ));
       return this.getInstanceUpstreamGroup(input.group_id)!;
+    });
+  }
+
+  updateGroupSourceModels(
+    groupId: string,
+    merge: (current: InstanceUpstreamConfigEntity) => SourceModelsPatch,
+  ): InstanceUpstreamConfigEntity {
+    return this.withImmediateTx(() => {
+      const row = this.get("SELECT * FROM meta_instance_upstream_config WHERE group_id = ?", groupId);
+      if (!row) {
+        throw new InstanceUpstreamWriteConflictError("group_not_found", `group not found: ${groupId}`);
+      }
+      const current = this.mapInstanceUpstreamGroup(row)!;
+      const patch = merge(current);
+      this.run(
+        `UPDATE meta_instance_upstream_config
+         SET source_models = ?, source_models_fetched_at = ?, source_models_error = ?,
+             version = version + 1, updated_at = ?
+         WHERE group_id = ?`,
+        JSON.stringify(patch.source_models ?? current.source_models),
+        patch.source_models_fetched_at !== undefined ? patch.source_models_fetched_at : current.source_models_fetched_at,
+        patch.source_models_error !== undefined ? patch.source_models_error : current.source_models_error,
+        nowIso(),
+        groupId,
+      );
+      return this.getInstanceUpstreamGroup(groupId)!;
     });
   }
 

@@ -12,6 +12,8 @@ export interface SubscriptionPoolSchedulerTarget {
   subscriptionThreshold(): Promise<number>;
   runSubscriptionUsageCheck(accountId: string): Promise<unknown>;
   runSubscriptionTokenRefresh(accountId: string, options?: RefreshOptions): Promise<unknown>;
+  /** Reads the model list of every enabled source of the instance. */
+  refreshAllSourceModels(): Promise<unknown>;
 }
 
 export interface SubscriptionPoolSchedulerOptions {
@@ -19,6 +21,10 @@ export interface SubscriptionPoolSchedulerOptions {
   /** Interval of the usage check for every account. */
   checkIntervalMs: number;
   logger: { warn?: (message: string) => void; info?: (message: string) => void };
+  /** Wait before the first model list refresh after an instance is seen. Default 5 minutes. */
+  sourceModelsFirstDelayMs?: number;
+  /** Time between two model list refreshes. Default 24 hours. */
+  sourceModelsIntervalMs?: number;
   /** Pause between two accounts of one pass, so the provider sees no burst. */
   accountGapMs?: number;
 }
@@ -50,10 +56,14 @@ export class SubscriptionPoolScheduler {
   );
   private readonly instances = new Set<string>();
   private readonly accountGapMs: number;
+  private readonly sourceModelsFirstDelayMs: number;
+  private readonly sourceModelsIntervalMs: number;
   private stopped = false;
 
   constructor(private readonly options: SubscriptionPoolSchedulerOptions) {
     this.accountGapMs = options.accountGapMs ?? 1000;
+    this.sourceModelsFirstDelayMs = options.sourceModelsFirstDelayMs ?? 5 * 60 * 1000;
+    this.sourceModelsIntervalMs = options.sourceModelsIntervalMs ?? 24 * 60 * 60 * 1000;
   }
 
   /** Starts the timers of an instance the first time it is seen. Resolves when its startup pass ends. */
@@ -61,6 +71,7 @@ export class SubscriptionPoolScheduler {
     if (this.stopped || this.instances.has(instanceId)) return;
     this.instances.add(instanceId);
     this.armSweep(instanceId);
+    this.armSourceModels(instanceId, this.sourceModelsFirstDelayMs);
     await apiRequestStorage.exit(() => this.pass(instanceId, REFRESH_LEAD_MS, true));
   }
 
@@ -100,6 +111,10 @@ export class SubscriptionPoolScheduler {
 
   private upsert(instanceId: string, accountId: string, kind: PoolTimerKind, at: number): void {
     this.queue.upsert({ key: this.key(instanceId, accountId, kind), instanceId, accountId, kind, at });
+  }
+
+  private armSourceModels(instanceId: string, delayMs: number): void {
+    this.upsert(instanceId, "", "source-models", Date.now() + delayMs);
   }
 
   private armSweep(instanceId: string): void {
@@ -144,6 +159,13 @@ export class SubscriptionPoolScheduler {
     if (entry.kind === "usage-sweep") {
       this.armSweep(entry.instanceId);
       await this.pass(entry.instanceId, SWEEP_REFRESH_WITHIN_MS, false);
+      return;
+    }
+    if (entry.kind === "source-models") {
+      this.armSourceModels(entry.instanceId, this.sourceModelsIntervalMs);
+      await this.guard(entry.instanceId, "", "source-models", async () => {
+        await (await this.options.getService(entry.instanceId)).refreshAllSourceModels();
+      });
       return;
     }
     await this.guard(entry.instanceId, entry.accountId, entry.kind, async () => {
