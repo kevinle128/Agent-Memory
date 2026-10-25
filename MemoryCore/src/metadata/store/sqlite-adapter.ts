@@ -67,6 +67,7 @@ import type {
   DeviceSetupEntity,
   UpsertDeviceSetupInput,
   InstanceUpstreamConfigEntity,
+  SourceModelEntry,
   InstanceUpstreamConfigFilter,
   CreateInstanceUpstreamGroupInput,
   UpdateInstanceUpstreamGroupInput,
@@ -122,7 +123,38 @@ function isStorePkCollision(err: unknown): boolean {
  * docs/design/2026-08-25-instance-upstream-config.md §5.1).
  * Used for a new database and for the rebuild in migrateSubscriptionPool.
  */
+const INSTANCE_UPSTREAM_SOURCE_COLUMNS: ReadonlyArray<readonly [string, string]> = [
+  ["source_name", "TEXT NOT NULL DEFAULT ''"],
+  ["source_provider", "TEXT NOT NULL DEFAULT ''"],
+  ["source_formats", "TEXT NOT NULL DEFAULT '[]'"],
+  ["source_agents", "TEXT NOT NULL DEFAULT '[]'"],
+  ["source_enabled", "INTEGER NOT NULL DEFAULT 0"],
+  ["source_models", "TEXT NOT NULL DEFAULT '[]'"],
+  ["source_models_fetched_at", "TEXT"],
+  ["source_models_error", "TEXT"],
+];
+
+/** A source name is unique among the groups that have one. */
+const INSTANCE_UPSTREAM_SOURCE_NAME_INDEX_DDL = `
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_iuc_source_name
+    ON meta_instance_upstream_config(source_name)
+    WHERE source_name != '';
+`;
+
+/** Parse a JSON array column; a missing or malformed value reads as an empty array. */
+function parseJsonArray<T>(raw: unknown): T[] {
+  try {
+    const value = JSON.parse(String(raw ?? "[]"));
+    return Array.isArray(value) ? (value as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 function instanceUpstreamTableDdl(tableName: string): string {
+  const sourceColumns = INSTANCE_UPSTREAM_SOURCE_COLUMNS
+    .map(([name, def]) => `${name} ${def},`)
+    .join("\n      ");
   return `
     CREATE TABLE IF NOT EXISTS ${tableName} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,6 +170,7 @@ function instanceUpstreamTableDdl(tableName: string): string {
       description TEXT NOT NULL DEFAULT '',
       version INTEGER NOT NULL DEFAULT 1,
       supported_agents_snapshot TEXT NOT NULL DEFAULT '[]',
+      ${sourceColumns}
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       UNIQUE(group_id)
@@ -452,6 +485,26 @@ export class SqliteMetadataStore implements IMetadataStore {
     this.migrateUserTypeColumn();
     this.migrateLegacyUserKeys();
     this.migrateSubscriptionPool();
+    this.migrateInstanceUpstreamSourceColumns();
+  }
+
+  /**
+   * Add the model source columns to an upstream group table of an earlier build. Additive only:
+   * each column is added when pragma_table_info does not list it, and no existing value is
+   * touched. The unique index is created after the columns exist.
+   */
+  private migrateInstanceUpstreamSourceColumns(): void {
+    const present = new Set(
+      this.all<{ name: string }>(
+        "SELECT name FROM pragma_table_info('meta_instance_upstream_config')",
+      ).map((c) => c.name),
+    );
+    for (const [name, def] of INSTANCE_UPSTREAM_SOURCE_COLUMNS) {
+      if (!present.has(name)) {
+        this.db.exec(`ALTER TABLE meta_instance_upstream_config ADD COLUMN ${name} ${def}`);
+      }
+    }
+    this.db.exec(INSTANCE_UPSTREAM_SOURCE_NAME_INDEX_DDL);
   }
 
   /**
@@ -2416,10 +2469,12 @@ export class SqliteMetadataStore implements IMetadataStore {
       }
 
       // 3. INSERT(custom/extraction 的 snapshot 恒 [];default 由 seed 路径独立处理,不走此 create 分支)
-      this.run(
+      this.runSourceNameChecked(() => this.run(
         `INSERT INTO meta_instance_upstream_config
-          (group_id, group_type, name, agents, enabled, mode, base_url, api_key, model_id, description, version, supported_agents_snapshot, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '[]', ?, ?)`,
+          (group_id, group_type, name, agents, enabled, mode, base_url, api_key, model_id, description, version, supported_agents_snapshot,
+           source_name, source_provider, source_formats, source_agents, source_enabled, source_models, source_models_fetched_at, source_models_error,
+           created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         groupId,
         input.group_type,
         input.name ?? "",
@@ -2430,9 +2485,17 @@ export class SqliteMetadataStore implements IMetadataStore {
         input.api_key ?? "",
         input.model_id ?? "",
         input.description ?? "",
+        input.source_name ?? "",
+        input.source_provider ?? "",
+        JSON.stringify(input.source_formats ?? []),
+        JSON.stringify(input.source_agents ?? []),
+        input.source_enabled ? 1 : 0,
+        JSON.stringify(input.source_models ?? []),
+        input.source_models_fetched_at ?? null,
+        input.source_models_error ?? null,
         now,
         now,
-      );
+      ));
 
       return this.getInstanceUpstreamGroup(groupId)!;
     });
@@ -2498,11 +2561,25 @@ export class SqliteMetadataStore implements IMetadataStore {
         api_key: input.api_key ?? current.api_key,
         model_id: input.model_id ?? current.model_id,
         description: input.description ?? current.description,
+        source_name: input.source_name ?? current.source_name,
+        source_provider: input.source_provider ?? current.source_provider,
+        source_formats: input.source_formats ?? current.source_formats,
+        source_agents: input.source_agents ?? current.source_agents,
+        source_enabled: input.source_enabled ?? current.source_enabled,
+        source_models: input.source_models ?? current.source_models,
+        // null clears the value, undefined keeps it.
+        source_models_fetched_at: input.source_models_fetched_at !== undefined
+          ? input.source_models_fetched_at : current.source_models_fetched_at,
+        source_models_error: input.source_models_error !== undefined
+          ? input.source_models_error : current.source_models_error,
       };
       const now = nowIso();
-      this.run(
+      this.runSourceNameChecked(() => this.run(
         `UPDATE meta_instance_upstream_config
-         SET name = ?, agents = ?, enabled = ?, mode = ?, base_url = ?, api_key = ?, model_id = ?, description = ?, version = version + 1, updated_at = ?
+         SET name = ?, agents = ?, enabled = ?, mode = ?, base_url = ?, api_key = ?, model_id = ?, description = ?,
+             source_name = ?, source_provider = ?, source_formats = ?, source_agents = ?, source_enabled = ?,
+             source_models = ?, source_models_fetched_at = ?, source_models_error = ?,
+             version = version + 1, updated_at = ?
          WHERE group_id = ?`,
         merged.name,
         JSON.stringify(merged.agents),
@@ -2512,9 +2589,17 @@ export class SqliteMetadataStore implements IMetadataStore {
         merged.api_key,
         merged.model_id,
         merged.description,
+        merged.source_name,
+        merged.source_provider,
+        JSON.stringify(merged.source_formats),
+        JSON.stringify(merged.source_agents),
+        merged.source_enabled ? 1 : 0,
+        JSON.stringify(merged.source_models),
+        merged.source_models_fetched_at,
+        merged.source_models_error,
         now,
         input.group_id,
-      );
+      ));
       return this.getInstanceUpstreamGroup(input.group_id)!;
     });
   }
@@ -2738,6 +2823,21 @@ export class SqliteMetadataStore implements IMetadataStore {
     return generateId(prefix);
   }
 
+  /** Run a group write and report a source name clash as the store conflict error. */
+  private runSourceNameChecked(write: () => void): void {
+    try {
+      write();
+    } catch (err) {
+      if (err instanceof Error && /UNIQUE constraint failed: meta_instance_upstream_config\.source_name/.test(err.message)) {
+        throw new InstanceUpstreamWriteConflictError(
+          "source_name_duplicate",
+          "source name is already used by another group",
+        );
+      }
+      throw err;
+    }
+  }
+
   private mapInstanceUpstreamGroup(row: Row | null): InstanceUpstreamConfigEntity | null {
     if (!row) return null;
     const r = row as Record<string, unknown>;
@@ -2758,6 +2858,14 @@ export class SqliteMetadataStore implements IMetadataStore {
       group_id: String(r.group_id),
       group_type: String(r.group_type) as GroupType,
       name: String(r.name ?? ""),
+      source_name: String(r.source_name ?? ""),
+      source_provider: String(r.source_provider ?? ""),
+      source_formats: parseJsonArray<string>(r.source_formats),
+      source_agents: parseJsonArray<string>(r.source_agents),
+      source_enabled: Number(r.source_enabled ?? 0) === 1,
+      source_models: parseJsonArray<SourceModelEntry>(r.source_models),
+      source_models_fetched_at: r.source_models_fetched_at == null ? null : String(r.source_models_fetched_at),
+      source_models_error: r.source_models_error == null ? null : String(r.source_models_error),
       agents,
       enabled: Number(r.enabled) === 1,
       mode: String(r.mode) as UpstreamMode,

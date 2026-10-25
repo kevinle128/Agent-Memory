@@ -643,6 +643,32 @@ export interface UpsertDeviceSetupInput {
 //   - MongoDB 版本乐观锁(version 字段)保护并发写
 
 export type GroupType = "default" | "custom" | "extraction";
+
+/** One model of a model source, as stored on the group. `id` is the provider id and may contain `/`. */
+export interface SourceModelEntry {
+  id: string;
+  display_name: string;
+  enabled: boolean;
+  available: boolean;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+/**
+ * Fields that turn a group into a named model source. A group with an empty `source_name`
+ * is not a source and keeps the defaults below.
+ */
+export interface InstanceUpstreamSourceFields {
+  /** Name used as the model id prefix. Empty = the group is not a source. Unique when not empty. */
+  source_name: string;
+  source_provider: string;
+  source_formats: string[];
+  source_agents: string[];
+  source_enabled: boolean;
+  source_models: SourceModelEntry[];
+  source_models_fetched_at: string | null;
+  source_models_error: string | null;
+}
 export type UpstreamMode =
   | "official"
   | "custom_unified"
@@ -662,7 +688,7 @@ export const EXTRACTION_GROUP_NAME = "抽取模型";
  * agents 字段以 JSON 数组形式存储(SQLite 用 TEXT 存 JSON, MongoDB 用原生数组)。
  * MongoDB 侧额外多一个 `version` 字段(乐观锁,§5.3);SQLite 不需要。
  */
-export interface InstanceUpstreamConfigEntity {
+export interface InstanceUpstreamConfigEntity extends InstanceUpstreamSourceFields {
   id: number;
   /** 后端生成的组 ID:`dflt-<random>` / `grp-<random>` / `ext-<random>`。 */
   group_id: string;
@@ -712,7 +738,7 @@ export interface InstanceUpstreamConfigEntity {
  * create 输入:新建 default (seed 内部用) / custom / extraction 行。
  * group_id 由 store 层生成,调用方不传。
  */
-export interface CreateInstanceUpstreamGroupInput {
+export interface CreateInstanceUpstreamGroupInput extends Partial<InstanceUpstreamSourceFields> {
   group_type: GroupType;
   name?: string;
   agents?: string[];
@@ -728,7 +754,7 @@ export interface CreateInstanceUpstreamGroupInput {
  * update 输入:PATCH 语义,未传字段保留原值。
  * `api_key`:undefined = 保留原值;空串 = 显式清空。
  */
-export interface UpdateInstanceUpstreamGroupInput {
+export interface UpdateInstanceUpstreamGroupInput extends Partial<InstanceUpstreamSourceFields> {
   group_id: string;
   /** 期望的 group_type,用作 dispatch 守卫(与库中不符 → GROUP_TYPE_MISMATCH)。 */
   expected_group_type: GroupType;
@@ -758,7 +784,7 @@ export interface MoveAgentBetweenUpstreamGroupsInput {
   /** The group the agent joins: an existing one, or a custom group to create with the agent in it. */
   to:
     | { group_id: string; enabled?: boolean }
-    | { create: Omit<CreateInstanceUpstreamGroupInput, "agents" | "group_type"> };
+    | { create: Omit<CreateInstanceUpstreamGroupInput, "agents" | "group_type" | keyof InstanceUpstreamSourceFields> };
 }
 
 export interface MoveAgentBetweenUpstreamGroupsResult {
@@ -798,7 +824,7 @@ export interface SupportedAgent {
  */
 export class InstanceUpstreamWriteConflictError extends Error {
   constructor(
-    public readonly reason: "agents_overlap" | "name_duplicate" | "group_not_found" | "group_type_mismatch" | "version_mismatch" | "default_already_exists" | "extraction_already_exists",
+    public readonly reason: "agents_overlap" | "name_duplicate" | "group_not_found" | "group_type_mismatch" | "version_mismatch" | "default_already_exists" | "extraction_already_exists" | "source_name_duplicate",
     message: string,
     public readonly detail?: Record<string, unknown>,
   ) {

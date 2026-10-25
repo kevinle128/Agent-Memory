@@ -1488,6 +1488,159 @@ export function runMetadataStoreContract(
         });
       });
 
+      describe("model source fields", () => {
+        const model = (id: string, enabled: boolean) => ({
+          id,
+          display_name: id,
+          enabled,
+          available: true,
+          first_seen_at: "2026-10-25T00:00:00.000Z",
+          last_seen_at: "2026-10-25T01:00:00.000Z",
+        });
+
+        const sourceFields = () => ({
+          source_name: "api-deepseek",
+          source_provider: "deepseek",
+          source_formats: ["openai-chat", "anthropic-messages"],
+          source_agents: ["omp", "hermes"],
+          source_enabled: true,
+          source_models: [model("deepseek-v4", true), model("vendor/model-x", false)],
+          source_models_fetched_at: "2026-10-25T01:00:00.000Z",
+          source_models_error: "last fetch failed",
+        });
+
+        const customInput = (name: string, over: Record<string, unknown> = {}) => ({
+          group_type: "custom" as const,
+          name,
+          agents: [] as string[],
+          mode: "custom_unified" as const,
+          base_url: "https://x.example.com",
+          api_key: "sk-x",
+          ...over,
+        });
+
+        it("a group without source fields reads the defaults", async () => {
+          const row = await store.createInstanceUpstreamGroup(customInput("plain", { agents: ["codex"] }));
+          for (const got of [row, (await store.getInstanceUpstreamGroup(row.group_id))!]) {
+            expect(got).toMatchObject({
+              source_name: "",
+              source_provider: "",
+              source_formats: [],
+              source_agents: [],
+              source_enabled: false,
+              source_models: [],
+              source_models_fetched_at: null,
+              source_models_error: null,
+            });
+          }
+          const listed = (await store.listInstanceUpstreamGroups()).find((g) => g.group_id === row.group_id)!;
+          expect(listed.source_name).toBe("");
+          expect(listed.source_models).toEqual([]);
+        });
+
+        it("the seeded default group reads the defaults", async () => {
+          const list = await store.listInstanceUpstreamGroups(undefined, TEST_SUPPORTED_AGENTS);
+          expect(list[0]).toMatchObject({ group_type: "default", source_name: "", source_enabled: false, source_agents: [] });
+        });
+
+        it("create persists every source field", async () => {
+          const row = await store.createInstanceUpstreamGroup(customInput("src", sourceFields()));
+          const got = (await store.getInstanceUpstreamGroup(row.group_id))!;
+          expect(got).toMatchObject(sourceFields());
+          expect(got.agents).toEqual([]);
+          const listed = (await store.listInstanceUpstreamGroups()).find((g) => g.group_id === row.group_id)!;
+          expect(listed).toMatchObject(sourceFields());
+        });
+
+        it("update persists source fields and keeps the ones it does not send", async () => {
+          const row = await store.createInstanceUpstreamGroup(customInput("src", { agents: ["codex"] }));
+          const attached = await store.updateInstanceUpstreamGroup({
+            group_id: row.group_id,
+            expected_group_type: "custom",
+            ...sourceFields(),
+          });
+          expect(attached).toMatchObject(sourceFields());
+          expect(attached.agents).toEqual(["codex"]);
+
+          const renamed = await store.updateInstanceUpstreamGroup({
+            group_id: row.group_id,
+            expected_group_type: "custom",
+            description: "changed",
+          });
+          expect(renamed).toMatchObject({ ...sourceFields(), description: "changed" });
+
+          const refreshed = await store.updateInstanceUpstreamGroup({
+            group_id: row.group_id,
+            expected_group_type: "custom",
+            source_models: [model("deepseek-v4", false)],
+            source_models_error: null,
+            source_enabled: false,
+          });
+          expect(refreshed.source_models).toEqual([model("deepseek-v4", false)]);
+          expect(refreshed.source_models_error).toBeNull();
+          expect(refreshed.source_enabled).toBe(false);
+          expect(refreshed.source_models_fetched_at).toBe("2026-10-25T01:00:00.000Z");
+          expect(refreshed.source_name).toBe("api-deepseek");
+        });
+
+        it("the store rejects a source name that another group already has", async () => {
+          await store.createInstanceUpstreamGroup(customInput("first", { source_name: "api-one" }));
+          // The SQLite store throws synchronously, so the call runs inside an async function.
+          await expect(
+            (async () => store.createInstanceUpstreamGroup(customInput("second", { source_name: "api-one" })))(),
+          ).rejects.toMatchObject({ reason: "source_name_duplicate" });
+
+          const other = await store.createInstanceUpstreamGroup(customInput("third", { source_name: "api-two" }));
+          await expect(
+            (async () => store.updateInstanceUpstreamGroup({
+              group_id: other.group_id,
+              expected_group_type: "custom",
+              source_name: "api-one",
+            }))(),
+          ).rejects.toBeInstanceOf(InstanceUpstreamWriteConflictError);
+          expect((await store.getInstanceUpstreamGroup(other.group_id))!.source_name).toBe("api-two");
+        });
+
+        it("groups without a source name do not clash with each other", async () => {
+          await store.createInstanceUpstreamGroup(customInput("a", { agents: ["codex"] }));
+          await store.createInstanceUpstreamGroup(customInput("b", { agents: ["codebuddy"] }));
+          const custom = (await store.listInstanceUpstreamGroups()).filter((g) => g.group_type === "custom");
+          expect(custom).toHaveLength(2);
+        });
+
+        it("toggle and agent moves keep the source fields", async () => {
+          await store.listInstanceUpstreamGroups(undefined, TEST_SUPPORTED_AGENTS);
+          const pool = await store.createInstanceUpstreamGroup({
+            group_type: "custom",
+            name: "claude pool",
+            agents: [],
+            mode: "subscription_pool",
+            ...sourceFields(),
+            source_enabled: false,
+          });
+          const expected = { ...sourceFields(), source_enabled: false };
+
+          const off = await store.toggleInstanceUpstreamGroup({ group_id: pool.group_id, enabled: false });
+          expect(off).toMatchObject({ enabled: false, ...expected });
+
+          const defaultGroup = (await store.listInstanceUpstreamGroups()).find((g) => g.group_type === "default")!;
+          const joined = await store.moveAgentBetweenUpstreamGroups({
+            agent: "claude-code",
+            from: [{ group_id: defaultGroup.group_id }],
+            to: { group_id: pool.group_id, enabled: true },
+          });
+          expect(joined.to).toMatchObject({ enabled: true, agents: ["claude-code"], ...expected });
+
+          const left = await store.moveAgentBetweenUpstreamGroups({
+            agent: "claude-code",
+            from: [{ group_id: pool.group_id, enabled: false }],
+            to: { group_id: defaultGroup.group_id },
+          });
+          expect(left.from[0]).toMatchObject({ enabled: false, agents: [], ...expected });
+          expect(await store.getInstanceUpstreamGroup(pool.group_id)).toMatchObject(expected);
+        });
+      });
+
       describe("getInstanceUpstreamGroup", () => {
         it("按 group_id 精确读回", async () => {
           const row = await store.createInstanceUpstreamGroup({

@@ -65,6 +65,7 @@ import type {
   DeviceSetupEntity,
   UpsertDeviceSetupInput,
   InstanceUpstreamConfigEntity,
+  SourceModelEntry,
   InstanceUpstreamConfigFilter,
   CreateInstanceUpstreamGroupInput,
   UpdateInstanceUpstreamGroupInput,
@@ -349,6 +350,13 @@ export class MongoMetadataStore implements IMetadataStore {
       this.ensureIndex("meta_instance_upstream_config",
         { group_type: 1 },
         { unique: true, partialFilterExpression: { group_type: "extraction" }, name: "ux_group_type_extraction" },
+      ),
+
+      // A source name is unique among the groups that have one. The filter uses $gt because
+      // a partial index does not support $ne.
+      this.ensureIndex("meta_instance_upstream_config",
+        { source_name: 1 },
+        { unique: true, partialFilterExpression: { source_name: { $gt: "" } }, name: "ux_source_name" },
       ),
 
       // ── meta_upstream_subscription_account ──
@@ -1685,10 +1693,11 @@ export class MongoMetadataStore implements IMetadataStore {
   }
 
   async getInstanceUpstreamGroup(groupId: string): Promise<InstanceUpstreamConfigEntity | null> {
-    return this.col<InstanceUpstreamConfigEntity>("meta_instance_upstream_config").findOne(
+    const doc = await this.col("meta_instance_upstream_config").findOne(
       { group_id: groupId } as Document,
       PROJECT_NO_ID,
-    ) as Promise<InstanceUpstreamConfigEntity | null>;
+    );
+    return doc ? this.mapMongoGroup(doc as Document) : null;
   }
 
   async listInstanceUpstreamGroups(
@@ -1812,12 +1821,26 @@ export class MongoMetadataStore implements IMetadataStore {
         description: input.description ?? "",
         version: 1,
         supported_agents_snapshot: [],   // custom/extraction 恒 [];default 由 seed 路径写入
+        source_name: input.source_name ?? "",
+        source_provider: input.source_provider ?? "",
+        source_formats: input.source_formats ?? [],
+        source_agents: input.source_agents ?? [],
+        source_enabled: input.source_enabled === true,
+        source_models: input.source_models ?? [],
+        source_models_fetched_at: input.source_models_fetched_at ?? null,
+        source_models_error: input.source_models_error ?? null,
         created_at: now,
         updated_at: now,
       } as Document);
     } catch (err) {
       const code = (err as { code?: number })?.code;
       const keyPattern = (err as { keyPattern?: Record<string, unknown> })?.keyPattern;
+      if (code === 11000 && keyPattern && "source_name" in keyPattern) {
+        throw new InstanceUpstreamWriteConflictError(
+          "source_name_duplicate",
+          "source name is already used by another group",
+        );
+      }
       if (code === 11000 && keyPattern && "group_type" in keyPattern) {
         // 并发 create default/extraction
         throw new InstanceUpstreamWriteConflictError(
@@ -1884,11 +1907,31 @@ export class MongoMetadataStore implements IMetadataStore {
       if (input.api_key !== undefined) setDoc.api_key = input.api_key;
       if (input.model_id !== undefined) setDoc.model_id = input.model_id;
       if (input.description !== undefined) setDoc.description = input.description;
+      if (input.source_name !== undefined) setDoc.source_name = input.source_name;
+      if (input.source_provider !== undefined) setDoc.source_provider = input.source_provider;
+      if (input.source_formats !== undefined) setDoc.source_formats = input.source_formats;
+      if (input.source_agents !== undefined) setDoc.source_agents = input.source_agents;
+      if (input.source_enabled !== undefined) setDoc.source_enabled = input.source_enabled;
+      if (input.source_models !== undefined) setDoc.source_models = input.source_models;
+      if (input.source_models_fetched_at !== undefined) setDoc.source_models_fetched_at = input.source_models_fetched_at;
+      if (input.source_models_error !== undefined) setDoc.source_models_error = input.source_models_error;
 
-      const result = await this.col("meta_instance_upstream_config").updateOne(
-        { group_id: input.group_id, version: effectiveExpectedVersion } as Document,
-        { $set: setDoc, $inc: { version: 1 } },
-      );
+      let result;
+      try {
+        result = await this.col("meta_instance_upstream_config").updateOne(
+          { group_id: input.group_id, version: effectiveExpectedVersion } as Document,
+          { $set: setDoc, $inc: { version: 1 } },
+        );
+      } catch (err) {
+        const keyPattern = (err as { keyPattern?: Record<string, unknown> })?.keyPattern;
+        if ((err as { code?: number })?.code === 11000 && keyPattern && "source_name" in keyPattern) {
+          throw new InstanceUpstreamWriteConflictError(
+            "source_name_duplicate",
+            "source name is already used by another group",
+          );
+        }
+        throw err;
+      }
       if ((result.matchedCount ?? 0) === 1) {
         return (await this.getInstanceUpstreamGroup(input.group_id))!;
       }
@@ -2294,6 +2337,15 @@ export class MongoMetadataStore implements IMetadataStore {
       version: Number(doc.version ?? 1),
       supported_agents_snapshot: Array.isArray(doc.supported_agents_snapshot)
         ? (doc.supported_agents_snapshot as string[]) : [],
+      // Documents written before the source fields existed read as "not a source".
+      source_name: String(doc.source_name ?? ""),
+      source_provider: String(doc.source_provider ?? ""),
+      source_formats: Array.isArray(doc.source_formats) ? (doc.source_formats as string[]) : [],
+      source_agents: Array.isArray(doc.source_agents) ? (doc.source_agents as string[]) : [],
+      source_enabled: doc.source_enabled === true,
+      source_models: Array.isArray(doc.source_models) ? (doc.source_models as SourceModelEntry[]) : [],
+      source_models_fetched_at: doc.source_models_fetched_at == null ? null : String(doc.source_models_fetched_at),
+      source_models_error: doc.source_models_error == null ? null : String(doc.source_models_error),
       created_at: String(doc.created_at),
       updated_at: String(doc.updated_at),
     };

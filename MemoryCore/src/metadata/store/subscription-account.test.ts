@@ -328,3 +328,143 @@ describe("sqlite subscription account table from an earlier build", () => {
     }
   });
 });
+
+describe("SqliteMetadataStore model source columns upgrade", () => {
+  const SOURCE_COLUMNS = [
+    "source_name", "source_provider", "source_formats", "source_agents", "source_enabled",
+    "source_models", "source_models_fetched_at", "source_models_error",
+  ];
+  const OLD_COLUMNS = [
+    "id", "group_id", "group_type", "name", "agents", "enabled", "mode", "base_url", "api_key",
+    "model_id", "description", "version", "supported_agents_snapshot", "created_at", "updated_at",
+  ];
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "meta-source-columns-"));
+    dbPath = path.join(dir, "metadata.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function readOldColumns(): unknown[] {
+    const raw = new DatabaseSync(dbPath);
+    try {
+      return raw
+        .prepare(`SELECT ${OLD_COLUMNS.join(", ")} FROM meta_instance_upstream_config ORDER BY id`)
+        .all();
+    } finally {
+      raw.close();
+    }
+  }
+
+  function columnNames(): string[] {
+    const raw = new DatabaseSync(dbPath);
+    try {
+      return (raw.prepare("SELECT name FROM pragma_table_info('meta_instance_upstream_config')").all() as Array<{ name: string }>)
+        .map((c) => c.name);
+    } finally {
+      raw.close();
+    }
+  }
+
+  /** A table that already accepts the pool mode but has no source column. */
+  function seedPoolAwareDatabase(): void {
+    const raw = new DatabaseSync(dbPath);
+    raw.exec("PRAGMA foreign_keys = ON");
+    raw.exec(
+      OLD_GROUP_TABLE_DDL.replace(
+        "'custom_passthrough')",
+        "'custom_passthrough','subscription_pool')",
+      ),
+    );
+    raw.prepare(INSERT_OLD_GROUP).run(
+      9, "grp-old-unified", "custom", "unified group", '["cursor"]', 0, "custom_unified",
+      "https://old.example.test", "old-secret-key", "old-model", "old description", 2, "[]",
+    );
+    raw.prepare(INSERT_OLD_GROUP).run(
+      12, "grp-old-pool", "custom", "pool group", '["claude-code"]', 1, "subscription_pool",
+      "", "", "", "", 3, "[]",
+    );
+    raw.close();
+  }
+
+  it("adds the source columns to a table that has none and keeps every old value", () => {
+    seedPoolAwareDatabase();
+    const before = readOldColumns();
+    expect(columnNames()).not.toContain("source_name");
+
+    const store = new SqliteMetadataStore(dbPath);
+    store.init();
+    try {
+      expect(columnNames()).toEqual(expect.arrayContaining(SOURCE_COLUMNS));
+      expect(readOldColumns()).toEqual(before);
+      expect(store.getInstanceUpstreamGroup("grp-old-unified")).toMatchObject({
+        source_name: "",
+        source_provider: "",
+        source_formats: [],
+        source_agents: [],
+        source_enabled: false,
+        source_models: [],
+        source_models_fetched_at: null,
+        source_models_error: null,
+        api_key: "old-secret-key",
+        agents: ["cursor"],
+      });
+
+      // The unique index exists after the upgrade.
+      store.updateInstanceUpstreamGroup({
+        group_id: "grp-old-unified", expected_group_type: "custom", source_name: "api-old",
+      });
+      expect(() => store.updateInstanceUpstreamGroup({
+        group_id: "grp-old-pool", expected_group_type: "custom", source_name: "api-old",
+      })).toThrow(/source name/);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("adds only the columns that are missing and does not change data on the next start", () => {
+    seedPoolAwareDatabase();
+    const raw = new DatabaseSync(dbPath);
+    raw.exec("ALTER TABLE meta_instance_upstream_config ADD COLUMN source_name TEXT NOT NULL DEFAULT ''");
+    raw.exec("UPDATE meta_instance_upstream_config SET source_name = 'sub-claude' WHERE group_id = 'grp-old-pool'");
+    raw.close();
+    const before = readOldColumns();
+
+    const first = new SqliteMetadataStore(dbPath);
+    first.init();
+    first.close();
+    const second = new SqliteMetadataStore(dbPath);
+    second.init();
+    try {
+      expect(columnNames().filter((n) => n === "source_name")).toHaveLength(1);
+      expect(columnNames()).toEqual(expect.arrayContaining(SOURCE_COLUMNS));
+      expect(readOldColumns()).toEqual(before);
+      expect(second.getInstanceUpstreamGroup("grp-old-pool")).toMatchObject({
+        source_name: "sub-claude",
+        source_agents: [],
+        source_enabled: false,
+      });
+    } finally {
+      second.close();
+    }
+  });
+
+  it("rebuilds a table without pool mode and still ends with the source columns", () => {
+    seedOldDatabase(dbPath);
+    const before = readOldColumns();
+
+    const store = new SqliteMetadataStore(dbPath);
+    store.init();
+    try {
+      expect(columnNames()).toEqual(expect.arrayContaining(SOURCE_COLUMNS));
+      expect(readOldColumns()).toEqual(before);
+    } finally {
+      store.close();
+    }
+  });
+});
