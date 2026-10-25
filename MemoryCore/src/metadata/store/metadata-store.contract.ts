@@ -1579,6 +1579,29 @@ export function runMetadataStoreContract(
           expect(d.supported_agents_snapshot.sort()).toEqual(["claude-code"]);
         });
 
+        it("legacy pi in default agents: switching pi to omp appends omp, keeps pi until removed, never re-adds pi", async () => {
+          await store.listInstanceUpstreamGroups(undefined, [
+            { agent_source: "claude-code", protocol: "anthropic", display_name: "CC" },
+            { agent_source: "pi", protocol: "openai-chat", display_name: "Pi" },
+          ]);
+          const supportedNow = [
+            { agent_source: "claude-code", protocol: "anthropic" as const, display_name: "CC" },
+            { agent_source: "omp", protocol: "openai-chat" as const, display_name: "oh-my-pi", multi_source: true },
+          ];
+          const listed = await store.listInstanceUpstreamGroups(undefined, supportedNow);
+          const d1 = listed.find((r) => r.group_type === "default")!;
+          expect(d1.agents.sort()).toEqual(["claude-code", "omp", "pi"]);
+          expect(d1.supported_agents_snapshot.sort()).toEqual(["claude-code", "omp"]);
+
+          await store.updateInstanceUpstreamGroup({
+            group_id: d1.group_id, expected_group_type: "default",
+            agents: ["claude-code", "omp"],
+          });
+          const d2 = (await store.listInstanceUpstreamGroups(undefined, supportedNow))
+            .find((r) => r.group_type === "default")!;
+          expect(d2.agents.sort()).toEqual(["claude-code", "omp"]);
+        });
+
         it("场景 F: 无变化 → hot path 零改动(version 不变)", async () => {
           const supported = [
             { agent_source: "claude-code", protocol: "anthropic" as const, display_name: "CC" },

@@ -34,6 +34,8 @@ export interface SupportedAgent {
   protocol: SupportedAgentProtocol;
   /** 前端展示用的可读名(中英文均可) */
   display_name: string;
+  /** true = the agent picks one of many model sources by the `<source>/<model>` prefix. */
+  multi_source?: boolean;
 }
 
 /**
@@ -54,9 +56,11 @@ export const DEFAULT_SUPPORTED_AGENTS: SupportedAgent[] = [
   //    集合定义: src/session/preset.ts HEADER_ONLY_AGENTS
   //    消费点:  handler.ts / anthropicHandler.ts session-reset pre-hook,
   //             session/codebuddy/init.ts header-preselect 早退分支
-  { agent_source: "pi",          protocol: "openai-chat",      display_name: "Pi" },
-  { agent_source: "hermes",      protocol: "anthropic",        display_name: "Hermes" },
-  { agent_source: "openclaw",    protocol: "anthropic",        display_name: "OpenClaw" },
+  //    omp (oh-my-pi) is the only agent of the pi family; `multi_source` agents choose
+  //    between many model sources by the `<source>/<model>` prefix in the model name.
+  { agent_source: "omp",         protocol: "openai-chat",      display_name: "oh-my-pi", multi_source: true },
+  { agent_source: "hermes",      protocol: "anthropic",        display_name: "Hermes",   multi_source: true },
+  { agent_source: "openclaw",    protocol: "anthropic",        display_name: "OpenClaw", multi_source: true },
 ];
 
 /** O(1) 查表:agent_source → SupportedAgent。 */
@@ -68,4 +72,10 @@ const AGENT_MAP: ReadonlyMap<string, SupportedAgent> = new Map(
 export function isSupportedAgent(agentSource: string | undefined | null): boolean {
   if (!agentSource) return false;
   return AGENT_MAP.has(agentSource);
+}
+
+/** True when the agent picks between many model sources by the model name prefix. */
+export function isMultiSourceAgent(agentSource: string | undefined | null): boolean {
+  if (!agentSource) return false;
+  return AGENT_MAP.get(agentSource)?.multi_source === true;
 }

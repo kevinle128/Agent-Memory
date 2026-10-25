@@ -38,6 +38,10 @@ import type { SupportedAgent } from "./types.js";
  *   2. **改本文件常量**(fallback 保证 Core 部署即使忘更新 yaml 也能生效)
  *   3. 可选:改 `tdai-gateway.*.yaml`(运维想显式管理时才需要)
  *   4. 部署 Core → 部署 Proxy
+ *
+ * omp (oh-my-pi) is the only agent of the pi family; there is no separate `pi` agent.
+ * `multi_source: true` marks agents that choose between many model sources by the
+ * `<source>/<model>` prefix in the model name.
  */
 export const DEFAULT_SUPPORTED_AGENTS_FALLBACK: readonly SupportedAgent[] = Object.freeze([
   { agent_source: "claude-code", protocol: "anthropic",        display_name: "Claude Code" },
@@ -46,7 +50,7 @@ export const DEFAULT_SUPPORTED_AGENTS_FALLBACK: readonly SupportedAgent[] = Obje
   { agent_source: "workbuddy",   protocol: "openai-responses", display_name: "WorkBuddy" },
   { agent_source: "dsh",         protocol: "openai-chat",      display_name: "DeepSeek Harness" },
   { agent_source: "opencode",    protocol: "openai-chat",      display_name: "OpenCode" },
-  { agent_source: "pi",          protocol: "openai-chat",      display_name: "Pi" },
-  { agent_source: "hermes",      protocol: "anthropic",        display_name: "Hermes" },
-  { agent_source: "openclaw",    protocol: "anthropic",        display_name: "OpenClaw" },
+  { agent_source: "omp",         protocol: "openai-chat",      display_name: "oh-my-pi", multi_source: true },
+  { agent_source: "hermes",      protocol: "anthropic",        display_name: "Hermes",   multi_source: true },
+  { agent_source: "openclaw",    protocol: "anthropic",        display_name: "OpenClaw", multi_source: true },
 ]) as readonly SupportedAgent[];

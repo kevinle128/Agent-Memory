@@ -788,6 +788,8 @@ export interface SupportedAgent {
   agent_source: string;
   protocol: "anthropic" | "openai-chat" | "openai-responses";
   display_name: string;
+  /** true = the agent picks one of many model sources by the `<source>/<model>` prefix. */
+  multi_source?: boolean;
 }
 
 /**
