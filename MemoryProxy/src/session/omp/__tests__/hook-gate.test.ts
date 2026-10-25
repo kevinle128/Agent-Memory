@@ -8,7 +8,6 @@ import {
 } from "../../../project-scope/session-workspace.js";
 import { GATE_TEXT_MARKER, resetHookGateCache } from "../../hook-gate-core.js";
 import {
-  isOmpRequest,
   OMP_GATE_CALL_PREFIX,
   runOmpHookGate,
   stripOmpGateTurns,
@@ -19,8 +18,8 @@ import {
 const SID = "01a16eab-0b03-708d-8d4f-4bba152cad8e";
 const ORIGIN = "http://127.0.0.1:8096";
 const COMMAND = `curl -fsSL ${ORIGIN}/setup/hooks.sh | bash -s -- --client omp --session ${SID}`;
-/** The hook report route stores omp reports under the route segment `pi`. */
-const KEY = { spaceId: "default", userId: "usr-1", agentSource: "pi", sessionId: SID };
+/** The hook report route stores omp reports under the route segment `omp`. */
+const KEY = { spaceId: "default", userId: "usr-1", agentSource: "omp", sessionId: SID };
 
 let store: SessionWorkspaceStore;
 
@@ -76,7 +75,7 @@ const OK = "Agent-Memory hooks installed.\n\nWall time: 3.2 seconds";
 function params(overrides: Partial<OmpGateParams> = {}, body: Record<string, unknown> = {}): OmpGateParams {
   return {
     config: { hookGate: { enabled: true } },
-    path: "/pi/default/v1/chat/completions",
+    path: "/omp/default/v1/chat/completions",
     headers: { "user-agent": "omp/18.6.3" },
     body: { stream: true, tools: INTERACTIVE_TOOLS, messages: [SYSTEM, PROMPT], ...body },
     sessionId: SID,
@@ -114,9 +113,8 @@ describe("runOmpHookGate: which requests are gated", () => {
     ["a request without bash", {}, { tools: ["ask", "read"].map(fnTool) }, "non-interactive"],
     ["a request without tools", {}, { tools: undefined }, "non-interactive"],
     ["a request that does not stream", {}, { stream: false }, "non-interactive"],
-    ["plain pi", { headers: { "user-agent": "OpenAI/JS 6.26.0" } }, {}, "not-omp"],
-    ["a request without User-Agent", { headers: {} }, {}, "not-omp"],
-    ["another route", { path: "/pi/default/cost-guard/v1/chat/completions" }, {}, "other-route"],
+    ["a request whose User-Agent is not omp", { headers: { "user-agent": "OpenAI/JS 6.26.0" } }, { tools: PRINT_TOOLS }, "non-interactive"],
+    ["another route", { path: "/omp/default/cost-guard/v1/chat/completions" }, {}, "other-route"],
     ["a request without a session id", { sessionId: null }, {}, "no-session-id"],
     ["a session id that is not safe for a shell", { sessionId: "a; rm -rf ~" }, {}, "no-session-id"],
     ["a disabled gate", { config: { hookGate: { enabled: false } } }, {}, "disabled"],
@@ -127,19 +125,22 @@ describe("runOmpHookGate: which requests are gated", () => {
     });
   }
 
-  it("recognises omp by User-Agent", () => {
-    expect(isOmpRequest({ "user-agent": "omp/18.12.6" })).toBe(true);
-    expect(isOmpRequest({ "user-agent": "OpenAI/JS 6.26.0" })).toBe(false);
-    expect(isOmpRequest({})).toBe(false);
+  it("gates the route without /v1 too", async () => {
+    expect(await runOmpHookGate(params({ path: "/omp/default/chat/completions" }))).toMatchObject({ action: "respond" });
   });
 
-  it("passes when the session has a report under the pi route key", async () => {
+  it("gates by route, not by User-Agent", async () => {
+    expect(await runOmpHookGate(params({ headers: {} }))).toMatchObject({ action: "respond" });
+    expect(await runOmpHookGate(params({ path: "/pi/default/v1/chat/completions" }))).toMatchObject({ action: "pass", reason: "other-route" });
+  });
+
+  it("passes when the session has a report under the omp route key", async () => {
     await store.put(KEY, report());
     expect(await runOmpHookGate(params())).toMatchObject({ action: "pass", reason: "installed" });
   });
 
   it("does not take a report that is stored under another agent source", async () => {
-    await store.put({ ...KEY, agentSource: "omp" }, report());
+    await store.put({ ...KEY, agentSource: "pi" }, report());
     expect((await runOmpHookGate(params())).action).toBe("respond");
   });
 
@@ -262,7 +263,7 @@ describe("runOmpHookGate: gate turns are removed on every pass", () => {
   const cases: Array<[string, Partial<OmpGateParams>, Record<string, unknown>]> = [
     ["the gate is switched off", { config: { hookGate: { enabled: false } } }, {}],
     ["the run is omp -p", {}, { tools: PRINT_TOOLS }],
-    ["the client is plain pi", { headers: { "user-agent": "OpenAI/JS 6.26.0" } }, {}],
+    ["the route is not an omp route", { path: "/pi/default/v1/chat/completions" }, {}],
     ["the request has no session id", { sessionId: null }, {}],
     ["the request does not stream", {}, { stream: false }],
   ];

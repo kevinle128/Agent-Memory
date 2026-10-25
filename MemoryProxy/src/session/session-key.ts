@@ -42,19 +42,19 @@ export function resolveConversationId(c: Context): string | null {
 }
 
 /**
- * Session id of a pi request. It equals the id the pi extension reports in the
- * hook, so the proxy session key joins the hook report. Only call this for pi:
- * other clients may use these header names with a different meaning.
+ * Session id of an omp request. It equals the id the omp extension reports in
+ * the hook, so the proxy session key joins the hook report. Only call this for
+ * omp (path agent `omp`): other clients may use these header names with a
+ * different meaning.
  *
- * pi sends the id in a header when `compat.sendSessionAffinityHeaders` is on.
- * oh-my-pi (User-Agent `omp/<version>`) sends no session header to a custom
- * provider. With `compat.supportsPromptCacheKey: true` it sends the same id in
+ * omp sends the id in a header when `compat.sendSessionAffinityHeaders` is on.
+ * Otherwise, with `compat.supportsPromptCacheKey: true`, it sends the same id in
  * the body field `prompt_cache_key`, which is read when `body` is given.
  */
-export function resolvePiSessionId(c: Context, body?: Record<string, unknown>): string | null {
+export function resolveOmpSessionId(c: Context, body?: Record<string, unknown>): string | null {
   const id = c.req.header("session_id") ?? c.req.header("x-session-affinity") ?? null;
   if (id && id.length > 0) return id;
-  if (body && /^omp\//i.test(c.req.header("user-agent") ?? "")) {
+  if (body) {
     const key = body.prompt_cache_key;
     if (typeof key === "string" && SESSION_ID_RE.test(key)) return key;
   }

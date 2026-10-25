@@ -1,18 +1,19 @@
-// Agent-Memory extension for pi and oh-my-pi. Installed as ~/.pi/agent/extensions/agent-memory.ts
-// (pi) or ~/.omp/agent/extensions/agent-memory.ts (omp).
+// Agent-Memory extension for oh-my-pi (omp). Installed as ~/.omp/agent/extensions/agent-memory.ts
+// by `install.sh --client omp`. The file keeps its old name, so that earlier installers and
+// `--uninstall --client pi` still find it.
 //
 // It sends the working directory and git identity of the session to the
 // Agent-Memory proxy, like the hook.sh script does for Claude Code and Codex.
 // The proxy uses them to find the project of the session.
 //
 // Rules for this extension:
-//   - It never throws into pi, never prints, and never blocks a prompt for more
+//   - It never throws into omp, never prints, and never blocks a prompt for more
 //     than REPORT_TIMEOUT_MS.
 //   - It reports only to the base URL of the active model when that URL is an
-//     Agent-Memory pi route (".../pi/<space>/v1"). The API key of any other
+//     Agent-Memory omp route (".../omp/<space>" or ".../omp/<space>/v1"). The API key of any other
 //     provider is never sent.
 //
-// No type import from the pi package: pi and its forks publish the types under
+// No type import from the omp package: pi-family agents publish the types under
 // different package names. Only the members used here are declared.
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -23,8 +24,8 @@ import { join } from "node:path";
 const HOOK_VERSION = "1";
 const REPORT_TIMEOUT_MS = 2000;
 const GIT_TIMEOUT_MS = 1500;
-// The proxy route of the pi agent: <origin>/pi/<space>/v1
-const PI_ROUTE_RE = /^(https?:\/\/.+\/pi\/[^/]+)\/v1\/?$/;
+// The proxy route of the omp agent: <origin>/omp/<space>, with an optional /v1
+const OMP_ROUTE_RE = /^(https?:\/\/.+\/omp\/[^/]+?)(?:\/v1)?\/?$/;
 
 interface PiModel {
   baseUrl?: string;
@@ -120,12 +121,12 @@ async function deviceId(): Promise<string | null> {
   }
 }
 
-/** Report URL and credentials of the active model, or null when it is not an Agent-Memory pi route. */
+/** Report URL and credentials of the active model, or null when it is not an Agent-Memory omp route. */
 export async function resolveTarget(
   ctx: PiContext,
 ): Promise<{ url: string; headers: Record<string, string> } | null> {
   const model = ctx.model;
-  const match = typeof model?.baseUrl === "string" ? PI_ROUTE_RE.exec(model.baseUrl) : null;
+  const match = typeof model?.baseUrl === "string" ? OMP_ROUTE_RE.exec(model.baseUrl) : null;
   if (!model || !match) return null;
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (auth.ok === false) return null;
@@ -151,7 +152,7 @@ async function report(ctx: PiContext, hookEvent: string): Promise<boolean> {
     git_remote: ws.gitRemote,
     hook_event: hookEvent,
     hook_version: HOOK_VERSION,
-    client: "pi",
+    client: "omp",
     os: platform(),
     arch: arch(),
     hostname: hostname(),

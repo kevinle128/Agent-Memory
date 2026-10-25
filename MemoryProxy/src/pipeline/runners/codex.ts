@@ -64,6 +64,9 @@ import { resolveModelId } from "../../pricing.js";
 import { codexAdapter } from "../../agent-adapters/codex.js";
 import { runCodexHookGate, stripCodexGateTurns } from "../../session/codex/hook-gate.js";
 import { resolveProxyOrigin } from "../../session/hook-gate-core.js";
+import { resolveConversationId, resolveOmpSessionId } from "../../session/session-key.js";
+import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
+import type { ModelSourceResolution } from "../stages/model-source.js";
 import {
   DEFAULT_GATE_PREFIX,
   buildFormResponse as buildCodexFormResponse,
@@ -266,6 +269,20 @@ function buildUpstreamHeaders(
 
 // filterResponseHeaders 合并到 common/constants.ts
 
+// ── Agent of the request ─────────────────────────────────────────────────────
+
+/** Agents, besides codex, that reach this runner on the Responses wire. */
+export const RESPONSES_SOURCE_AGENTS = ["omp", "hermes", "openclaw"] as const;
+
+/**
+ * The agent of a request, from the first path segment. Only the listed agents run the pipeline
+ * as themselves; every other path (`/codex`, `/proxy`, ...) runs as codex, as before.
+ */
+export function resolveCodexRunnerAgent(path: string): string {
+  const first = path.split("/").filter(Boolean)[0]?.toLowerCase() ?? "";
+  return (RESPONSES_SOURCE_AGENTS as readonly string[]).includes(first) ? first : "codex";
+}
+
 // ── Main handler ─────────────────────────────────────────────────────────────
 
 /**
@@ -314,11 +331,26 @@ export async function runCodexPipeline(
     if (wecomIdentity.kind !== "resolved") return wecomIdentity.response;
     wecomName = wecomIdentity.name;
   }
-  const poolRejection = poolServiceRejection(config, body.model);
-  if (poolRejection) return c.json(poolRejection, 400);
+  // Codex-only branches below stay behind `agent === "codex"`; the other agents share the rest.
+  const agent = resolveCodexRunnerAgent(path);
+  // `<source>/<model>` of a multi-source agent. Returns `none` before any other work for every
+  // other agent, so the pool-service and main-model steps below run unchanged for them.
+  const modelSource = await stageModelSource({
+    config, agent, spaceId: extractSpaceIdFromPath(path) ?? "",
+    format: "openai-responses", model: body.model, servesPool: true,
+  });
+  // Responses clients read `error.type` and `error.message`, which the Anthropic envelope carries.
+  if (modelSource.kind === "error") return modelSourceErrorResponse(c, "anthropic", modelSource);
+  const matchedSource = modelSource.kind === "matched" ? modelSource : null;
+  if (matchedSource) applyModelSource(c, body, matchedSource, agent);
+  if (!matchedSource) {
+    const poolRejection = poolServiceRejection(config, body.model);
+    if (poolRejection) return c.json(poolRejection, 400);
+  }
   // A pool request goes to the ChatGPT backend, which only knows the client's own model name.
   const clientModel = typeof body.model === "string" ? body.model : "";
-  applyMainModel(body);
+  if (!matchedSource) applyMainModel(body);
+  const presetResolution = matchedSource?.resolution;
 
   // ── 3. Extract headers as plain object ─────────────────────────────────────
   const headers: Record<string, string> = {};
@@ -330,11 +362,11 @@ export async function runCodexPipeline(
   // 由 agent.stageGates.identityRecord 门控 (codex 现走 full preset, 恒 true)。
   // 历史上 codex 起步 minimal 且需显式 flip; 后因 B1-B8 修复在 minimal 下不生效
   // 而统一改为 full, 保留 gate 判据以便按档位回滚。
-  const codexAgent = resolveAgentStrategy("codex");
+  const codexAgent = resolveAgentStrategy(agent);
   const reqHeadersForIdentity: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) reqHeadersForIdentity[k] = v;
   if (codexAgent.stageGates.identityRecord) {
-    stageIdentity(c, body, "codex");
+    stageIdentity(c, body, agent);
   }
 
   // ── DEBUG: dump request_user_input tool schema once so we can see codex's
@@ -377,7 +409,7 @@ export async function runCodexPipeline(
       const { getInstanceUpstreamConfigs, resolveForAgent, shouldOverride } =
         await import("../../instance-upstream-cache.js");
       const cfgs = await getInstanceUpstreamConfigs(config.coreSkill, _spaceIdForGate, config.instanceUpstream);
-      const _codexResolution = resolveForAgent(cfgs, "codex");
+      const _codexResolution = presetResolution ?? resolveForAgent(cfgs, agent);
       _codexIsPool = _codexResolution.kind === "pool";
       _codexIsCustomUpstream = !isAuxiliary && (shouldOverride(_codexResolution) || _codexIsPool);
     } catch {
@@ -397,7 +429,9 @@ export async function runCodexPipeline(
   }
 
   if (_codexIsPool && clientModel) body.model = clientModel;
-  const modelId = _codexIsPool ? (clientModel || requestedModel) : resolveModelId(config.creditPricing, requestedModel);
+  const modelId = _codexIsPool || matchedSource
+    ? (clientModel || requestedModel)
+    : resolveModelId(config.creditPricing, requestedModel);
   // 对外展示名只用于客户端请求；TokenHub 只接受价目表中登记的真实服务 ID。
   if (typeof body.model === "string" && modelId !== requestedModel) {
     body.model = modelId;
@@ -410,13 +444,17 @@ export async function runCodexPipeline(
     pipe.info("CODEX_AUX", `auxiliary request → passthrough (path=${path})`);
     // aux 不上报 langfuse（跟 CC/CB 对齐——sidequery/fork 类 aux 不算真对话轮）
     // A compaction request carries the whole history, so it must not carry the hook gate items.
-    return forwardToUpstream(c, config, stripCodexGateTurns(body), traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null);
+    return forwardToUpstream(c, config, stripCodexGateTurns(body), traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null, null, presetResolution);
   }
 
   // ── 6. Session ID extraction ───────────────────────────────────────────────
-  const sessionId = extractCodexSessionId(headers, body);
+  // omp, hermes and openclaw send the shared conversation headers; omp also sends the id as
+  // `prompt_cache_key`. Codex keeps its own lookup.
+  const sessionId = agent === "codex"
+    ? extractCodexSessionId(headers, body)
+    : resolveConversationId(c) ?? (agent === "omp" ? resolveOmpSessionId(c, body) : null);
   const sessionKey = sessionId ?? `${keyId}:${traceId}`;
-  const agentSource = "codex";
+  const agentSource = agent;
   const isStream = body.stream !== false;
 
   // ── 6a. Hook gate (before anything stores or forwards the turn) ────────────
@@ -424,7 +462,7 @@ export async function runCodexPipeline(
   // instead of a model answer. A gated turn returns here, so it writes no L0,
   // buffers no skill and bills no upstream call. On a pass, the body has the
   // synthetic gate items removed, and the turn counters below read that body.
-  {
+  if (agent === "codex") {
     const gate = await runCodexHookGate({
       config, path, headers, body, sessionId,
       // The key of the hook report route: the verified id, else "anonymous".
@@ -489,7 +527,7 @@ export async function runCodexPipeline(
     return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, lf, null, {
       seed: sessionTurnSeed,
       authUserId: userId,
-    });
+    }, presetResolution);
   }
 
   // ── 7. Session-init state machine ──────────────────────────────────────────
@@ -723,14 +761,14 @@ export async function runCodexPipeline(
       const memResp = await stageMemCommandIntercept({
         enabled: true,
         body: body as Record<string, unknown>,
-        agentSource: "codex", sessionKey,
+        agentSource, sessionKey,
         sessionInfo: sessionInfo as Record<string, unknown> | null | undefined,
         injectionSkipped, sessionJustRegistered: false,
         config, spaceId, userId: userId || "", apiKey: apiKey || "",
         callerUserKey: callerUserKey ?? undefined,
         isStream, protocol: "responses",
         modelId,
-        upstreamUrl: config.upstream.agents?.["codex"]?.url || config.upstream.url,
+        upstreamUrl: config.upstream.agents?.[agent]?.url || config.upstream.url,
         messages: input,
         createTdaiClientFn: createCodexTdaiClient,
         bodyMessages: extractSimpleMessages(input),
@@ -896,7 +934,7 @@ export async function runCodexPipeline(
     seed: sessionTurnSeed,
     sessionInfo,
     authUserId: userId,
-  });
+  }, presetResolution);
 }
 
 // ── Archive context (skill/conversation/add + TDAI L0 write) ─────────────────
@@ -1055,12 +1093,14 @@ async function forwardToUpstream(
   lf: LangfuseTurnContext | null,
   archiveCtx: CodexArchiveCtx | null = null,
   sessionTurn: PendingSessionTurn | null = null,
+  presetResolution?: ModelSourceResolution,
 ): Promise<Response> {
+  const agent = resolveCodexRunnerAgent(c.req.path);
   // Per-agent upstream override (upstream.agents.codex.url) 优先于全局 url。
   // 对齐 anthropicHandler.ts:1029 的解析姿势。codex 通常需要单独指向支持
   // Responses API 的兼容层——部分 OpenAI 兼容上游只实现
   // messages/chat_completions，不支持 /responses，此处允许按 agent 覆盖。
-  const agentUpstreamEntry = config.upstream.agents?.["codex"];
+  const agentUpstreamEntry = config.upstream.agents?.[agent];
   let upstreamBase = agentUpstreamEntry?.url || config.upstream.url;
   let upstreamUrl = joinUrl(upstreamBase, c.req.path);
   const upstreamHeaders = buildUpstreamHeaders(c, config);
@@ -1082,12 +1122,13 @@ async function forwardToUpstream(
   // 实例没把 codex 写进 agents 列表时 unmanaged → 400 把协议路由堵死。
   const spaceId = extractSpaceIdFromPath(c.req.path) ?? "";
   const _upstreamResolve = await stageInstanceUpstreamResponses({
-    agent: "codex",
+    agent,
     spaceId,
     config,
     pathForOverride: c.req.path,
     forceOfficial: isLegacyProxyPath(c.req.path),
     poolSupported: true,
+    presetResolution,
   });
   if (isInstanceUpstreamBlocked(_upstreamResolve)) {
     return c.json(_upstreamResolve.errorBody, 400);
@@ -1104,6 +1145,10 @@ async function forwardToUpstream(
         body,
         userKey: extractApiKeyFromContext(c, "bearer-first"),
         bindSession: lf !== null,
+        // The agents that are not codex name the conversation in `prompt_cache_key`.
+        sessionId: agent !== "codex" && typeof body.prompt_cache_key === "string" && body.prompt_cache_key
+          ? body.prompt_cache_key
+          : undefined,
       })
     : null;
   if (poolRequest) {
@@ -1201,7 +1246,7 @@ async function forwardToUpstream(
   // Bug B1 fix (handler-audit): 老 codex 完全不接 enforceRateLimit, 上游 quota 被
   // 打爆时无法保护自家运营账号。由 codex agent.stageGates.rateLimit 门控 (现走 full
   // preset, 恒 true)。custom upstream (用户自付) 时用户自己管 quota, 跳过。
-  const codexAgentForForward = resolveAgentStrategy("codex");
+  const codexAgentForForward = resolveAgentStrategy(agent);
   if (codexAgentForForward.stageGates.rateLimit && !skipCreditReport) {
     try {
       await enforceRateLimit({
@@ -1434,6 +1479,7 @@ async function forwardToUpstream(
     pipe,
     config,
     requestPath: c.req.path,
+    agentSource: agent,
     keyId,
     obsProjectName,
     sessionKey: lf?.sessionId ?? keyId,
@@ -1497,6 +1543,8 @@ export interface CodexTapContext {
   pipe: ReturnType<typeof createPipeline>;
   config?: ProxyConfig;
   requestPath?: string;
+  /** Agent of the request. Default `codex`. */
+  agentSource?: string;
   keyId?: string;
   /** Opik project the turn trace was created in (`wecomName || keyId`). */
   obsProjectName?: string;
@@ -1661,7 +1709,8 @@ export function consumeCodexStream(stream: ReadableStream<Uint8Array>, ctx: Code
       }
 
       // ── Opik LLM span (bug B7 fix, gated by stageGates.opik) ──
-      const codexAgent = resolveAgentStrategy("codex");
+      const tapAgentSource = ctx.agentSource ?? "codex";
+      const codexAgent = resolveAgentStrategy(tapAgentSource);
       if (ctx.config && Object.keys(usage).length > 0) {
         const output = outputText
           ? { role: "assistant" as const, content: outputText }
@@ -1694,11 +1743,11 @@ export function consumeCodexStream(stream: ReadableStream<Uint8Array>, ctx: Code
       // ── ModelIntent telemetry (bug B4 fix, gated by stageGates.modelIntentTelemetry) ──
       stageEmitModelIntent({
         gates: codexAgent.stageGates,
-        sessionKey: `codex:${ctx.sessionKey}`,
+        sessionKey: `${tapAgentSource}:${ctx.sessionKey}`,
         turnSeq: lf?.turnSeq ?? 0,
         spaceId: ctx.spaceId,
         userId: ctx.keyId ?? "unknown",
-        agentSource: "codex",
+        agentSource: tapAgentSource,
         intents: toolCalls.filter((tc) => tc.name).map((tc) => ({ name: tc.name, arguments: tc.arguments })),
       });
 

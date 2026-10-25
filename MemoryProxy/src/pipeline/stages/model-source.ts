@@ -151,7 +151,7 @@ export function applyModelSource(
   body.model = matched.upstreamModel;
   c.set("clientFacingModel", matched.clientModel);
   console.log(
-    `[model-source] agent=${agent} source=${matched.sourceName} format=${matched.format} kind=${matched.resolution.kind} model=${matched.upstreamModel}`,
+    `[model-source] agent=${agent} source=${matched.sourceName} group=${matched.groupId} format=${matched.format} kind=${matched.resolution.kind} model=${matched.upstreamModel}`,
   );
   return {
     model_source: matched.sourceName,

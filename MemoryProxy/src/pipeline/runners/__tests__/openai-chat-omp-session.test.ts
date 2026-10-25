@@ -1,6 +1,6 @@
 /**
- * OpenAI-chat runner: the pi agent takes its session key from the session id
- * header that pi sends, so the key joins the workspace the pi extension
+ * OpenAI-chat runner: the omp agent takes its session key from the session id
+ * header that omp sends, so the key joins the workspace the omp extension
  * reported. Other agents do not read that header.
  */
 import { Hono } from "hono";
@@ -67,7 +67,7 @@ const l0Writes = (calls: ReturnType<typeof installFetch>) =>
 beforeEach(async () => {
   resetPoolState();
   const store = new SessionWorkspaceStore(new MemoryStorage());
-  for (const agentSource of ["pi", "opencode"]) {
+  for (const agentSource of ["omp", "opencode"]) {
     await store.put(
       { spaceId: "default", userId: "usr-1", agentSource, sessionId: SESSION },
       {
@@ -96,24 +96,24 @@ function usedSessionKey(log: ReturnType<typeof vi.spyOn>): string | undefined {
   return undefined;
 }
 
-describe("openai-chat runner session key for pi", () => {
-  it("uses the session_id header for pi, so the L0 write carries the reported project", async () => {
+describe("openai-chat runner session key for omp", () => {
+  it("uses the session_id header for omp, so the L0 write carries the reported project", async () => {
     const log = vi.spyOn(console, "log");
-    const writes = l0Writes(await send("pi", { session_id: SESSION }));
+    const writes = l0Writes(await send("omp", { session_id: SESSION }));
     expect(usedSessionKey(log)).toBe(SESSION);
     expect(writes.length).toBeGreaterThan(0);
     expect(JSON.parse(writes[0]!.body)).toMatchObject({ project_key: "git:h/x/demo", project_hash: "0123456789abcdef" });
   });
 
-  it("uses the x-session-affinity header for pi", async () => {
+  it("uses the x-session-affinity header for omp", async () => {
     const log = vi.spyOn(console, "log");
-    await send("pi", { "x-session-affinity": SESSION });
+    await send("omp", { "x-session-affinity": SESSION });
     expect(usedSessionKey(log)).toBe(SESSION);
   });
 
-  it("falls back to the key id for pi without a session header", async () => {
+  it("falls back to the key id for omp without a session header", async () => {
     const log = vi.spyOn(console, "log");
-    const writes = l0Writes(await send("pi", {}));
+    const writes = l0Writes(await send("omp", {}));
     expect(usedSessionKey(log)).not.toBe(SESSION);
     for (const w of writes) expect(JSON.parse(w.body)).not.toHaveProperty("project_key");
   });

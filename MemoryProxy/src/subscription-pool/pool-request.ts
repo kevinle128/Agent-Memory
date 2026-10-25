@@ -67,6 +67,8 @@ export interface PoolRequestInput {
   userKey: string;
   /** True for a dialogue turn: it may create or move the Session Binding. False reads only. */
   bindSession: boolean;
+  /** Conversation id chosen by the caller. When set, it replaces the id read from headers and body. */
+  sessionId?: string;
   now?: () => number;
   signal?: AbortSignal;
 }
@@ -152,7 +154,7 @@ class PoolRequestImpl implements PoolRequest {
     const bearer = (input.clientHeaders.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
     this.clientLoginAllowed = Boolean(userKeyHeader) && Boolean(bearer) && bearer !== userKeyHeader
       && bearer !== (input.userKey ?? "");
-    const sessionId = extractPoolSessionId(input.clientHeaders, input.body);
+    const sessionId = input.sessionId || extractPoolSessionId(input.clientHeaders, input.body);
     this.sessionKey = sessionId ? `session:${sessionId}` : input.userKey ? `user:${input.userKey}` : null;
     try {
       this.storage = getProxyStorage(input.config.storage);

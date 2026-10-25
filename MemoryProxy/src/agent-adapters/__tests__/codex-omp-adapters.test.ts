@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { codexAdapter } from "../codex.js";
-import { piAdapter } from "../pi.js";
+import { ompAdapter } from "../omp.js";
 import { classifyCodexRequest } from "../../pipeline/runners/codex.js";
 
 const TITLE_META = JSON.stringify({ session_id: "s", thread_source: "thread_title", model: "gpt-5.5" });
@@ -34,24 +34,24 @@ describe("codex thread_title classification", () => {
   });
 });
 
-describe("piAdapter user text", () => {
+describe("ompAdapter user text", () => {
   const reminder = { type: "text", text: "<system-reminder>\nToday: 2026-10-24; current working directory: '/w'.\n</system-reminder>" };
 
   it("drops the leading system-reminder part of an omp prompt", () => {
-    expect(piAdapter.extractUserText([reminder, { type: "text", text: "mem: status" }])).toBe("mem: status");
+    expect(ompAdapter.extractUserText([reminder, { type: "text", text: "mem: status" }])).toBe("mem: status");
   });
 
   it("keeps a plain string and a one-part array", () => {
-    expect(piAdapter.extractUserText("hello")).toBe("hello");
-    expect(piAdapter.extractUserText([{ type: "text", text: "hello" }])).toBe("hello");
+    expect(ompAdapter.extractUserText("hello")).toBe("hello");
+    expect(ompAdapter.extractUserText([{ type: "text", text: "hello" }])).toBe("hello");
   });
 
   it("keeps every typed part", () => {
-    expect(piAdapter.extractUserText([reminder, { type: "text", text: "a" }, { type: "text", text: "b" }])).toBe("a\nb");
+    expect(ompAdapter.extractUserText([reminder, { type: "text", text: "a" }, { type: "text", text: "b" }])).toBe("a\nb");
   });
 
   it("returns null when only the reminder is present", () => {
-    expect(piAdapter.extractUserText([reminder])).toBeNull();
-    expect(piAdapter.extractUserText("")).toBeNull();
+    expect(ompAdapter.extractUserText([reminder])).toBeNull();
+    expect(ompAdapter.extractUserText("")).toBeNull();
   });
 });

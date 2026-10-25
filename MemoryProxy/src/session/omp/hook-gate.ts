@@ -1,8 +1,8 @@
 /**
  * Mandatory project hook for interactive oh-my-pi (omp) sessions.
  *
- * omp is a fork of pi and talks to the proxy on the pi route
- * (`/pi/<space>/v1/chat/completions`). The proxy learns the project of a session
+ * omp talks to the proxy on the omp route
+ * (`/omp/<space>/v1/chat/completions`, or without `/v1`). The proxy learns the project of a session
  * only from the client hook report (see project-scope/session-workspace.ts and
  * session/hook-gate-core.ts). An omp terminal session without a report gets no
  * model answer. The proxy answers with a `bash` tool call that runs the
@@ -23,7 +23,6 @@
  *
  * Which requests are gated (captured with omp 18.6.3)
  * ---------------------------------------------------
- *   User-Agent   `omp/<version>`; plain pi sends `OpenAI/JS <version>`
  *   tools        `-p`, rpc and SDK runs do not offer `ask`. Only the terminal
  *                does, so the gate needs `ask` and `bash`.
  *   session id   omp sends no session header to a custom provider. With
@@ -31,8 +30,8 @@
  *                `prompt_cache_key`, which equals the id its extension reports.
  *                The caller resolves the id. Without one the gate does not run.
  *
- * The hook report route stores the report under the agent source `pi`, the
- * first segment of the route, so the lookup uses `pi` and not `omp`.
+ * The hook report route stores the report under the agent source `omp`, the
+ * first segment of the route, so the lookup uses the same value.
  *
  * Every pass removes the synthetic gate turns from the history first, so that a
  * resumed session or a proxy with the gate switched off never sends the
@@ -63,18 +62,17 @@ import {
 /** `tool_call_id` prefix of every gate tool call. The tool message that answers it carries the same id. */
 export const OMP_GATE_CALL_PREFIX = "call_omp_hook_gate_";
 
-const OMP_USER_AGENT_RE = /^omp\//i;
-/** The route of the pi agent that has a hook report route beside it. */
-const GATED_PATH_RE = /^\/pi\/[^/]+\/v1\/chat\/completions\/?$/;
+/** The route of the omp agent that has a hook report route beside it. */
+const GATED_PATH_RE = /^\/omp\/[^/]+\/(?:v1\/)?chat\/completions\/?$/;
 /** The hook report route keys reports by the first route segment. */
-const REPORT_AGENT_SOURCE = "pi";
+const REPORT_AGENT_SOURCE = "omp";
 const INTENT = "Install the Agent-Memory project hook";
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 export interface OmpGateParams {
   config: GateConfig;
-  /** Request path, for example `/pi/default/v1/chat/completions`. */
+  /** Request path, for example `/omp/default/v1/chat/completions`. */
   path: string;
   /** Lower-cased request header names. */
   headers: Record<string, string>;
@@ -97,21 +95,15 @@ export type OmpGateResult =
   /** Answer the client with `response`. Nothing goes upstream and nothing is stored. */
   | { action: "respond"; response: Response; reason: string };
 
-/** True when the request comes from omp, which is the only pi flavour that the gate covers. */
-export function isOmpRequest(headers: Record<string, string>): boolean {
-  return OMP_USER_AGENT_RE.test(headers["user-agent"] ?? "");
-}
-
 let warnedNoSessionId = false;
 
-/** Decide what to do with one pi-route request. Never throws: a failed report lookup lets the request through. */
+/** Decide what to do with one omp-route request. Never throws: a failed report lookup lets the request through. */
 export async function runOmpHookGate(params: OmpGateParams): Promise<OmpGateResult> {
   const { body } = params;
   const pass = (reason: string): OmpGateResult => ({ action: "pass", body: stripOmpGateTurns(body), reason });
 
   if (!isGateEnabled(params.config)) return pass("disabled");
   if (!GATED_PATH_RE.test(params.path)) return pass("other-route");
-  if (!isOmpRequest(params.headers)) return pass("not-omp");
   if (body.stream !== true || !(offersTool(body, "ask") && offersTool(body, "bash"))) return pass("non-interactive");
 
   const sessionId = params.sessionId;

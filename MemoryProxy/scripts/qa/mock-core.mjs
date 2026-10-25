@@ -7,7 +7,7 @@
  *   POST /v3/internal/meta/instance-upstream/list → 按 MOCK_MODE 返回不同 rows
  *
  * MOCK_MODE:
- *   blocked-default   → default 组 enabled=false（覆盖 pi）→ 期望 400 UPSTREAM_DISABLED
+ *   blocked-default   → default 组 enabled=false（覆盖 omp）→ 期望 400 UPSTREAM_DISABLED
  *   blocked-custom    → custom 组 enabled=false（覆盖 codebuddy）→ 期望 400 UPSTREAM_DISABLED
  *   unmanaged         → 只声明部分 agent，其余落 unmanaged → 期望 400 AGENT_NOT_CONFIGURED
  *   pool              → codex 落在 subscription_pool 组；两个账号 (acc-1, acc-2)，token 为
@@ -23,7 +23,7 @@ const PORT = Number(process.env.MOCK_PORT || 18500);
 const MODE = process.env.MOCK_MODE || "blocked-default";
 
 function rowsFor(mode) {
-  const allAgents = ["claude-code", "codebuddy", "codex", "workbuddy", "dsh", "opencode", "pi", "hermes", "openclaw"];
+  const allAgents = ["claude-code", "codebuddy", "codex", "workbuddy", "dsh", "opencode", "omp", "hermes", "openclaw"];
   if (mode === "blocked-default") {
     return [{
       id: 1, group_id: "dflt-mock", group_type: "default", name: "mock-default",

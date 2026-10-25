@@ -184,7 +184,7 @@ const PROXY_PREFIX_RE = /^\/proxy\/[^/]+/;
  *     `/v1/embeddings` 等）永远到不了上游，且启动阶段无任何报错。
  * 新增 agent 路由时同步补这里；更稳妥的做法是让路由注册与本名单共用同一份来源。
  */
-const AGENT_PREFIX_RE = /^\/(claude-code|codebuddy|codex|cursor|anthropic|openai|pi|dsh)(?:\/[^/]+)?(?=\/v1\/|\/responses(?:\/|$)|\/memories\/|\/realtime\/)/i;
+const AGENT_PREFIX_RE = /^\/(claude-code|codebuddy|codex|cursor|anthropic|openai|omp|hermes|openclaw|dsh)(?:\/[^/]+)?(?=\/v1\/|\/responses(?:\/|$)|\/memories\/|\/realtime\/)/i;
 
 /**
  * `/cost-guard` marker 正则：位于 `/{agent}/{spaceId}` 之后的独立 segment。

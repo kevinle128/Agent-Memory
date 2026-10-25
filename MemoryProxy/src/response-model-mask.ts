@@ -44,7 +44,10 @@ export async function maskResponseModel(resp: Response, model: string): Promise<
   return new Response(maskJsonText(text, model), { status: resp.status, statusText: resp.statusText, headers });
 }
 
-/** Rewrite `model` (OpenAI, Anthropic) and `message.model` (Anthropic message_start). */
+/**
+ * Rewrite `model` (OpenAI, Anthropic), `message.model` (Anthropic message_start) and
+ * `response.model` (the Responses events `response.created`, `response.completed`, ...).
+ */
 function maskPayload(payload: unknown, model: string): boolean {
   if (!payload || typeof payload !== "object") return false;
   const obj = payload as Record<string, unknown>;
@@ -56,6 +59,11 @@ function maskPayload(payload: unknown, model: string): boolean {
   const message = obj.message as Record<string, unknown> | undefined;
   if (message && typeof message === "object" && typeof message.model === "string" && message.model !== model) {
     message.model = model;
+    changed = true;
+  }
+  const response = obj.response as Record<string, unknown> | undefined;
+  if (response && typeof response === "object" && typeof response.model === "string" && response.model !== model) {
+    response.model = model;
     changed = true;
   }
   return changed;

@@ -1,15 +1,15 @@
 /**
- * OpenAI-chat runner, pi route: an interactive omp session without a hook
+ * OpenAI-chat runner, omp route: an interactive omp session without a hook
  * report is answered by the hook gate. A gated turn reaches no upstream, writes
  * no L0 and starts no session-init. omp sends its session id in the body field
- * `prompt_cache_key`. Plain pi and `omp -p` are not gated.
+ * `prompt_cache_key`. `omp -p` is not gated.
  */
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryStorage } from "../../../storage/memory-storage.js";
 import { SessionWorkspaceStore, setSessionWorkspaceStore } from "../../../project-scope/session-workspace.js";
-import { OMP_GATE_CALL_PREFIX } from "../../../session/pi/hook-gate.js";
+import { OMP_GATE_CALL_PREFIX } from "../../../session/omp/hook-gate.js";
 import { resetHookGateCache } from "../../../session/hook-gate-core.js";
 import { createHookReportHandler } from "../../../routes/hook-report.js";
 import { runOpenaiChatPipeline } from "../openai-chat.js";
@@ -77,7 +77,7 @@ async function send(options: SendOptions = {}) {
   app.post("/:agent/:spaceId/v1/chat/completions", (c) => runOpenaiChatPipeline(c, config));
   app.post("/:agent/:spaceId/v3/hook/report", (c) => createHookReportHandler(config)(c));
   await options.beforeSend?.(app);
-  const res = await app.request("/pi/default/v1/chat/completions", {
+  const res = await app.request("/omp/default/v1/chat/completions", {
     method: "POST",
     headers: {
       "content-type": "application/json", authorization: "Bearer k",
@@ -115,7 +115,7 @@ afterEach(() => {
 
 async function putReport() {
   await store.put(
-    { spaceId: "default", userId: "usr-1", agentSource: "pi", sessionId: SESSION },
+    { spaceId: "default", userId: "usr-1", agentSource: "omp", sessionId: SESSION },
     {
       sessionId: SESSION, deviceId: "d1", client: "omp", cwd: "/w", gitToplevel: null, gitRemote: null,
       projectKey: null, projectHash: null, projectLabel: null, hookEvent: "Install", hookVersion: "1",
@@ -146,7 +146,7 @@ describe("openai-chat runner hook gate for omp", () => {
   it("passes once the extension posted its report to the real report route", async () => {
     const { calls } = await send({
       beforeSend: async (app) => {
-        const res = await app.request("/pi/default/v3/hook/report", {
+        const res = await app.request("/omp/default/v3/hook/report", {
           method: "POST",
           headers: { "content-type": "application/json", authorization: "Bearer k" },
           body: JSON.stringify({
@@ -166,10 +166,10 @@ describe("openai-chat runner hook gate for omp", () => {
     expect(JSON.parse(modelCalls(calls)[0]!.body).messages).toEqual([PROMPT]);
   });
 
-  it("does not gate plain pi, even with an ask tool and the same key field", async () => {
+  it("gates on the omp route whatever the User-Agent says", async () => {
     const { text, calls } = await send({ userAgent: "OpenAI/JS 6.26.0" });
-    expect(text).not.toContain(OMP_GATE_CALL_PREFIX);
-    expect(modelCalls(calls)).toHaveLength(1);
+    expect(text).toContain(OMP_GATE_CALL_PREFIX);
+    expect(calls.upstreamCalls).toHaveLength(0);
   });
 
   it("does not gate when the config switch is off, and removes the gate turns", async () => {

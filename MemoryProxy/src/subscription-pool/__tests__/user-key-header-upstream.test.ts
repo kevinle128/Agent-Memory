@@ -10,7 +10,7 @@ const SPACE = "sp-key";
 
 function rows(agent: string, mode: InstanceUpstreamRow["mode"]): InstanceUpstreamRow[] {
   return [
-    { group_id: "d", group_type: "default", name: "d", agents: ["pi"], enabled: true, mode: "official", base_url: "", api_key: "", model_id: "" },
+    { group_id: "d", group_type: "default", name: "d", agents: ["omp"], enabled: true, mode: "official", base_url: "", api_key: "", model_id: "" },
     { group_id: "c", group_type: "custom", name: "c", agents: [agent], enabled: true, mode, base_url: "http://custom.test/api", api_key: "group-key", model_id: "" },
   ];
 }

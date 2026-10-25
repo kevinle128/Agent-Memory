@@ -237,7 +237,7 @@ make_omp_home() {
   {
     echo "providers:"
     echo "  am-proxy:"
-    echo "    baseUrl: $PROXY/pi/$SPACE/v1"
+    echo "    baseUrl: $PROXY/omp/$SPACE/v1"
     echo "    apiKey: AM_E2E_KEY"
     echo "    api: openai-completions"
     if [[ "${2:-}" != "no-flag" ]]; then
@@ -269,11 +269,11 @@ if wait_pane "$S" 'Agent-Memory omp extension installed' 90; then
 else
   bad "O1 installer did not run; screen:"; show "$S"
 fi
-OSID="$(log_since "$M" | sed -nE 's/^\[hook-gate\] session=([^ ]+) agent=pi answered locally.*/\1/p' | head -1)"
+OSID="$(log_since "$M" | sed -nE 's/^\[hook-gate\] session=([^ ]+) agent=omp answered locally.*/\1/p' | head -1)"
 [[ -n "$OSID" ]] && ok "O1 request answered by the gate (session $OSID)" || bad "O1 no gate log line"
-wait_log "$M" "\\[hook-report\\] session=$OSID agent=pi event=Install" 30 \
+wait_log "$M" "\\[hook-report\\] session=$OSID agent=omp event=Install" 30 \
   && ok "O1 hook report stored for the session" || bad "O1 no hook report for $OSID"
-wait_log "$M" "\\[hook-gate\\] session=$OSID agent=pi removed synthetic turns" 60 \
+wait_log "$M" "\\[hook-gate\\] session=$OSID agent=omp removed synthetic turns" 60 \
   && ok "O1 synthetic turns removed from the forwarded request" || bad "O1 no strip log line"
 wait_log "$M" 'FORWARD upstream=.*chat/completions' 60 \
   && ok "O1 original prompt forwarded to the upstream" || bad "O1 prompt not forwarded"
@@ -283,7 +283,7 @@ echo "== O2: next prompt and omp -p are not gated"
 M="$(log_mark)"
 send_prompt "$S" "What is 3 plus 4? Reply with only the number."
 sleep 10
-[[ "$(log_since "$M" | grep -c 'agent=pi answered locally')" -eq 0 ]] && ok "O2 next prompt not gated" || bad "O2 next prompt gated"
+[[ "$(log_since "$M" | grep -c 'agent=omp answered locally')" -eq 0 ]] && ok "O2 next prompt not gated" || bad "O2 next prompt gated"
 tmux kill-session -t "$S" 2>/dev/null
 
 make_omp_home e
@@ -291,7 +291,7 @@ M="$(log_mark)"
 (cd "$WORK/e/proj" && env $(omp_env e) timeout 90 omp -p --model "am-proxy/$OMP_MODEL" "$QUESTION" </dev/null >/dev/null 2>&1)
 # A remote proxy log can arrive late, so wait for the line instead of reading once.
 wait_log "$M" 'FORWARD upstream=.*chat/completions' 20 && ok "O2 omp -p reached the upstream" || bad "O2 omp -p request not forwarded"
-[[ "$(log_since "$M" | grep -c 'agent=pi answered locally')" -eq 0 ]] && ok "O2 omp -p not gated" || bad "O2 omp -p gated"
+[[ "$(log_since "$M" | grep -c 'agent=omp answered locally')" -eq 0 ]] && ok "O2 omp -p not gated" || bad "O2 omp -p gated"
 [[ ! -e "$WORK/e/home/.omp/agent/extensions/agent-memory.ts" ]] && ok "O2 omp -p did not install the extension" || bad "O2 extension was installed"
 
 echo "== O3: installer sets compat.supportsPromptCacheKey"
@@ -316,7 +316,7 @@ assert new.count("supportsPromptCacheKey") == 1
 assert new.replace("    compat:\n      supportsPromptCacheKey: true\n", "") == old
 PY
 ls "$WORK/f/home/.omp/agent"/models.yml.agent-memory-backup-* >/dev/null 2>&1 && ok "O3 backup of models.yml made" || bad "O3 no backup"
-log_since "$M" | grep -q "\[hook-report\] session=$SIDF agent=pi event=Install" && ok "O3 report of the given session stored" || bad "O3 no report"
+log_since "$M" | grep -q "\[hook-report\] session=$SIDF agent=omp event=Install" && ok "O3 report of the given session stored" || bad "O3 no report"
 cp "$MF" "$WORK/f/after1.yml"
 (cd "$WORK/f/proj" && env $(omp_env f) bash "$INSTALL" --client omp </dev/null >/dev/null 2>&1)
 cmp -s "$MF" "$WORK/f/after1.yml" && [[ "$(ls "$WORK/f/home/.omp/agent"/models.yml.agent-memory-backup-* | wc -l)" -eq 1 ]] \

@@ -119,7 +119,7 @@ import type { AgentProfile } from "./agents/interface.js";
 import { CodeBuddyProfile } from "./agents/codebuddy/profile.js";
 import { ClaudeCodeProfile } from "./agents/claude-code/index.js";
 import { WorkbuddyProfile } from "./agents/workbuddy/profile.js";
-import { PiProfile } from "./agents/pi/index.js";
+import { OmpProfile } from "./agents/omp/index.js";
 import { getHookCacheRepo, setHookCacheRepo, type HookCacheRepo } from "../db/hookCacheRepo.js";
 import { getSessionRepo, setSessionRepo, type SessionRepo } from "../db/sessionRepo.js";
 import { getRedisClient } from "../db/redis-client.js";
@@ -482,7 +482,7 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
       ["codebuddy", new CodeBuddyProfile()],
       ["claude-code", new ClaudeCodeProfile()],
       ["workbuddy", new WorkbuddyProfile()],
-      ["pi", new PiProfile()],
+      ["omp", new OmpProfile()],
       // ["cursor", new CursorProfile()],
     ]),
     // Legacy fallback: scan system prompt content (for backward compat).

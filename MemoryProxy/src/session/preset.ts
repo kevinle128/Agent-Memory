@@ -20,7 +20,7 @@ import type { TeamOption } from "./types.js";
  * (`x-team-id` / `x-agent-id` / `x-task-id`) and which have **no interactive
  * form UI** to fall back on:
  *
- *   - `pi`       — openai-chat, no `ask_followup_question` tool in body.tools
+ *   - `omp`      — openai-chat, anthropic and responses, no `ask_followup_question` tool in body.tools
  *   - `hermes`   — anthropic, no ask-user tool available
  *   - `openclaw` — anthropic, same as hermes
  *
@@ -32,7 +32,7 @@ import type { TeamOption } from "./types.js";
 export const HEADER_ONLY_AGENTS: ReadonlySet<string> = new Set([
   "hermes",
   "openclaw",
-  "pi",
+  "omp",
 ]);
 
 /** True when the agent has no interactive form UI to fall back on. */

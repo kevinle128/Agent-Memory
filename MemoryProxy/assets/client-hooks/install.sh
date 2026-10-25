@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- \
-#     [--base-url URL] [--client claude-code|codex|pi|omp] [--session SID] [--uninstall]
+#     [--base-url URL] [--client claude-code|codex|omp] [--session SID] [--uninstall]
 #
 # Install, claude-code (default):
 #   1. Download <proxy-origin>/setup/hook.sh to ~/.agent-memory/hook.sh.
@@ -23,25 +23,28 @@
 #   Codex itself computes and stores them as [hooks.state."<key>"] trusted_hash.
 #   Without the codex command, the hooks stay untrusted: run /hooks in Codex.
 #   The proxy URL and key come from the active model provider of the Codex config.
-# Install, pi:
-#   Download <proxy-origin>/setup/pi-extension.ts to
-#   $PI_CODING_AGENT_DIR/extensions/agent-memory.ts (default ~/.pi/agent). Set
-#   compat.sendSessionAffinityHeaders = true on every provider of models.json whose
-#   baseUrl is an Agent-Memory pi route, so pi sends its session id to the proxy.
 # Install, omp (oh-my-pi):
 #   Download <proxy-origin>/setup/pi-extension.ts to
 #   $PI_CODING_AGENT_DIR/extensions/agent-memory.ts (default ~/.omp/agent), the
 #   directory that omp scans. Set compat.supportsPromptCacheKey: true on every
-#   provider of models.yml (or models.yaml) whose baseUrl is an Agent-Memory pi
-#   route, so omp sends its session id to the proxy as prompt_cache_key. A backup of
-#   the file is made first. The provider block is edited as text, because no YAML
+#   provider of models.yml (or models.yaml) whose baseUrl is an Agent-Memory omp
+#   route (.../omp/<space>, with an optional /v1), so omp sends its session id to
+#   the proxy as prompt_cache_key. A baseUrl on the retired pi route (<origin>/pi/<space>)
+#   is first moved to <origin>/omp/<space> (only the shape <origin>/pi/<space>/v1, and only
+#   the origin of --base-url when it is given): the file is copied to
+#   <file>.agent-memory-backup-<time>, the copy is checked to be equal to the file,
+#   and only the "/pi/" after the origin of a baseUrl line changes. A file without
+#   such a line gets no backup and no change. Any other edit of the file is made
+#   after the same backup (one backup per run). The provider block is edited as text, because no YAML
 #   tool is needed otherwise. A block that cannot be edited safely (an inline
 #   compat value) is left as is, with a note. With --session SID: send one report
 #   with this session id, using the apiKey of that provider (an environment
 #   variable name, or the key itself).
+# pi is no longer a supported client: --client pi exits with an error. Only
+#   --uninstall --client pi still works, and removes the extension of an earlier pi install.
 # Uninstall:
 #   Remove only our hook entries (and hook.sh when no other client uses it, or the
-#   pi or omp extension). Keep device.json. For pi and omp, the compat flag stays:
+#   omp or pi extension). Keep device.json. For omp, the compat flag stays:
 #   it may have been set before and is harmless.
 #
 # The script is safe to run again: it never adds a second entry.
@@ -54,7 +57,6 @@ CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG="$CODEX_DIR/config.toml"
 PI_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 PI_EXTENSION_FILE="$PI_DIR/extensions/agent-memory.ts"
-PI_MODELS_FILE="$PI_DIR/models.json"
 OMP_DIR="${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}"
 OMP_EXTENSION_FILE="$OMP_DIR/extensions/agent-memory.ts"
 AM_DIR="$HOME/.agent-memory"
@@ -909,92 +911,6 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# pi: models.json
-# ---------------------------------------------------------------------------
-
-# Read models.json on stdin. Set compat.sendSessionAffinityHeaders = true on
-# every provider whose baseUrl is an Agent-Memory pi route (.../pi/<space>/v1).
-# Print the new document, or nothing when it does not change.
-edit_models() {
-  case "$JSON_TOOL" in
-    jq)
-      jq '
-        . as $orig
-        | (if (.providers | type) == "object" then
-            .providers |= with_entries(
-              if (.value | type) == "object" and ((.value.baseUrl // "") | type) == "string"
-                 and (.value.baseUrl | test("^https?://.+/pi/[^/]+/v1/?$"))
-              then .value.compat = ((if (.value.compat | type) == "object" then .value.compat else {} end) + {sendSessionAffinityHeaders: true})
-              else . end)
-          else . end) as $new
-        | if $new == $orig then empty else $new end'
-      ;;
-    python3)
-      python3 -c '
-import json, re, sys
-raw = sys.stdin.buffer.read().decode("utf-8")
-doc = json.loads(raw) if raw.strip() else {}
-if not isinstance(doc, dict):
-    sys.exit("models.json root is not an object")
-before = json.dumps(doc)
-pat = re.compile(r"^https?://.+/pi/[^/]+/v1/?$")
-providers = doc.get("providers")
-if isinstance(providers, dict):
-    for p in providers.values():
-        if isinstance(p, dict) and isinstance(p.get("baseUrl"), str) and pat.match(p["baseUrl"]):
-            compat = p.get("compat") if isinstance(p.get("compat"), dict) else {}
-            compat["sendSessionAffinityHeaders"] = True
-            p["compat"] = compat
-if json.dumps(doc) != before:
-    sys.stdout.buffer.write((json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
-'
-      ;;
-    node)
-      node -e '
-const fs = require("fs");
-const raw = fs.readFileSync(0, "utf8");
-const doc = raw.trim() ? JSON.parse(raw) : {};
-const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-if (!isObj(doc)) { console.error("models.json root is not an object"); process.exit(1); }
-const before = JSON.stringify(doc);
-const pat = /^https?:\/\/.+\/pi\/[^/]+\/v1\/?$/;
-if (isObj(doc.providers)) {
-  for (const p of Object.values(doc.providers)) {
-    if (isObj(p) && typeof p.baseUrl === "string" && pat.test(p.baseUrl)) {
-      const compat = isObj(p.compat) ? p.compat : {};
-      compat.sendSessionAffinityHeaders = true;
-      p.compat = compat;
-    }
-  }
-}
-if (JSON.stringify(doc) !== before) process.stdout.write(JSON.stringify(doc, null, 2) + "\n");
-'
-      ;;
-    *)
-      fail "unknown JSON tool: $JSON_TOOL"
-      ;;
-  esac
-}
-
-pi_install() {
-  local origin="$1" new
-  fetch_file "$origin" "/setup/pi-extension.ts" "$PI_EXTENSION_FILE" "//"
-  chmod 644 "$PI_EXTENSION_FILE"
-  if [ ! -f "$PI_MODELS_FILE" ]; then
-    echo "Note: $PI_MODELS_FILE does not exist. Add the proxy as a pi provider (baseUrl .../pi/<space>/v1), then run this installer again." >&2
-    return
-  fi
-  new=$(edit_models < "$PI_MODELS_FILE") \
-    || fail "cannot update $PI_MODELS_FILE. Is it valid JSON? The file is not changed."
-  if [ -n "$new" ]; then
-    printf '%s\n' "$new" | write_if_changed "$PI_MODELS_FILE" || true
-  fi
-  if ! grep -Eq '"baseUrl"[[:space:]]*:[[:space:]]*"https?://[^"]*/pi/[^"/]+/v1/?"' "$PI_MODELS_FILE"; then
-    echo "Note: no provider in $PI_MODELS_FILE has a baseUrl like .../pi/<space>/v1. The extension reports nothing until one exists." >&2
-  fi
-}
-
-# ---------------------------------------------------------------------------
 # omp: models.yml
 # ---------------------------------------------------------------------------
 
@@ -1013,7 +929,7 @@ omp_models_file() {
 # Read a models.yml on stdin. $1 is "info" or "edit".
 #
 # A provider is a key under the top-level "providers:" whose baseUrl is an
-# Agent-Memory pi route (.../pi/<space>/v1). The file is read as text: block
+# Agent-Memory omp route (.../omp/<space>[/v1]). The file is read as text: block
 # style with spaces, as omp writes it.
 #   info: print the baseUrl on line 1 and the apiKey on line 2 of the first
 #         provider that matches.
@@ -1083,7 +999,7 @@ omp_models_edit() {
           else if (k == "apiKey") apikey = value_of(line[j])
           else if (k == "compat") cl = j
         }
-        if (base ~ /^https?:\/\/.+\/pi\/[^\/]+\/v1\/?$/) {
+        if (base ~ /^https?:\/\/.+\/omp\/[^\/]+(\/v1)?\/?$/) {
           if (mode == "info") { print base; print apikey; exit 0 }
           pad = sprintf("%" fi "s", "")
           if (cl == 0) {
@@ -1132,10 +1048,52 @@ omp_check_lf() {
   fi
 }
 
-# Print the baseUrl and the apiKey of the first Agent-Memory pi provider in the
+# Print the baseUrl and the apiKey of the first Agent-Memory omp provider in the
 # omp models file $1 (two lines). Print nothing when there is none.
 omp_provider_info() {
   omp_models_edit info < "$1" || true
+}
+
+# Regex (ERE) of a baseUrl line on the retired pi route: <origin>/pi/<space>/v1, the only
+# shape that route ever had. $1 is the origin to match, as a regex. Group 1 is everything
+# up to the origin, group 3 is what follows "/pi/".
+pi_baseurl_re() {
+  printf '%s' "^([[:space:]]*(-[[:space:]]+)?[\"']?baseUrl[\"']?[[:space:]]*:[[:space:]]*[\"']?$1)/pi/([^/[:space:]\"']+/v1/?[\"']?[[:space:]]*(#.*)?)\$"
+}
+
+# Move the baseUrl lines of the models file from <origin>/pi/<space>/v1 to
+# <origin>/omp/<space>/v1. Only the path segment right after the origin of a baseUrl
+# line changes. $1 is the proxy origin when the caller knows it (--base-url): then only
+# lines of that origin move. Before the change the file is copied, and the copy must be
+# equal to the file. A file without such a line is not touched and gets no backup.
+omp_migrate_pi_routes() {
+  local given="$1" models count tmp re origin_re sep
+  sep=$(printf '\001')
+  models=$(omp_models_file)
+  [ -n "$models" ] || return 0
+  omp_check_lf "$models"
+  if [ -n "$given" ]; then
+    origin_re=$(printf '%s' "$given" | sed 's/[][\\.*^$()+?{}|#]/\\&/g')
+  else
+    origin_re='https?://[^/[:space:]"'"'"']+'
+  fi
+  re=$(pi_baseurl_re "$origin_re")
+  count=$(grep -Ec "$re" "$models" || true)
+  [ "${count:-0}" -gt 0 ] || return 0
+  backup_file "$models"
+  if [ ! -f "$LAST_BACKUP" ] || ! cmp -s "$models" "$LAST_BACKUP"; then
+    fail "the backup $LAST_BACKUP of $models is missing or differs from it. The file is not changed."
+  fi
+  # The later edits of this run keep this backup: it holds the file from before the run.
+  BACKED_UP_FILE="$models"
+  tmp=$(mktemp "${TMPDIR:-/tmp}/am-models.XXXXXX")
+  # The delimiter is a control character: the regex holds "#", "/" and the origin.
+  sed -E "s${sep}${re}${sep}\\1/omp/\\3${sep}" "$models" > "$tmp" \
+    || { rm -f "$tmp"; fail "cannot update $models. The file is not changed."; }
+  # Write in place, to keep the file mode and any link.
+  cat "$tmp" > "$models"
+  rm -f "$tmp"
+  echo "Moved $count baseUrl line(s) in $models from /pi/ to /omp/. Backup: $LAST_BACKUP"
 }
 
 omp_install() {
@@ -1144,7 +1102,7 @@ omp_install() {
   chmod 644 "$OMP_EXTENSION_FILE"
   models=$(omp_models_file)
   if [ -z "$models" ]; then
-    echo "Note: $OMP_DIR/models.yml does not exist. Add the proxy as an omp provider (baseUrl .../pi/<space>/v1, api openai-completions) with compat.supportsPromptCacheKey: true, then run this installer again." >&2
+    echo "Note: $OMP_DIR/models.yml does not exist. Add the proxy as an omp provider (baseUrl .../omp/<space>, api openai-completions) with compat.supportsPromptCacheKey: true, then run this installer again." >&2
     return
   fi
   omp_check_lf "$models"
@@ -1160,7 +1118,7 @@ omp_install() {
     printf '%s\n' "$new" | write_if_changed "$models" || true
   fi
   if [ -z "$(omp_provider_info "$models")" ]; then
-    echo "Note: no provider in $models has a baseUrl like .../pi/<space>/v1. omp sends no session id to the proxy until one exists." >&2
+    echo "Note: no provider in $models has a baseUrl like .../omp/<space>. omp sends no session id to the proxy until one exists." >&2
   fi
 }
 
@@ -1183,8 +1141,11 @@ main() {
   done
 
   case "$client" in
-    claude-code | codex | pi | omp) ;;
-    *) fail "unsupported client: $client (use claude-code, codex, pi or omp)" ;;
+    claude-code | codex | omp) ;;
+    pi)
+      [ "$uninstall" = "1" ] || fail "pi is no longer supported. Use --client omp (oh-my-pi)."
+      ;;
+    *) fail "unsupported client: $client (use claude-code, codex or omp)" ;;
   esac
   case "$HOME" in /*) ;; *) fail "HOME must be an absolute path" ;; esac
 
@@ -1219,28 +1180,17 @@ main() {
   if [ -z "$base" ] && [ "$client" = "codex" ]; then
     base=$(codex_connection | sed -n 1p)
   fi
-  if [ -z "$base" ] && [ "$client" = "pi" ] && [ -f "$PI_MODELS_FILE" ]; then
-    base=$(grep -Eo '"baseUrl"[[:space:]]*:[[:space:]]*"https?://[^"]*/pi/[^"/]+/v1/?"' "$PI_MODELS_FILE" \
-      | head -n 1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')
+  if [ "$client" = "omp" ]; then
+    omp_migrate_pi_routes "$(printf '%s' "$base" | sed -nE 's|^(https?://[^/?]+).*|\1|p')"
   fi
   if [ -z "$base" ] && [ "$client" = "omp" ]; then
     models=$(omp_models_file)
     if [ -n "$models" ]; then omp_check_lf "$models"; base=$(omp_provider_info "$models" | sed -n 1p); fi
-    [ -n "$base" ] || fail "no proxy URL. Add the proxy as a provider in $OMP_DIR/models.yml (baseUrl .../pi/<space>/v1, api openai-completions, compat.supportsPromptCacheKey: true), or use --base-url."
+    [ -n "$base" ] || fail "no proxy URL. Add the proxy as a provider in $OMP_DIR/models.yml (baseUrl .../omp/<space>, api openai-completions, compat.supportsPromptCacheKey: true), or use --base-url."
   fi
-  [ -n "$base" ] || fail "no proxy URL. Use --base-url, or configure the client first (claude-code: ANTHROPIC_BASE_URL in env or $SETTINGS_FILE; codex: $CODEX_CONFIG; pi: $PI_MODELS_FILE)."
+  [ -n "$base" ] || fail "no proxy URL. Use --base-url, or configure the client first (claude-code: ANTHROPIC_BASE_URL in env or $SETTINGS_FILE; codex: $CODEX_CONFIG)."
   origin=$(printf '%s' "$base" | sed -nE 's|^(https?://[^/?]+).*|\1|p')
   [ -n "$origin" ] || fail "the base URL must start with http:// or https:// (got: $base)"
-
-  if [ "$client" = "pi" ]; then
-    [ -z "$session" ] || fail "--session is not supported for pi"
-    mkdir -p "$AM_DIR"
-    chmod 700 "$AM_DIR"
-    device=$(ensure_device_id)
-    pi_install "$origin"
-    echo "Agent-Memory pi extension installed (device $device)."
-    return
-  fi
 
   if [ "$client" = "omp" ]; then
     mkdir -p "$AM_DIR"
@@ -1250,12 +1200,12 @@ main() {
     echo "Agent-Memory omp extension installed (device $device)."
     if [ -n "$session" ]; then
       # A running omp does not load the new extension, so the installer sends the
-      # report of this session. The hook script sends it with the pi route and key.
+      # report of this session. The hook script sends it with the omp route and key.
       models=$(omp_models_file)
       [ -n "$models" ] || fail "no models file to read the proxy provider from (needed for --session)"
       route=$(omp_provider_info "$models" | sed -n 1p | sed -E 's#/v1/?$##')
       key=$(omp_provider_info "$models" | sed -n 2p)
-      [ -n "$route" ] || fail "no provider with a baseUrl like .../pi/<space>/v1 in $models (needed for --session)"
+      [ -n "$route" ] || fail "no provider with a baseUrl like .../omp/<space> in $models (needed for --session)"
       case "$key" in
         '!'*) fail "the apiKey of the provider is a command (!...). Set it to the key or to the name of an environment variable, then run this command again." ;;
       esac

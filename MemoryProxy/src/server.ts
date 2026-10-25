@@ -7,7 +7,8 @@ import { runAnthropicPipeline } from "./pipeline/runners/anthropic.js";
 import { withClientFacingModel } from "./response-model-mask.js";
 import { runUtilityPipeline as handleAuxiliaryEndpoint } from "./pipeline/runners/utility.js";
 import { runDirectPipeline as handleDirectPassthrough } from "./pipeline/runners/direct.js";
-import { runCodexPipeline as handleCodexEndpoint } from "./pipeline/runners/codex.js";
+import { runCodexPipeline, RESPONSES_SOURCE_AGENTS, runCodexPipeline as handleCodexEndpoint } from "./pipeline/runners/codex.js";
+import { handleAgentRouteMoved } from "./routes/agent-route-moved.js";
 import { runWorkbuddyPipeline as handleWorkbuddyEndpoint } from "./pipeline/runners/workbuddy.js";
 import { handleModels } from "./modelsHandler.js";
 import { apiKeyToKeyId, extractBearerToken } from "./opik.js";
@@ -23,6 +24,9 @@ import type { ProxyConfig } from "./types.js";
 
 const handleChatCompletions = withClientFacingModel(runOpenaiChatPipeline);
 const handleAnthropicMessages = withClientFacingModel(runAnthropicPipeline);
+/** Responses endpoint of the agents that choose a model source by name (not codex itself). */
+const handleResponsesForSourceAgent = withClientFacingModel(runCodexPipeline);
+
 
 export function createApp(config: ProxyConfig): Hono {
   const app = new Hono();
@@ -161,6 +165,11 @@ export function createApp(config: ProxyConfig): Hono {
   app.delete("/v3/admin/rate-limits", rateLimitHandlers.delete);
 
   app.get("/v3/admin/model-aliases", createModelAliasHandler(config));
+
+  // `/pi/...` is retired: oh-my-pi has its own `/omp/<space>` route. Answer 410 with the new base
+  // URL before the hook report route and any pipeline route can see the request.
+  app.all("/pi/:spaceId/*", (c) => handleAgentRouteMoved(c));
+  app.all("/pi/*", (c) => handleAgentRouteMoved(c));
 
   // ── Client hook: install scripts and session workspace reports ──
   // Registered before the agent-prefixed model routes and the catch-all.
@@ -380,6 +389,15 @@ export function createApp(config: ProxyConfig): Hono {
     app.post("/opencode/:spaceId/analyse/chat/completions", (c) => handleChatCompletions(c, config));
   }
 
+  // Responses and chat endpoints of the multi-source agents. Registered per agent (not as
+  // `/:agent/:spaceId/responses`) so `/proxy/:spaceId/responses` keeps its own handler.
+  for (const agent of RESPONSES_SOURCE_AGENTS) {
+    for (const suffix of ["responses", "v1/responses", "responses/compact", "v1/responses/compact"]) {
+      app.post(`/${agent}/:spaceId/${suffix}`, (c) => handleResponsesForSourceAgent(c, config));
+    }
+    app.post(`/${agent}/:spaceId/chat/completions`, (c) => handleChatCompletions(c, config));
+  }
+
   // OpenAI Models API — tenant-scoped and generated locally from the public pricing catalog.
   app.get("/:agent/:spaceId/v1/models", (c) => handleModels(c, config));
   app.post("/:agent/:spaceId/v1/messages", (c) => handleAnthropicMessages(c, config));
@@ -387,7 +405,7 @@ export function createApp(config: ProxyConfig): Hono {
   app.post("/:agent/:spaceId/v1/embeddings", (c) => handleAuxiliaryEndpoint(c, config));
   app.post("/:agent/:spaceId/v1/completions", (c) => handleAuxiliaryEndpoint(c, config));
   app.post("/:agent/:spaceId/v1/moderations", (c) => handleAuxiliaryEndpoint(c, config));
-  // Chat completions catch — runner 内部按 URL agent 段派 codebuddy/dsh/opencode/pi
+  // Chat completions catch — runner 内部按 URL agent 段派 codebuddy/dsh/opencode/omp
   app.post("/:agent/:spaceId/v1/chat/completions", (c) => handleChatCompletions(c, config));
 
   // Agent-prefixed routes without spaceId (deprecated: no credit reporting)

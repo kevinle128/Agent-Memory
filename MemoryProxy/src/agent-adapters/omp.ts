@@ -1,14 +1,13 @@
 /**
- * Pi (earendil-works pi-coding-agent) client adapter.
+ * oh-my-pi (omp) client adapter.
  *
- * Pi sends OpenAI Chat Completions with plain-string user content and no
- * cache_control markers / fork-sidequery concept — every request is main.
- * Verified via a real Pi subprocess spike (2026-08-21).
+ * omp sends plain-string or text-part user content and has no cache_control
+ * markers or fork/sidequery concept, so every request is main.
  *
- * oh-my-pi (a fork, same route) sends the user content as an array of text
- * parts. The first part is a `<system-reminder>` block with the date and the
- * working directory, and the typed prompt follows. Those reminder parts are not
- * user text, so they are dropped.
+ * When omp sends the user content as an array of text parts, the first part is
+ * a `<system-reminder>` block with the date and the working directory, and the
+ * typed prompt follows. Those reminder parts are not user text, so they are
+ * dropped.
  */
 import { defaultAdapter } from "./default.js";
 import type { AgentAdapter } from "./types.js";
@@ -21,8 +20,8 @@ function isSystemReminder(part: unknown): boolean {
   return trimmed.startsWith("<system-reminder>") && trimmed.endsWith("</system-reminder>");
 }
 
-export const piAdapter: AgentAdapter = {
-  agentKind: "pi",
+export const ompAdapter: AgentAdapter = {
+  agentKind: "omp",
   classifyRequest() {
     return "main";
   },

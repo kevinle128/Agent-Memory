@@ -21,7 +21,7 @@
 
 import type { ProxyConfig } from "../../types.js";
 import { getInstanceUpstreamConfigs, resolveForAgent } from "../../instance-upstream-cache.js";
-import type { InstanceUpstreamRow } from "../../instance-upstream-cache.js";
+import type { InstanceUpstreamRow, Resolution } from "../../instance-upstream-cache.js";
 import { joinUrl } from "../../guard-adapter.js";
 
 export interface InstanceUpstreamResponsesInput {
@@ -37,6 +37,11 @@ export interface InstanceUpstreamResponsesInput {
    * in a pool group is handled as `official`.
    */
   poolSupported?: boolean;
+  /**
+   * Resolution chosen by the model-source stage. When set it replaces `resolveForAgent`, as it
+   * does in the early stage of the chat and Anthropic runners. Omitted = derived from the agent.
+   */
+  presetResolution?: Extract<Resolution, { kind: "override" | "pool" }>;
 }
 
 export interface InstanceUpstreamResponsesBlocked {
@@ -81,9 +86,9 @@ export async function stageInstanceUpstreamResponses(
     config.instanceUpstream,
   );
 
-  const resolution = forceOfficial
+  const resolution: Resolution = forceOfficial
     ? { kind: "official" as const, row: null }
-    : resolveForAgent(instanceConfigs, agent);
+    : input.presetResolution ?? resolveForAgent(instanceConfigs, agent);
 
   if (resolution.kind === "blocked") {
     return {

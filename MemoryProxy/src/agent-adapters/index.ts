@@ -18,13 +18,13 @@ import { codexAdapter } from "./codex.js";
 import { workbuddyAdapter } from "./workbuddy.js";
 import { dshAdapter } from "./dsh.js";
 import { opencodeAdapter } from "./opencode.js";
-import { piAdapter } from "./pi.js";
+import { ompAdapter } from "./omp.js";
 import { defaultAdapter } from "./default.js";
 
 export type { AgentAdapter, AgentKind, RequestKind } from "./types.js";
 
 /** Every agentSource that `resolveAgentAdapter` maps to a dedicated adapter. */
-export const AGENT_SOURCES = ["codebuddy", "claude-code", "codex", "workbuddy", "dsh", "opencode", "pi"] as const;
+export const AGENT_SOURCES = ["codebuddy", "claude-code", "codex", "workbuddy", "dsh", "opencode", "omp"] as const;
 
 /**
  * Session-store keys to probe for a bridge request. The handler stores state
@@ -50,8 +50,8 @@ export function resolveAgentAdapter(agentSource: string): AgentAdapter {
       return dshAdapter;
     case "opencode":
       return opencodeAdapter;
-    case "pi":
-      return piAdapter;
+    case "omp":
+      return ompAdapter;
     default:
       return defaultAdapter;
   }

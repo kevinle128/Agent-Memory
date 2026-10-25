@@ -4,7 +4,7 @@ import { AGENT_SOURCES, resolveAgentAdapter, sessionKeyCandidates } from "../ind
 import { defaultAdapter } from "../default.js";
 
 describe("sessionKeyCandidates", () => {
-  it("probes every registered agent source, including opencode and pi", () => {
+  it("probes every registered agent source, including opencode and omp", () => {
     expect(sessionKeyCandidates("abc")).toEqual([
       "abc",
       "codebuddy:abc",
@@ -13,12 +13,12 @@ describe("sessionKeyCandidates", () => {
       "workbuddy:abc",
       "dsh:abc",
       "opencode:abc",
-      "pi:abc",
+      "omp:abc",
     ]);
   });
 
   it("uses a composite key as is", () => {
-    expect(sessionKeyCandidates("pi:abc")).toEqual(["pi:abc"]);
+    expect(sessionKeyCandidates("omp:abc")).toEqual(["omp:abc"]);
   });
 
   it("lists only sources that have a dedicated adapter", () => {

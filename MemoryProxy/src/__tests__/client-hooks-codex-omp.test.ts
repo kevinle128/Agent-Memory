@@ -1,7 +1,7 @@
-// Tests for the Codex and pi parts of the client hook files in assets/client-hooks.
+// Tests for the Codex and omp parts of the client hook files in assets/client-hooks.
 // Each test runs the real scripts against a temporary HOME and a local HTTP
 // server. A fake `codex` command stands in for `codex app-server`. The real
-// ~/.codex, ~/.pi and ~/.agent-memory are never touched.
+// ~/.codex, ~/.omp and ~/.agent-memory are never touched.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import http from "node:http";
@@ -514,93 +514,33 @@ describe("install.sh --client codex", () => {
   });
 });
 
-const PI_ROUTE = () => `${origin}/pi/default/v1`;
+const OMP_ROUTE = () => `${origin}/omp/default/v1`;
 
-function piDir(): string {
-  return path.join(home, ".pi", "agent");
-}
-
-function writePiModels(doc: object): void {
-  fs.mkdirSync(piDir(), { recursive: true });
-  fs.writeFileSync(path.join(piDir(), "models.json"), JSON.stringify(doc, null, 2));
-}
-
-function readPiModels(): { providers: Record<string, { compat?: Record<string, unknown>; [k: string]: unknown }> } {
-  return JSON.parse(fs.readFileSync(path.join(piDir(), "models.json"), "utf8"));
-}
-
-const JSON_TOOLS = ["jq", "python3", "node"].filter((t) => spawnSync("sh", ["-c", `command -v ${t}`]).status === 0);
-
-describe.each(JSON_TOOLS)("install.sh --client pi with the %s JSON tool", (tool) => {
-  const env = () => baseEnv({ AGENT_MEMORY_JSON_TOOL: tool });
-  const models = () => ({
-    providers: {
-      proxy: { baseUrl: PI_ROUTE(), api: "openai-completions", apiKey: "$KEY", compat: { supportsDeveloperRole: false } },
-      other: { baseUrl: "https://api.example.com/v1", api: "openai-completions" },
-    },
+describe("install.sh --client pi (retired)", () => {
+  it("exits with an error that names omp and changes nothing", async () => {
+    const r = await runInstaller(["--client", "pi"], baseEnv());
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("pi is no longer supported");
+    expect(r.stderr).toContain("--client omp");
+    expect(fs.existsSync(path.join(home, ".pi"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".agent-memory"))).toBe(false);
   });
 
-  it("installs the extension and sets the compat flag only on the proxy provider", async () => {
-    writePiModels(models());
-    const r = await runInstaller(["--client", "pi"], env());
+  it("--uninstall still removes the extension of an earlier pi install", async () => {
+    const ext = path.join(home, ".pi", "agent", "extensions", "agent-memory.ts");
+    fs.mkdirSync(path.dirname(ext), { recursive: true });
+    fs.writeFileSync(ext, "// old");
+    const r = await runInstaller(["--client", "pi", "--uninstall"], baseEnv());
     expect(r.code).toBe(0);
-    expect(fs.readFileSync(path.join(piDir(), "extensions", "agent-memory.ts"), "utf8")).toBe(fs.readFileSync(PI_EXTENSION, "utf8"));
-    const doc = readPiModels();
-    expect(doc.providers.proxy.compat).toEqual({ supportsDeveloperRole: false, sendSessionAffinityHeaders: true });
-    expect(doc.providers.proxy.apiKey).toBe("$KEY");
-    expect(doc.providers.other).toEqual(models().providers.other);
-    expect(backups(piDir(), "models.json")).toHaveLength(1);
-  });
-
-  it("changes nothing on a second install", async () => {
-    writePiModels(models());
-    await runInstaller(["--client", "pi"], env());
-    const first = fs.readFileSync(path.join(piDir(), "models.json"), "utf8");
-    const r = await runInstaller(["--client", "pi"], env());
-    expect(r.code).toBe(0);
-    expect(fs.readFileSync(path.join(piDir(), "models.json"), "utf8")).toBe(first);
-    expect(backups(piDir(), "models.json")).toHaveLength(1);
-  });
-
-  it("does not touch a models.json that is not valid JSON", async () => {
-    fs.mkdirSync(piDir(), { recursive: true });
-    fs.writeFileSync(path.join(piDir(), "models.json"), "{ not json");
-    const r = await runInstaller(["--client", "pi", "--base-url", `${origin}/pi/default/v1`], env());
-    expect(r.code).toBe(1);
-    expect(fs.readFileSync(path.join(piDir(), "models.json"), "utf8")).toBe("{ not json");
-  });
-
-  it("installs the extension and explains when models.json does not exist", async () => {
-    const r = await runInstaller(["--client", "pi", "--base-url", `${origin}/pi/default/v1`], env());
-    expect(r.code).toBe(0);
-    expect(r.stderr).toContain("models.json");
-    expect(fs.existsSync(path.join(piDir(), "extensions", "agent-memory.ts"))).toBe(true);
-  });
-
-  it("--uninstall removes the extension and leaves models.json alone", async () => {
-    writePiModels(models());
-    await runInstaller(["--client", "pi"], env());
-    const before = fs.readFileSync(path.join(piDir(), "models.json"), "utf8");
-    const r = await runInstaller(["--client", "pi", "--uninstall"], env());
-    expect(r.code).toBe(0);
-    expect(fs.existsSync(path.join(piDir(), "extensions", "agent-memory.ts"))).toBe(false);
-    expect(fs.readFileSync(path.join(piDir(), "models.json"), "utf8")).toBe(before);
-  });
-
-  it("honors PI_CODING_AGENT_DIR", async () => {
-    const dir = mkTmp("am-pidir-");
-    fs.writeFileSync(path.join(dir, "models.json"), JSON.stringify(models()));
-    const r = await runInstaller(["--client", "pi"], baseEnv({ AGENT_MEMORY_JSON_TOOL: tool, PI_CODING_AGENT_DIR: dir }));
-    expect(r.code).toBe(0);
-    expect(fs.existsSync(path.join(dir, "extensions", "agent-memory.ts"))).toBe(true);
-    expect(JSON.parse(fs.readFileSync(path.join(dir, "models.json"), "utf8")).providers.proxy.compat.sendSessionAffinityHeaders).toBe(true);
+    expect(fs.existsSync(ext)).toBe(false);
   });
 });
 
 // ── install.sh --client omp ──────────────────────────────────────────────────
 
 const ompDir = () => path.join(home, ".omp", "agent");
-const ompRoute = () => `${origin}/pi/default/v1`;
+const ompRoute = () => `${origin}/omp/default/v1`;
+const piRoute = () => `${origin}/pi/default/v1`;
 const ompModelsPath = (file = "models.yml") => path.join(ompDir(), file);
 const OMP_KEY = "sk-mem-omp-secret-key";
 
@@ -740,13 +680,13 @@ describe("install.sh --client omp", () => {
 
   const sessionReports = () => requests.filter((q) => q.url.endsWith("/v3/hook/report"));
 
-  it("--session reports through the pi route with an apiKey that is an environment variable, and never prints the key", async () => {
+  it("--session reports through the omp route with an apiKey that is an environment variable, and never prints the key", async () => {
     writeOmpModels(ompYaml("AM_E2E_KEY"));
     const r = await runInstaller(["--client", "omp", "--session", "01a16eab-0b03-708d-8d4f-4bba152cad8e"], baseEnv({ AM_E2E_KEY: OMP_KEY }));
     expect(r.code).toBe(0);
     const reports = sessionReports();
     expect(reports).toHaveLength(1);
-    expect(reports[0].url).toBe("/pi/default/v3/hook/report");
+    expect(reports[0].url).toBe("/omp/default/v3/hook/report");
     expect(reports[0].headers.authorization).toBe(`Bearer ${OMP_KEY}`);
     expect(JSON.parse(reports[0].body)).toMatchObject({ session_id: "01a16eab-0b03-708d-8d4f-4bba152cad8e", client: "omp", hook_event: "Install" });
     expect(r.stdout + r.stderr).not.toContain(OMP_KEY);
@@ -768,6 +708,66 @@ describe("install.sh --client omp", () => {
     expect(sessionReports()).toHaveLength(0);
   });
 
+  describe("a baseUrl on the retired pi route", () => {
+    const withPi = () => ompYaml("K").replace(ompRoute(), piRoute());
+
+    it("moves /pi/ to /omp/ after an equal backup, and prints the count and the backup path", async () => {
+      const before = withPi();
+      writeOmpModels(before);
+      const r = await runInstaller(["--client", "omp"], baseEnv());
+      expect(r.code).toBe(0);
+      const copies = backups(ompDir(), "models.yml");
+      expect(copies).toHaveLength(1);
+      expect(fs.readFileSync(path.join(ompDir(), copies[0]), "utf8")).toBe(before);
+      const after = readOmpModels();
+      expect(after).toContain(`baseUrl: ${ompRoute()}`);
+      expect(after.replace(FLAG, "")).toBe(before.replace(piRoute(), ompRoute()));
+      expect(r.stdout).toContain("Moved 1 baseUrl line(s)");
+      expect(r.stdout).toContain(path.join(ompDir(), copies[0]));
+    });
+
+    it("changes nothing and makes no new backup on a second run", async () => {
+      writeOmpModels(withPi());
+      await runInstaller(["--client", "omp"], baseEnv());
+      const first = readOmpModels();
+      const r = await runInstaller(["--client", "omp"], baseEnv());
+      expect(r.code).toBe(0);
+      expect(readOmpModels()).toBe(first);
+      expect(backups(ompDir(), "models.yml")).toHaveLength(1);
+      expect(r.stdout).not.toContain("Moved");
+    });
+
+    it("makes no backup for a file without a /pi/ route", async () => {
+      const doc = ompYaml("K", "    compat:\n      supportsPromptCacheKey: true");
+      writeOmpModels(doc);
+      const r = await runInstaller(["--client", "omp"], baseEnv());
+      expect(r.code).toBe(0);
+      expect(readOmpModels()).toBe(doc);
+      expect(backups(ompDir(), "models.yml")).toHaveLength(0);
+    });
+
+    it("moves only the path after the origin of a proxy baseUrl line", async () => {
+      const doc = withPi()
+        + "  third:\n    baseUrl: https://api.example.com/pi/x\n    note: " + piRoute() + "\n"
+        + "  fourth:\n    baseUrl: https://api.example.com/pi/x/v1\n";
+      writeOmpModels(doc);
+      const r = await runInstaller(["--client", "omp", "--base-url", origin], baseEnv());
+      expect(r.code).toBe(0);
+      const after = readOmpModels();
+      expect(after).toContain("baseUrl: https://api.example.com/pi/x\n");
+      expect(after).toContain("baseUrl: https://api.example.com/pi/x/v1\n");
+      expect(after).toContain(`note: ${piRoute()}`);
+      expect(after).toContain(`baseUrl: ${ompRoute()}`);
+    });
+
+    it("makes the --session report go to /omp/ after the move", async () => {
+      writeOmpModels(withPi().replace("apiKey: K", `apiKey: ${OMP_KEY}`));
+      const r = await runInstaller(["--client", "omp", "--session", "sid-1"], baseEnv());
+      expect(r.code).toBe(0);
+      expect(sessionReports()[0].url).toBe("/omp/default/v3/hook/report");
+    });
+  });
+
   it("--uninstall removes the extension and leaves the models file alone", async () => {
     writeOmpModels(ompYaml("K"));
     await runInstaller(["--client", "omp"], baseEnv());
@@ -779,7 +779,7 @@ describe("install.sh --client omp", () => {
   });
 });
 
-describe("pi extension", () => {
+describe("omp extension", () => {
   type Handler = (event: unknown, ctx: unknown) => Promise<void> | void;
   const handlers = new Map<string, Handler>();
   const pi = { on: (name: string, h: Handler) => void handlers.set(name, h) };
@@ -809,13 +809,13 @@ describe("pi extension", () => {
     expect([...handlers.keys()].sort()).toEqual(["input", "session_start"]);
   });
 
-  it("posts the workspace of the session to the pi route with the model credentials", async () => {
+  it("posts the workspace of the session to the omp route with the model credentials", async () => {
     const repo = mkTmp("am-pirepo-");
     spawnSync("git", ["init", "-q"], { cwd: repo });
     spawnSync("git", ["remote", "add", "origin", "https://user:tok@git.example.com/vtc/demo.git"], { cwd: repo });
-    await handlers.get("session_start")?.({ reason: "startup" }, ctxFor(PI_ROUTE(), repo));
+    await handlers.get("session_start")?.({ reason: "startup" }, ctxFor(OMP_ROUTE(), repo));
     expect(requests).toHaveLength(1);
-    expect(requests[0].url).toBe("/pi/default/v3/hook/report");
+    expect(requests[0].url).toBe("/omp/default/v3/hook/report");
     expect(requests[0].headers.authorization).toBe("Bearer sk-mem-pi");
     expect(requests[0].headers["x-extra"]).toBe("1");
     const body = JSON.parse(requests[0].body) as Record<string, unknown>;
@@ -825,7 +825,7 @@ describe("pi extension", () => {
       git_toplevel: repo,
       git_remote: "https://git.example.com/vtc/demo.git",
       hook_event: "session_start",
-      client: "pi",
+      client: "omp",
       hook_version: "1",
     });
     expect(typeof body.device_id).toBe("string");
@@ -834,19 +834,19 @@ describe("pi extension", () => {
   });
 
   it("sends null git fields outside a git repository and reports the input event", async () => {
-    await handlers.get("input")?.({ text: "hi", source: "interactive" }, ctxFor(PI_ROUTE(), work));
+    await handlers.get("input")?.({ text: "hi", source: "interactive" }, ctxFor(OMP_ROUTE(), work));
     expect(requests).toHaveLength(1);
     expect(JSON.parse(requests[0].body)).toMatchObject({ git_toplevel: null, git_remote: null, hook_event: "input" });
   });
 
-  it("sends nothing when the active model is not an Agent-Memory pi route", async () => {
+  it("sends nothing when the active model is not an Agent-Memory omp route", async () => {
     await handlers.get("session_start")?.({}, ctxFor("https://api.openai.com/v1", work));
     expect(requests).toHaveLength(0);
   });
 
   it("never throws when the proxy is unreachable", async () => {
     await expect(
-      handlers.get("session_start")?.({}, ctxFor("http://127.0.0.1:1/pi/default/v1", work)),
+      handlers.get("session_start")?.({}, ctxFor("http://127.0.0.1:1/omp/default/v1", work)),
     ).resolves.toBeUndefined();
   });
 });

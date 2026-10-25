@@ -29,7 +29,7 @@
  */
 export type AgentKind =
   | "claude-code" | "codebuddy" | "codex" | "workbuddy"
-  | "dsh" | "opencode" | "pi"
+  | "dsh" | "opencode" | "omp"
   | "hermes" | "openclaw"
   | "unknown";
 

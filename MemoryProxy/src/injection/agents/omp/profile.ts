@@ -1,17 +1,17 @@
 /**
- * PiProfile — AgentProfile for the Pi coding agent (earendil-works
- * pi-coding-agent). Pi's system prompt uses `Label:` lines (not markdown
+ * OmpProfile — AgentProfile for the oh-my-pi (omp) coding agent. Its
+ * system prompt (a pi-family prompt) uses `Label:` lines (not markdown
  * headings like Claude Code, not XML tags like CodeBuddy). This profile
  * splits on label lines into PromptSegments and maps semantic slots to
  * those labels, falling back to coarse injection points when a label is
- * absent (so Pi prompt drift never breaks injection — only moves its
+ * absent (so prompt drift never breaks injection — only moves its
  * anchor). Lossless parse→rebuild (join "\n", no trimming), matching the
  * ClaudeCodeProfile safety guarantee.
  */
 import type { AgentProfile, PromptSegment, ResolvedAnchor } from "../interface.js";
 import type { SemanticSlot } from "../../types.js";
 
-const PI_SLOT_MAP: Record<string, string | null> = {
+const OMP_SLOT_MAP: Record<string, string | null> = {
   persona: null,                   // preamble (plain) → fallback to coarse point
   tools: "Available tools",         // skill tools land before the tools section
   skills: "Guidelines",            // no dedicated skills section; anchor at Guidelines
@@ -21,12 +21,12 @@ const PI_SLOT_MAP: Record<string, string | null> = {
   task_context: "project_context", // the <project_context> block
 };
 
-// Label lines Pi emits: "Available tools:", "Guidelines:", "Pi documentation ...:"
+// Label lines the prompt emits: "Available tools:", "Guidelines:", "Pi documentation ...:"
 const LABEL_RE = /^([A-Z][A-Za-z ]*):\s*$/;
 // XML block sections: <project_context> ... </project_context>
 const XML_OPEN_RE = /^<([a-z_]+)>\s*$/;
 
-export function splitByPiLabels(systemText: string): PromptSegment[] {
+export function splitByOmpLabels(systemText: string): PromptSegment[] {
   const lines = systemText.split("\n");
   const segments: PromptSegment[] = [];
   let index = 0;
@@ -79,7 +79,7 @@ export function splitByPiLabels(systemText: string): PromptSegment[] {
   return segments;
 }
 
-export function applyPiAnchor(
+export function applyOmpAnchor(
   segments: PromptSegment[],
   resolved: ResolvedAnchor,
   text: string,
@@ -133,8 +133,8 @@ export function applyPiAnchor(
   return result;
 }
 
-export class PiProfile implements AgentProfile {
-  readonly id = "pi";
+export class OmpProfile implements AgentProfile {
+  readonly id = "omp";
   readonly protocol = "openai" as const;
 
   detect(systemText: string): boolean {
@@ -145,11 +145,11 @@ export class PiProfile implements AgentProfile {
   }
 
   parse(systemText: string): PromptSegment[] {
-    return splitByPiLabels(systemText);
+    return splitByOmpLabels(systemText);
   }
 
   resolveSlot(slot: SemanticSlot): string | null {
-    return PI_SLOT_MAP[slot] ?? null;
+    return OMP_SLOT_MAP[slot] ?? null;
   }
 
   applyAnchor(
@@ -157,7 +157,7 @@ export class PiProfile implements AgentProfile {
     resolved: ResolvedAnchor,
     text: string,
   ): PromptSegment[] {
-    return applyPiAnchor(segments, resolved, text);
+    return applyOmpAnchor(segments, resolved, text);
   }
 
   rebuild(segments: PromptSegment[]): string {
