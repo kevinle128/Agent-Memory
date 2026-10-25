@@ -191,7 +191,7 @@ Proxy 只有知道会话属于哪个项目，才能注入项目记忆。Claude C
 `setup-proxy.sh` 选择 claude-code 或 codex 时会自动安装（失败只告警，不影响配置）。手动安装：
 
 ```bash
-curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- [--base-url URL] [--client claude-code|codex|pi|omp] [--session SID] [--uninstall]
+curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- [--base-url URL] [--client claude-code|codex|omp] [--session SID] [--uninstall]
 ```
 
 - `--base-url`：默认取环境变量 `ANTHROPIC_BASE_URL`，其次取 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL`；`<proxy-origin>` 是它的 `scheme://host[:port]` 部分
@@ -252,9 +252,9 @@ echo '{"session_id":"test","cwd":"'"$PWD"'","hook_event_name":"Manual"}' \
 - 门禁是安装引导，不是安全控制：它 fail open。禁用 `AskUserQuestion`、使用 SDK、无头运行、上报查询失败、历史被压缩都会使请求放行或重新询问，不能用来强制合规
 - 回滚：proxy 配置 `hookGate.enabled: false`（默认 `true`），关闭后不拦截任何请求（同一个开关也管 Codex 与 oh-my-pi，见 `agents/codex/README.md` §9.1.1 与本文 §11.5）
 
-### 11.4 Codex、pi 与 oh-my-pi
+### 11.4 Codex 与 oh-my-pi
 
-同一个安装器也支持 Codex、pi 与 oh-my-pi（`omp`），用 `--client` 选择。两者上报的内容和 Claude Code 相同，proxy 用上报的 session id 关联请求。
+同一个安装器也支持 Codex 与 oh-my-pi（`omp`），用 `--client` 选择。两者上报的内容和 Claude Code 相同，proxy 用上报的 session id 关联请求。
 
 **Codex（`--client codex`）**
 
@@ -266,49 +266,41 @@ echo '{"session_id":"test","cwd":"'"$PWD"'","hook_event_name":"Manual"}' \
 - 写入后若 Codex 无法加载配置或没有列出这两个 hook，脚本恢复备份并退出 1
 - 注意：hook 的 key 包含它在 `config.toml` 中的位置。如果之后在它前面加了别的 hook，trust 会失效、上报静默停止；重新运行安装器即可
 
-**pi（`--client pi`）**
-
-- 把 extension 写入 `$PI_CODING_AGENT_DIR/extensions/agent-memory.ts`（默认 `~/.pi/agent`），在 `session_start` 与 `input` 事件上报
-- extension 使用当前 model 的 `baseUrl` 与 key，只在 model 走 `.../pi/<space>/v1` 路由时上报，超时 2 秒，从不抛错
-- 在 `models.json` 中所有指向 `.../pi/<space>/v1` 的 provider 上设置 `compat.sendSessionAffinityHeaders: true`，让 pi 在请求中带 `session_id` 头；proxy 只对 pi 用这个头作为 session key。修改前备份，JSON 无效时不改文件
-- 卸载会删除 extension，保留 compat 设置（无害）
-- 需要支持 `compat.sendSessionAffinityHeaders` 的 pi 版本，且 API 类型为 `openai-completions`
-
 **oh-my-pi（`--client omp`）**
 
-oh-my-pi 是 pi 的 fork，走同一条 `/pi/<space>/v1` 路由，同一个 extension 文件可以直接使用，但配置目录不同。
+oh-my-pi 走自己的路由 `/omp/<space>`（`agent_source` 为 `omp`），有 `anthropic-messages`、`openai-responses`、`openai-completions` 三种格式。pi 不再被支持：`--client pi` 直接报错，`/pi/...` 路由返回 HTTP 410（`agent_route_moved`）并给出新的 base URL；`--uninstall --client pi` 仍可删除旧的 pi extension。
 
-- 把 extension 写入 `$PI_CODING_AGENT_DIR/extensions/agent-memory.ts`，默认 `~/.omp/agent`（omp 不扫描 `~/.pi`）
-- omp 对自定义 provider 不发 session 头，只有在 `~/.omp/agent/models.yml`（或 `models.yaml`）里该 provider 设置 `compat.supportsPromptCacheKey: true` 后，才在 body 里带 `prompt_cache_key`，值等于 extension 上报的 session id。安装器对所有 `baseUrl` 指向 `.../pi/<space>/v1` 的 provider 设置该开关：按文本编辑（不需要 YAML 工具），修改前备份，只改该 provider 层的 `compat`（不改 `models[].compat`），已设置则不改文件；`compat` 写成行内 `{ ... }` 时不改，提示手动设置。找不到指向 proxy 的 provider 时只打印要添加的内容，不猜测
-- proxy 只对 User-Agent 以 `omp/` 开头的 pi 路由请求读取 `prompt_cache_key` 作为 session id（要求字符集同 hook 上报路由，`[A-Za-z0-9._:-]{1,128}`）；普通 pi 仍只读 `session_id` / `x-session-affinity` 头
-- `--session SID`：运行中的 omp 不会加载刚装好的 extension，所以安装器自己用该 provider 的 `baseUrl` 与 `apiKey`（环境变量名，或 key 本身；`!命令` 形式不支持，会提示）上报一次，`client` 字段为 `omp`
+- 把 extension 写入 `$PI_CODING_AGENT_DIR/extensions/agent-memory.ts`，默认 `~/.omp/agent`
+- session id 的来源：`anthropic-messages` 用请求头 `x-claude-code-session-id`；`openai-responses` 与 `openai-completions` 用 body 里的 `prompt_cache_key`。omp 对自定义 provider 不发 session 头，只有在 `~/.omp/agent/models.yml`（或 `models.yaml`）里该 provider 设置 `compat.supportsPromptCacheKey: true` 后才带 `prompt_cache_key`，值等于 extension 上报的 session id（字符集同 hook 上报路由，`[A-Za-z0-9._:-]{1,128}`）。安装器对所有 `baseUrl` 指向 `.../omp/<space>`（可带 `/v1`）的 provider 设置该开关：按文本编辑（不需要 YAML 工具），修改前备份，只改该 provider 层的 `compat`（不改 `models[].compat`），已设置则不改文件；`compat` 写成行内 `{ ... }` 时不改，提示手动设置。找不到指向 proxy 的 provider 时只打印要添加的内容，不猜测
+- 旧配置迁移：给了 `--base-url <proxy origin>` 时，`models.yml` 里属于该 origin 的 `<origin>/pi/<space>/v1` 会先备份（`models.yml.agent-memory-backup-<时间>`，并校验副本与原文件相同）再改成 `/omp/`，输出改动行数与备份路径；其他 origin 的 `baseUrl` 不动。没有 `--base-url` 时不改任何行，只提示带上 `--base-url` 重新运行。门禁生成的安装命令总是带 `--base-url <proxy origin>`
+- `--session SID`：运行中的 omp 不会加载刚装好的 extension，所以安装器自己用该 provider 的 `baseUrl` 与 `apiKey`（环境变量名，或 key 本身；`!命令` 形式不支持，会提示）上报一次，`client` 字段为 `omp`，上报存在 agent `omp` 下
 - 卸载会删除 extension，保留 compat 设置（无害）
-- provider 示例（`~/.omp/agent/models.yml`，新用户的模板必须带 `compat.supportsPromptCacheKey: true`，否则 proxy 收不到 session id，门禁不会生效）：
+- provider 示例（`~/.omp/agent/models.yml`，新用户的模板必须带 `compat.supportsPromptCacheKey: true`，否则 proxy 收不到 session id，门禁不会生效；`anthropic-messages` 的 `baseUrl` 写 `https://<proxy-origin>/omp/<space>`，不带 `/v1`）：
 
   ```yaml
   providers:
     am-proxy:
-      baseUrl: https://<proxy-origin>/pi/<space>/v1
+      baseUrl: https://<proxy-origin>/omp/<space>/v1
       apiKey: AM_USER_KEY          # 环境变量名，或 key 本身
-      api: openai-completions
+      api: openai-completions      # 或 openai-responses / anthropic-messages
       compat:
         supportsPromptCacheKey: true
       models:
         - id: <model>
   ```
-- `$PI_CODING_AGENT_DIR` 对 pi 与 omp 是同一个变量：为 pi 设置过它再运行 `--client omp`，extension 会写进那个目录；不设置时 omp 用 `~/.omp/agent`。`models.yml` 必须是 LF 换行，CRLF 会被拒绝并提示
-- `omp` 的用户文本是数组，第一段是 `<system-reminder>`（日期和工作目录）；pi adapter 提取用户文本时会跳过这类段落，所以 `mem:` 命令与 L0 只看用户键入的内容
-- 不支持 omp 的 `anthropic-messages` 模型：omp 会伪装成 Claude Code 的 User-Agent 与 header，proxy 会把它当作 Claude Code
+- `$PI_CODING_AGENT_DIR` 指定 omp 的配置目录；不设置时用 `~/.omp/agent`。`models.yml` 必须是 LF 换行，CRLF 会被拒绝并提示
+- `omp` 的用户文本是数组，第一段是 `<system-reminder>`（日期和工作目录）；adapter 提取用户文本时会跳过这类段落，所以 `mem:` 命令与 L0 只看用户键入的内容
+- `anthropic-messages` 格式下 omp 会伪装成 Claude Code 的 User-Agent 与 header，但 proxy 按路径 `/omp/` 识别 agent，所以不会走 Claude Code 的门禁
 
-**验证**：`MemoryProxy/scripts/qa/codex-pi-e2e.sh` 在临时 HOME 中用真实的 codex 与 pi 检查上报、session 关联与 L0 的项目字段；`MemoryProxy/scripts/qa/codex-omp-hook-gate-e2e.sh` 用真实的 Codex TUI 与 omp 检查强制安装门禁。
+**验证**：`MemoryProxy/scripts/qa/codex-pi-e2e.sh` 在临时 HOME 中用真实的 codex 检查上报、session 关联与 L0 的项目字段；`MemoryProxy/scripts/qa/codex-omp-hook-gate-e2e.sh` 用真实的 Codex TUI 与 omp 检查强制安装门禁。
 
 ### 11.5 Codex 与 oh-my-pi 的 hook 门禁
 
-Codex TUI 与 omp 没有表单，门禁直接返回一个 shell 工具调用，执行 `curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client <codex|omp> --session <session_id>`。Codex 的细节见 `agents/codex/README.md` §9.1.1。
+Codex TUI 与 omp 没有表单，门禁直接返回一个 shell 工具调用，执行 `curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client <codex|omp> --session <session_id>`（omp 的命令还带 `--base-url <proxy-origin>`）。Codex 的细节见 `agents/codex/README.md` §9.1.1。
 
-- **omp**：只拦截 User-Agent 以 `omp/` 开头、`stream: true`、且请求同时提供 `ask`（只有交互模式有）与 `bash` 工具的 `/pi/<space>/v1/chat/completions`。`omp -p`、rpc、SDK 与普通 pi 原样放行。调用是 `bash`（参数 `command` 与必填的 `i`），omp 默认的 approval 模式（`yolo`）直接执行，不弹批准框；其他 approval 模式会弹出
-- **session id**：omp 的 `prompt_cache_key`（见 §11.4）。请求里没有可用的 session id 时不拦截，proxy 第一次在日志里警告，之后每个请求以 debug 级别记录一行。报告按路由段 `pi` 存取，所以查找用的 agent source 是 `pi`
+- **omp** 三种格式都拦截，路由为 `/omp/<space>[/v1]/{messages,responses,chat/completions}`。判断条件：`stream: true`，且请求同时提供 ask 工具（只有交互模式有）与 shell 工具。Anthropic 格式的工具名带 `_` 前缀（`_ask`、`_bash`），另两种是 `ask`、`bash`。`omp -p`、rpc、SDK 与 TUI 的标题请求（没有任何工具）原样放行；请求头里没有区分 TUI 与 `-p` 的信号，所以不读 User-Agent。调用的参数是 `command` 与必填的 `i`，omp 默认的 approval 模式（`yolo`）直接执行，不弹批准框；其他 approval 模式会弹出。回复形状：Anthropic 为 `tool_use`，Responses 为 `function_call`，chat 为 `tool_calls`，id 前缀都是 `call_omp_hook_gate_`
+- **session id**：Anthropic 用 `x-claude-code-session-id`，Responses 与 chat 用 `prompt_cache_key`（见 §11.4）。请求里没有可用的 session id 时不拦截，proxy 第一次在日志里警告，之后每个请求以 debug 级别记录一行。报告按路由段 `omp` 存取，所以查找用的 agent source 是 `omp`
 - 命令结果回来后，proxy 再查一次上报（最多等约 3 秒）：有则去掉合成对话并继续；命令被拒绝或仍无上报则返回带手动命令的文本（以 `[Agent-Memory hook gate]` 开头）。同一会话 2 次失败后放行（fail open）
-- 合成的 assistant 消息（`tool_calls` id 前缀 `call_omp_hook_gate_`）、对应的 `role: tool` 消息、以及以上述标记开头且没有 `tool_calls` 的文本回复，每次请求都会被去掉（包括关闭门禁时）。omp 没有消息 id，标记前缀是文本回复唯一的识别信号
+- 合成的调用（`tool_calls` / `tool_use` / `function_call`，id 前缀 `call_omp_hook_gate_`）、对应的结果（`role: tool` / `tool_result` / `function_call_output`）、以及以上述标记开头且没有工具调用的文本回复，每次请求都会被去掉（包括关闭门禁时）。omp 没有消息 id，标记前缀是文本回复唯一的识别信号
 - 被拦截的请求不转发上游、不写 L0、不计费
 - 回滚：`hookGate.enabled: false`（同一个开关，三个客户端）

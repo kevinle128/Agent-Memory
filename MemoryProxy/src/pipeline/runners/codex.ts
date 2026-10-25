@@ -63,6 +63,7 @@ import { enforceRateLimit, isRateLimitExceededError } from "../../rate-limit/gua
 import { resolveModelId } from "../../pricing.js";
 import { codexAdapter } from "../../agent-adapters/codex.js";
 import { runCodexHookGate, stripCodexGateTurns } from "../../session/codex/hook-gate.js";
+import { runOmpHookGate, stripOmpGateTurns } from "../../session/omp/hook-gate.js";
 import { resolveProxyOrigin } from "../../session/hook-gate-core.js";
 import { resolveConversationId, resolveOmpSessionId } from "../../session/session-key.js";
 import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
@@ -444,7 +445,7 @@ export async function runCodexPipeline(
     pipe.info("CODEX_AUX", `auxiliary request → passthrough (path=${path})`);
     // aux 不上报 langfuse（跟 CC/CB 对齐——sidequery/fork 类 aux 不算真对话轮）
     // A compaction request carries the whole history, so it must not carry the hook gate items.
-    return forwardToUpstream(c, config, stripCodexGateTurns(body), traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null, null, presetResolution);
+    return forwardToUpstream(c, config, agent === "omp" ? stripOmpGateTurns(body, "openai-responses") : stripCodexGateTurns(body), traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null, null, presetResolution);
   }
 
   // ── 6. Session ID extraction ───────────────────────────────────────────────
@@ -476,6 +477,24 @@ export async function runCodexPipeline(
     if (gate.body !== body) {
       body = gate.body as typeof body;
       console.log(`[hook-gate] session=${sessionId} agent=codex removed synthetic items: ${gate.reason}`);
+    }
+  }
+  // The same gate for oh-my-pi: an interactive omp session without a hook report gets an install
+  // tool call. Other omp requests only lose the synthetic gate turns of earlier turns.
+  if (agent === "omp") {
+    const gate = await runOmpHookGate({
+      config, path, body,
+      sessionId,
+      spaceId: spaceId || extractSpaceIdFromPath(path) || "", userId: userId || "anonymous", modelId,
+      origin: resolveProxyOrigin(headers, c.req.url),
+    });
+    if (gate.action === "respond") {
+      console.log(`[hook-gate] session=${sessionId} agent=omp answered locally: ${gate.reason}`);
+      return gate.response;
+    }
+    if (gate.body !== body) {
+      body = gate.body as typeof body;
+      console.log(`[hook-gate] session=${sessionId} agent=omp removed synthetic items: ${gate.reason}`);
     }
   }
   const sessionTurnSeed = createSessionTurnSeed(config, {

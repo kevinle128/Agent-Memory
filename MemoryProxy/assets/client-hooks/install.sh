@@ -31,7 +31,8 @@
 #   route (.../omp/<space>, with an optional /v1), so omp sends its session id to
 #   the proxy as prompt_cache_key. A baseUrl on the retired pi route (<origin>/pi/<space>)
 #   is first moved to <origin>/omp/<space> (only the shape <origin>/pi/<space>/v1, and only
-#   the origin of --base-url when it is given): the file is copied to
+#   the origin of --base-url, which the gate command always passes; without it
+#   nothing moves): the file is copied to
 #   <file>.agent-memory-backup-<time>, the copy is checked to be equal to the file,
 #   and only the "/pi/" after the origin of a baseUrl line changes. A file without
 #   such a line gets no backup and no change. Any other edit of the file is made
@@ -1063,8 +1064,8 @@ pi_baseurl_re() {
 
 # Move the baseUrl lines of the models file from <origin>/pi/<space>/v1 to
 # <origin>/omp/<space>/v1. Only the path segment right after the origin of a baseUrl
-# line changes. $1 is the proxy origin when the caller knows it (--base-url): then only
-# lines of that origin move. Before the change the file is copied, and the copy must be
+# line changes. $1 is the proxy origin (--base-url): only lines of that origin move. Without it
+# nothing moves. Before the change the file is copied, and the copy must be
 # equal to the file. A file without such a line is not touched and gets no backup.
 omp_migrate_pi_routes() {
   local given="$1" models count tmp re origin_re sep
@@ -1072,11 +1073,16 @@ omp_migrate_pi_routes() {
   models=$(omp_models_file)
   [ -n "$models" ] || return 0
   omp_check_lf "$models"
-  if [ -n "$given" ]; then
-    origin_re=$(printf '%s' "$given" | sed 's/[][\\.*^$()+?{}|#]/\\&/g')
-  else
-    origin_re='https?://[^/[:space:]"'"'"']+'
+  if [ -z "$given" ]; then
+    # The installer cannot tell which origin is its proxy, and a baseUrl of another origin is not
+    # ours to change. Say so when a pi-shaped line exists, and leave the file alone.
+    re=$(pi_baseurl_re 'https?://[^/[:space:]"'"'"']+')
+    if [ "$(grep -Ec "$re" "$models" || true)" -gt 0 ]; then
+      echo "Note: $models has a baseUrl on the retired /pi/ route. Run this installer again with --base-url <proxy origin> to move the lines of that proxy to /omp/." >&2
+    fi
+    return 0
   fi
+  origin_re=$(printf '%s' "$given" | sed 's/[][\\.*^$()+?{}|#]/\\&/g')
   re=$(pi_baseurl_re "$origin_re")
   count=$(grep -Ec "$re" "$models" || true)
   [ "${count:-0}" -gt 0 ] || return 0

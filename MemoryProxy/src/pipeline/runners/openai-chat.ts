@@ -668,7 +668,7 @@ export async function runOpenaiChatPipeline(
     const { runOmpHookGate } = await import("../../session/omp/hook-gate.js");
     const { resolveProxyOrigin } = await import("../../session/hook-gate-core.js");
     const gate = await runOmpHookGate({
-      config, path: c.req.path, headers: lcHeaders, body: body as Record<string, unknown>,
+      config, path: c.req.path, body: body as Record<string, unknown>,
       sessionId: resolveOmpSessionId(c, body as Record<string, unknown>),
       // The key of the hook report route: the verified id, else "anonymous".
       spaceId: spaceId || c.req.param("spaceId") || "", userId: earlyVerify.userId || "anonymous", modelId,

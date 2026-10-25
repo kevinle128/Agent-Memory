@@ -714,7 +714,7 @@ describe("install.sh --client omp", () => {
     it("moves /pi/ to /omp/ after an equal backup, and prints the count and the backup path", async () => {
       const before = withPi();
       writeOmpModels(before);
-      const r = await runInstaller(["--client", "omp"], baseEnv());
+      const r = await runInstaller(["--client", "omp", "--base-url", origin], baseEnv());
       expect(r.code).toBe(0);
       const copies = backups(ompDir(), "models.yml");
       expect(copies).toHaveLength(1);
@@ -728,9 +728,9 @@ describe("install.sh --client omp", () => {
 
     it("changes nothing and makes no new backup on a second run", async () => {
       writeOmpModels(withPi());
-      await runInstaller(["--client", "omp"], baseEnv());
+      await runInstaller(["--client", "omp", "--base-url", origin], baseEnv());
       const first = readOmpModels();
-      const r = await runInstaller(["--client", "omp"], baseEnv());
+      const r = await runInstaller(["--client", "omp", "--base-url", origin], baseEnv());
       expect(r.code).toBe(0);
       expect(readOmpModels()).toBe(first);
       expect(backups(ompDir(), "models.yml")).toHaveLength(1);
@@ -740,7 +740,7 @@ describe("install.sh --client omp", () => {
     it("makes no backup for a file without a /pi/ route", async () => {
       const doc = ompYaml("K", "    compat:\n      supportsPromptCacheKey: true");
       writeOmpModels(doc);
-      const r = await runInstaller(["--client", "omp"], baseEnv());
+      const r = await runInstaller(["--client", "omp", "--base-url", origin], baseEnv());
       expect(r.code).toBe(0);
       expect(readOmpModels()).toBe(doc);
       expect(backups(ompDir(), "models.yml")).toHaveLength(0);
@@ -760,9 +760,26 @@ describe("install.sh --client omp", () => {
       expect(after).toContain(`baseUrl: ${ompRoute()}`);
     });
 
+    it("leaves a pi route of a foreign origin alone, with and without --base-url", async () => {
+      const foreign = "https://other-proxy.example.com/pi/default/v1";
+      const doc = withPi() + `  foreign:\n    baseUrl: ${foreign}\n`;
+      writeOmpModels(doc);
+      const given = await runInstaller(["--client", "omp", "--base-url", origin], baseEnv());
+      expect(given.code).toBe(0);
+      expect(readOmpModels()).toContain(`baseUrl: ${foreign}\n`);
+      expect(readOmpModels()).toContain(`baseUrl: ${ompRoute()}`);
+
+      writeOmpModels(doc);
+      const before = backups(ompDir(), "models.yml").length;
+      const bare = await runInstaller(["--client", "omp"], baseEnv());
+      expect(bare.stdout + bare.stderr).toContain("--base-url");
+      expect(readOmpModels().replace(FLAG, "")).toBe(doc.replace(FLAG, ""));
+      expect(backups(ompDir(), "models.yml").length).toBe(before);
+    });
+
     it("makes the --session report go to /omp/ after the move", async () => {
       writeOmpModels(withPi().replace("apiKey: K", `apiKey: ${OMP_KEY}`));
-      const r = await runInstaller(["--client", "omp", "--session", "sid-1"], baseEnv());
+      const r = await runInstaller(["--client", "omp", "--session", "sid-1", "--base-url", origin], baseEnv());
       expect(r.code).toBe(0);
       expect(sessionReports()[0].url).toBe("/omp/default/v3/hook/report");
     });

@@ -17,7 +17,7 @@ import {
 
 const SID = "01a16eab-0b03-708d-8d4f-4bba152cad8e";
 const ORIGIN = "http://127.0.0.1:8096";
-const COMMAND = `curl -fsSL ${ORIGIN}/setup/hooks.sh | bash -s -- --client omp --session ${SID}`;
+const COMMAND = `curl -fsSL ${ORIGIN}/setup/hooks.sh | bash -s -- --client omp --session ${SID} --base-url ${ORIGIN}`;
 /** The hook report route stores omp reports under the route segment `omp`. */
 const KEY = { spaceId: "default", userId: "usr-1", agentSource: "omp", sessionId: SID };
 
@@ -76,7 +76,6 @@ function params(overrides: Partial<OmpGateParams> = {}, body: Record<string, unk
   return {
     config: { hookGate: { enabled: true } },
     path: "/omp/default/v1/chat/completions",
-    headers: { "user-agent": "omp/18.6.3" },
     body: { stream: true, tools: INTERACTIVE_TOOLS, messages: [SYSTEM, PROMPT], ...body },
     sessionId: SID,
     spaceId: "default",
@@ -113,7 +112,6 @@ describe("runOmpHookGate: which requests are gated", () => {
     ["a request without bash", {}, { tools: ["ask", "read"].map(fnTool) }, "non-interactive"],
     ["a request without tools", {}, { tools: undefined }, "non-interactive"],
     ["a request that does not stream", {}, { stream: false }, "non-interactive"],
-    ["a request whose User-Agent is not omp", { headers: { "user-agent": "OpenAI/JS 6.26.0" } }, { tools: PRINT_TOOLS }, "non-interactive"],
     ["another route", { path: "/omp/default/cost-guard/v1/chat/completions" }, {}, "other-route"],
     ["a request without a session id", { sessionId: null }, {}, "no-session-id"],
     ["a session id that is not safe for a shell", { sessionId: "a; rm -rf ~" }, {}, "no-session-id"],
@@ -129,8 +127,7 @@ describe("runOmpHookGate: which requests are gated", () => {
     expect(await runOmpHookGate(params({ path: "/omp/default/chat/completions" }))).toMatchObject({ action: "respond" });
   });
 
-  it("gates by route, not by User-Agent", async () => {
-    expect(await runOmpHookGate(params({ headers: {} }))).toMatchObject({ action: "respond" });
+  it("gates by route", async () => {
     expect(await runOmpHookGate(params({ path: "/pi/default/v1/chat/completions" }))).toMatchObject({ action: "pass", reason: "other-route" });
   });
 

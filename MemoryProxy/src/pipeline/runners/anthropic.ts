@@ -709,6 +709,31 @@ export async function runAnthropicPipeline(
     }
   }
 
+  // ── Hook gate for oh-my-pi in the Anthropic format ───────────────────────
+  // omp imitates Claude Code here, but the Claude Code gate above only runs on
+  // the claude-code route. An interactive omp session without a hook report
+  // gets an install tool call; every other omp request only loses the synthetic
+  // gate turns of earlier turns.
+  if (agentSource === "omp") {
+    const { runOmpHookGate } = await import("../../session/omp/hook-gate.js");
+    const { resolveProxyOrigin } = await import("../../session/hook-gate-core.js");
+    const gate = await runOmpHookGate({
+      config, path: c.req.path, body,
+      sessionId: conversationId,
+      spaceId: spaceId || c.req.param("spaceId") || "", userId: earlyVerify.userId || "anonymous", modelId,
+      origin: resolveProxyOrigin(lcHeaders, c.req.url),
+    });
+    if (gate.action === "respond") {
+      console.log(`[hook-gate] session=${conversationId} agent=omp answered locally: ${gate.reason}`);
+      return gate.response;
+    }
+    if (gate.body !== body) {
+      body = gate.body;
+      messages = Array.isArray(body.messages) ? body.messages : [];
+      console.log(`[hook-gate] session=${conversationId} agent=omp removed synthetic turns: ${gate.reason}`);
+    }
+  }
+
   const sessionTurnSeed = createSessionTurnSeed(config, {
     agent: agentSource,
     path: c.req.path,
