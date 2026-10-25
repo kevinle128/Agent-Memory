@@ -34,6 +34,12 @@ export interface InstanceUpstreamEarlyInput {
    *  - openai: {code, error_code, message, detail}
    *  - anthropic: {type:"error", error:{type,message}, detail} */
   errorEnvelope: "openai" | "anthropic";
+  /**
+   * Resolution chosen by the model-source stage. When set it replaces `resolveForAgent` for the
+   * conversation request and the request skips the pricing gate like a custom upstream.
+   * Omitted = the resolution is derived from the agent exactly as before.
+   */
+  presetResolution?: Extract<Resolution, { kind: "override" | "pool" }>;
 }
 
 export interface InstanceUpstreamEarlyResult {
@@ -57,9 +63,10 @@ export async function stageInstanceUpstreamEarly(
     config.coreSkill, spaceId, config.instanceUpstream,
   );
   const legacyProxy = isLegacyProxyPath(c.req.path);
-  const earlyConvResolution: Resolution = legacyProxy
-    ? { kind: "official", row: null }
-    : resolveForAgent(instanceConfigs, agent ?? "");
+  const earlyConvResolution: Resolution = input.presetResolution
+    ?? (legacyProxy
+      ? { kind: "official", row: null }
+      : resolveForAgent(instanceConfigs, agent ?? ""));
   const earlyExtractRow = resolveExtraction(instanceConfigs);
   const earlySysMatch = hasSystemUsers() ? matchSystemUserByUserId(earlyUserId) : null;
 
@@ -119,7 +126,7 @@ export async function stageInstanceUpstreamEarly(
   // caller dispatch: systemUser 看 extraction, 外部客户看 conversation
   const isCustomUpstream = earlySysMatch !== null
     ? shouldOverride(earlyExtractRow)
-    : shouldOverride(earlyConvResolution);
+    : input.presetResolution !== undefined || shouldOverride(earlyConvResolution);
 
   return {
     blockedResp,

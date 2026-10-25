@@ -72,6 +72,23 @@ export interface InstanceUpstreamRow {
   supported_agents_snapshot?: string[];
   created_at?: string;
   updated_at?: string;
+  // ── Model source fields (absent on rows from a Core without source support) ──
+  /** Prefix of `<source>/<model>`. Empty or absent = the group is not a model source. */
+  source_name?: string;
+  source_provider?: string;
+  source_formats?: string[];
+  source_agents?: string[];
+  /** Switch of an API-key source. A subscription source follows `enabled` of its pool. */
+  source_enabled?: boolean;
+  source_models?: SourceModelEntry[];
+}
+
+/** One model of a model source. `id` is the provider id and may contain `/`. */
+export interface SourceModelEntry {
+  id: string;
+  display_name?: string;
+  enabled: boolean;
+  available?: boolean;
 }
 
 /**

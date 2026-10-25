@@ -55,6 +55,7 @@ import { writeFailedReportRaw } from "../../clickhouse.js";
 import { verifyUserKey } from "../../auth.js";
 import { stageAuth } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
+import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
 import { stageModelGate, buildUnregisteredModelErrorBody } from "../stages/model-gate.js";
 import { stageCredit } from "../stages/credit.js";
 import { stageSystemUser } from "../stages/system-user.js";
@@ -413,9 +414,22 @@ export async function runOpenaiChatPipeline(
   }
   // eslint-disable-next-line prefer-const
   let body = parseResult.body;
-  const poolService = applyPoolService(config, body);
+  // `<source>/<model>` of a multi-source agent: returns `none` before any other work for every
+  // other agent, so the model-pool and main-model steps below run unchanged for them.
+  const sourceAgent = c.req.path.split("/").filter(Boolean)[0];
+  const modelSource = await stageModelSource({
+    config, agent: sourceAgent, spaceId: earlySpaceId,
+    format: "openai-chat", model: body.model, servesPool: false,
+  });
+  if (modelSource.kind === "error") return modelSourceErrorResponse(c, "openai", modelSource);
+  const modelSourceMetadata = modelSource.kind === "matched"
+    ? applyModelSource(c, body, modelSource, sourceAgent ?? "")
+    : {};
+  const poolService = modelSource.kind === "matched"
+    ? { routed: false, clientFacingModel: null }
+    : applyPoolService(config, body);
   if (poolService.clientFacingModel) c.set("clientFacingModel", poolService.clientFacingModel);
-  const mainModelFrom = poolService.routed ? null : applyMainModel(body);
+  const mainModelFrom = modelSource.kind === "matched" || poolService.routed ? null : applyMainModel(body);
 
   // ── DEBUG: dump tools/instructions/metadata（Phase 1 workbuddy 调研）──
   // 仅在 sessionInit.debugVerboseLogging=true 时启用，生产环境默认关闭。
@@ -531,6 +545,7 @@ export async function runOpenaiChatPipeline(
   const earlyResult = await stageInstanceUpstreamEarly({
     c, config, spaceId: earlySpaceId, earlyUserId: earlyVerify.userId,
     errorEnvelope: "openai",
+    ...(modelSource.kind === "matched" ? { presetResolution: modelSource.resolution } : {}),
   });
   if (earlyResult.blockedResp) return earlyResult.blockedResp;
   const _earlyAgent = earlyResult.agent;
@@ -1165,17 +1180,20 @@ export async function runOpenaiChatPipeline(
   // 结构 + 客户端指纹塞进 Langfuse observationMetadata，供抓包分析用。
   // 默认关（{}），不污染线上 trace。详见 common/langfuse-debug.ts。
   const langfuseDebug = config.langfuse.debug === true;
-  const debugMetadata = buildRequestDebugMetadata({
-    debug: langfuseDebug,
-    body: body as Record<string, unknown>,
-    headers: reqHeaders,
-    agentSource,
-    // 本 handler 不做 CC 客户端的 fork/sidequery 分流（只 anthropicHandler 走那套）
-    spaceId,
-    turnSeq,
-    requestPath: c.req.path,
-    protocol: "openai",
-  });
+  const debugMetadata = {
+    ...buildRequestDebugMetadata({
+      debug: langfuseDebug,
+      body: body as Record<string, unknown>,
+      headers: reqHeaders,
+      agentSource,
+      // 本 handler 不做 CC 客户端的 fork/sidequery 分流（只 anthropicHandler 走那套）
+      spaceId,
+      turnSeq,
+      requestPath: c.req.path,
+      protocol: "openai",
+    }),
+    ...modelSourceMetadata,
+  };
 
   // ── Opik: create trace (gated by stageGates.opik) ─────────────────────
   const forkTraceId = _gates.opik ? opikCreateTrace(config, {

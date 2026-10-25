@@ -560,6 +560,14 @@ export interface AgentUpstreamEntry {
 }
 
 /** Top-level proxy configuration (merged from config file + CLI args). */
+/** Routing of `<source>/<model>` model names for multi-source agents (omp, hermes, openclaw). */
+export interface ModelSourcesConfig {
+  /** Master switch. When false the proxy never reads the model prefix. */
+  enabled: boolean;
+  /** Optional narrowing: only these agents use source routing. Omitted = every multi-source agent. */
+  agents?: string[];
+}
+
 export interface ProxyConfig {
   server: {
     host: string; // default: "0.0.0.0"
@@ -624,6 +632,8 @@ export interface ProxyConfig {
   tdai: TdaiConfig;
   coreSkill: CoreSkillConfig;
   instanceUpstream: InstanceUpstreamConfig;
+  /** `<source>/<model>` routing for multi-source agents. Absent = disabled. */
+  modelSources?: ModelSourcesConfig;
   knowledge: KnowledgeConfig;
   skillRuntime: SkillRuntimeConfig;
   /**
@@ -1146,6 +1156,7 @@ export interface RawYamlConfig {
   skill?: Partial<CoreSkillConfig>;
   coreSkill?: Partial<CoreSkillConfig>;
   instanceUpstream?: Partial<InstanceUpstreamConfig>;
+  modelSources?: Partial<ModelSourcesConfig>;
   knowledge?: Partial<KnowledgeConfig>;
   skillRuntime?: {
     allowLlmWrite?: boolean;

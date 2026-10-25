@@ -58,6 +58,7 @@ import { verifyUserKey } from "../../auth.js";
 import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-request.js";
 import { stageAuth } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
+import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
 import { stageModelGate } from "../stages/model-gate.js";
 import {
   stageWriteUsageLog,
@@ -503,9 +504,22 @@ export async function runAnthropicPipeline(
   }
   // eslint-disable-next-line prefer-const
   let body = parseResult.body;
-  const poolService = applyPoolService(config, body);
+  // `<source>/<model>` of a multi-source agent: returns `none` before any other work for every
+  // other agent, so the model-pool and main-model steps below run unchanged for them.
+  const sourceAgent = c.req.path.split("/").filter(Boolean)[0];
+  const modelSource = await stageModelSource({
+    config, agent: sourceAgent, spaceId: earlySpaceId,
+    format: "anthropic-messages", model: body.model, servesPool: true,
+  });
+  if (modelSource.kind === "error") return modelSourceErrorResponse(c, "anthropic", modelSource);
+  const modelSourceMetadata = modelSource.kind === "matched"
+    ? applyModelSource(c, body, modelSource, sourceAgent ?? "")
+    : {};
+  const poolService = modelSource.kind === "matched"
+    ? { routed: false, clientFacingModel: null }
+    : applyPoolService(config, body);
   if (poolService.clientFacingModel) c.set("clientFacingModel", poolService.clientFacingModel);
-  const mainModelFrom = poolService.routed ? null : applyMainModel(body);
+  const mainModelFrom = modelSource.kind === "matched" || poolService.routed ? null : applyMainModel(body);
 
   // ── CC request classification (feature-gated, per-agent) ─────────────────
   // 通过 agentAdapter 分类请求 —— 每个客户端有自己的规则：
@@ -564,6 +578,7 @@ export async function runAnthropicPipeline(
   const earlyResult = await stageInstanceUpstreamEarly({
     c, config, spaceId: earlySpaceId, earlyUserId: earlyVerify.userId,
     errorEnvelope: "anthropic",
+    ...(modelSource.kind === "matched" ? { presetResolution: modelSource.resolution } : {}),
   });
   if (earlyResult.blockedResp) return earlyResult.blockedResp;
   const _earlyConvResolution = earlyResult.earlyConvResolution;
@@ -1163,17 +1178,20 @@ export async function runAnthropicPipeline(
   // 抓 CB / CC 客户端指纹用；关闭时恒返回 {}，不污染线上 metadata。
   // 详见 common/langfuse-debug.ts。
   const langfuseDebug = config.langfuse.debug === true;
-  const debugMetadata = buildRequestDebugMetadata({
-    debug: langfuseDebug,
-    body: body as Record<string, unknown>,
-    headers: reqHeaders,
-    agentSource,
-    requestKind,
-    spaceId,
-    turnSeq,
-    requestPath: c.req.path,
-    protocol: "anthropic",
-  });
+  const debugMetadata = {
+    ...buildRequestDebugMetadata({
+      debug: langfuseDebug,
+      body: body as Record<string, unknown>,
+      headers: reqHeaders,
+      agentSource,
+      requestKind,
+      spaceId,
+      turnSeq,
+      requestPath: c.req.path,
+      protocol: "anthropic",
+    }),
+    ...modelSourceMetadata,
+  };
 
   // ── Opik: create trace ───────────────────────────────────────────────────
   const forkTraceId = _gates.opik ? opikCreateTrace(config, {

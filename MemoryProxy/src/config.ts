@@ -202,6 +202,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   systemUsers: [],
   admin: { apiKey: "" },
   memCommand: {},
+  modelSources: { enabled: false },
   ccRequestRouting: { enabled: true },
   hookGate: { enabled: true },
   workbuddyRequestRouting: { enabled: true },
@@ -603,6 +604,12 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
     instanceUpstream: {
       cacheTtlSec:
         yaml.instanceUpstream?.cacheTtlSec ?? DEFAULT_CONFIG.instanceUpstream.cacheTtlSec,
+    },
+    modelSources: {
+      enabled: yaml.modelSources?.enabled ?? false,
+      ...(Array.isArray(yaml.modelSources?.agents)
+        ? { agents: yaml.modelSources.agents.filter((a): a is string => typeof a === "string" && a !== "") }
+        : {}),
     },
     knowledge: {
       enabled: yaml.knowledge?.enabled ?? DEFAULT_CONFIG.knowledge.enabled,

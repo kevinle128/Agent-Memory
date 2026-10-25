@@ -1034,3 +1034,12 @@ pipeline:
     opencode: false
     pi: false
     claude-code: false
+
+# ── Model sources (`<source>/<model>` routing) ───────────────────────────────
+# Agents that use many providers at once (omp, hermes, openclaw) send `model: "<source>/<model>"`.
+# The proxy finds the upstream group whose source name matches the prefix, checks the agent, the
+# wire format and the enabled model list, then sends the real model id to that group's upstream.
+# Claude Code and Codex never use this path. Off by default: when off the prefix is never read.
+modelSources:
+  enabled: false
+  # agents: [omp, hermes, openclaw]   # optional: narrow to some multi-source agents
