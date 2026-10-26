@@ -29,6 +29,7 @@ const PATH_TO_PAGE: Record<string, PageId> = {
   '/team/agents': 'team_agents',
   '/team/api-keys': 'api_keys',
   '/team/subscription-pool': 'subscription_pool',
+  '/team/model-provider': 'model_provider',
 };
 
 /** PageId → 路由 path */
@@ -221,8 +222,7 @@ export function ConsoleLayout() {
           <Content>
             {!isGuide && (
               <TabBar
-                // 非 admin 不显示订阅账号池标签（页面本身也会重定向）
-                pages={openPages.filter((id) => id !== 'subscription_pool' || userRole === 'admin')}
+                pages={openPages}
                 activePage={activePage}
                 onNavigate={navigateTo}
                 onClose={closePage}

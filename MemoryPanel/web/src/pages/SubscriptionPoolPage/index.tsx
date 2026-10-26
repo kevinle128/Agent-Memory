@@ -22,6 +22,7 @@ import { AddAccountDialog } from './components/AddAccountDialog';
 import { PoolSwitchConfirmDialog } from './components/PoolSwitchConfirmDialog';
 import { DeleteAccountDialog } from './components/DeleteAccountDialog';
 import { ResetCreditsDialog } from './components/ResetCreditsDialog';
+import { PoolSourceCard } from './components/PoolSourceCard';
 import './style.css';
 
 /** Pool errors that mean the shown data is stale. */
@@ -317,6 +318,8 @@ function SubscriptionPoolContent() {
               )}
             </Card.Body>
           </Card>
+
+          {pool && <PoolSourceCard provider={provider} pool={pool} readOnly={readOnly} onChanged={refresh} />}
         </>
       )}
 
@@ -327,6 +330,8 @@ function SubscriptionPoolContent() {
           accountCount={accounts.length}
           availableCount={availableCount}
           activeSessions={pool?.summary.active_sessions ?? 0}
+          sourceName={pool?.source?.source_name || null}
+          sourceAgents={pool?.source?.source_agents ?? []}
           busy={switching}
           onConfirm={() => void confirmSwitch()}
           onClose={() => setSwitchTarget(null)}

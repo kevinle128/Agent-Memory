@@ -97,6 +97,17 @@ export const META_ACTIONS = [
   'subscription-pool/account/check-usage',
   'subscription-pool/account/redeem-reset-credit',
   'subscription-pool/check-all',
+  // Model sources on upstream groups. `groups/view` is key-free and open to any signed-in user;
+  // the other actions need System Admin and the kernel enforces the role.
+  'upstream/supported-agents',
+  'instance-upstream/groups/view',
+  'instance-upstream/groups/create',
+  'instance-upstream/groups/update',
+  'instance-upstream/groups/toggle',
+  'instance-upstream/groups/delete',
+  'instance-upstream/groups/suggest-source-name',
+  'instance-upstream/groups/source-models/update',
+  'instance-upstream/groups/source-refresh',
 ] as const;
 
 export type MetaAction = (typeof META_ACTIONS)[number];

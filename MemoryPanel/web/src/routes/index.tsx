@@ -15,6 +15,7 @@ import { MembersPage } from '@/pages/MembersPage';
 import { AgentsPage } from '@/pages/AgentsPage';
 import { ApiKeysPage } from '@/pages/ApiKeysPage';
 import { SubscriptionPoolPage } from '@/pages/SubscriptionPoolPage';
+import { ModelProviderPage } from '@/pages/ModelProviderPage';
 import { GuidePage } from '@/pages/GuidePage';
 import { AnalyticsPage } from '@/pages/AnalyticsPage';
 
@@ -33,6 +34,7 @@ export const routes: RouteObject[] = [
       { path: 'team/agents', element: <AgentsPage /> },
       { path: 'team/api-keys', element: <ApiKeysPage /> },
       { path: 'team/subscription-pool', element: <SubscriptionPoolPage /> },
+      { path: 'team/model-provider', element: <ModelProviderPage /> },
       { path: 'guide', element: <GuidePage /> },
     ],
   },

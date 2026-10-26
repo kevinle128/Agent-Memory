@@ -193,3 +193,8 @@
 ._memory-pool-credit-confirm {
   flex-basis: 100%;
 }
+
+._memory-pool-source-card { border-left: 3px solid #ffd0a8; }
+._memory-pool-source-form { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px 20px; align-items: start; }
+._memory-pool-source-label { padding-top: 6px; color: rgba(0, 0, 0, 0.7); font-size: 13px; }
+@media (max-width: 760px) { ._memory-pool-source-form { grid-template-columns: 1fr; gap: 6px; } }

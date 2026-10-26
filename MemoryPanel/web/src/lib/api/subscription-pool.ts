@@ -6,6 +6,7 @@
  * Core never returns login tokens, and this module has no field for them.
  */
 import { metaPost } from './base';
+import type { PoolSourceView } from './model-providers';
 import type { PoolAccountStatus, PoolProvider, PoolResetCredits, PoolWindow } from '../subscription-pool-display';
 
 export type { PoolProvider } from '../subscription-pool-display';
@@ -56,6 +57,8 @@ export interface SubscriptionPoolProviderStatus {
     active_sessions: number;
     earliest_reset: number | null;
   };
+  /** Source part of the pool group. Null until the pool is turned on for the first time. */
+  source: PoolSourceView | null;
 }
 
 export interface SubscriptionPoolStatus {

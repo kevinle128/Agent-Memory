@@ -26,6 +26,7 @@ export type PageId =
   | 'team_agents'
   | 'api_keys'
   | 'subscription_pool'
+  | 'model_provider'
   | 'analytics';
 
 /** 页面元数据 */
@@ -55,6 +56,7 @@ export function usePageMeta(): Record<PageId, PageMeta> {
     team_agents:     { id: 'team_agents',     label: t('menu.team_agents'), desc: t('menu.desc.team_agents'), group: t('menu.group.organization'), order: 1 },
     api_keys:        { id: 'api_keys',        label: t('menu.api_keys'), desc: t('menu.desc.api_keys'), group: t('menu.group.organization'), order: 2 },
     subscription_pool: { id: 'subscription_pool', label: t('menu.subscription_pool'), desc: t('menu.desc.subscription_pool'), group: t('menu.group.organization'), order: 3 },
+    model_provider: { id: 'model_provider', label: t('menu.model_provider'), desc: t('menu.desc.model_provider'), group: t('menu.group.organization'), order: 4 },
   };
 }
 
@@ -81,6 +83,14 @@ export const ITEM_ICON: Record<PageId, JSX.Element> = {
       <path d="M3 7h18" />
       <path d="M7 21l-4-4 4-4" />
       <path d="M21 17H3" />
+    </svg>
+  ),
+  model_provider: (
+    <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="6" cy="6" r="2.5" />
+      <circle cx="6" cy="18" r="2.5" />
+      <circle cx="18" cy="12" r="2.5" />
+      <path d="M8.5 6h3a3 3 0 0 1 3 3v0M8.5 18h3a3 3 0 0 0 3-3v0" />
     </svg>
   ),
   wiki: <BooksIcon size={16} />,
