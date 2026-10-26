@@ -297,7 +297,8 @@ describe("proposals", () => {
     const g = await createGlobal();
     const id = await propose(g.skill_id);
     const checkAssetPermission = vi.fn(async ({ user_id }: { user_id: string }) => ({ allowed: user_id === "owner", reason: "x" }));
-    const withAcl = deps({ getMetadataService: async () => ({ checkAssetPermission }) as never });
+    const getTeamMember = vi.fn(async () => ({ role: "member", status: "active" }));
+    const withAcl = deps({ getMetadataService: async () => ({ checkAssetPermission, getTeamMember }) as never });
 
     const denied = await handleProposalApprove({ team_id: IDS.team_id, user_id: "stranger", proposal_id: id }, auth, "r", withAcl);
     expect(denied.code).toBe(40301);
@@ -309,6 +310,107 @@ describe("proposals", () => {
 
     const ok = await handleProposalApprove({ team_id: IDS.team_id, user_id: "owner", proposal_id: id }, auth, "r", withAcl);
     expect(ok.code).toBe(0);
+  });
+
+  /** A metadata service where `owner` owns every skill asset and `roles` gives each user's team role. */
+  function teamMeta(roles: Record<string, { role: string; status: string }>) {
+    const checkAssetPermission = vi.fn(async ({ user_id }: { user_id: string }) => ({ allowed: user_id === "owner", reason: "x" }));
+    const getTeamMember = vi.fn(async (_team: string, userId: string) => roles[userId] ?? null);
+    return { checkAssetPermission, getTeamMember, deps: deps({ getMetadataService: async () => ({ checkAssetPermission, getTeamMember }) as never }) };
+  }
+
+  it("an active team admin approves and rejects a proposal on a skill of another user", async () => {
+    h = createSkillHarness({ mode: "code" });
+    const g = await createGlobal();
+    const first = await propose(g.skill_id);
+    const meta = teamMeta({ admin: { role: "admin", status: "active" } });
+
+    const ok = await handleProposalApprove({ team_id: IDS.team_id, user_id: "admin", proposal_id: first }, auth, "r", meta.deps);
+    expect(ok.code).toBe(0);
+    expect(ok.data).toMatchObject({ proposal: { status: "approved", decided_by: "admin" } });
+    expect(meta.getTeamMember).toHaveBeenCalledWith(IDS.team_id, "admin");
+    expect(meta.checkAssetPermission).not.toHaveBeenCalled();
+
+    const second = await handleUpdate(
+      { ...IDS, skill_id: g.skill_id, expected_version: 2, content: skillMd("team-rules", "Again."), ...EXTRACTED },
+      auth, "r", deps(),
+    );
+    const secondId = (second.data as { proposal: { proposal_id: string } }).proposal.proposal_id;
+    const rejected = await handleProposalReject({ team_id: IDS.team_id, user_id: "admin", proposal_id: secondId }, auth, "r", meta.deps);
+    expect(rejected.code).toBe(0);
+  });
+
+  it("a member who does not own the skill, or an admin who is not active, is refused", async () => {
+    h = createSkillHarness({ mode: "code" });
+    const g = await createGlobal();
+    const id = await propose(g.skill_id);
+    const meta = teamMeta({
+      member: { role: "member", status: "active" },
+      "old-admin": { role: "admin", status: "removed" },
+    });
+    for (const user_id of ["member", "old-admin"]) {
+      expect((await handleProposalApprove({ team_id: IDS.team_id, user_id, proposal_id: id }, auth, "r", meta.deps)).code).toBe(40301);
+      expect((await handleProposalReject({ team_id: IDS.team_id, user_id, proposal_id: id }, auth, "r", meta.deps)).code).toBe(40301);
+    }
+    expect((await h.core.getProposal(id, IDS.team_id))?.status).toBe("pending");
+  });
+
+  it("lists every proposal of the team for an admin, and only decidable ones for a member", async () => {
+    h = createSkillHarness({ mode: "code" });
+    const a = await createGlobal("rules-a");
+    const b = await createGlobal("rules-b");
+    const idA = await propose(a.skill_id, "rules-a");
+    const idB = await propose(b.skill_id, "rules-b");
+    const checkAssetPermission = vi.fn(async ({ user_id, asset_id }: { user_id: string; asset_id: string }) => ({
+      allowed: user_id === "member" && asset_id === b.skill_id, reason: "x",
+    }));
+    const getTeamMember = vi.fn(async (_team: string, userId: string) =>
+      userId === "admin" ? { role: "admin", status: "active" } : { role: "member", status: "active" });
+    const meta = deps({ getMetadataService: async () => ({ checkAssetPermission, getTeamMember }) as never });
+    const list = (user_id?: string, pagination?: { limit: number; offset: number }) =>
+      handleProposalsList({ team_id: IDS.team_id, user_id, status: ["pending"], pagination }, auth, "r", meta);
+
+    const forAdmin = (await list("admin")).data as { items: { proposal_id: string }[]; total: number };
+    expect(forAdmin.total).toBe(2);
+    expect(forAdmin.items.map((p) => p.proposal_id).sort()).toEqual([idA, idB].sort());
+
+    const forMember = (await list("member")).data as { items: { proposal_id: string }[]; total: number };
+    expect(forMember).toMatchObject({ total: 1, items: [{ proposal_id: idB }] });
+    // One permission check per skill, not per proposal page.
+    expect(checkAssetPermission).toHaveBeenCalledTimes(2);
+
+    const stranger = (await list("stranger", { limit: 10, offset: 0 })).data as { total: number };
+    expect(stranger.total).toBe(0);
+
+    // Without a user, the list keeps the earlier behavior and is not filtered.
+    expect(((await list()).data as { total: number }).total).toBe(2);
+  });
+
+  it("names the owner of each proposal's skill, and still lists when the lookup fails", async () => {
+    h = createSkillHarness({ mode: "code" });
+    const g = await createGlobal();
+    const id = await propose(g.skill_id);
+    const base = {
+      checkAssetPermission: vi.fn(async () => ({ allowed: true, reason: "x" })),
+      getTeamMember: vi.fn(async () => ({ role: "admin", status: "active" })),
+    };
+    const named = deps({ getMetadataService: async () => ({
+      ...base,
+      getAgentById: vi.fn(async () => ({ agent_id: IDS.agent_id, owner_user_id: "usr-huy", name: "default-agent-huynd" })),
+      getUserById: vi.fn(async () => ({ user_id: "usr-huy", username: "huynd", display_name: "" })),
+    }) as never });
+    const res = await handleProposalsList({ team_id: IDS.team_id, user_id: "admin" }, auth, "r", named);
+    expect(res.data).toMatchObject({
+      items: [{ proposal_id: id, owner_user_id: "usr-huy", owner_name: "huynd", owner_agent_name: "default-agent-huynd" }],
+    });
+
+    const broken = deps({ getMetadataService: async () => ({
+      ...base,
+      getAgentById: vi.fn(async () => { throw new Error("down"); }),
+    }) as never });
+    const still = await handleProposalsList({ team_id: IDS.team_id, user_id: "admin" }, auth, "r", broken);
+    expect(still.code).toBe(0);
+    expect((still.data as { items: Record<string, unknown>[] }).items[0]).not.toHaveProperty("owner_name");
   });
 
   it("without a metadata service, an agent_id that is not the owner is refused", async () => {

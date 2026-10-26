@@ -184,12 +184,16 @@ export function useSkillsPanel() {
     setProposalsLoading(true);
     const [skillsRes, proposalsRes] = await Promise.allSettled([
       listTeamSkills(activeTeamId),
-      listSkillProposals({ team_id: activeTeamId, status: ['pending', 'stale'] }),
+      // Core returns only the proposals this user may decide on: all of the team
+      // for an admin, the user's own skills for a member. Without a user, ask for none.
+      myUserId
+        ? listSkillProposals({ team_id: activeTeamId, user_id: myUserId, status: ['pending', 'stale'] })
+        : Promise.resolve({ items: [] as SkillProposal[], total: 0 }),
     ]);
     setTeamSkills(skillsRes.status === 'fulfilled' ? skillsRes.value : []);
     setProposals(proposalsRes.status === 'fulfilled' ? proposalsRes.value.items : []);
     setProposalsLoading(false);
-  }, [activeTeamId]);
+  }, [activeTeamId, myUserId]);
 
   // 选中某条 skill 时按需预拉其数据面详情（幂等，已缓存则跳过）。
   // 不做列表级批量预取：有多少 skill 就发多少次 getSkill() 太浪费，

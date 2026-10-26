@@ -847,9 +847,20 @@ export async function handleProposalsList(body: unknown, auth: V2AuthContext, re
   const pre = await precheck(proposalsListRequestSchema, body, auth, deps, requestId);
   if (!pre.ok) { obsLogger.warn("skill.handleProposalsList.done", { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
   try {
-    const r = await pre.core.listProposals(pre.data);
+    // A list without a user keeps the earlier behavior: no viewer filter.
+    const r = pre.data.user_id && pre.data.team_id
+      ? await listDecidableProposals(
+        pre.core,
+        pre.data,
+        await proposalGate(pre.data.team_id, { user_id: pre.data.user_id, agent_id: pre.data.agent_id }, auth, deps),
+      )
+      : await pre.core.listProposals(pre.data);
+    const owners = await proposalOwners(r.items, auth, deps);
     obsLogger.info("skill.handleProposalsList.done", { req_id: requestId, code: 0, dur_ms: Date.now() - t0, items: r.items.length, total: r.total });
-    return successEnvelope({ items: r.items.map(toProposalView), total: r.total }, requestId);
+    return successEnvelope(
+      { items: r.items.map((p) => ({ ...toProposalView(p), ...owners.get(p.owner_agent_id) })), total: r.total },
+      requestId,
+    );
   } catch (e) {
     obsLogger.error("skill.handleProposalsList.done", { req_id: requestId, dur_ms: Date.now() - t0 }, e instanceof Error ? e : undefined);
     return mapCoreError(e, requestId);
@@ -857,30 +868,113 @@ export async function handleProposalsList(body: unknown, auth: V2AuthContext, re
 }
 
 /**
- * The person who decides on a proposal must be allowed to write the skill.
+ * Who may see and decide on the proposals of a team.
  *
- * With a metadata service, that is the asset ACL check on the skill (asset id
- * equals skill id): owner, team role, or explicit grant. A skill without an
- * asset row is refused until a read has registered it. Without a metadata
- * service (embedded tests), the team of the request has already been matched
- * to the proposal, and an `agent_id` that is sent must be the owner agent.
+ * With a metadata service: an active team admin may decide on every proposal of
+ * the team, also for a private skill of another user. Any other user needs write
+ * access to the skill asset (asset id equals skill id): the owner, or an explicit
+ * grant. A skill without an asset row is refused for a non-admin until a read has
+ * registered it. Without a metadata service (embedded tests), the team of the
+ * request has already been matched to the proposal, and an `agent_id` that is
+ * sent must be the owner agent.
  */
-async function mayDecideProposal(
-  proposal: SkillChangeProposal,
+interface ProposalGate {
+  /** True when the gate lets every proposal of the team through. */
+  readonly allowsAll: boolean;
+  allows(proposal: SkillChangeProposal): Promise<boolean>;
+}
+
+async function proposalGate(
+  teamId: string,
   input: { user_id: string; agent_id?: string },
   auth: V2AuthContext,
   deps: SkillRouterDeps,
-): Promise<boolean> {
+): Promise<ProposalGate> {
   if (!deps.getMetadataService) {
-    return !input.agent_id || input.agent_id === proposal.owner_agent_id;
+    const allowsAll = !input.agent_id;
+    return { allowsAll, allows: async (p) => allowsAll || input.agent_id === p.owner_agent_id };
   }
   const metaSvc = await deps.getMetadataService(auth.serviceId);
-  const verdict = await metaSvc.checkAssetPermission({
-    user_id: input.user_id,
-    asset_id: proposal.skill_id,
-    action: "write",
-  });
-  return verdict.allowed;
+  const member = await metaSvc.getTeamMember(teamId, input.user_id);
+  if (member?.status === "active" && member.role === "admin") {
+    return { allowsAll: true, allows: async () => true };
+  }
+  const bySkill = new Map<string, Promise<boolean>>();
+  return {
+    allowsAll: false,
+    allows: (p) => {
+      let verdict = bySkill.get(p.skill_id);
+      if (!verdict) {
+        verdict = metaSvc
+          .checkAssetPermission({ user_id: input.user_id, asset_id: p.skill_id, action: "write" })
+          .then((r) => r.allowed);
+        bySkill.set(p.skill_id, verdict);
+      }
+      return verdict;
+    },
+  };
+}
+
+/** Who owns the skill of a proposal, for the person who decides. */
+interface ProposalOwner {
+  owner_user_id?: string;
+  owner_name?: string;
+  owner_agent_name?: string;
+}
+
+/**
+ * Looks up the owner of each proposal's skill: the agent, its owner user, and
+ * the user's display name (or username). One lookup per agent. Best effort: a
+ * failed or missing lookup leaves the fields out, and the list still answers.
+ */
+async function proposalOwners(
+  proposals: SkillChangeProposal[],
+  auth: V2AuthContext,
+  deps: SkillRouterDeps,
+): Promise<Map<string, ProposalOwner>> {
+  const owners = new Map<string, ProposalOwner>();
+  if (!deps.getMetadataService || proposals.length === 0) return owners;
+  try {
+    const metaSvc = await deps.getMetadataService(auth.serviceId);
+    for (const agentId of new Set(proposals.map((p) => p.owner_agent_id))) {
+      const agent = await metaSvc.getAgentById(agentId).catch(() => null);
+      if (!agent) continue;
+      const user = agent.owner_user_id ? await metaSvc.getUserById(agent.owner_user_id).catch(() => null) : null;
+      owners.set(agentId, {
+        owner_user_id: agent.owner_user_id || undefined,
+        owner_name: user ? user.display_name || user.username : undefined,
+        owner_agent_name: agent.name || undefined,
+      });
+    }
+  } catch (e) {
+    obsLogger.warn("skill.proposalOwners.failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+  return owners;
+}
+
+/** Page size used to read every matching proposal before the gate filters them. */
+const PROPOSAL_SCAN_PAGE = 200;
+
+/**
+ * Proposals the user may decide on. An admin gets the normal paginated list.
+ * For any other user, all matching proposals are read, filtered, and then
+ * paginated, so `total` counts only the proposals that the user can see.
+ */
+async function listDecidableProposals(
+  core: SkillCore,
+  input: Parameters<SkillCore["listProposals"]>[0],
+  gate: ProposalGate,
+): Promise<{ items: SkillChangeProposal[]; total: number }> {
+  if (gate.allowsAll) return core.listProposals(input);
+  const visible: SkillChangeProposal[] = [];
+  for (let offset = 0; ; offset += PROPOSAL_SCAN_PAGE) {
+    const page = await core.listProposals({ ...input, pagination: { limit: PROPOSAL_SCAN_PAGE, offset } });
+    for (const p of page.items) if (await gate.allows(p)) visible.push(p);
+    if (page.items.length < PROPOSAL_SCAN_PAGE || offset + page.items.length >= page.total) break;
+  }
+  const offset = input.pagination?.offset ?? 0;
+  const limit = input.pagination?.limit ?? visible.length;
+  return { items: visible.slice(offset, offset + limit), total: visible.length };
 }
 
 type ProposalDecision = "approve" | "reject";
@@ -905,7 +999,8 @@ async function handleProposalDecision(
       obsLogger.info(event, { req_id: requestId, code: 40401, dur_ms: Date.now() - t0, proposal_id, reason: "not_found" });
       return errorEnvelope(40401, "SKILL_PROPOSAL_NOT_FOUND: proposal not found", requestId);
     }
-    if (!(await mayDecideProposal(proposal, { user_id, agent_id }, auth, deps))) {
+    const gate = await proposalGate(proposal.team_id, { user_id, agent_id }, auth, deps);
+    if (!(await gate.allows(proposal))) {
       obsLogger.warn(event, { req_id: requestId, code: 40301, dur_ms: Date.now() - t0, proposal_id, reason: "forbidden" });
       return errorEnvelope(40301, "SKILL_NOT_OWNER: user may not decide on this proposal", requestId);
     }

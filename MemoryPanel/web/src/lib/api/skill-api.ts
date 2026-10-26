@@ -544,6 +544,10 @@ export interface SkillProposal {
   decided_at_ms?: number;
   decided_by?: string;
   result_version?: number;
+  /** Owner of the skill, filled by Core when it can look them up. */
+  owner_user_id?: string;
+  owner_name?: string;
+  owner_agent_name?: string;
 }
 
 export function listSkillProposals(params: {

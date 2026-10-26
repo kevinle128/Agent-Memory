@@ -24,8 +24,24 @@ function StatusTag({ status }: { status: string }) {
   return <span className="_memory-skill-stale">{t('skillScope.proposals.stale')}</span>;
 }
 
+/** Whose skill the proposal changes: the owner's name, "(you)" for the viewer, and the agent. */
+function OwnerTag({ proposal, userId }: { proposal: SkillProposal; userId: string }) {
+  const { t } = useTranslation();
+  const name = proposal.owner_name || proposal.owner_user_id;
+  const agent = proposal.owner_agent_name || proposal.owner_agent_id;
+  const mine = !!userId && proposal.owner_user_id === userId;
+  return (
+    <span className="_memory-skill-owner" data-owner={proposal.owner_user_id ?? ''}>
+      {t('skillScope.proposals.owner')}: <b>{name || '—'}</b>
+      {mine && ` (${t('skillScope.proposals.ownerYou')})`}
+      {agent && ` · ${t('skillScope.proposals.ownerAgent', { name: agent })}`}
+    </span>
+  );
+}
+
 function ProposalDetail(props: {
   teamId: string;
+  userId: string;
   proposal: SkillProposal;
   busy: boolean;
   onApprove: () => void;
@@ -63,7 +79,7 @@ function ProposalDetail(props: {
     <div className="_memory-skill-screen">
       <div className="_memory-skill-screen-head">
         <div className="_memory-skill-screen-title">
-          {p.skill_name} <StatusTag status={p.status} />
+          {p.skill_name} <OwnerTag proposal={p} userId={props.userId} /> <StatusTag status={p.status} />
         </div>
         <div className="_memory-skill-screen-actions">
           {p.status === 'pending' && (
@@ -175,6 +191,7 @@ export function ProposalsView(props: {
     return (
       <ProposalDetail
         teamId={props.teamId}
+        userId={props.userId}
         proposal={open}
         busy={busy === open.proposal_id}
         onApprove={() => void approve(open)}
@@ -226,6 +243,7 @@ export function ProposalsView(props: {
             <div className="_memory-skill-vcard-title">
               <b>{p.skill_name}</b>
               <ScopeBadge skill={{ skill_id: p.skill_id, name: p.skill_name, scope: 'global' }} />
+              <OwnerTag proposal={p} userId={props.userId} />
               <span className="_memory-skill-vtag">
                 v{p.base_version} → {t('skillScope.proposals.proposed')}
               </span>

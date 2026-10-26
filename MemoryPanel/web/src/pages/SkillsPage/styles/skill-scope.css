@@ -206,6 +206,17 @@
 }
 ._memory-skill-source--rollback { background: #fff1e0; color: #c15b00; }
 ._memory-skill-source--extracted { background: #f1eafc; color: #7a4dd8; }
+._memory-skill-owner {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 20px;
+  background: #f3f3f3;
+  color: #333;
+  border: 1px solid #dcdcdc;
+}
+
 ._memory-skill-stale {
   display: inline-block;
   padding: 0 6px;
