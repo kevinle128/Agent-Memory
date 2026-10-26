@@ -2208,7 +2208,7 @@ export const enUS = {
   'menu.model_provider': 'Model Provider',
   'menu.desc.model_provider': 'Manage API-key model sources (custom upstream groups)',
   'modelProvider.title': 'Model Provider',
-  'modelProvider.subtitle': 'Instance "{{instance}}" · Custom upstream groups (API keys). A group can serve whole agents as today, be a model source <model>, or both. Subscription sources live on the Subscription Pool tab.',
+  'modelProvider.subtitle': 'Instance "{{instance}}" · Custom upstream groups (API keys). A group can serve whole agents as today, be a model source <source>/<model>, or both. Subscription sources live on the Subscription Pool tab.',
   'modelProvider.tab.list': 'Providers',
   'modelProvider.tab.preview': 'What clients see',
   'modelProvider.readOnly': 'Read-only. Everyone can view this tab; only a System Admin can add, edit, switch, delete or fetch models. Keys are never shown, only "key configured".',

@@ -112,9 +112,11 @@ export function ProviderForm({ mode, group, attach, readOnly, groups, poolAgents
     modelProvidersApi.suggestSourceName('api', draft.providerSlug).then(
       (name) => {
         if (!live) return;
-        setSuggestion(name);
-        setDraft((d) => (d.sourceName === '' || d.sourceName === suggestionRef.current ? { ...d, sourceName: name } : d));
+        // Read the old proposal now: the state updater below runs later, after the ref changes.
+        const previous = suggestionRef.current;
         suggestionRef.current = name;
+        setSuggestion(name);
+        setDraft((d) => (d.sourceName === '' || d.sourceName === previous ? { ...d, sourceName: name } : d));
       },
       () => undefined,
     );
