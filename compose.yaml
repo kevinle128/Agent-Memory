@@ -159,6 +159,8 @@ configs:
           dbPath: /data/tdai-memory-proxy/proxy.db
       costGuard:
         enabled: false
+      modelSources:
+        enabled: true
       injection:
         enabled: true
         externalGatewayUrl: ${PROXY_PUBLIC_URL:-http://localhost:8096}
