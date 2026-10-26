@@ -823,6 +823,8 @@ export interface SupportedAgent {
   display_name: string;
   /** true = the agent picks one of many model sources by the `<source>/<model>` prefix. */
   multi_source?: boolean;
+  /** Wire formats the client can send through the proxy. Defaults to the one of `protocol`. */
+  formats?: string[];
 }
 
 /**

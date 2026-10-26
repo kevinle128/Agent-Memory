@@ -2411,7 +2411,7 @@ export class MetadataService {
       providers: providers.map((p) => {
         const group = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.name === this.subscriptionPoolName(p));
         const rows = accounts.filter((a) => a.provider === p && (!group || a.group_id === group.group_id));
-        const on = Boolean(group?.enabled && group.agents.includes(this.subscriptionAgent(p)));
+        const on = Boolean(group?.enabled);
         const earliest_reset = rows.map((a) => a.exhausted_until).filter((v): v is number => v !== null).sort((a, b) => a - b)[0] ?? null;
         return {
           provider: p,
@@ -2430,35 +2430,45 @@ export class MetadataService {
     };
   }
 
+  /**
+   * Turn the pool on as a model source: create the group when missing, give it its fixed source
+   * name and set it on. Which client uses the pool is chosen through the client sources.
+   */
   async enableSubscriptionPool(provider: SubscriptionProvider, supportedAgents: SupportedAgent[]): Promise<Record<string, unknown>> {
     this.subscriptionAdapter(provider);
     await this.store.ensureDefaultSeeded(supportedAgents);
-    const agent = this.subscriptionAgent(provider);
     const groups = await this.store.listInstanceUpstreamGroups(undefined, supportedAgents);
-    const existingPool = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.name === this.subscriptionPoolName(provider));
-    const current = groups.find((g) => g.agents.includes(agent));
-    if (current?.group_type === "custom" && current.mode !== "subscription_pool") {
-      throw new MetadataError("POOL_AGENT_CUSTOM_GROUP", `agent ${agent} is already in a custom upstream group`);
-    }
-    if (!existingPool?.source_name && (await this.takenSourceNames(existingPool?.group_id)).has(poolSourceFields(provider).source_name)) {
-      throw new MetadataError("SOURCE_NAME_TAKEN", `source name is already used by another group: ${poolSourceFields(provider).source_name}`);
+    const pool = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.name === this.subscriptionPoolName(provider));
+    const fixed = poolSourceFields(provider);
+    if (!pool?.source_name && (await this.takenSourceNames(pool?.group_id)).has(fixed.source_name)) {
+      throw new MetadataError("SOURCE_NAME_TAKEN", `source name is already used by another group: ${fixed.source_name}`);
     }
     try {
-      const result = await this.store.moveAgentBetweenUpstreamGroups({
-        agent,
-        from: current && current.group_id !== existingPool?.group_id ? [{ group_id: current.group_id }] : [],
-        to: existingPool
-          ? { group_id: existingPool.group_id, enabled: true }
-          : { create: { name: this.subscriptionPoolName(provider), mode: "subscription_pool", base_url: "", api_key: "", model_id: "", description: `${provider} subscription accounts` } },
-      });
-      if (result.to.source_name) return this.toPublicGroup(result.to);
-      const named = await this.store.updateInstanceUpstreamGroup({
-        group_id: result.to.group_id,
+      if (!pool) {
+        const row = await this.store.createInstanceUpstreamGroup({
+          group_type: "custom",
+          name: this.subscriptionPoolName(provider),
+          agents: [],
+          enabled: true,
+          mode: "subscription_pool",
+          base_url: "",
+          api_key: "",
+          model_id: "",
+          description: `${provider} subscription accounts`,
+          ...fixed,
+        });
+        this.notifySourceAttached(null, row);
+        return this.toPublicGroup(row);
+      }
+      if (pool.enabled && pool.source_name) return this.toPublicGroup(pool);
+      const row = await this.store.updateInstanceUpstreamGroup({
+        group_id: pool.group_id,
         expected_group_type: "custom",
-        ...poolSourceFields(provider),
+        enabled: true,
+        ...(pool.source_name ? {} : fixed),
       });
-      this.notifySourceAttached(result.to, named);
-      return this.toPublicGroup(named);
+      this.notifySourceAttached(pool, row);
+      return this.toPublicGroup(row);
     } catch (e) {
       throw this.translateUpstreamConflict(e);
     }
@@ -2976,7 +2986,7 @@ export class MetadataService {
     await this.store.ensureDefaultSeeded(supportedAgents);
     if (!input.enabled) {
       const current = await this.store.getInstanceUpstreamGroup(input.group_id);
-      if (current) this.assertSourceNotInUse(current);
+      if (current?.enabled) this.assertSourceNotInUse(current);
     }
     try {
       const row = await this.store.toggleInstanceUpstreamGroup(input);
@@ -3243,6 +3253,10 @@ export class MetadataService {
     );
   }
 
+  private static clientFormats(agent: SupportedAgent): string[] {
+    return agent.formats && agent.formats.length > 0 ? agent.formats : [MetadataService.PROTOCOL_FORMAT[agent.protocol]];
+  }
+
   private static readonly PROTOCOL_FORMAT: Record<SupportedAgent["protocol"], string> = {
     anthropic: "anthropic-messages",
     "openai-chat": "openai-chat",
@@ -3256,7 +3270,7 @@ export class MetadataService {
   }
 
   private static sourceIsOn(group: InstanceUpstreamConfigEntity): boolean {
-    return group.mode === "subscription_pool" ? group.enabled : group.source_enabled;
+    return group.mode === "subscription_pool" ? group.enabled : group.enabled && group.source_enabled;
   }
 
   private buildClientSources(
@@ -3273,6 +3287,7 @@ export class MetadataService {
           display_name: a.display_name,
           mode: multi ? "multi" : "single",
           ...(multi ? {} : { format: MetadataService.PROTOCOL_FORMAT[a.protocol] }),
+          formats: MetadataService.clientFormats(a),
           selected: chosen.map((g) => g.source_name),
         };
       }),
@@ -3316,6 +3331,16 @@ export class MetadataService {
       throw new MetadataError("SOURCE_DISABLED", `sources are off: ${off.join(",")}`, { disabled_sources: off });
     }
     if (agent.multi_source === true) {
+      const clientFormats = MetadataService.clientFormats(agent);
+      for (const g of chosen as InstanceUpstreamConfigEntity[]) {
+        if (!g.source_formats.some((f) => clientFormats.includes(f))) {
+          throw new MetadataError(
+            "SOURCE_FORMAT_MISMATCH",
+            `source ${g.source_name} shares no format with ${agent.agent_source}`,
+            { source_name: g.source_name, client_formats: clientFormats },
+          );
+        }
+      }
       await this.setMultiSourceClient(agent.agent_source, sources, new Set(names));
     } else {
       await this.setSingleSourceClient(agent, groups, chosen as InstanceUpstreamConfigEntity[]);
@@ -3356,12 +3381,8 @@ export class MetadataService {
       throw new MetadataError(
         "SOURCE_FORMAT_MISMATCH",
         `source ${target.source_name} does not serve ${format}`,
-        { source_name: target.source_name, required_format: format },
+        { source_name: target.source_name, required_format: format, client_formats: [format] },
       );
-    }
-    // The group routes the client to its upstream, so the group switch must be on as well.
-    if (!target.enabled) {
-      throw new MetadataError("SOURCE_DISABLED", `source ${target.source_name} is off`, { disabled_sources: [target.source_name] });
     }
     const holders = groups.filter((g) => g.agents.includes(agent.agent_source));
     if (holders.length === 1 && holders[0]!.group_id === target.group_id) return;

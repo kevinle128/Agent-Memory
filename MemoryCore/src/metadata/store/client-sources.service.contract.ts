@@ -12,8 +12,9 @@ import type { SupportedAgent } from "../types.js";
 const AGENTS: SupportedAgent[] = [
   { agent_source: "claude-code", protocol: "anthropic", display_name: "Claude Code" },
   { agent_source: "codex", protocol: "openai-responses", display_name: "Codex" },
-  { agent_source: "codebuddy", protocol: "openai-chat", display_name: "CodeBuddy", multi_source: true },
-  { agent_source: "omp", protocol: "openai-chat", display_name: "oh-my-pi", multi_source: true },
+  { agent_source: "codebuddy", protocol: "openai-chat", display_name: "CodeBuddy", multi_source: true, formats: ["openai-chat"] },
+  { agent_source: "omp", protocol: "openai-chat", display_name: "oh-my-pi", multi_source: true, formats: ["anthropic-messages", "openai-responses", "openai-chat"] },
+  { agent_source: "workbuddy", protocol: "openai-responses", display_name: "WorkBuddy", multi_source: true },
 ];
 
 const API_KEY = "sk-provider-secret-1234";
@@ -66,13 +67,15 @@ export function runClientSourcesServiceContract(
         await apiSource("api-chat", { source_models: [model("a", true), model("b")] });
         await apiSource("api-off", { source_enabled: false });
         await svc.enableSubscriptionPool("claude", AGENTS);
+        await update("claude-code", ["sub-claude"]);
         await update("omp", ["api-chat"]);
         const res = await svc.listClientSources(AGENTS);
         expect(res.agents).toEqual([
-          { agent: "claude-code", display_name: "Claude Code", mode: "single", format: "anthropic-messages", selected: ["sub-claude"] },
-          { agent: "codex", display_name: "Codex", mode: "single", format: "openai-responses", selected: [] },
-          { agent: "codebuddy", display_name: "CodeBuddy", mode: "multi", selected: [] },
-          { agent: "omp", display_name: "oh-my-pi", mode: "multi", selected: ["api-chat"] },
+          { agent: "claude-code", display_name: "Claude Code", mode: "single", format: "anthropic-messages", formats: ["anthropic-messages"], selected: ["sub-claude"] },
+          { agent: "codex", display_name: "Codex", mode: "single", format: "openai-responses", formats: ["openai-responses"], selected: [] },
+          { agent: "codebuddy", display_name: "CodeBuddy", mode: "multi", formats: ["openai-chat"], selected: [] },
+          { agent: "omp", display_name: "oh-my-pi", mode: "multi", formats: ["anthropic-messages", "openai-responses", "openai-chat"], selected: ["api-chat"] },
+          { agent: "workbuddy", display_name: "WorkBuddy", mode: "multi", formats: ["openai-responses"], selected: [] },
         ]);
         expect(res.sources).toEqual([
           { source_name: "api-chat", source_type: "api", provider: "deepseek", formats: ["openai-chat"], enabled: true, models_on: 1, models_total: 2 },
@@ -115,6 +118,7 @@ export function runClientSourcesServiceContract(
       it("moves claude-code from the pool to an Anthropic source and back", async () => {
         await apiSource("api-anthropic", { source_formats: ["anthropic-messages"] });
         await svc.enableSubscriptionPool("claude", AGENTS);
+        await expect(update("claude-code", ["sub-claude"])).resolves.toMatchObject({ selected: ["sub-claude"] });
         expect((await groupOf("claude-code")).mode).toBe("subscription_pool");
 
         await expect(update("claude-code", ["api-anthropic"])).resolves.toMatchObject({ selected: ["api-anthropic"] });
@@ -188,6 +192,7 @@ export function runClientSourcesServiceContract(
 
       it("refuses to disable a pool that claude-code or a multi-source client uses", async () => {
         await svc.enableSubscriptionPool("claude", AGENTS);
+        await update("claude-code", ["sub-claude"]);
         await expect(svc.disableSubscriptionPool("claude", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["claude-code"] } });
         const pool = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).find((g) => g.mode === "subscription_pool")!;
         await expect(svc.toggleInstanceUpstreamGroup({ group_id: pool.group_id, enabled: false }, AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
@@ -206,6 +211,63 @@ export function runClientSourcesServiceContract(
         expect(pool.enabled).toBe(false);
         await expect(update("codex", ["sub-openai"])).rejects.toMatchObject({ code: "SOURCE_DISABLED" });
         await expect(svc.disableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "POOL_NOT_ENABLED" });
+      });
+    });
+
+    describe("formats", () => {
+      it("rejects a multi-source client source that shares no format with the client", async () => {
+        await apiSource("api-chat", { source_formats: ["openai-chat"] });
+        await apiSource("api-resp", { source_formats: ["openai-responses"] });
+        await apiSource("api-both", { source_formats: ["openai-responses", "anthropic-messages"] });
+        await expect(update("codebuddy", ["api-resp"])).rejects.toMatchObject({
+          code: "SOURCE_FORMAT_MISMATCH", detail: { source_name: "api-resp", client_formats: ["openai-chat"] },
+        });
+        await expect(update("workbuddy", ["api-chat"])).rejects.toMatchObject({ code: "SOURCE_FORMAT_MISMATCH" });
+        await expect(update("omp", ["api-chat", "api-both"])).resolves.toMatchObject({ selected: ["api-both", "api-chat"] });
+        expect((await entry("codebuddy")).selected).toEqual([]);
+      });
+
+      it("falls back to the protocol format when an agent lists no formats", async () => {
+        expect((await entry("workbuddy")).formats).toEqual(["openai-responses"]);
+      });
+    });
+
+    describe("pool as a source", () => {
+      it("turns the pool on without moving the agent and reports the pool switch", async () => {
+        await svc.enableSubscriptionPool("claude", AGENTS);
+        await apiSource("api-anthropic", { source_formats: ["anthropic-messages"] });
+        await update("claude-code", ["api-anthropic"]);
+        await update("omp", ["sub-claude"]);
+        const status = await svc.getSubscriptionPoolStatus("claude") as { providers: { enabled: boolean }[] };
+        expect(status.providers[0].enabled).toBe(true);
+        await expect(svc.enableSubscriptionPool("claude", AGENTS)).resolves.toMatchObject({ enabled: true, source_name: "sub-claude" });
+        expect((await groupOf("claude-code")).source_name).toBe("api-anthropic");
+      });
+
+      it("turns the pool on again after it was switched off", async () => {
+        await svc.enableSubscriptionPool("codex", AGENTS);
+        await update("omp", ["sub-openai"]);
+        await update("omp", []);
+        await svc.disableSubscriptionPool("codex", AGENTS);
+        const again = await svc.enableSubscriptionPool("codex", AGENTS);
+        expect(again).toMatchObject({ enabled: true, source_name: "sub-openai" });
+      });
+
+      it("treats a source as on only when both the group and the source switch are on", async () => {
+        const group = await apiSource("api-half");
+        await svc.toggleInstanceUpstreamGroup({ group_id: group.group_id as string, enabled: false }, AGENTS);
+        expect((await svc.listClientSources(AGENTS)).sources[0]).toMatchObject({ source_name: "api-half", enabled: false });
+        await expect(update("omp", ["api-half"])).rejects.toMatchObject({ code: "SOURCE_DISABLED" });
+      });
+
+      it("does nothing when a group that is already off is turned off again", async () => {
+        const group = await apiSource("api-quiet");
+        await update("omp", ["api-quiet"]);
+        await svc.updateInstanceUpstreamGroup({ group_id: group.group_id as string, group_type: "custom", source_agents: [] }, AGENTS);
+        await svc.toggleInstanceUpstreamGroup({ group_id: group.group_id as string, enabled: false }, AGENTS);
+        await svc.updateInstanceUpstreamGroup({ group_id: group.group_id as string, group_type: "custom", source_agents: ["omp"] }, AGENTS);
+        await expect(svc.toggleInstanceUpstreamGroup({ group_id: group.group_id as string, enabled: false }, AGENTS))
+          .resolves.toMatchObject({ enabled: false });
       });
     });
 

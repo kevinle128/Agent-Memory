@@ -34,17 +34,24 @@ describe("subscription pool service", () => {
     await store.moveAgentBetweenUpstreamGroups({ agent, from: [{ group_id: holder.group_id }], to: { group_id: fallback.group_id } });
   }
 
-  it("moves codex onto a pool group and switches the pool off only after codex left it", async () => {
+  /** The state of an instance that enabled the pool before clients chose sources: the agent sits in the pool group. */
+  async function moveIntoPool(agent: string): Promise<void> {
+    const groups = await store.listInstanceUpstreamGroups(undefined, AGENTS);
+    const holder = groups.find((group) => group.agents.includes(agent))!;
+    const pool = groups.find((group) => group.mode === "subscription_pool")!;
+    await store.moveAgentBetweenUpstreamGroups({ agent, from: [{ group_id: holder.group_id }], to: { group_id: pool.group_id } });
+  }
+
+  it("turns the codex pool on as a source without moving codex, and switches it off only while unused", async () => {
     await svc.enableSubscriptionPool("codex", AGENTS);
     const enabled = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     const defaultGroup = enabled.find((group) => group.group_type === "default");
     const pool = enabled.find((group) => group.mode === "subscription_pool");
-    expect(defaultGroup?.agents).not.toContain("codex");
-    expect(defaultGroup?.agents).toContain("claude-code");
-    expect(pool?.agents).toEqual(["codex"]);
-    expect(pool?.base_url).toBe("");
-    expect(pool?.api_key).toBe("");
+    expect(defaultGroup?.agents).toEqual(expect.arrayContaining(["codex", "claude-code"]));
+    expect(pool).toMatchObject({ agents: [], enabled: true, source_name: "sub-openai", base_url: "", api_key: "" });
+    expect(await svc.getSubscriptionPoolStatus("codex")).toMatchObject({ providers: [{ enabled: true }] });
 
+    await moveIntoPool("codex");
     await expect(svc.disableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["codex"] } });
     await releaseToDefault("codex");
     const disabled = await svc.disableSubscriptionPool("codex", AGENTS);
@@ -56,7 +63,7 @@ describe("subscription pool service", () => {
     expect(after.find((group) => group.group_id === pool?.group_id)).toMatchObject({ agents: [], enabled: false });
   });
 
-  it("refuses to enable the pool when the agent already has a custom upstream", async () => {
+  it("turns the pool on while the agent has a custom upstream and leaves the agent there", async () => {
     await store.ensureDefaultSeeded(AGENTS);
     const groups = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     const fallback = groups.find((group) => group.group_type === "default")!;
@@ -65,7 +72,7 @@ describe("subscription pool service", () => {
       from: [{ group_id: fallback.group_id }],
       to: { create: { name: "office gateway", mode: "custom_unified", base_url: "https://gw.example.test", api_key: "secret" } },
     });
-    await expect(svc.enableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "POOL_AGENT_CUSTOM_GROUP" });
+    await expect(svc.enableSubscriptionPool("codex", AGENTS)).resolves.toMatchObject({ enabled: true, agents: [] });
     const still = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     expect(still.find((group) => group.name === "office gateway")?.agents).toEqual(["codex"]);
   });
@@ -146,10 +153,8 @@ describe("subscription pool service", () => {
     const enabled = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     const defaultGroup = enabled.find((group) => group.group_type === "default");
     const pool = enabled.find((group) => group.mode === "subscription_pool");
-    expect(defaultGroup?.agents).not.toContain("claude-code");
-    expect(defaultGroup?.agents).toContain("codex");
-    expect(pool?.agents).toEqual(["claude-code"]);
-    expect(pool?.name).toBe("claude subscription pool");
+    expect(defaultGroup?.agents).toEqual(expect.arrayContaining(["codex", "claude-code"]));
+    expect(pool).toMatchObject({ agents: [], name: "claude subscription pool", source_name: "sub-claude" });
 
     const started = svc.startSubscriptionOAuth("claude");
     const url = new URL(started.authorize_url);
@@ -159,6 +164,7 @@ describe("subscription pool service", () => {
     expect(started.authorize_url).not.toContain("code_verifier");
     expect(JSON.stringify(started)).not.toContain("codeVerifier");
 
+    await moveIntoPool("claude-code");
     await expect(svc.disableSubscriptionPool("claude", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
     await releaseToDefault("claude-code");
     await svc.disableSubscriptionPool("claude", AGENTS);
@@ -234,7 +240,7 @@ describe("subscription pool provider calls", () => {
 
     const enabled = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).filter((group) => group.mode === "subscription_pool");
     expect(enabled).toHaveLength(1);
-    expect(enabled[0]).toMatchObject({ group_id: pool?.group_id, enabled: true, agents: ["codex"] });
+    expect(enabled[0]).toMatchObject({ group_id: pool?.group_id, enabled: true, agents: [] });
     expect((await svc.listSubscriptionAccountsInternal()).accounts).toHaveLength(1);
     const status = await svc.getSubscriptionPoolStatus("codex") as { providers: Array<{ group_id: string | null; accounts: unknown[] }> };
     expect(status.providers[0]).toMatchObject({ group_id: pool?.group_id });

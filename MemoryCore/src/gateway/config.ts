@@ -992,6 +992,7 @@ export function loadGatewayConfig(overrides?: GatewayConfigOverrides): GatewayCo
           protocol: (e.protocol as "anthropic" | "openai-chat" | "openai-responses") ?? "openai-chat",
           display_name: String(e.display_name ?? ""),
           ...(e.multi_source === true ? { multi_source: true } : {}),
+          ...(Array.isArray(e.formats) && e.formats.length > 0 ? { formats: e.formats.map(String) } : {}),
         }))
         .filter((a) => a.agent_source !== "")
     : [];

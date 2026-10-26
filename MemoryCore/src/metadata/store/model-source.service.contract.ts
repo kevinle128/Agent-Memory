@@ -272,7 +272,7 @@ export function runModelSourceServiceContract(
       it("fixes provider and format by the pool provider", async () => {
         const pool = await codexPool();
         const attached = await attach(pool.group_id, { source_provider: "whatever", source_formats: ["openai-chat"] });
-        expect(attached).toMatchObject({ source_name: "sub-openai", source_provider: "openai", source_formats: ["openai-responses"], agents: ["codex"] });
+        expect(attached).toMatchObject({ source_name: "sub-openai", source_provider: "openai", source_formats: ["openai-responses"], agents: [] });
       });
 
       it("rejects source_enabled on a pool", async () => {
