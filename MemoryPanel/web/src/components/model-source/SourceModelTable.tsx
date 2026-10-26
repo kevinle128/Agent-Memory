@@ -1,11 +1,10 @@
 /**
- * SourceModelTable — models of a source with search, an "unticked" filter and bulk on/off for the
- * filtered rows. It holds no model state: the page applies a change and passes the new list in.
+ * SourceModelTable — models of a source with search and bulk on/off for the filtered rows. It holds no model state: the page applies a change and passes the new list in.
  */
 import './style.css';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Button, Checkbox, Input, Switch, Tag } from 'tea-component';
+import { Button, Input, Switch, Tag } from 'tea-component';
 import { bulkChanges, countAvailable, countEnabled, filterModels } from '@/lib/model-source';
 import type { SourceModel } from '@/lib/api/model-providers';
 
@@ -14,25 +13,20 @@ export type ModelChange = { id: string; enabled: boolean };
 interface Props {
   models: readonly SourceModel[];
   sourceName: string;
-  /** Checkbox rows for API sources, switch rows for subscription sources. */
-  kind: 'checkbox' | 'switch';
   readOnly?: boolean;
   /** A write is in flight. */
   busy?: boolean;
   /** Pool source whose pool is off: rows look dim. */
   dimmed?: boolean;
-  /** Show the "only new, unticked" filter. */
-  showUntickedFilter?: boolean;
   onChange: (changes: ModelChange[]) => void;
 }
 
-export function SourceModelTable({ models, sourceName, kind, readOnly, busy, dimmed, showUntickedFilter, onChange }: Props) {
+export function SourceModelTable({ models, sourceName, readOnly, busy, dimmed, onChange }: Props) {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
-  const [onlyUnticked, setOnlyUnticked] = useState(false);
-  const visible = useMemo(() => filterModels(models, { query, onlyUnticked }), [models, query, onlyUnticked]);
+  const visible = useMemo(() => filterModels(models, query), [models, query]);
   const locked = Boolean(readOnly) || Boolean(busy);
-  const filtered = query.trim() !== '' || onlyUnticked;
+  const filtered = query.trim() !== '';
   const canOn = bulkChanges(visible, true).length > 0;
   const canOff = bulkChanges(visible, false).length > 0;
 
@@ -46,11 +40,6 @@ export function SourceModelTable({ models, sourceName, kind, readOnly, busy, dim
           size="m"
           autoComplete="off"
         />
-        {showUntickedFilter && (
-          <Checkbox value={onlyUnticked} onChange={setOnlyUnticked}>
-            {t('modelSource.models.onlyNew')}
-          </Checkbox>
-        )}
         {!readOnly && (
           <>
             <Button type="weak" disabled={locked || !canOn} onClick={() => onChange(bulkChanges(visible, true))}>
@@ -73,19 +62,8 @@ export function SourceModelTable({ models, sourceName, kind, readOnly, busy, dim
         ) : (
           visible.map((m) => {
             const disabled = locked || !m.available;
-            const on = m.enabled && m.available;
             return (
               <div key={m.id} className={`_memory-ms-model${m.available ? '' : ' _memory-ms-gone'}`} role="listitem">
-                {kind === 'checkbox' ? (
-                  <Checkbox
-                    value={m.enabled}
-                    disabled={disabled}
-                    onChange={(v) => onChange([{ id: m.id, enabled: v }])}
-                    aria-label={m.id}
-                  />
-                ) : (
-                  <span />
-                )}
                 <div>
                   <div className="_memory-ms-id">
                     {m.id}
@@ -96,15 +74,11 @@ export function SourceModelTable({ models, sourceName, kind, readOnly, busy, dim
                     {m.id}
                   </div>
                 </div>
-                {kind === 'switch' ? (
-                  <Switch
-                    value={m.enabled}
-                    disabled={disabled}
-                    onChange={(v) => onChange([{ id: m.id, enabled: v }])}
-                  />
-                ) : (
-                  <Tag theme={on ? 'success' : 'default'}>{on ? t('modelSource.models.on') : t('modelSource.models.off')}</Tag>
-                )}
+                <Switch
+                  value={m.enabled}
+                  disabled={disabled}
+                  onChange={(v) => onChange([{ id: m.id, enabled: v }])}
+                />
               </div>
             );
           })

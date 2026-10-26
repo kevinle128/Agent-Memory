@@ -4,6 +4,7 @@
  */
 import i18n from '@/i18n';
 import { ApiError } from '@/lib/api/base';
+import { CLIENT_SOURCE_STALE_CODES, parseSourceInUse, type SourceInUse } from '@/lib/client-sources';
 import { parsePoolErrorCode } from '@/lib/subscription-pool-display';
 
 export function sourceErrorCode(error: unknown): string | null {
@@ -18,4 +19,13 @@ export function sourceErrorMessage(error: unknown): string | null {
 }
 
 /** Codes that mean the shown data is older than the stored data. */
-export const STALE_SOURCE_CODES: ReadonlySet<string> = new Set(['WRITE_CONFLICT', 'GROUP_NOT_FOUND']);
+export const STALE_SOURCE_CODES: ReadonlySet<string> = new Set([
+  'WRITE_CONFLICT',
+  'GROUP_NOT_FOUND',
+  ...CLIENT_SOURCE_STALE_CODES,
+]);
+
+/** The clients that block a turn-off or a delete, or null when the error is another one. */
+export function sourceInUseOf(error: unknown): SourceInUse | null {
+  return error instanceof ApiError ? parseSourceInUse(error.body, error.rawMessage) : null;
+}

@@ -40,6 +40,8 @@ import { AddIcon } from 'tea-icons-react';
 import { userKeysApi, metaInstancesApi, type UserKey } from '@/lib/teamApi';
 import { useCurrentRole } from '@/services/useCurrentRole';
 import { useAuthStore } from '@/stores/auth';
+import { isGlobalAdmin } from '@/services';
+import { ClientEndpoints } from './ClientEndpoints';
 import { tea } from '@/lib/tea-bridge';
 import '../styles/api-key-panel.css';
 
@@ -312,68 +314,18 @@ export default function ApiKeyPanel() {
               <span style={{ opacity: 0.6, marginLeft: 6 }}>({auth.instance_id})</span>
             </div>
           )}
-          <div className="_memory-apikey-endpoints">
-            {(() => {
-              // base 未拉到就显示加载中；防止用户误抄硬编码 URL
-              if (!clientBaseUrl) {
-                return (
-                  <Text theme="weak" style={{ fontSize: 11 }}>
-                    {t('apiKey.endpoint.loading')}
-                  </Text>
-                );
-              }
-              // 去掉结尾斜杠，避免 base + /path 拼成双斜杠（! 绕过闭包窄化）
-              const base = clientBaseUrl!.replace(/\/+$/, '');
-              const iid = auth?.instance_id ?? '[instance-id]';
-              const endpoints: Array<{ label: string; url: string }> = [
-                { label: 'CodeBuddy', url: `${base}/codebuddy/${iid}` },
-                { label: 'Claude Code', url: `${base}/claude-code/${iid}` },
-                // WorkBuddy 走 /workbuddy/<spaceId>（spaceId=instance_id，与 codebuddy 对称）。
-                // 网页版底层 OpenAI ChatCompletions、桌面版 Responses API，proxy 均已适配。
-                { label: 'WorkBuddy', url: `${base}/workbuddy/${iid}` },
-                // codex 用 OpenAI Responses API（POST /v1/responses）；proxy 侧
-                // 同时注册了 v1/无v1 两种路径，惯例用不带 /v1 的 base，客户端
-                // config.toml 里 base_url 直接填这个地址即可，wire_api="responses"。
-                { label: 'Codex', url: `${base}/codex/${iid}` },
-                // dsh (deepseek-harness) — DeepSeek 官方 agent harness,Web UI 会话
-                // 走 OpenAI Chat Completions。**尾巴不带 /v1** —— dsh 客户端
-                // hardcoded 拼 ${baseURL}/chat/completions,与 CB 同族;proxy 侧
-                // 路由 /dsh/{spaceId}/chat/completions 已对齐。用户填的 baseURL
-                // 直接是这里的地址,不要在后面再加 /v1。
-                { label: 'DeepSeek Harness (dsh)', url: `${base}/dsh/${iid}` },
-                // OpenCode — sst/opencode 通用终端 AI 编程 Agent，协议 = 标准
-                // OpenAI Chat Completions（POST /v1/chat/completions），与 CB/dsh 同族。
-                // proxy 侧 agent-adapters/opencode.ts 已适配 form 回填 + mem: 命令族全套。
-                { label: 'OpenCode', url: `${base}/opencode/${iid}` },
-                { label: 'OpenClaw', url: `${base}/openclaw/${iid}` },
-                { label: 'Hermes', url: `${base}/hermes/${iid}` },
-              ];
-              return endpoints.map((ep) => (
-                <div className="_memory-apikey-endpoint" key={ep.label}>
-                  <Text theme="label" parent="div" style={{ marginBottom: 4 }}>
-                    {ep.label}
-                  </Text>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <code
-                      style={{
-                        flex: 1,
-                        fontSize: 11,
-                        wordBreak: 'break-all',
-                        background: 'var(--tea-color-bg-secondary-default)',
-                        padding: '4px 8px',
-                        borderRadius: 4,
-                      }}
-                    >
-                      {ep.url}
-                    </code>
-                    <Copy text={ep.url}>
-                      <Button>{t('apiKey.endpoint.copy')}</Button>
-                    </Copy>
-                  </div>
-                </div>
-              ));
-            })()}
-          </div>
+          {clientBaseUrl ? (
+            <ClientEndpoints
+              baseUrl={clientBaseUrl.replace(/\/+$/, '')}
+              instanceId={auth?.instance_id ?? '[instance-id]'}
+              canEdit={Boolean(auth && isGlobalAdmin(auth.user, auth.isAdmin))}
+            />
+          ) : (
+            // base 未拉到就显示加载中；防止用户误抄硬编码 URL
+            <Text theme="weak" style={{ fontSize: 11 }}>
+              {t('apiKey.endpoint.loading')}
+            </Text>
+          )}
         </Card.Body>
       </Card>
       {/* ===== 新建弹窗：只需设置「过期时间」（可留空＝永不过期），不再需要名称 ===== */}

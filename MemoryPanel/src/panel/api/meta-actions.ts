@@ -108,6 +108,9 @@ export const META_ACTIONS = [
   'instance-upstream/groups/suggest-source-name',
   'instance-upstream/groups/source-models/update',
   'instance-upstream/groups/source-refresh',
+  // Which model sources each client uses. `list` is open to any signed-in user, `update` needs System Admin.
+  'instance-upstream/client-sources/list',
+  'instance-upstream/client-sources/update',
 ] as const;
 
 export type MetaAction = (typeof META_ACTIONS)[number];

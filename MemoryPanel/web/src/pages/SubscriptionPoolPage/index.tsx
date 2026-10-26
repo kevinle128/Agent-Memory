@@ -12,6 +12,12 @@ import { isGlobalAdmin } from '@/services';
 import { tea } from '@/lib/tea-bridge';
 import { subscriptionPoolApi, type PoolProvider, type SubscriptionAccount } from '@/lib/api/subscription-pool';
 import { accountState, classifyRedeemOutcome } from '@/lib/subscription-pool-display';
+import { countAvailable, countEnabled } from '@/lib/model-source';
+import { sourceInUseOf } from '@/lib/source-error';
+import { clientSourcesApi } from '@/lib/api/client-sources';
+import { clientsUsing, type SourceInUse } from '@/lib/client-sources';
+import { SelectedModelsModal } from '@/components/model-source/SelectedModelsModal';
+import { SourceInUseModal } from '@/components/model-source/SourceInUseModal';
 import { usePoolStatus } from './use-pool-status';
 import { poolErrorCode, poolErrorMessage } from './pool-errors';
 import { PoolHeader } from './components/PoolHeader';
@@ -22,7 +28,6 @@ import { AddAccountDialog } from './components/AddAccountDialog';
 import { PoolSwitchConfirmDialog } from './components/PoolSwitchConfirmDialog';
 import { DeleteAccountDialog } from './components/DeleteAccountDialog';
 import { ResetCreditsDialog } from './components/ResetCreditsDialog';
-import { PoolSourceCard } from './components/PoolSourceCard';
 import './style.css';
 
 /** Pool errors that mean the shown data is stale. */
@@ -81,6 +86,8 @@ function SubscriptionPoolContent() {
   const [deletingBusy, setDeletingBusy] = useState(false);
   const [creditsAccountId, setCreditsAccountId] = useState<string | null>(null);
   const [redeemingCreditId, setRedeemingCreditId] = useState<string | null>(null);
+  const [modelsOpen, setModelsOpen] = useState(false);
+  const [inUse, setInUse] = useState<SourceInUse | null>(null);
 
   const now = Date.now();
   const accounts = pool?.accounts ?? [];
@@ -123,10 +130,36 @@ function SubscriptionPoolContent() {
       setSwitchTarget(null);
       await refresh();
     } catch (e) {
-      reportError(e);
+      const blocked = sourceInUseOf(e);
+      if (blocked) {
+        setSwitchTarget(null);
+        setInUse(blocked);
+      } else {
+        reportError(e);
+      }
     } finally {
       setSwitching(false);
     }
+  }
+
+  /**
+   * Turning the pool off asks Core's client list first, so a pool that clients still use shows the
+   * blocking dialog at once. Core refuses the write as well, which covers a stale list.
+   */
+  async function requestSwitch(next: boolean) {
+    const name = pool?.source?.source_name;
+    if (!next && name) {
+      try {
+        const clients = clientsUsing((await clientSourcesApi.list()).agents, name);
+        if (clients.length > 0) {
+          setInUse({ sourceName: name, clients: clients.map((c) => c.agent) });
+          return;
+        }
+      } catch {
+        /* Core still checks when the switch is sent. */
+      }
+    }
+    setSwitchTarget(next);
   }
 
   async function saveThreshold(value: number) {
@@ -246,7 +279,7 @@ function SubscriptionPoolContent() {
         onProviderChange={setProvider}
         poolEnabled={poolEnabled}
         switchDisabled={switching}
-        onToggle={setSwitchTarget}
+        onToggle={(next) => void requestSwitch(next)}
         instanceName={auth?.instance_name || auth?.instance_id || ''}
       />
 
@@ -287,12 +320,19 @@ function SubscriptionPoolContent() {
               title={t('subscriptionPool.accounts.title')}
               subtitle={t('subscriptionPool.accounts.tokensHidden')}
               operation={
-                !readOnly && <Button
-                  type="primary"
-                  onClick={() => setAdding({})}
-                >
-                  {t('subscriptionPool.accounts.add')}
-                </Button>
+                <>
+                  <Button disabled={!pool?.group_id || !pool.source?.source_name} onClick={() => setModelsOpen(true)}>
+                    {t('selectedModels.button')}{' '}
+                    <span className="_memory-ms-weak">
+                      {pool?.source ? `${countEnabled(pool.source.source_models)}/${countAvailable(pool.source.source_models)}` : '–'}
+                    </span>
+                  </Button>
+                  {!readOnly && (
+                    <Button type="primary" onClick={() => setAdding({})}>
+                      {t('subscriptionPool.accounts.add')}
+                    </Button>
+                  )}
+                </>
               }
             >
               <AccountTable
@@ -318,8 +358,6 @@ function SubscriptionPoolContent() {
               )}
             </Card.Body>
           </Card>
-
-          {pool && <PoolSourceCard provider={provider} pool={pool} readOnly={readOnly} onChanged={refresh} />}
         </>
       )}
 
@@ -330,13 +368,28 @@ function SubscriptionPoolContent() {
           accountCount={accounts.length}
           availableCount={availableCount}
           activeSessions={pool?.summary.active_sessions ?? 0}
-          sourceName={pool?.source?.source_name || null}
-          sourceAgents={pool?.source?.source_agents ?? []}
           busy={switching}
           onConfirm={() => void confirmSwitch()}
           onClose={() => setSwitchTarget(null)}
         />
       )}
+      {modelsOpen && pool?.group_id && pool.source?.source_name && (
+        <SelectedModelsModal
+          source={{
+            groupId: pool.group_id,
+            sourceName: pool.source.source_name,
+            kind: 'subscription',
+            models: pool.source.source_models,
+            fetchedAt: pool.source.source_models_fetched_at,
+            fetchError: pool.source.source_models_error,
+            off: !pool.source.source_active,
+          }}
+          readOnly={readOnly}
+          onChanged={refresh}
+          onClose={() => setModelsOpen(false)}
+        />
+      )}
+      {inUse && <SourceInUseModal inUse={inUse} action="pool" onClose={() => setInUse(null)} />}
       {!readOnly && adding && (
         <AddAccountDialog
           provider={provider}

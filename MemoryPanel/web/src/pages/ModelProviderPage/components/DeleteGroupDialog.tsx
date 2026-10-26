@@ -1,9 +1,8 @@
 /**
- * DeleteGroupDialog — confirms removing a custom group. Names the agents and source clients it affects.
+ * DeleteGroupDialog — confirms removing an API-key model source.
  */
 import { useTranslation } from 'react-i18next';
-import { Button, Modal, Tag, Text } from 'tea-component';
-import { countEnabled } from '@/lib/model-source';
+import { Button, Modal, Text } from 'tea-component';
 import type { ProviderGroup } from '@/lib/api/model-providers';
 
 interface Props {
@@ -18,19 +17,7 @@ export function DeleteGroupDialog({ group, busy, onConfirm, onClose }: Props) {
   return (
     <Modal visible size="s" caption={t('modelProvider.delete.title')} onClose={onClose} disableEscape={busy}>
       <Modal.Body>
-        <p><b>{t('modelProvider.delete.name', { name: group.name })}</b> {t('modelProvider.delete.keyGone')}</p>
-        {group.agents.length > 0 && (
-          <p>
-            {t('modelProvider.delete.agents')}{' '}
-            {group.agents.map((a) => <Tag key={a} theme="primary">{a}</Tag>)}
-          </p>
-        )}
-        {group.source_name && (
-          <p>
-            {t('modelProvider.delete.source', { count: countEnabled(group.source_models), name: group.source_name })}{' '}
-            {group.source_agents.map((a) => <Tag key={a} theme="primary">{a}</Tag>)}
-          </p>
-        )}
+        <p><b>{t('modelProvider.delete.name', { name: group.source_name || group.name })}</b> {t('modelProvider.delete.keyGone')}</p>
         <Text theme="weak" parent="p">{t('modelProvider.delete.note')}</Text>
       </Modal.Body>
       <Modal.Footer>

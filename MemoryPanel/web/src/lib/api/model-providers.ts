@@ -54,13 +54,6 @@ export interface PoolSourceView extends SourceFields {
   source_active: boolean;
 }
 
-export interface SupportedAgent {
-  agent_source: string;
-  display_name: string;
-  protocol?: string;
-  multi_source?: boolean;
-}
-
 /** Fields a caller may send for the source part of a group. Fetch results are written by Core only. */
 export interface SourceInput {
   source_name?: string;
@@ -101,11 +94,6 @@ export type WrittenGroup = ProviderGroup;
 export const modelProvidersApi = {
   view: async (): Promise<ProviderGroup[]> => {
     const res = await metaPost<{ items: ProviderGroup[] }>('instance-upstream/groups/view', {});
-    return res.items ?? [];
-  },
-
-  supportedAgents: async (): Promise<SupportedAgent[]> => {
-    const res = await metaPost<{ items: SupportedAgent[] }>('upstream/supported-agents', {});
     return res.items ?? [];
   },
 

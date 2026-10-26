@@ -1,19 +1,16 @@
 /**
- * Loads the custom upstream groups (key-free view) and the pool status that the page needs:
- * which pools hold claude-code / codex, and which source names the pools already use.
+ * Loads the custom upstream groups (key-free view) and the pool status, so the page knows which
+ * source names the groups and the pools already use.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { modelProvidersApi, type ProviderGroup } from '@/lib/api/model-providers';
 import { subscriptionPoolApi, type SubscriptionPoolProviderStatus } from '@/lib/api/subscription-pool';
-import { POOL_AGENTS } from '@/lib/model-source';
 
 export interface ProviderGroupsState {
   groups: ProviderGroup[];
   pools: SubscriptionPoolProviderStatus[];
   loading: boolean;
   error: unknown;
-  /** Agents that sit in a subscription pool now. The agent picker locks them. */
-  poolAgents: ReadonlySet<string>;
   /** Source names held by other groups and by pools. */
   takenNames: (exceptGroupId?: string) => Set<string>;
   /** Reload now and return the new list. */
@@ -52,10 +49,6 @@ export function useProviderGroups(): ProviderGroupsState {
     };
   }, [reload]);
 
-  const poolAgents = new Set<string>(
-    pools.filter((p) => p.enabled).map((p) => POOL_AGENTS[p.provider]),
-  );
-
   const takenNames = useCallback(
     (exceptGroupId?: string) => {
       const out = new Set<string>();
@@ -66,5 +59,5 @@ export function useProviderGroups(): ProviderGroupsState {
     [groups, pools],
   );
 
-  return { groups, pools, loading, error, poolAgents, takenNames, reload };
+  return { groups, pools, loading, error, takenNames, reload };
 }

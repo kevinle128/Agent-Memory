@@ -1,28 +1,27 @@
 /**
- * ModelProviderPage — custom upstream groups, which are the API-key model sources.
+ * ModelProviderPage — API-key model sources (custom upstream groups).
  *
- * Everyone signed in can read the groups (the read action has no key field). Only a System Admin
- * can create, edit, delete or tick models; the kernel checks the role on every write. Subscription
- * sources are edited on the Subscription Pool page.
+ * Everyone signed in can read the sources (the read action has no key field). Only a System Admin
+ * can add, turn off, delete or pick models; the kernel checks the role on every write. Which
+ * clients use a source is chosen on the API Key page. Subscription sources live on the
+ * Subscription Pool page.
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
-import { Alert, Button, Card, StatusTip, Tabs, Tag, Text, H3 } from 'tea-component';
+import { Alert, Button, Card, StatusTip } from 'tea-component';
 import { useAuthStore } from '@/stores/auth';
 import { isGlobalAdmin } from '@/services';
 import { tea } from '@/lib/tea-bridge';
 import { modelProvidersApi, type ProviderGroup } from '@/lib/api/model-providers';
-import { countEnabled } from '@/lib/model-source';
-import { sourceErrorCode, sourceErrorMessage, STALE_SOURCE_CODES } from '@/lib/source-error';
-import { ClientPreview } from '@/components/model-source/ClientPreview';
+import type { SourceInUse } from '@/lib/client-sources';
+import { sourceErrorCode, sourceErrorMessage, sourceInUseOf, STALE_SOURCE_CODES } from '@/lib/source-error';
+import { SelectedModelsModal } from '@/components/model-source/SelectedModelsModal';
+import { SourceInUseModal, type InUseAction } from '@/components/model-source/SourceInUseModal';
 import { useProviderGroups } from './use-provider-groups';
 import { ProviderTable } from './components/ProviderTable';
-import { ProviderForm } from './components/ProviderForm';
+import { AddProviderModal } from './components/AddProviderModal';
 import { DeleteGroupDialog } from './components/DeleteGroupDialog';
 import './style.css';
-
-type View = { kind: 'list' } | { kind: 'preview' } | { kind: 'form'; groupId: string | null; attach: boolean; seq: number };
 
 export function ModelProviderPage() {
   const { auth } = useAuthStore();
@@ -32,19 +31,24 @@ export function ModelProviderPage() {
 
 function ModelProviderContent() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { auth } = useAuthStore();
   const readOnly = !auth || !isGlobalAdmin(auth.user, auth.isAdmin);
-  const state = useProviderGroups();
-  const { groups, pools, loading, error, poolAgents, takenNames, reload } = state;
-  const [view, setView] = useState<View>({ kind: 'list' });
+  const { groups, loading, error, takenNames, reload } = useProviderGroups();
+  // Legacy groups without a source name are not model sources and stay out of this table.
+  const sources = groups.filter((g) => g.source_name && g.mode === 'custom_unified');
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<ProviderGroup | null>(null);
   const [deletingBusy, setDeletingBusy] = useState(false);
-  // Bumped after every write so the preview reloads its own data.
-  const [previewKey, setPreviewKey] = useState(0);
+  const [modelsOf, setModelsOf] = useState<string | null>(null);
+  const [inUse, setInUse] = useState<{ info: SourceInUse; action: InUseAction } | null>(null);
 
-  function reportError(e: unknown) {
+  function reportError(e: unknown, action: InUseAction) {
+    const blocked = sourceInUseOf(e);
+    if (blocked) {
+      setInUse({ info: blocked, action });
+      return;
+    }
     const message = sourceErrorMessage(e);
     if (message) tea.notify.error(message);
     else tea.notify.error(e);
@@ -57,7 +61,7 @@ function ModelProviderContent() {
     try {
       await run();
     } catch (e) {
-      reportError(e);
+      reportError(e, 'off');
     } finally {
       setBusyIds((prev) => {
         const next = new Set(prev);
@@ -67,113 +71,42 @@ function ModelProviderContent() {
     }
   }
 
-  const toggleAgents = (g: ProviderGroup, enabled: boolean) =>
+  /** One write sets the group switch and the source switch together, so the row has one status. */
+  const toggle = (g: ProviderGroup, on: boolean) =>
     withBusy(g.group_id, async () => {
-      await modelProvidersApi.toggle(g.group_id, enabled, g.version);
-      tea.notify.success(t(enabled ? 'modelProvider.toast.agentsOn' : 'modelProvider.toast.agentsOff', { name: g.name }));
+      await modelProvidersApi.update({
+        group_id: g.group_id,
+        expected_version: g.version,
+        enabled: on,
+        source_enabled: on,
+      });
+      tea.notify.success(t(on ? 'modelProvider.toast.sourceOn' : 'modelProvider.toast.sourceOff', { name: g.source_name }));
       await reload();
-      setPreviewKey((k) => k + 1);
-    });
-
-  const toggleSource = (g: ProviderGroup, enabled: boolean) =>
-    withBusy(g.group_id, async () => {
-      await modelProvidersApi.update({ group_id: g.group_id, expected_version: g.version, source_enabled: enabled });
-      tea.notify.success(t(enabled ? 'modelProvider.toast.sourceOn' : 'modelProvider.toast.sourceOff', { name: g.source_name }));
-      await reload();
-      setPreviewKey((k) => k + 1);
     });
 
   async function confirmDelete() {
     if (!deleting) return;
+    const target = deleting;
     setDeletingBusy(true);
     try {
-      await modelProvidersApi.remove(deleting.group_id);
-      tea.notify.success(t('modelProvider.toast.deleted', { name: deleting.name }));
+      await modelProvidersApi.remove(target.group_id);
+      tea.notify.success(t('modelProvider.toast.deleted', { name: target.source_name }));
       setDeleting(null);
       await reload();
-      setPreviewKey((k) => k + 1);
     } catch (e) {
-      reportError(e);
       setDeleting(null);
+      reportError(e, 'delete');
     } finally {
       setDeletingBusy(false);
     }
   }
 
-  async function onSaved(groupId: string, created: boolean) {
-    await reload();
-    setPreviewKey((k) => k + 1);
-    setView((v) => ({ kind: 'form', groupId, attach: false, seq: (v.kind === 'form' ? v.seq : 0) + 1 }));
-    void created;
-  }
-
-  if (view.kind === 'form') {
-    const group = view.groupId ? groups.find((g) => g.group_id === view.groupId) ?? null : null;
-    if (view.groupId && !group) {
-      // The group is gone (deleted elsewhere): back to the list.
-      return (
-        <div className="_memory-mp-body">
-          <Alert type="warning">{t('modelProvider.gone')}</Alert>
-          <Button onClick={() => setView({ kind: 'list' })}>{t('modelProvider.back')}</Button>
-        </div>
-      );
-    }
-    return (
-      <div className="_memory-mp-body">
-        <Card>
-          <Card.Body>
-            <ProviderForm
-              key={`${view.groupId ?? 'new'}:${view.seq}`}
-              mode={group ? 'edit' : 'add'}
-              group={group}
-              attach={view.attach}
-              readOnly={readOnly}
-              groups={groups}
-              poolAgents={poolAgents}
-              takenNames={takenNames(group?.group_id)}
-              onBack={() => {
-                setView({ kind: 'list' });
-                void reload();
-              }}
-              onSaved={(id, created) => void onSaved(id, created)}
-              onChanged={() => {
-                setPreviewKey((k) => k + 1);
-                void reload();
-              }}
-            />
-          </Card.Body>
-        </Card>
-      </div>
-    );
-  }
+  const modelsGroup = modelsOf ? sources.find((g) => g.group_id === modelsOf) ?? null : null;
 
   return (
     <div className="_memory-mp-body">
-      <Card>
-        <Card.Body>
-          <div className="_memory-mp-header">
-            <H3>{t('modelProvider.title')}</H3>
-            <Tabs
-              tabs={[
-                { id: 'list', label: t('modelProvider.tab.list') },
-                { id: 'preview', label: t('modelProvider.tab.preview') },
-              ]}
-              activeId={view.kind}
-              disableTabScrolling
-              onActive={(tab) => setView({ kind: tab.id as 'list' | 'preview' })}
-            />
-          </div>
-          <Text theme="weak" parent="div" style={{ marginTop: 8 }}>
-            {t('modelProvider.subtitle', { instance: auth?.instance_name || auth?.instance_id || '' })}
-          </Text>
-        </Card.Body>
-      </Card>
-
       {readOnly && <Alert type="warning">{t('modelProvider.readOnly')}</Alert>}
-
-      {view.kind === 'preview' ? (
-        <ClientPreview refreshKey={previewKey} />
-      ) : error && groups.length === 0 ? (
+      {error && groups.length === 0 ? (
         <Card>
           <Card.Body>
             <StatusTip
@@ -185,65 +118,62 @@ function ModelProviderContent() {
           </Card.Body>
         </Card>
       ) : (
-        <>
-          <Alert type="info">{t('modelProvider.twoPaths')}</Alert>
-          <Card>
-            <Card.Body
-              title={t('modelProvider.list.title')}
-              subtitle={t('modelProvider.list.subtitle')}
-              operation={
-                !readOnly && (
-                  <Button type="primary" onClick={() => setView({ kind: 'form', groupId: null, attach: false, seq: 0 })}>
-                    {t('modelProvider.add')}
-                  </Button>
-                )
-              }
-            >
-              {loading && groups.length === 0 ? (
-                <StatusTip status="loading" />
-              ) : (
-                <ProviderTable
-                  groups={groups}
-                  readOnly={readOnly}
-                  busyIds={busyIds}
-                  onEdit={(g, attach) => setView({ kind: 'form', groupId: g.group_id, attach, seq: 0 })}
-                  onDelete={setDeleting}
-                  onToggleAgents={(g, v) => void toggleAgents(g, v)}
-                  onToggleSource={(g, v) => void toggleSource(g, v)}
-                />
-              )}
-              <div className="_memory-mp-footnote">{t('modelProvider.list.footnote', { count: groups.length })}</div>
-            </Card.Body>
-          </Card>
-          <Card>
-            <Card.Body
-              title={t('modelProvider.subs.title')}
-              subtitle={t('modelProvider.subs.subtitle')}
-              operation={<Button onClick={() => navigate('/team/subscription-pool')}>{t('modelProvider.subs.open')}</Button>}
-            >
-              <div className="_memory-mp-tags">
-                {pools.map((p) =>
-                  p.source?.source_name ? (
-                    <span key={p.provider} className="_memory-mp-sub">
-                      <Tag theme="primary">{p.source.source_name}</Tag>
-                      <span>
-                        {t(`subscriptionPool.agent.${p.provider}`)} · {t('modelProvider.subs.models', { count: countEnabled(p.source.source_models) })} ·{' '}
-                        {p.source.source_active ? t('modelProvider.subs.followsPool') : t('modelSource.offByPool')}
-                      </span>
-                    </span>
-                  ) : (
-                    <span key={p.provider} className="_memory-mp-sub">
-                      <Tag>{t(`subscriptionPool.agent.${p.provider}`)}</Tag>
-                      <span className="_memory-mp-weak">{t('modelProvider.subs.none')}</span>
-                    </span>
-                  ),
-                )}
-              </div>
-            </Card.Body>
-          </Card>
-        </>
+        <Card>
+          <Card.Body
+            title={t('modelProvider.list.title')}
+            subtitle={t('modelProvider.list.subtitle')}
+            operation={
+              !readOnly && (
+                <Button type="primary" onClick={() => setAdding(true)}>
+                  {t('modelProvider.add')}
+                </Button>
+              )
+            }
+          >
+            {loading && groups.length === 0 ? (
+              <StatusTip status="loading" />
+            ) : (
+              <ProviderTable
+                groups={sources}
+                readOnly={readOnly}
+                busyIds={busyIds}
+                onModels={(g) => setModelsOf(g.group_id)}
+                onDelete={setDeleting}
+                onToggle={(g, on) => void toggle(g, on)}
+              />
+            )}
+          </Card.Body>
+        </Card>
       )}
 
+      {!readOnly && adding && (
+        <AddProviderModal
+          takenNames={takenNames()}
+          onClose={() => setAdding(false)}
+          onCreated={async () => {
+            setAdding(false);
+            await reload();
+          }}
+        />
+      )}
+      {modelsGroup && (
+        <SelectedModelsModal
+          source={{
+            groupId: modelsGroup.group_id,
+            sourceName: modelsGroup.source_name,
+            kind: 'api',
+            models: modelsGroup.source_models,
+            fetchedAt: modelsGroup.source_models_fetched_at,
+            fetchError: modelsGroup.source_models_error,
+            off: !(modelsGroup.enabled && modelsGroup.source_enabled),
+          }}
+          readOnly={readOnly}
+          onChanged={async () => {
+            await reload();
+          }}
+          onClose={() => setModelsOf(null)}
+        />
+      )}
       {!readOnly && deleting && (
         <DeleteGroupDialog
           group={deleting}
@@ -252,6 +182,7 @@ function ModelProviderContent() {
           onClose={() => setDeleting(null)}
         />
       )}
+      {inUse && <SourceInUseModal inUse={inUse.info} action={inUse.action} onClose={() => setInUse(null)} />}
     </div>
   );
 }

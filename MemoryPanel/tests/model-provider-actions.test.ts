@@ -11,6 +11,8 @@ const SOURCE_ACTIONS = [
   'instance-upstream/groups/suggest-source-name',
   'instance-upstream/groups/source-models/update',
   'instance-upstream/groups/source-refresh',
+  'instance-upstream/client-sources/list',
+  'instance-upstream/client-sources/update',
 ];
 
 describe('model provider panel actions', () => {

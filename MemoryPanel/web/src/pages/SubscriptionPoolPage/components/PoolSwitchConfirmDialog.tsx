@@ -12,15 +12,12 @@ interface Props {
   accountCount: number;
   availableCount: number;
   activeSessions: number;
-  /** Source name of the pool, or null when the pool is not a source. */
-  sourceName: string | null;
-  sourceAgents: readonly string[];
   busy: boolean;
   onConfirm: () => void;
   onClose: () => void;
 }
 
-export function PoolSwitchConfirmDialog({ provider, turnOn, accountCount, availableCount, activeSessions, sourceName, sourceAgents, busy, onConfirm, onClose }: Props) {
+export function PoolSwitchConfirmDialog({ provider, turnOn, accountCount, availableCount, activeSessions, busy, onConfirm, onClose }: Props) {
   const { t } = useTranslation();
   const agent = t(`subscriptionPool.agent.${provider}`);
   return (
@@ -53,13 +50,6 @@ export function PoolSwitchConfirmDialog({ provider, turnOn, accountCount, availa
               <li>{t('subscriptionPool.disable.b2')}</li>
             </ul>
           </>
-        )}
-        {sourceName && (
-          <Alert type={turnOn ? 'info' : 'warning'} style={{ marginTop: 12 }}>
-            {turnOn
-              ? t('subscriptionPool.source.confirmOn', { name: sourceName, agents: sourceAgents.join(', ') })
-              : t('subscriptionPool.source.confirmOff', { name: sourceName, agents: sourceAgents.join(', ') })}
-          </Alert>
         )}
       </Modal.Body>
       <Modal.Footer>

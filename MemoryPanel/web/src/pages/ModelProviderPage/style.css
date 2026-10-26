@@ -2,28 +2,9 @@
 
 ._memory-mp-body { display: flex; flex-direction: column; gap: 16px; }
 ._memory-mp-body > .tea-card { width: 100%; margin-left: 0; margin-right: 0; }
-._memory-mp-header { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-._memory-mp-header .tea-tabs__backward,
-._memory-mp-header .tea-tabs__forward { display: none !important; }
-._memory-mp-weak { color: rgba(0, 0, 0, 0.5); font-size: 12px; }
-._memory-mp-warn { color: #b35400; font-size: 12px; margin-top: 4px; }
 ._memory-mp-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-._memory-mp-switch { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
-._memory-mp-footnote { margin-top: 8px; font-size: 12px; color: rgba(0, 0, 0, 0.7); }
-._memory-mp-sub { display: inline-flex; align-items: center; gap: 6px; margin-right: 16px; font-size: 12px; }
 
-._memory-mp-formcard { display: flex; flex-direction: column; gap: 12px; }
-._memory-mp-title { margin: 0; font-size: 16px; font-weight: 600; }
 ._memory-mp-form { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px 20px; align-items: start; }
 ._memory-mp-label { padding-top: 6px; color: rgba(0, 0, 0, 0.7); font-size: 13px; }
-._memory-mp-req { color: #d32f30; }
 ._memory-mp-ctrl { min-width: 0; }
-._memory-mp-ctrl--new { border-left: 3px solid #ffd0a8; padding-left: 12px; }
-._memory-mp-section { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 0 6px; margin-top: 8px; border-bottom: 1px solid #e6e9ef; }
-._memory-mp-section b { font-size: 13px; }
-._memory-mp-section span { font-size: 12px; color: rgba(0, 0, 0, 0.5); }
-._memory-mp-agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; max-width: 760px; }
-._memory-mp-agent { padding: 6px 10px; border: 1px solid #d6dbe3; border-radius: 4px; font-size: 13px; }
-._memory-mp-agent--taken { background: #f2f4f8; color: rgba(0, 0, 0, 0.5); }
-._memory-mp-footer { display: flex; align-items: center; gap: 8px; padding-top: 16px; border-top: 1px solid #e6e9ef; }
 @media (max-width: 760px) { ._memory-mp-form { grid-template-columns: 1fr; gap: 6px; } }
