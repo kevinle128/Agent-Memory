@@ -44,8 +44,9 @@ import {
   mergeResponsesToolCalls,
 } from "../../common/responses-payload.js";
 import { verifyUserKey } from "../../auth.js";
-import { stageAuth } from "../stages/auth.js";
+import { stageAuth, extractApiKeyFromContext } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
+import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-request.js";
 import {
   stageModelSource,
   applyModelSource,
@@ -512,9 +513,31 @@ async function forwardToUpstream(
     config,
     pathForOverride: upstreamPath,
     presetResolution,
+    poolSupported: true,
   });
   if (isInstanceUpstreamBlocked(_upstreamResolve)) {
     return c.json(_upstreamResolve.errorBody, 400);
+  }
+  // Subscription pool (a source request only): the account, its credentials and the retry on a
+  // limit come from the pool. The ChatGPT backend needs `store: false`.
+  const poolRequest = _upstreamResolve.pool
+    ? openPoolRequest({
+        config,
+        spaceId,
+        row: _upstreamResolve.pool.row,
+        clientHeaders: c.req.raw.headers,
+        signal: c.req.raw.signal,
+        body,
+        userKey: extractApiKeyFromContext(c, "bearer-first"),
+        bindSession: lf !== null,
+      })
+    : null;
+  if (poolRequest) {
+    upstreamUrl = joinUrl(poolRequest.upstreamBase, upstreamPath);
+    if (body.store === undefined) body.store = false;
+    // The account's credentials are set per attempt, so no client or proxy key may remain.
+    delete headers["authorization"];
+    delete headers["x-api-key"];
   }
   if (_upstreamResolve.overrideUrl) {
     upstreamUrl = _upstreamResolve.overrideUrl;
@@ -638,15 +661,24 @@ async function forwardToUpstream(
 
   let upstreamResp: Response;
   try {
-    const fetchOpts: RequestInit = {
-      method: "POST",
-      headers,
-      body: bodyStr,
+    const buildFetchOpts = (reqHeaders: Record<string, string>): RequestInit => {
+      const fetchOpts: RequestInit = {
+        method: "POST",
+        headers: reqHeaders,
+        body: bodyStr,
+      };
+      if (wbForwardTimeoutMs > 0) {
+        fetchOpts.signal = AbortSignal.timeout(wbForwardTimeoutMs);
+      }
+      return fetchOpts;
     };
-    if (wbForwardTimeoutMs > 0) {
-      fetchOpts.signal = AbortSignal.timeout(wbForwardTimeoutMs);
-    }
-    upstreamResp = await fetch(upstreamUrl, fetchOpts);
+    upstreamResp = poolRequest
+      ? await poolRequest.send((auth, signal) => {
+          const options = buildFetchOpts(applyPoolAuth(headers, c.req.raw.headers, auth));
+          if (signal) options.signal = options.signal ? AbortSignal.any([signal, options.signal]) : signal;
+          return fetch(upstreamUrl, options);
+        })
+      : await fetch(upstreamUrl, buildFetchOpts(headers));
   } catch (err) {
     if (err instanceof DOMException && err.name === "TimeoutError") {
       pipe.info("WORKBUDDY_FORWARD_ERR", `Timeout after ${wbForwardTimeoutMs / 1000}s`);
@@ -755,6 +787,7 @@ async function forwardToUpstream(
         extensionStats: preparedStats ?? undefined,
         spaceId,
         upstreamRequestId,
+        ...(poolRequest?.accountId ? { subscriptionAccountId: poolRequest.accountId } : {}),
       });
       await stageRecordTokenUsage({
         config, gates: wbAgentForForward.stageGates,
@@ -826,6 +859,7 @@ async function forwardToUpstream(
     inputBody: body,
     upstreamUrl,
     sessionTurnCtx: upstreamResp.ok ? sessionTurnCtx : null,
+    subscriptionAccountId: poolRequest?.accountId ?? undefined,
   });
 
   // CFQ 剥离排在最后：tap 走的是另一条 tee 分支，读到的仍是模型原始输出。
@@ -882,6 +916,8 @@ interface WorkbuddyTapContext {
   upstreamUrl: string;
   /** Online session trace for this call; null when it is not recorded. */
   sessionTurnCtx: SessionTurnContext | null;
+  /** Pool account that served the call; unset outside a subscription pool. */
+  subscriptionAccountId?: string;
 }
 
 /**
@@ -1027,6 +1063,7 @@ async function consumeWorkbuddyStream(
       extensionStats: ctx.preparedStats ?? undefined,
       spaceId: ctx.spaceId,
       upstreamRequestId: ctx.upstreamRequestId,
+      ...(ctx.subscriptionAccountId ? { logMeta: { subscriptionAccountId: ctx.subscriptionAccountId } } : {}),
     });
   }
   try {
@@ -1198,11 +1235,10 @@ export async function runWorkbuddyPipeline(
     wecomName = wecomIdentity.name;
   }
   // `<source>/<model>`: returns `none` unless modelSources is on and the model carries a source
-  // prefix, so every other request keeps the checks below unchanged. The forward step has no
-  // subscription pool branch, so a pool source answers with a format mismatch.
+  // prefix, so every other request keeps the checks below unchanged.
   const modelSource = await stageModelSource({
     config, agent: "workbuddy", spaceId: extractSpaceIdFromPath(path) ?? "",
-    format: "openai-responses", model: body.model, servesPool: false,
+    format: "openai-responses", model: body.model, servesPool: true,
   });
   // Responses clients read `error.type` and `error.message`, which the Anthropic envelope carries.
   if (modelSource.kind === "error") return modelSourceErrorResponse(c, "anthropic", modelSource);

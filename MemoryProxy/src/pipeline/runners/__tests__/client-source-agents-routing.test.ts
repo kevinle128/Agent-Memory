@@ -173,13 +173,20 @@ describe("an API source of the client agents", () => {
     expect(JSON.parse(upstreamCalls[0]!.body).model).toBe("x-model");
   });
 
-  it("workbuddy: a pool source answers 400 model_format_mismatch because its forward has no pool branch", async () => {
+  it("workbuddy: a Codex pool source goes to the ChatGPT backend with the pool account and store false", async () => {
     prime([defaultRow, poolSource]);
     const { upstreamCalls } = installFetch(() => jsonResponse(responses("x-model")));
     const res = await post(configWith(true), `workbuddy/${SPACE}/v1/responses`, responsesBody("sub-openai/x-model"));
-    expect(res.status).toBe(400);
-    expect(JSON.stringify(await res.json())).toContain("model_format_mismatch");
-    expect(upstreamCalls).toHaveLength(0);
+    expect(res.status).toBe(200);
+    expect(upstreamCalls).toHaveLength(1);
+    const call = upstreamCalls[0]!;
+    expect(call.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(call.headers["authorization"]).toBe("Bearer token-a");
+    expect(call.headers["chatgpt-account-id"]).toBe("chatgpt-a");
+    expect(JSON.stringify(call.headers)).not.toContain("sk-mem-user");
+    expect(JSON.parse(call.body).model).toBe("x-model");
+    expect(JSON.parse(call.body).store).toBe(false);
+    expect((await res.json() as { model: string }).model).toBe("sub-openai/x-model");
   });
 
   it("dsh: a Claude subscription pool source on /v1/messages uses the pool account", async () => {
