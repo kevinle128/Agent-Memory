@@ -56,7 +56,22 @@ async function listTeamSkills(teamId: string): Promise<SkillSummary[]> {
   return items;
 }
 
-export function useSkillsPanel() {
+/** An agent the Agent Assets selector can show. */
+export interface BrowseAgent {
+  id: string;
+  name: string;
+  ownerUserId: string;
+  /** True when the logged-in user owns the agent. Only these agents can be changed. */
+  mine: boolean;
+}
+
+/**
+ * @param opts.isAdmin An admin can browse the skills of every agent in the team,
+ *   including private skills of other users, read-only. Everyone else sees only
+ *   their own agents.
+ */
+export function useSkillsPanel(opts: { isAdmin?: boolean } = {}) {
+  const isAdmin = !!opts.isAdmin;
   const { t } = useTranslation();
   // 默认展示 Agent 资产（fixed），避免用户误以为自己的资产在「团队资产」里
   const [tab, setTab] = useState<Tab>('fixed');
@@ -72,6 +87,8 @@ export function useSkillsPanel() {
   //   - teamAgents：前端按 owner_user_id === myUserId 过滤出**我 owner 的 agent**
   //     （fixed tab 下拉 / 导入 / fork 用；agent 私有可见性语义）。
   const [teamAgents, setTeamAgents] = useState<Array<{ id: string; name: string }>>([]);
+  // Every agent of the team with its owner, for the admin's read-only browsing.
+  const [allAgents, setAllAgents] = useState<BrowseAgent[]>([]);
   const [agentNameMap, setAgentNameMap] = useState<Record<string, string>>({});
   // agent 列表加载态：fixed tab 依赖 agent（下拉 + 按 agent 拉 skill），
   // 初始 true 让首屏就是加载态，避免 agent 请求期间左侧列表先闪空态再变加载态。
@@ -82,6 +99,7 @@ export function useSkillsPanel() {
     if (!activeTeamId) {
       setAgentNameMap({});
       setTeamAgents([]);
+      setAllAgents([]);
       setAgentsLoading(false);
       return () => {
         cancelled = true;
@@ -98,6 +116,14 @@ export function useSkillsPanel() {
             .filter((a) => !!myUserId && a.owner_user_id === myUserId)
             .map((a) => ({ id: a.agent_id, name: a.name })),
         );
+        setAllAgents(
+          agents.map((a) => ({
+            id: a.agent_id,
+            name: a.name,
+            ownerUserId: a.owner_user_id,
+            mine: !!myUserId && a.owner_user_id === myUserId,
+          })),
+        );
       })
       .catch((err) => {
         if (cancelled) return;
@@ -105,6 +131,7 @@ export function useSkillsPanel() {
         tea.notify.error(err?.message || t('skills.notify.loadAgentsFailed'));
         setAgentNameMap({});
         setTeamAgents([]);
+        setAllAgents([]);
       })
       .finally(() => {
         if (!cancelled) setAgentsLoading(false);
@@ -337,18 +364,27 @@ export function useSkillsPanel() {
     }
   }, [tab, selectedAgent, activeTeamId, myUserId, loadTeamMeta, resetSkillDetailCache, preloadSkillDetail]);
 
+  // Agents the selector offers: the user's own agents first, then, for an admin,
+  // the agents of other users (read-only).
+  const browseAgents = useMemo<BrowseAgent[]>(() => {
+    const mine = teamAgents.map((a) => ({ ...a, ownerUserId: myUserId, mine: true }));
+    if (!isAdmin) return mine;
+    return [...mine, ...allAgents.filter((a) => !a.mine)];
+  }, [isAdmin, teamAgents, allAgents, myUserId]);
+  const selectedAgentIsMine = teamAgents.some((a) => a.id === selectedAgent);
+
   // 同步 selectedAgent 到 teamAgents：
   //   - 切换 team 后，老 selectedAgent 可能已不在新 team 内，需要重置；
   //   - 首次渲染时也要给 selectedAgent 一个默认值。
   useEffect(() => {
-    if (teamAgents.length === 0) {
+    if (browseAgents.length === 0) {
       if (selectedAgent) setSelectedAgent('');
       return;
     }
-    if (!selectedAgent || !teamAgents.some((a) => a.id === selectedAgent)) {
-      setSelectedAgent(teamAgents[0].id);
+    if (!selectedAgent || !browseAgents.some((a) => a.id === selectedAgent)) {
+      setSelectedAgent(browseAgents[0].id);
     }
-  }, [teamAgents, selectedAgent]);
+  }, [browseAgents, selectedAgent]);
 
   // 触发 refresh：依赖原始参数 + refresh，并用 key 去重防止短时间内重复触发。
   // 之前直接 `useEffect(() => refresh(), [refresh])` 会因 refresh 引用变化
@@ -502,7 +538,7 @@ export function useSkillsPanel() {
   // team tab 不依赖 agent，直接用 skill 列表 loading。
   const listLoading =
     tab === 'fixed'
-      ? agentsLoading || loading || (teamAgents.length > 0 && !selectedAgent)
+      ? agentsLoading || loading || (browseAgents.length > 0 && !selectedAgent)
       : loading;
 
   return {
@@ -511,6 +547,8 @@ export function useSkillsPanel() {
     activeTeamId,
     myUserId,
     teamAgents,
+    browseAgents,
+    selectedAgentIsMine,
     agentNameMap,
     // state
     tab,

@@ -29,6 +29,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Select, Segment, Tag, Tooltip } from 'tea-component';
 import { DeleteIcon } from 'tea-icons-react';
 import { tea } from '@/lib/tea-bridge';
+import { useDisplayNameResolver } from '@/services/user-profile-store';
 import { AssetPageHeader } from '@/components/asset/AssetPageHeader';
 import { AssetSplitLayout } from '@/components/asset/AssetSplitLayout';
 import {
@@ -53,13 +54,14 @@ import '../styles/skills-list.css';
 
 export default function SkillsPanel({
   currentUser: _currentUser,
-  isAdmin: _isAdmin,
+  isAdmin,
 }: {
   currentUser: string;
   isAdmin: boolean;
 }) {
   const { t } = useTranslation();
-  const store = useSkillsPanel();
+  const store = useSkillsPanel({ isAdmin });
+  const ownerName = useDisplayNameResolver();
 
   const {
     // context
@@ -67,6 +69,8 @@ export default function SkillsPanel({
     activeTeamId,
     myUserId,
     teamAgents,
+    browseAgents,
+    selectedAgentIsMine,
     agentNameMap,
     // state
     tab,
@@ -137,11 +141,14 @@ export default function SkillsPanel({
                 setSelectedAgent(value);
                 setSelectedSkillId(null);
               }}
-              disabled={teamAgents.length === 0}
+              disabled={browseAgents.length === 0}
               placeholder={t('skills.noAgent')}
-              options={teamAgents.map((agent) => ({
+              options={browseAgents.map((agent) => ({
                 value: agent.id,
-                text: `${agent.name}（${agent.id}）`,
+                // An agent of another user (admin browsing) names its owner.
+                text: agent.mine
+                  ? `${agent.name}（${agent.id}）`
+                  : `${agent.name}（${agent.id}）· ${t('skills.agentOwner', { name: ownerName(agent.ownerUserId) || agent.ownerUserId })}`,
               }))}
             />
           ) : undefined
@@ -365,7 +372,7 @@ export default function SkillsPanel({
           teamId={activeTeamId ?? ''}
           userId={myUserId}
           agents={teamAgents}
-          agentId={tab === 'fixed' ? selectedAgent : undefined}
+          agentId={tab === 'fixed' && selectedAgentIsMine ? selectedAgent : undefined}
           onClose={() => setShowImport(false)}
           onImported={() => {
             // skill 建成功后，内核数据面 onSkillCreated 钩子会自动登记 asset
@@ -381,7 +388,7 @@ export default function SkillsPanel({
           teamId={activeTeamId ?? ''}
           userId={myUserId}
           agents={teamAgents}
-          defaultAgentId={tab === 'fixed' ? selectedAgent : undefined}
+          defaultAgentId={tab === 'fixed' && selectedAgentIsMine ? selectedAgent : undefined}
           projects={knownProjects}
           showProjectOption={showProjectUi}
           onClose={() => setShowNew(false)}
