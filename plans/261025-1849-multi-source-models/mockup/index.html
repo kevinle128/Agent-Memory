@@ -1,0 +1,1416 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Model Provider · Memory Hub (mockup)</title>
+<!--
+  Mockup tĩnh cho tab "Model Provider" của Memory Hub Panel (quản lý nhóm upstream tùy chỉnh).
+  Không dùng tài nguyên mạng. Màu, cỡ chữ, khung trang lấy từ:
+    MemoryPanel/web/src/index.css, src/tea-override.css,
+    src/layouts/GlobalHeader/style.css, src/layouts/TabBar/style.css,
+    src/pages/SubscriptionPoolPage/style.css,
+    tea-component/dist/style/mixins/_var-color-light.scss (bảng màu Tea light).
+  Mọi key trong tệp này là placeholder (sk-••••). Không có secret thật.
+-->
+<style>
+/* ===== Tea Design tokens (light), chép từ _var-color-light.scss ===== */
+:root {
+  --tea-color-palette-blue-1: #e3ecff;
+  --tea-color-palette-blue-7: #266fe8;
+  --tea-color-palette-blue-8: #0052d9;
+  --tea-color-palette-blue-9: #0034b5;
+  --tea-color-palette-bluegray-1: #f2f4f8;
+  --tea-color-palette-bluegray-2: #e9ecf1;
+  --tea-color-palette-bluegray-3: #e6e9ef;
+  --tea-color-palette-bluegray-4: #d6dbe3;
+  --tea-color-palette-green-1: #e0f7eb;
+  --tea-color-palette-green-8: #0cbf5b;
+  --tea-color-palette-orange-1: #ffeddf;
+  --tea-color-palette-orange-8: #ff7800;
+  --tea-color-palette-red-1: #fce8e8;
+  --tea-color-palette-red-8: #f64041;
+
+  --tea-color-bg-brand-default: var(--tea-color-palette-blue-8);
+  --tea-color-bg-brand-hover: var(--tea-color-palette-blue-7);
+  --tea-color-bg-brand-active: var(--tea-color-palette-blue-9);
+  --tea-color-bg-brand-lighten-default: var(--tea-color-palette-blue-1);
+  --tea-color-bg-page-default: var(--tea-color-palette-bluegray-1);
+  --tea-color-bg-primary-default: #fff;
+  --tea-color-bg-secondary-default: var(--tea-color-palette-bluegray-1);
+  --tea-color-bg-secondary-hover: var(--tea-color-palette-bluegray-2);
+  --tea-color-bg-success-default: var(--tea-color-palette-green-8);
+  --tea-color-bg-warning-default: var(--tea-color-palette-orange-8);
+  --tea-color-bg-error-default: var(--tea-color-palette-red-8);
+  --tea-color-text-primary: rgba(0, 0, 0, 0.9);
+  --tea-color-text-secondary: rgba(0, 0, 0, 0.7);
+  --tea-color-text-tertiary: rgba(0, 0, 0, 0.5);
+  --tea-color-text-brand-default: var(--tea-color-palette-blue-8);
+  --tea-color-text-link-default: var(--tea-color-palette-blue-8);
+  /* Văn bản cảnh báo dùng tông cam đậm hơn orange-8 để đạt tỉ lệ tương phản 4.5:1 trên nền trắng. */
+  --tea-color-text-warning-default: #b35400;
+  --tea-color-text-success-default: #0a7f3f;
+  --tea-color-text-error-default: #d32f30;
+  --tea-color-border-primary-default: var(--tea-color-palette-bluegray-3);
+  --tea-color-border-secondary-default: var(--tea-color-palette-bluegray-2);
+  --tea-color-border-brand-default: var(--tea-color-palette-blue-8);
+  --tea-shadow-xs: 0 1px 2px rgba(54, 58, 80, 0.08);
+  --tea-form-height-default: 30px;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: Roboto, 'San Francisco', 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--tea-color-bg-page-default);
+  color: var(--tea-color-text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--tea-color-border-brand-default);
+  outline-offset: 2px;
+}
+code, .mono { font-family: var(--font-mono); font-size: 12px; }
+
+/* ===== App shell: GlobalHeader 48px + Sider 200px + Content ===== */
+.shell { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.gh { display: flex; align-items: center; justify-content: space-between; height: 48px; padding: 0 16px;
+  background: #fff; border-bottom: 1px solid var(--tea-color-border-primary-default); flex-shrink: 0; }
+.gh-left, .gh-right { display: flex; align-items: center; gap: 12px; }
+.gh-logo { width: 22px; height: 22px; border-radius: 4px; background: linear-gradient(135deg, #266fe8, #0034b5);
+  display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
+.gh-brand { font-weight: 600; white-space: nowrap; }
+.gh-divider { width: 1px; height: 20px; background: var(--tea-color-border-primary-default); }
+.gh-team { font-size: 13px; color: var(--tea-color-text-secondary); }
+.gh-sync { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--tea-color-text-secondary); }
+.gh-sync i { width: 6px; height: 6px; border-radius: 50%; background: var(--tea-color-bg-success-default); }
+.gh-user { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.gh-avatar { width: 24px; height: 24px; border-radius: 50%; background: var(--tea-color-bg-brand-lighten-default);
+  color: var(--tea-color-text-brand-default); display: grid; place-items: center; font-size: 12px; font-weight: 600; }
+
+.body { display: flex; flex: 1; min-height: 0; }
+.sider { width: 200px; flex-shrink: 0; background: #fff; border-right: 1px solid var(--tea-color-border-primary-default);
+  overflow-y: auto; padding: 8px 0; }
+.menu-label { padding: 12px 16px 4px; font-size: 12px; color: var(--tea-color-text-tertiary); }
+.menu-item { display: flex; align-items: center; gap: 8px; height: 36px; margin: 2px 8px; padding: 0 12px; border-radius: 6px;
+  color: var(--tea-color-text-primary); cursor: pointer; font-size: 14px; border: 0; background: none; width: calc(100% - 16px); text-align: left; }
+.menu-item:hover { background: var(--tea-color-bg-secondary-default); }
+.menu-item.is-selected { background: var(--tea-color-bg-brand-default); color: #fff; }
+.menu-item svg { flex-shrink: 0; }
+.menu-new { margin-left: auto; font-size: 11px; padding: 0 6px; border-radius: 9px; background: var(--tea-color-palette-orange-1); color: var(--tea-color-text-warning-default); }
+.menu-item.is-selected .menu-new { background: rgba(255,255,255,.2); color: #fff; }
+
+.content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tabbar { display: flex; align-items: center; height: 36px; padding: 0 8px; background: #fff;
+  border-bottom: 1px solid var(--tea-color-border-primary-default); flex-shrink: 0; overflow-x: auto; }
+.tabbar-item { display: flex; align-items: center; gap: 4px; height: 32px; padding: 0 12px; font-size: 12px;
+  color: var(--tea-color-text-secondary); border-bottom: 2px solid transparent; border-radius: 4px 4px 0 0; flex-shrink: 0; }
+.tabbar-item.is-active { color: var(--tea-color-text-primary); font-weight: 500; border-bottom-color: var(--tea-color-border-brand-default); }
+.content-body { flex: 1; overflow-y: auto; padding: 16px; scrollbar-gutter: stable; }
+.page { display: flex; flex-direction: column; gap: 16px; animation: page-enter .3s cubic-bezier(.16,1,.3,1); }
+@keyframes page-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+/* ===== Mockup-only: thanh chọn màn hình + ghi chú (không thuộc sản phẩm) ===== */
+.mock-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px;
+  border: 1px dashed #b39ddb; background: #f6f2ff; font-size: 12px; }
+.mock-bar b { color: #5e35b1; margin-right: 4px; }
+.mock-bar button { height: 26px; padding: 0 10px; border: 1px solid #c9b8ef; background: #fff; border-radius: 13px; cursor: pointer; font-size: 12px; }
+.mock-bar button.on { background: #5e35b1; border-color: #5e35b1; color: #fff; }
+.mock-bar button:disabled { opacity: .45; cursor: not-allowed; }
+.mock-role { margin-left: 8px; border-color: #c9b8ef; border-radius: 13px; align-items: center; background: #fff; }
+.mock-role-label { padding: 0 6px 0 10px; color: #5e35b1; }
+.mock-bar .mock-role button { height: 24px; border: 0; border-left: 1px solid #c9b8ef; border-radius: 0; padding: 0 10px; }
+.mock-bar .mock-role button[aria-pressed='true'] { background: #5e35b1; color: #fff; }
+.mock-bar label { margin-left: auto; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.note { border-left: 3px solid #f5b400; background: #fff8e1; padding: 6px 10px; font-size: 12px; color: #5d4300; }
+.note::before { content: 'Ghi chú thiết kế · '; font-weight: 600; }
+body.hide-notes .note { display: none; }
+
+/* ===== Tea Card / Alert / Button / Tag / Switch / Table / Form ===== */
+.card { background: #fff; border: 1px solid var(--tea-color-border-primary-default); box-shadow: var(--tea-shadow-xs); }
+.card-body { padding: 20px 24px; }
+.card-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.card-title { margin: 0; font-size: 14px; font-weight: 600; }
+.card-sub { font-size: 12px; color: var(--tea-color-text-tertiary); margin-top: 2px; }
+.card-op { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+h3.page-title { margin: 0; font-size: 16px; font-weight: 600; }
+.page-head { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.weak { color: var(--tea-color-text-tertiary); }
+.sec { color: var(--tea-color-text-secondary); }
+.small { font-size: 12px; }
+
+.alert { display: flex; gap: 8px; padding: 10px 16px; font-size: 13px; border: 1px solid; }
+.alert::before { font-weight: 700; flex-shrink: 0; }
+.alert-info { background: var(--tea-color-palette-blue-1); border-color: #bbd3fb; }
+.alert-info::before { content: 'ⓘ'; color: var(--tea-color-text-brand-default); }
+.alert-warning { background: var(--tea-color-palette-orange-1); border-color: #ffd0a8; }
+.alert-warning::before { content: '⚠'; color: var(--tea-color-text-warning-default); }
+.alert-error { background: var(--tea-color-palette-red-1); border-color: #f8bcbc; }
+.alert-error::before { content: '✕'; color: var(--tea-color-text-error-default); }
+.alert-success { background: var(--tea-color-palette-green-1); border-color: #a7e8c4; }
+.alert-success::before { content: '✓'; color: var(--tea-color-text-success-default); }
+
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: var(--tea-form-height-default);
+  min-width: 24px; padding: 0 20px; border: 1px solid var(--tea-color-palette-bluegray-4); background: #fff; border-radius: 3px;
+  cursor: pointer; font-size: 12px; white-space: nowrap; transition: background-color .2s, border-color .2s, transform .15s; }
+.btn:hover { border-color: #b7bfcc; background: var(--tea-color-bg-secondary-default); }
+.btn:active:not(:disabled) { transform: scale(.97); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--tea-color-bg-brand-default); border-color: var(--tea-color-bg-brand-default); color: #fff; }
+.btn-primary:hover { background: var(--tea-color-bg-brand-hover); border-color: var(--tea-color-bg-brand-hover); }
+.btn-error { color: var(--tea-color-text-error-default); border-color: #f8bcbc; }
+.btn-error:hover { background: var(--tea-color-palette-red-1); border-color: var(--tea-color-text-error-default); }
+.btn-danger { background: var(--tea-color-bg-error-default); border-color: var(--tea-color-bg-error-default); color: #fff; }
+.btn-danger:hover { background: #d32f30; }
+.btn-link { border: 0; background: none; padding: 0; height: auto; min-width: 0; color: var(--tea-color-text-link-default); margin-right: 8px; }
+.btn-link:hover { background: none; color: var(--tea-color-bg-brand-hover); text-decoration: underline; }
+.btn-link.danger { color: var(--tea-color-text-error-default); }
+.btn-sm { height: 26px; padding: 0 12px; }
+
+.tag { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: 12px; font-size: 12px;
+  border: 1px solid var(--tea-color-palette-bluegray-4); background: var(--tea-color-bg-secondary-default); color: var(--tea-color-text-secondary); white-space: nowrap; }
+.tag-primary { background: var(--tea-color-palette-blue-1); border-color: #bbd3fb; color: var(--tea-color-text-brand-default); }
+.tag-success { background: var(--tea-color-palette-green-1); border-color: #a7e8c4; color: var(--tea-color-text-success-default); }
+.tag-warning { background: var(--tea-color-palette-orange-1); border-color: #ffd0a8; color: var(--tea-color-text-warning-default); }
+.tag-error { background: var(--tea-color-palette-red-1); border-color: #f8bcbc; color: var(--tea-color-text-error-default); }
+.tag-sub { background: #f0e9ff; border-color: #d6c6fb; color: #5e35b1; }
+.tag-api { background: #e5f6f7; border-color: #b2e2e6; color: #00737d; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.switch { position: relative; width: 35px; height: 20px; border-radius: 10px; border: 0; padding: 0; cursor: pointer;
+  background: var(--tea-color-palette-bluegray-4); transition: background-color .2s; flex-shrink: 0; }
+.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .2s; }
+.switch[aria-checked='true'] { background: var(--tea-color-bg-brand-default); }
+.switch[aria-checked='true']::after { transform: translateX(15px); }
+.switch:disabled { opacity: .5; cursor: not-allowed; }
+
+.table-wrap { overflow-x: auto; }
+table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-weight: 500; color: var(--tea-color-text-tertiary); font-size: 12px; padding: 10px 12px;
+  border-bottom: 1px solid #cfd5de; background: #fff; white-space: nowrap; }
+.tbl td { padding: 12px; border-bottom: 1px solid var(--tea-color-border-secondary-default); vertical-align: top; }
+.tbl tbody tr:hover td { background: #f7f9fc; }
+.tbl tr.locked td { background: var(--tea-color-bg-secondary-default); color: var(--tea-color-text-secondary); }
+.tbl tr.is-off td { color: var(--tea-color-text-tertiary); }
+.actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.footnote { margin-top: 8px; font-size: 12px; color: var(--tea-color-text-secondary); }
+
+.form { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 16px 20px; align-items: start; }
+.form-label { padding-top: 6px; color: var(--tea-color-text-secondary); font-size: 13px; }
+.form-label .req { color: var(--tea-color-text-error-default); margin-left: 2px; }
+.form-ctrl { min-width: 0; }
+.form-help { font-size: 12px; color: var(--tea-color-text-tertiary); margin-top: 4px; }
+.form-msg { font-size: 12px; margin-top: 4px; }
+.form-msg.err { color: var(--tea-color-text-error-default); }
+.form-msg.warn { color: var(--tea-color-text-warning-default); }
+.form-msg.ok { color: var(--tea-color-text-success-default); }
+.input, .select { height: var(--tea-form-height-default); padding: 0 10px; border: 1px solid var(--tea-color-palette-bluegray-4);
+  border-radius: 3px; background: #fff; font-size: 12px; width: 100%; max-width: 420px; }
+.input:hover, .select:hover { border-color: #b7bfcc; }
+.input:focus, .select:focus { border-color: var(--tea-color-border-brand-default); outline: none; box-shadow: 0 0 0 2px rgba(0,82,217,.15); }
+.input.is-error { border-color: var(--tea-color-bg-error-default); }
+.input:disabled, .select:disabled { background: var(--tea-color-bg-secondary-default); color: var(--tea-color-text-secondary); cursor: not-allowed; }
+.radio-card:disabled { cursor: not-allowed; opacity: .75; }
+.input[readonly] { background: var(--tea-color-bg-secondary-default); color: var(--tea-color-text-secondary); }
+.input-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--tea-color-palette-bluegray-4); border-radius: 3px; overflow: hidden; }
+.seg button { height: 30px; padding: 0 16px; border: 0; background: #fff; cursor: pointer; font-size: 12px; border-right: 1px solid var(--tea-color-palette-bluegray-4); }
+.seg button:last-child { border-right: 0; }
+.seg button[aria-pressed='true'] { background: var(--tea-color-bg-brand-lighten-default); color: var(--tea-color-text-brand-default); font-weight: 600; }
+.radio-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; max-width: 720px; }
+.radio-card { display: flex; gap: 8px; padding: 10px 12px; border: 1px solid var(--tea-color-palette-bluegray-4); border-radius: 4px; cursor: pointer; background: #fff; text-align: left; }
+.radio-card:hover { border-color: #b7bfcc; }
+.radio-card[aria-checked='true'] { border-color: var(--tea-color-border-brand-default); background: #f5f8ff; }
+.radio-dot { width: 14px; height: 14px; border-radius: 50%; border: 1px solid #b7bfcc; margin-top: 3px; flex-shrink: 0; position: relative; background: #fff; }
+.radio-card[aria-checked='true'] .radio-dot { border-color: var(--tea-color-border-brand-default); }
+.radio-card[aria-checked='true'] .radio-dot::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--tea-color-bg-brand-default); }
+.radio-card b { display: block; font-size: 13px; }
+.radio-card span { font-size: 12px; color: var(--tea-color-text-tertiary); }
+
+.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; min-height: 28px; font-size: 13px; }
+.check input { width: 14px; height: 14px; accent-color: var(--tea-color-bg-brand-default); margin: 0; }
+
+/* Danh sách model trong form */
+.ml { border: 1px solid var(--tea-color-border-primary-default); max-width: 760px; }
+.ml-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--tea-color-border-primary-default); background: var(--tea-color-bg-secondary-default); flex-wrap: wrap; }
+.ml-toolbar .input { max-width: 240px; }
+.ml-count { margin-left: auto; font-size: 12px; color: var(--tea-color-text-secondary); }
+.ml-body { max-height: 300px; overflow-y: auto; }
+.ml-row { display: grid; grid-template-columns: 24px minmax(0,1fr) auto; gap: 8px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--tea-color-border-secondary-default); min-height: 40px; }
+.ml-row:last-child { border-bottom: 0; }
+.ml-row:hover { background: #f7f9fc; }
+.ml-id { font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.ml-id .src { color: var(--tea-color-text-tertiary); }
+.ml-empty { padding: 24px; text-align: center; color: var(--tea-color-text-tertiary); font-size: 13px; }
+.spinner { width: 14px; height: 14px; border: 2px solid #bbd3fb; border-top-color: var(--tea-color-bg-brand-default); border-radius: 50%; animation: spin .8s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Phân biệt trường mới và trường cũ trong form */
+.tag-new { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 9px; font-size: 11px; font-weight: 600;
+  background: var(--tea-color-palette-orange-1); color: var(--tea-color-text-warning-default); border: 1px solid #ffd0a8; vertical-align: middle; }
+.field-key { display: inline-block; font-family: var(--font-mono); font-size: 11px; color: var(--tea-color-text-tertiary); background: var(--tea-color-bg-secondary-default);
+  padding: 0 4px; border-radius: 2px; vertical-align: middle; }
+.form-label .field-key, .form-label .tag-new { margin-left: 4px; }
+.form-section { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 0 6px;
+  border-bottom: 1px solid var(--tea-color-border-primary-default); margin-top: 8px; }
+.form-section b { font-size: 13px; }
+.form-section span:not(.tag-new) { font-size: 12px; color: var(--tea-color-text-tertiary); }
+.form-ctrl.is-new { border-left: 3px solid #ffd0a8; padding-left: 12px; }
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; max-width: 760px; }
+.agent-chip { display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border: 1px solid var(--tea-color-palette-bluegray-4); border-radius: 4px; cursor: pointer; font-size: 13px; }
+.agent-chip input { margin-top: 3px; accent-color: var(--tea-color-bg-brand-default); }
+.agent-chip span { display: flex; flex-direction: column; gap: 2px; }
+.agent-chip.is-taken { background: var(--tea-color-bg-secondary-default); color: var(--tea-color-text-tertiary); cursor: not-allowed; }
+.ml-row.is-gone .ml-id { color: var(--tea-color-text-tertiary); }
+.pool-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.pool-bar { position: relative; height: 8px; border-radius: 4px; background: var(--tea-color-bg-secondary-default); margin-top: 4px; }
+.pool-bar i { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; background: var(--tea-color-bg-success-default); }
+.pool-bar i.warn { background: var(--tea-color-bg-warning-default); }
+.pool-bar i.full { background: var(--tea-color-bg-error-default); }
+.pool-bar span { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--tea-color-text-primary); }
+.source-card { border-left: 3px solid #ffd0a8; }
+@media (max-width: 760px) { .pool-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.legend { font-size: 12px; color: var(--tea-color-text-secondary); margin: -4px 0 16px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.form-footer { display: flex; gap: 8px; padding: 16px 24px; border-top: 1px solid var(--tea-color-border-primary-default); background: #fff; position: sticky; bottom: -16px; }
+
+/* Sơ đồ đặt tên model */
+.ns { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.ns-box { border: 1px solid var(--tea-color-border-primary-default); padding: 12px; background: #fff; }
+.ns-box h4 { margin: 0 0 8px; font-size: 12px; font-weight: 500; color: var(--tea-color-text-secondary); }
+.ns-id { font-family: var(--font-mono); font-size: 13px; padding: 4px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ns-id .s { color: #5e35b1; font-weight: 600; }
+.ns-id .s.api { color: #00737d; }
+.ns-id .slash { color: var(--tea-color-text-tertiary); }
+
+/* Preview */
+.agent-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--tea-color-border-primary-default); flex-wrap: wrap; }
+.agent-tab { height: 36px; padding: 0 16px; border: 0; border-bottom: 2px solid transparent; background: none; cursor: pointer; font-size: 13px; color: var(--tea-color-text-secondary); display: flex; align-items: center; gap: 6px; }
+.agent-tab:hover { color: var(--tea-color-text-primary); }
+.agent-tab[aria-selected='true'] { color: var(--tea-color-text-brand-default); border-bottom-color: var(--tea-color-border-brand-default); font-weight: 600; }
+.code { position: relative; background: #1e222d; color: #e6e9ef; font-family: var(--font-mono); font-size: 12px; line-height: 1.6;
+  padding: 14px 16px; margin: 0; overflow-x: auto; white-space: pre; border-radius: 2px; }
+.code .k { color: #8fb8ff; } .code .v { color: #b5e3a4; } .code .c { color: #8b93a6; }
+.code-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.two-col { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+
+/* Dialog (giống ._memory-pool-mask / ._memory-pool-dialog) */
+.mask { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgba(0,0,0,.45); }
+.dialog { width: min(560px, 100%); max-height: calc(100vh - 48px); overflow: auto; padding: 20px 24px 16px; background: #fff; border-radius: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
+.dialog-title { margin: 0 0 16px; font-size: 16px; font-weight: 600; }
+.dialog-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.dialog p { margin: 0 0 12px; }
+
+/* Toast (tea.notify) */
+.toasts { position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 1100; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+.toast { background: #fff; box-shadow: 0 4px 12px rgba(0,0,0,.15); padding: 8px 16px; font-size: 13px; border-left: 3px solid var(--tea-color-bg-success-default); animation: page-enter .2s; }
+.toast.warn { border-left-color: var(--tea-color-bg-warning-default); }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+@media (max-width: 960px) {
+  .two-col { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .sider { width: 56px; }
+  .sider .menu-label, .sider .menu-text, .sider .menu-new { display: none; }
+  .menu-item { justify-content: center; padding: 0; }
+  .form { grid-template-columns: 1fr; gap: 6px; }
+  .form-label { padding-top: 10px; }
+  .gh-team, .gh-sync { display: none; }
+  .card-body { padding: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="gh">
+    <div class="gh-left">
+      <div class="gh-logo" aria-hidden="true">M</div>
+      <span class="gh-brand">Memory Hub</span>
+      <span class="gh-divider" aria-hidden="true"></span>
+      <span class="gh-team">Team: vtc-studio ▾</span>
+    </div>
+    <div class="gh-right">
+      <span class="gh-sync"><i></i>Đã đồng bộ</span>
+      <span class="gh-user" id="gh-user"><span class="gh-avatar">K</span>kevin · System Admin</span>
+    </div>
+  </header>
+
+  <div class="body">
+    <nav class="sider" aria-label="Menu chính">
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><span class="menu-text">Bảng công việc</span></button>
+      <div class="menu-label">Phân tích dữ liệu</div>
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="4" y1="20" x2="20" y2="20"/><rect x="6" y="10" width="3" height="6"/><rect x="10.5" y="6" width="3" height="10"/><rect x="15" y="13" width="3" height="3"/></svg><span class="menu-text">Lượt gọi trực tuyến</span></button>
+      <div class="menu-label">Tổ chức &amp; quyền</div>
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 16 0v1"/></svg><span class="menu-text">Thành viên</span></button>
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="7" r="4"/><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="menu-text">Agents</span></button>
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span class="menu-text">API Key</span></button>
+      <button class="menu-item" type="button" data-go="pool"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 3l4 4-4 4"/><path d="M3 7h18"/><path d="M7 21l-4-4 4-4"/><path d="M21 17H3"/></svg><span class="menu-text">Pool tài khoản thuê bao</span></button>
+      <button class="menu-item is-selected" type="button" aria-current="page" data-go="list"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="12" r="2.5"/><path d="M8.5 6h3a3 3 0 0 1 3 3v0M8.5 18h3a3 3 0 0 0 3-3v0M15.5 12h0"/></svg><span class="menu-text">Model Provider</span><span class="menu-new">Mới</span></button>
+      <div class="menu-label">Quản lý tài sản</div>
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/></svg><span class="menu-text">Wiki</span></button>
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg><span class="menu-text">Code_Graph</span></button>
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.5-2.5z"/></svg><span class="menu-text">Skill</span></button>
+      <button class="menu-item" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="menu-text">Chat_Memory</span></button>
+    </nav>
+
+    <div class="content">
+      <div class="tabbar" role="tablist" aria-label="Trang đang mở">
+        <span class="tabbar-item">Bảng công việc</span>
+        <span class="tabbar-item" id="tab-pool">Pool tài khoản thuê bao</span>
+        <span class="tabbar-item is-active" id="tab-provider">Model Provider</span>
+      </div>
+      <div class="content-body">
+        <main class="page" id="app" aria-live="polite"></main>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div id="dialog-root"></div>
+
+<script>
+'use strict';
+
+/* ===================== Dữ liệu mẫu ===================== */
+var FORMATS = {
+  'anthropic-messages': { label: 'Anthropic Messages', omp: 'memory-anthropic', path: '/omp/<space>' },
+  'openai-responses':   { label: 'OpenAI Responses',   omp: 'memory-responses', path: '/omp/<space>/v1' },
+  'openai-chat':        { label: 'OpenAI Chat',        omp: 'memory-chat',      path: '/omp/<space>/v1' }
+};
+var FORMAT_ORDER = ['anthropic-messages', 'openai-responses', 'openai-chat'];
+
+var MODES = {
+  custom_unified:     { short: 'custom_unified — proxy dùng key của nhóm', long: 'Proxy gửi yêu cầu bằng API key lưu trong nhóm.' },
+  custom_passthrough: { short: 'custom_passthrough — dùng key của client', long: 'Proxy chuyển tiếp key mà client gửi lên; nhóm không lưu key.' }
+};
+
+/* Agent hỗ trợ (default-supported-agents.ts) sau thay đổi: thêm omp, bỏ pi (pi không còn được hỗ trợ). Chỉ omp, hermes, openclaw là multi_source. */
+var ALL_AGENTS = [
+  { id: 'claude-code', label: 'Claude Code' }, { id: 'codex', label: 'Codex' },
+  { id: 'codebuddy', label: 'CodeBuddy' }, { id: 'workbuddy', label: 'WorkBuddy' },
+  { id: 'dsh', label: 'DeepSeek Harness' }, { id: 'opencode', label: 'OpenCode' },
+  { id: 'hermes', label: 'Hermes' }, { id: 'openclaw', label: 'OpenClaw' }, { id: 'omp', label: 'omp' }
+];
+var MULTI_AGENTS = ['omp', 'hermes', 'openclaw'];
+var LOCKED_AGENTS = [{ id: 'claude-code', label: 'Claude Code', pool: 'claude' }, { id: 'codex', label: 'Codex', pool: 'codex' }];
+
+var API_PROVIDERS = {
+  openai:     { label: 'OpenAI', slug: 'openai', baseUrl: 'https://api.openai.com/v1', format: 'openai-responses',
+                models: ['gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-mini', 'gpt-6-nano', 'o5-pro', 'gpt-image-3', 'text-embedding-4-large'] },
+  deepseek:   { label: 'DeepSeek', slug: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', format: 'openai-chat',
+                models: ['deepseek-v4', 'deepseek-v4-flash', 'deepseek-v4-reasoner'] },
+  openrouter: { label: 'OpenRouter', slug: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', format: 'openai-chat',
+                models: ['deepseek-v4', 'qwen4-max', 'glm-5', 'kimi-k3', 'llama-5-70b', 'mistral-large-3', 'gemini-3-pro', 'claude-sonnet-5'] },
+  moonshot:   { label: 'Moonshot', slug: 'moonshot', baseUrl: 'https://api.moonshot.cn/v1', format: 'openai-chat',
+                models: ['kimi-k3', 'kimi-k3-turbo'] },
+  custom:     { label: 'Khác (base URL riêng)', slug: 'custom', baseUrl: '', format: 'openai-chat',
+                models: ['deepseek-v4', 'deepseek-v4-flash', 'qwen4-32b', 'glm-5-air'] }
+};
+
+function mk(ids, offList) {
+  return ids.map(function (id) { return { id: id, on: !(offList || []).includes(id), available: true }; });
+}
+
+var state = {
+  view: 'list',            // list | form | pool | preview
+  notes: true,
+  role: 'admin',           // admin | member (giống readOnly = !isGlobalAdmin của trang Pool)
+  previewAgent: 'omp',
+  poolTab: 'claude',
+  form: null,
+  /* Nhóm upstream custom = dòng của tab Model Provider. source = null: nhóm cũ, chưa dùng làm nguồn. */
+  groups: [
+    { id: 'grp-openai', name: 'OpenAI key công ty', provider: 'openai', mode: 'custom_unified', baseUrl: API_PROVIDERS.openai.baseUrl,
+      keySet: true, description: 'Key dùng chung của team', agents: [], modelId: '', enabled: true,
+      source: { name: 'api-openai', formats: ['openai-responses'], agents: ['omp', 'hermes'], enabled: true, fetchedAt: '25/10 18:40', error: '',
+        models: mk(API_PROVIDERS.openai.models, ['gpt-6-nano', 'o5-pro', 'gpt-image-3', 'text-embedding-4-large'])
+          .concat([{ id: 'gpt-5.5', on: true, available: false }]) } },
+    { id: 'grp-deepseek', name: 'DeepSeek', provider: 'deepseek', mode: 'custom_unified', baseUrl: API_PROVIDERS.deepseek.baseUrl,
+      keySet: true, description: '', agents: ['dsh'], modelId: 'deepseek-v4', enabled: true,
+      source: { name: 'api-deepseek', formats: ['openai-chat'], agents: ['omp', 'openclaw'], enabled: true, fetchedAt: '25/10 18:41', error: '',
+        models: mk(API_PROVIDERS.deepseek.models, ['deepseek-v4-reasoner']) } },
+    { id: 'grp-openrouter', name: 'OpenRouter', provider: 'openrouter', mode: 'custom_unified', baseUrl: API_PROVIDERS.openrouter.baseUrl,
+      keySet: true, description: '', agents: [], modelId: '', enabled: true,
+      source: { name: 'api-openrouter', formats: ['openai-chat'], agents: ['omp'], enabled: true, fetchedAt: '25/10 18:42', error: '',
+        models: mk(API_PROVIDERS.openrouter.models, ['glm-5', 'kimi-k3', 'llama-5-70b', 'mistral-large-3', 'gemini-3-pro', 'claude-sonnet-5']) } },
+    { id: 'grp-siliconflow', name: 'SiliconFlow', provider: 'custom', mode: 'custom_unified', baseUrl: 'https://api.siliconflow.cn/v1',
+      keySet: true, description: '', agents: [], modelId: '', enabled: true,
+      source: { name: 'api-siliconflow', formats: ['openai-chat'], agents: ['omp', 'hermes'], enabled: true, fetchedAt: '25/10 16:10',
+        error: 'Lần lấy lúc 25/10 18:05 lỗi: HTTP 429 (quá giới hạn). Giữ danh sách cũ.',
+        models: mk(API_PROVIDERS.custom.models, ['glm-5-air']) } },
+    { id: 'grp-kimi', name: 'Kimi cho CodeBuddy', provider: 'moonshot', mode: 'custom_unified', baseUrl: API_PROVIDERS.moonshot.baseUrl,
+      keySet: true, description: 'Nhóm tạo trước tính năng nguồn', agents: ['codebuddy', 'opencode'], modelId: 'kimi-k3', enabled: true, source: null },
+    { id: 'grp-byok', name: 'Key riêng từng người', provider: 'custom', mode: 'custom_passthrough', baseUrl: 'https://api.anthropic.com',
+      keySet: false, description: 'Người dùng tự gửi key Anthropic', agents: ['workbuddy'], modelId: '', enabled: true, source: null }
+  ],
+  /* Nhóm subscription_pool. Phần source sửa trên tab Pool; bật/tắt theo công tắc pool (không có source_enabled riêng). Codex chưa có nguồn: minh họa bước tạo tên. */
+  pools: {
+    claude: { label: 'Pool thuê bao Claude', tab: 'Claude Code', agent: 'claude-code', enabled: true, slug: 'claude', format: 'anthropic-messages',
+      accounts: [
+        { name: 'claude-team-01', label: 'Max 20x', state: 'active', p5h: 42, pw: 61 },
+        { name: 'claude-team-02', label: 'Max 20x', state: 'near_limit', p5h: 88, pw: 74 },
+        { name: 'claude-team-03', label: 'Max 5x', state: 'disabled', p5h: 0, pw: 12 }
+      ],
+      models: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-5'],
+      source: { name: 'sub-claude', formats: ['anthropic-messages'], agents: ['omp', 'hermes', 'openclaw'], fetchedAt: '25/10 18:30', error: '',
+        models: mk(['claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-5']) } },
+    codex: { label: 'Pool thuê bao ChatGPT / Codex', tab: 'Codex', agent: 'codex', enabled: true, slug: 'openai', format: 'openai-responses',
+      accounts: [
+        { name: 'chatgpt-pro-01', label: 'Pro', state: 'active', p5h: 23, pw: 40 },
+        { name: 'chatgpt-pro-02', label: 'Pro', state: 'active', p5h: 57, pw: 66 }
+      ],
+      models: ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-mini'],
+      source: null }
+  }
+};
+
+/* ===================== Tiện ích ===================== */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function $(sel, root) { return (root || document).querySelector(sel); }
+function $all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+function isAdmin() { return state.role === 'admin'; }
+function findGroup(id) { return state.groups.find(function (g) { return g.id === id; }); }
+function agentLabel(id) { var a = ALL_AGENTS.find(function (x) { return x.id === id; }); return a ? a.label : id; }
+function onCount(models) { return models.filter(function (m) { return m.on && m.available; }).length; }
+function availCount(models) { return models.filter(function (m) { return m.available; }).length; }
+function NEW() { return ' <span class="tag-new" title="Trường mới thêm trên tính năng cũ">mới</span>'; }
+function OLD(field) { return ' <span class="field-key">' + field + '</span>'; }
+function fmtTags(formats) { return formats.map(function (f) { return '<span class="tag">' + FORMATS[f].label + '</span>'; }).join(''); }
+function agentTags(list, cls) {
+  if (!list.length) return '<span class="weak">—</span>';
+  return '<div class="tags">' + list.map(function (a) { return '<span class="tag ' + (cls || 'tag-primary') + '">' + esc(a) + '</span>'; }).join('') + '</div>';
+}
+
+function toast(msg, warn) {
+  var el = document.createElement('div');
+  el.className = 'toast' + (warn ? ' warn' : '');
+  el.textContent = msg;
+  $('#toasts').appendChild(el);
+  setTimeout(function () { el.remove(); }, 3200);
+}
+
+/* Mọi tên nguồn đang dùng (nhóm custom + nhóm pool). */
+function takenNames(exceptGroupId) {
+  var out = [];
+  state.groups.forEach(function (g) { if (g.source && g.id !== exceptGroupId) out.push(g.source.name); });
+  Object.keys(state.pools).forEach(function (k) { if (state.pools[k].source) out.push(state.pools[k].source.name); });
+  return out;
+}
+function suggestName(slug, exceptGroupId) {
+  var base = 'api-' + slug, taken = takenNames(exceptGroupId);
+  if (!taken.includes(base)) return base;
+  var i = 2;
+  while (taken.includes(base + '-' + i)) i++;
+  return base + '-' + i;
+}
+/* Dạng: ^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$, duy nhất. */
+function validateName(name, exceptGroupId) {
+  if (!name) return { ok: false, msg: 'Bắt buộc nhập tên nguồn.' };
+  if (name.length > 40) return { ok: false, msg: 'Tối đa 40 ký tự.' };
+  if (/[A-Z]/.test(name)) return { ok: false, msg: 'Chỉ dùng chữ thường. Gợi ý: ' + name.toLowerCase() };
+  if (!/^[a-z0-9-]+$/.test(name)) return { ok: false, msg: 'Chỉ được dùng a-z, 0-9 và dấu "-". Không dùng "/" vì "/" ngăn cách nguồn và model.' };
+  if (/^-|-$/.test(name)) return { ok: false, msg: 'Không bắt đầu hoặc kết thúc bằng dấu "-".' };
+  if (takenNames(exceptGroupId).includes(name)) return { ok: false, msg: 'Tên "' + name + '" đã có. Tên nguồn phải duy nhất.' };
+  return { ok: true };
+}
+
+/* Agent ở đường "Dùng cho cả agent" chỉ thuộc một nhóm (agents_overlap). */
+function agentOwner(agentId, exceptGroupId) {
+  var g = state.groups.find(function (x) { return x.id !== exceptGroupId && x.agents.includes(agentId); });
+  if (g) return g.name;
+  var p = Object.keys(state.pools).find(function (k) { return state.pools[k].agent === agentId; });
+  return p ? state.pools[p].label : null;
+}
+
+/* Danh sách /v1/models mà một agent multi_source sẽ thấy. */
+function exposedFor(agent) {
+  var out = [];
+  Object.keys(state.pools).forEach(function (k) {
+    var p = state.pools[k], s = p.source;
+    if (!s || !p.enabled || !s.agents.includes(agent)) return;
+    s.models.forEach(function (m) { if (m.on && m.available) out.push({ id: s.name + '/' + m.id, model: m.id, name: s.name, kind: 'sub', provider: p.label, formats: s.formats }); });
+  });
+  state.groups.forEach(function (g) {
+    var s = g.source;
+    if (!s || !s.enabled || g.mode !== 'custom_unified' || !s.agents.includes(agent)) return;
+    s.models.forEach(function (m) { if (m.on && m.available) out.push({ id: s.name + '/' + m.id, model: m.id, name: s.name, kind: 'api', provider: API_PROVIDERS[g.provider].label, formats: s.formats }); });
+  });
+  return out;
+}
+
+/* ===================== Khung, thanh mockup ===================== */
+var SCREENS = [
+  { id: 'list', label: '1 · Model Provider' },
+  { id: 'add', label: '2 · Thêm provider' },
+  { id: 'edit', label: '3 · Sửa provider' },
+  { id: 'attach', label: '4 · Nhóm cũ → Dùng làm nguồn' },
+  { id: 'pool', label: '5 · Pool Claude: phần nguồn' },
+  { id: 'pool-create', label: '6 · Pool Codex: tạo nguồn' },
+  { id: 'preview', label: '7 · Client sẽ thấy' }
+];
+var ADMIN_SCREENS = { add: true, attach: true };
+var activeScreen = 'list';
+
+function mockBar() {
+  return '<div class="mock-bar" role="toolbar" aria-label="Chọn màn hình mockup"><b>Mockup · màn hình:</b>' +
+    SCREENS.map(function (s) {
+      var locked = !isAdmin() && ADMIN_SCREENS[s.id];
+      return '<button type="button" data-screen="' + s.id + '" class="' + (activeScreen === s.id ? 'on' : '') + '"' +
+        (locked ? ' disabled title="Thành viên không mở được màn này"' : '') + '>' + s.label + '</button>';
+    }).join('') +
+    '<span class="seg mock-role" role="group" aria-label="Xem như"><span class="mock-role-label">Xem như:</span>' +
+      '<button type="button" data-role="admin" aria-pressed="' + isAdmin() + '">Admin</button>' +
+      '<button type="button" data-role="member" aria-pressed="' + !isAdmin() + '">Thành viên</button></span>' +
+    '<label><input type="checkbox" id="toggle-notes" ' + (state.notes ? 'checked' : '') + '> Hiện ghi chú thiết kế</label></div>';
+}
+
+function syncShell() {
+  var onPool = state.view === 'pool';
+  $all('.sider [data-go]').forEach(function (b) {
+    var sel = (b.dataset.go === 'pool') === onPool;
+    b.classList.toggle('is-selected', sel);
+    if (sel) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  $('#tab-pool').classList.toggle('is-active', onPool);
+  $('#tab-provider').classList.toggle('is-active', !onPool);
+  $('#gh-user').innerHTML = isAdmin() ? '<span class="gh-avatar">K</span>kevin · System Admin' : '<span class="gh-avatar">A</span>an · Thành viên';
+}
+
+function pageHead() {
+  var tab = state.view === 'preview' ? 'preview' : 'list';
+  return '<div class="card"><div class="card-body">' +
+    '<div class="page-head"><h3 class="page-title">Model Provider</h3>' +
+    '<div class="seg" role="group" aria-label="Chế độ xem">' +
+      '<button type="button" data-go="list" aria-pressed="' + (tab === 'list') + '">Danh sách provider</button>' +
+      '<button type="button" data-go="preview" aria-pressed="' + (tab === 'preview') + '">Client sẽ thấy</button>' +
+    '</div></div>' +
+    '<div class="sec small" style="margin-top:8px">Instance "vtc-prod" · Quản lý nhóm upstream tùy chỉnh (API key). Mỗi nhóm có thể dùng cho cả agent (như hôm nay), ' +
+    'dùng làm nguồn model <code>&lt;nguồn&gt;/&lt;model&gt;</code>, hoặc cả hai. Nguồn thuê bao ở tab Pool tài khoản thuê bao.</div>' +
+    '</div></div>';
+}
+
+function render() {
+  var html = mockBar();
+  if (state.view === 'list') html += pageHead() + renderList();
+  else if (state.view === 'form') html += renderForm();
+  else if (state.view === 'pool') html += renderPool();
+  else html += pageHead() + renderPreview();
+  $('#app').innerHTML = html;
+  syncShell();
+  bindCommon();
+  if (state.view === 'list') bindList();
+  if (state.view === 'form') bindForm();
+  if (state.view === 'pool') bindPool();
+  if (state.view === 'preview') bindPreview();
+}
+
+function go(view) { state.view = view; state.form = null; activeScreen = view === 'pool' ? (state.poolTab === 'codex' ? 'pool-create' : 'pool') : view; closeDialog(); render(); }
+
+function bindCommon() {
+  $all('[data-screen]').forEach(function (b) { b.onclick = function () { goScreen(b.dataset.screen); }; });
+  $all('#app [data-go]').forEach(function (b) { b.onclick = function (e) { e.preventDefault(); go(b.dataset.go); }; });
+  $all('[data-role]').forEach(function (b) {
+    b.onclick = function () {
+      if (state.role === b.dataset.role) return;
+      state.role = b.dataset.role;
+      closeDialog();
+      if (!isAdmin() && state.form) {
+        // Thành viên: form thêm quay về danh sách; form sửa chuyển thành form xem.
+        if (state.form.mode === 'add') { go('list'); return; }
+        openEdit(state.form.groupId); return;
+      }
+      render();
+    };
+  });
+  var tn = $('#toggle-notes');
+  if (tn) tn.onchange = function () { state.notes = tn.checked; document.body.classList.toggle('hide-notes', !tn.checked); };
+}
+
+function goScreen(id) {
+  if (!isAdmin() && ADMIN_SCREENS[id]) { toast('Chế độ chỉ đọc: chỉ System Admin thêm hoặc sửa provider.', true); return; }
+  activeScreen = id;
+  closeDialog();
+  if (id === 'add') { openAdd(); state.form.key = 'sk-••••••••••••••••'; render(); fetchModels(); }
+  else if (id === 'edit') openEdit('grp-openai');
+  else if (id === 'attach') openEdit('grp-kimi', true);
+  else if (id === 'pool' || id === 'pool-create') { state.view = 'pool'; state.form = null; state.poolTab = id === 'pool' ? 'claude' : 'codex'; poolSearch.q = ''; render(); }
+  else { state.view = id; state.form = null; render(); }
+}
+
+/* ===================== Màn 1: danh sách provider ===================== */
+function renderList() {
+  var admin = isAdmin();
+  var rows = state.groups.map(function (g) {
+    var s = g.source;
+    var groupCell = '<b>' + esc(g.name) + '</b><div class="weak small">' + esc(API_PROVIDERS[g.provider].label) + '</div>' +
+      '<div class="mono small" style="overflow-wrap:anywhere">' + esc(g.baseUrl) + '</div>' +
+      '<div class="tags" style="margin-top:4px"><span class="tag' + (g.mode === 'custom_passthrough' ? ' tag-warning' : '') + '" title="' + esc(MODES[g.mode].long) + '">' + g.mode + '</span>' +
+      (g.mode === 'custom_unified' ? '<span class="tag ' + (g.keySet ? 'tag-success' : 'tag-error') + '">' + (g.keySet ? 'key đã cấu hình' : 'chưa có key') + '</span>' : '') + '</div>';
+    var agentCell = agentTags(g.agents) +
+      '<div class="small" style="margin-top:4px"><span class="weak">model_id:</span> ' + (g.modelId ? '<code>' + esc(g.modelId) + '</code>' : '<span class="weak">trống</span>') + '</div>' +
+      (g.agents.length ? '<div style="display:flex;align-items:center;gap:6px;margin-top:6px">' +
+        (admin ? '<button type="button" class="switch" role="switch" aria-checked="' + g.enabled + '" aria-label="Bật/tắt nhóm cho agents" data-toggle-agents="' + g.id + '"></button>' : '') +
+        '<span class="tag ' + (g.enabled ? 'tag-success' : '') + '">' + (g.enabled ? '● Bật' : '○ Tắt') + '</span></div>' : '');
+    var sourceCell;
+    if (s) {
+      sourceCell = '<b class="mono" style="font-size:13px">' + esc(s.name) + '</b><div class="tags" style="margin-top:4px">' + fmtTags(s.formats) + '</div>' +
+        '<div class="small" style="margin-top:4px">Model bật <b>' + onCount(s.models) + '</b><span class="weak">/' + availCount(s.models) + '</span></div>' +
+        '<div style="margin-top:4px">' + agentTags(s.agents) + '</div>' +
+        (s.error ? '<div class="small" style="color:var(--tea-color-text-warning-default);margin-top:4px">⚠ ' + esc(s.error) + '</div>'
+          : '<div class="weak small" style="margin-top:4px">Lấy model lúc ' + esc(s.fetchedAt) + '</div>') +
+        '<div style="display:flex;align-items:center;gap:6px;margin-top:6px">' +
+          (admin ? '<button type="button" class="switch" role="switch" aria-checked="' + s.enabled + '" aria-label="Bật/tắt nguồn ' + esc(s.name) + '" data-toggle-source="' + g.id + '"></button>' : '') +
+          '<span class="tag ' + (s.enabled ? 'tag-success' : '') + '">' + (s.enabled ? '● Nguồn bật' : '○ Nguồn tắt') + '</span></div>';
+    } else if (g.mode === 'custom_passthrough') {
+      sourceCell = '<span class="tag tag-warning">Không dùng được làm nguồn</span><div class="weak small" style="margin-top:4px">Nhóm passthrough gửi key của client lên upstream; client nhiều nguồn gửi user key của proxy. Không có trường nguồn, không lấy model.</div>';
+    } else {
+      sourceCell = '<span class="weak small">Chưa dùng làm nguồn (nhóm tạo trước tính năng này).</span>' +
+        (admin ? '<div style="margin-top:6px"><button type="button" class="btn btn-sm" data-attach="' + g.id + '">Dùng làm nguồn</button></div>' : '');
+    }
+    var actions = admin
+      ? '<div class="actions"><button type="button" class="btn-link btn" data-edit="' + g.id + '">Sửa</button><button type="button" class="btn btn-error btn-sm" data-del="' + g.id + '">Xóa</button></div>'
+      : '<button type="button" class="btn-link btn" data-edit="' + g.id + '">Xem</button>';
+    return '<tr class="' + (s && !s.enabled && !g.enabled ? 'is-off' : '') + '"><td>' + groupCell + '</td><td>' + agentCell + '</td><td>' + sourceCell + '</td><td>' + actions + '</td></tr>';
+  }).join('');
+
+  var subs = Object.keys(state.pools).map(function (k) { return state.pools[k]; });
+  return (admin ? '' : '<div class="alert alert-warning"><div>Chế độ chỉ đọc. Mọi người xem được tab này; chỉ System Admin thêm, sửa, bật/tắt, xóa hoặc lấy model. Không hiện key, chỉ hiện "key đã cấu hình".</div></div>') +
+    '<div class="alert alert-info"><div>Hai đường độc lập trên cùng một nhóm. <b>Dùng cho cả agent</b> (cũ): mọi yêu cầu của agent trong <code>agents</code> đi qua nhóm, <code>model_id</code> ghi đè model như hôm nay. ' +
+      '<b>Dùng làm nguồn</b> (mới): omp, hermes, openclaw trong <code>source_agents</code> gọi <code>&lt;nguồn&gt;/&lt;model&gt;</code>; proxy gửi id model thật, không dùng <code>model_id</code>.</div></div>' +
+    '<div class="card"><div class="card-body">' +
+      '<div class="card-head"><div><h4 class="card-title">Provider (nhóm upstream tùy chỉnh)</h4><div class="card-sub">Không liệt kê nhóm pool, nhóm mặc định và nhóm trích xuất.</div></div>' +
+      (admin ? '<div class="card-op"><button type="button" class="btn btn-primary" data-add>+ Thêm provider</button></div>' : '') + '</div>' +
+      '<div class="table-wrap"><table class="tbl" style="min-width:1080px"><thead><tr>' +
+        '<th style="width:26%">Nhóm</th><th style="width:22%">Dùng cho cả agent <span class="weak">(cũ)</span></th><th>Dùng làm nguồn' + NEW() + '</th><th style="width:120px">' + (admin ? 'Thao tác' : 'Chi tiết') + '</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div class="footnote">' + state.groups.length + ' nhóm. Công tắc bên trái tắt đường agent; công tắc bên phải (<code>source_enabled</code>) tắt nguồn. Hai công tắc độc lập.</div>' +
+    '</div></div>' +
+    '<div class="card"><div class="card-body">' +
+      '<div class="card-head"><div><h4 class="card-title">Nguồn thuê bao (chỉ xem ở đây)</h4><div class="card-sub">Sửa ở tab Pool tài khoản thuê bao, phần "Dùng làm nguồn" của từng pool.</div></div>' +
+      '<div class="card-op"><a href="#" class="btn" data-go="pool">Mở Pool tài khoản thuê bao ↗</a></div></div>' +
+      '<div class="tags">' + subs.map(function (p) {
+        if (!p.source) return '<span class="tag">' + esc(p.tab) + '</span><span class="weak small" style="margin-right:12px;align-self:center">chưa dùng làm nguồn</span>';
+        return '<span class="tag tag-sub mono">' + esc(p.source.name) + '</span><span class="small" style="margin-right:12px;align-self:center">' + esc(p.label) + ' · ' + onCount(p.source.models) + ' model · ' +
+          (p.enabled ? '<span class="weak">bật theo pool</span>' : '<span style="color:var(--tea-color-text-warning-default)">Nguồn đang tắt vì pool tắt</span>') + '</span>';
+      }).join('') + '</div>' +
+    '</div></div>' +
+    renderNamespace() +
+    '<div class="note">Nhóm "DeepSeek" minh họa cả hai đường: dsh dùng nhóm như hôm nay với model_id cố định, còn omp/openclaw gọi api-deepseek/&lt;model&gt;. ' +
+      'Nhóm "Kimi cho CodeBuddy" là nhóm cũ: chỉ có cột "Dùng cho cả agent" và nút "Dùng làm nguồn" (admin).</div>';
+}
+
+function renderNamespace() {
+  function idLine(src, model, tag, api) {
+    return '<div class="ns-id"><span class="s' + (api ? ' api' : '') + '">' + esc(src) + '</span><span class="slash">/</span><span>' + esc(model) + '</span>' + (tag || '') + '</div>';
+  }
+  return '<div class="card"><div class="card-body">' +
+    '<div class="card-head"><div><h4 class="card-title">Cách đặt tên model cho client</h4><div class="card-sub">Tên nguồn là tiền tố. Model trùng tên ở hai nguồn không ghi đè nhau.</div></div></div>' +
+    '<div class="ns">' +
+      '<div class="ns-box"><h4>gpt-6-sol: thuê bao và API key</h4>' +
+        idLine('sub-openai', 'gpt-6-sol', '<span class="tag tag-sub">Thuê bao</span>') + idLine('api-openai', 'gpt-6-sol', '<span class="tag tag-api">API key</span>', true) + '</div>' +
+      '<div class="ns-box"><h4>deepseek-v4: hai nhà cung cấp API</h4>' +
+        idLine('api-openrouter', 'deepseek-v4', '<span class="tag">OpenRouter</span>', true) + idLine('api-siliconflow', 'deepseek-v4', '<span class="tag">Base URL riêng</span>', true) + '</div>' +
+      '<div class="ns-box"><h4>Claude: chỉ có ở pool thuê bao</h4>' + idLine('sub-claude', 'claude-opus-5-5') + idLine('sub-claude', 'claude-sonnet-5') + '</div>' +
+    '</div></div></div>';
+}
+
+function bindList() {
+  $all('[data-toggle-agents]').forEach(function (b) {
+    b.onclick = function () { var g = findGroup(b.dataset.toggleAgents); g.enabled = !g.enabled; toast((g.enabled ? 'Đã bật' : 'Đã tắt') + ' nhóm "' + g.name + '" cho ' + g.agents.join(', ') + '.', !g.enabled); render(); };
+  });
+  $all('[data-toggle-source]').forEach(function (b) {
+    b.onclick = function () {
+      var s = findGroup(b.dataset.toggleSource).source; s.enabled = !s.enabled;
+      toast(s.enabled ? 'Đã bật nguồn ' + s.name + '.' : 'Đã tắt nguồn ' + s.name + '. ' + s.agents.join(', ') + ' không còn thấy model ' + s.name + '/*.', !s.enabled); render();
+    };
+  });
+  $all('[data-edit]').forEach(function (b) { b.onclick = function () { activeScreen = 'edit'; openEdit(b.dataset.edit); }; });
+  $all('[data-attach]').forEach(function (b) { b.onclick = function () { activeScreen = 'attach'; openEdit(b.dataset.attach, true); }; });
+  $all('[data-del]').forEach(function (b) { b.onclick = function () { showDeleteDialog(b.dataset.del); }; });
+  $all('[data-add]').forEach(function (b) { b.onclick = function () { activeScreen = 'add'; openAdd(); }; });
+}
+
+/* ===================== Màn 2–4: form provider ===================== */
+function openAdd() {
+  var p = API_PROVIDERS.openai;
+  state.form = {
+    mode: 'add', groupId: null, name: p.label, provider: 'openai', groupMode: 'custom_unified', baseUrl: p.baseUrl,
+    key: '', keySet: false, description: '', agents: [], modelId: '', enabled: true,
+    useSource: true, sourceSaved: false, sourceName: suggestName(p.slug, null), nameTouched: false,
+    formats: [p.format], sourceAgents: MULTI_AGENTS.slice(), sourceEnabled: true,
+    models: [], fetchState: 'idle', fetchedAt: '', error: '', search: ''
+  };
+  state.view = 'form';
+  render();
+}
+
+function openEdit(id, attach) {
+  var g = findGroup(id), s = g.source;
+  var f = {
+    mode: 'edit', groupId: g.id, attach: !!attach, name: g.name, provider: g.provider, groupMode: g.mode, baseUrl: g.baseUrl,
+    key: '', keySet: g.keySet, description: g.description, agents: g.agents.slice(), modelId: g.modelId, enabled: g.enabled,
+    useSource: !!s || !!attach, sourceSaved: !!s, nameTouched: false,
+    sourceName: s ? s.name : suggestName(API_PROVIDERS[g.provider].slug, g.id),
+    formats: s ? s.formats.slice() : [API_PROVIDERS[g.provider].format], sourceAgents: s ? s.agents.slice() : MULTI_AGENTS.slice(),
+    sourceEnabled: s ? s.enabled : true,
+    models: s ? s.models.map(function (m) { return { id: m.id, on: m.on, available: m.available }; }) : [],
+    fetchState: s ? 'done' : 'idle', fetchedAt: s ? s.fetchedAt : '', error: s ? s.error : '', search: ''
+  };
+  state.form = f;
+  state.view = 'form';
+  render();
+}
+
+function needsKey(f) { return f.groupMode === 'custom_unified'; }
+function sourceAllowed(f) { return f.groupMode === 'custom_unified'; }
+function sourceOn(f) { return f.useSource && sourceAllowed(f); }
+
+function formProblems(f) {
+  var p = [];
+  if (!f.name.trim()) p.push('Cần tên nhóm.');
+  if (!f.baseUrl) p.push('Cần base URL.');
+  if (needsKey(f) && !f.key && !f.keySet) p.push('Cần API key.');
+  if (sourceOn(f)) {
+    if (!f.sourceSaved && !validateName(f.sourceName, f.groupId).ok) p.push('Tên nguồn chưa hợp lệ.');
+    if (!f.formats.length) p.push('Chọn ít nhất một định dạng.');
+  }
+  // Core: agents ≥ 1 hoặc (source_name khác rỗng và source_agents ≥ 1)
+  if (!f.agents.length && !(sourceOn(f) && f.sourceAgents.length)) p.push('Chọn ít nhất một agent ở "Dùng cho cả agent" hoặc một agent ở "Dùng làm nguồn".');
+  return p;
+}
+
+function row(label, ctrl, isNew) {
+  return '<div class="form-label' + (isNew ? ' is-new' : '') + '">' + label + '</div><div class="form-ctrl' + (isNew ? ' is-new' : '') + '">' + ctrl + '</div>';
+}
+function section(title, sub) {
+  return '<div class="form-section"><b>' + title + '</b>' + (sub ? '<span>' + sub + '</span>' : '') + '</div>';
+}
+
+function nameMessage(f) {
+  var v = validateName(f.sourceName, f.groupId);
+  if (!v.ok) return { cls: 'err', text: v.msg };
+  if (!f.nameTouched) return { cls: 'ok', text: 'Tên do hệ thống gợi ý từ nhà cung cấp. Có thể sửa trước khi lưu.' };
+  return { cls: 'ok', text: 'Tên hợp lệ.' };
+}
+
+function renderForm() {
+  var f = state.form, ro = !isAdmin(), isEdit = f.mode === 'edit';
+  var g = isEdit ? findGroup(f.groupId) : null;
+  var title = ro ? 'Xem provider ' + esc(f.name) : f.attach ? 'Dùng làm nguồn: ' + esc(g.name) : isEdit ? 'Sửa provider ' + esc(g.name) : 'Thêm provider';
+  var html = '';
+
+  /* --- Thông tin nhóm (đã có) --- */
+  html += section('Thông tin nhóm (đã có)', 'Trường của nhóm upstream custom hôm nay.');
+  html += row('<label for="f-provider">Nhà cung cấp</label>' + NEW() + OLD('source_provider'),
+    '<select class="select" id="f-provider">' + Object.keys(API_PROVIDERS).map(function (k) {
+      return '<option value="' + k + '" ' + (f.provider === k ? 'selected' : '') + '>' + API_PROVIDERS[k].label + '</option>';
+    }).join('') + '</select><div class="form-help">Điền sẵn base URL, định dạng và gợi ý tên nguồn. Lưu ở cột mới <code>source_provider</code>.</div>', true);
+  html += row('<label for="f-group">Tên nhóm<span class="req">*</span></label>' + OLD('name'),
+    '<input class="input" id="f-group" value="' + esc(f.name) + '" placeholder="Ví dụ: OpenAI key công ty">' +
+    '<div class="form-help">Tên cho người quản trị đọc. Được dùng chữ có dấu, khoảng trắng. Client không thấy tên này.</div>');
+  html += row('Chế độ<span class="req">*</span>' + OLD('mode'),
+    '<div class="radio-cards" role="radiogroup" aria-label="Chế độ" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">' +
+    Object.keys(MODES).map(function (k) {
+      return '<button type="button" class="radio-card" role="radio" data-mode="' + k + '" aria-checked="' + (f.groupMode === k) + '"' + (f.sourceSaved && k === 'custom_passthrough' ? ' disabled title="Nhóm đang là nguồn"' : '') + '>' +
+        '<span class="radio-dot"></span><span><b class="mono">' + MODES[k].short + '</b><span>' + MODES[k].long + '</span>' +
+        (k === 'custom_passthrough' ? '<span class="tag tag-warning" style="margin-top:6px">không dùng được làm nguồn</span>' : '') + '</span></button>';
+    }).join('') + '</div>');
+  html += row('<label for="f-base">Base URL<span class="req">*</span></label>' + OLD('base_url'),
+    '<input class="input mono" id="f-base" value="' + esc(f.baseUrl) + '" placeholder="https://example-provider.internal/v1" spellcheck="false">' +
+    '<div class="form-help">Nhận mọi endpoint tương thích OpenAI hoặc Anthropic.</div>');
+  if (ro) {
+    html += row('API key' + OLD('api_key'), '<div style="min-height:30px;display:flex;align-items:center;gap:8px">' +
+      (needsKey(f) ? '<span class="tag ' + (f.keySet ? 'tag-success' : 'tag-error') + '">' + (f.keySet ? 'Đã cấu hình' : 'Chưa có') + '</span><span class="weak small">Thành viên không thấy key.</span>'
+        : '<span class="weak small">Không lưu key (custom_passthrough).</span>') + '</div>');
+  } else if (needsKey(f)) {
+    html += row('<label for="f-key">API key<span class="req">*</span></label>' + OLD('api_key'),
+      '<input class="input mono" id="f-key" type="password" value="' + esc(f.key) + '" placeholder="' + (f.keySet ? 'Đã lưu (sk-••••…). Để trống nếu không đổi' : 'sk-••••') + '" autocomplete="off">' +
+      '<div class="form-help">Lưu ở Core. Không action Panel nào trả key rõ.</div>');
+  } else {
+    html += row('API key' + OLD('api_key'), '<div class="alert alert-info" style="max-width:560px"><div>Ẩn ở chế độ <code>custom_passthrough</code>: nhóm không lưu key, proxy chuyển tiếp key do client gửi.</div></div>');
+  }
+  html += row('<label for="f-desc">Mô tả</label>' + OLD('description'), '<input class="input" id="f-desc" value="' + esc(f.description) + '" placeholder="Tùy chọn">');
+
+  /* --- Dùng cho cả agent (cũ) --- */
+  html += section('Dùng cho cả agent (hành vi cũ)', 'Mọi yêu cầu của agent được chọn đi qua nhóm này. Giữ nguyên như hôm nay.');
+  html += row('Agent' + OLD('agents'), renderAgentPicker(f));
+  html += row('<label for="f-modelid">Model cố định</label>' + OLD('model_id'),
+    '<input class="input mono" id="f-modelid" value="' + esc(f.modelId) + '" placeholder="Để trống" style="max-width:280px" spellcheck="false">' +
+    '<div class="form-help">Như hôm nay: khi đặt, proxy ghi đè model của mọi yêu cầu từ các agent ở trên. Không ảnh hưởng phần "Dùng làm nguồn".</div>');
+  html += row('Trạng thái' + OLD('enabled'), '<div style="display:flex;align-items:center;gap:8px;min-height:30px">' +
+    '<button type="button" class="switch" role="switch" id="f-enabled" aria-checked="' + f.enabled + '" aria-label="Bật nhóm cho các agent trên"></button><span>' + (f.enabled ? 'Bật cho các agent trên' : 'Tắt (agent nhận lỗi UPSTREAM_DISABLED)') + '</span></div>');
+
+  /* --- Dùng làm nguồn (mới) --- */
+  html += section('Dùng làm nguồn' + NEW(), 'omp, hermes, openclaw gọi model dạng &lt;nguồn&gt;/&lt;model&gt;. Proxy gửi id model thật, bỏ qua model_id.');
+  if (!sourceAllowed(f)) {
+    html += row('', '<div class="alert alert-warning" style="max-width:760px"><div><b>Không dùng được làm nguồn.</b> Nhóm <code>custom_passthrough</code> gửi key của client lên upstream; client nhiều nguồn gửi user key của proxy, không phải key nhà cung cấp, nên nhà cung cấp sẽ từ chối. Nhóm passthrough không có trường nguồn và không lấy model; Core trả <code>SOURCE_MODE_NOT_ALLOWED</code> nếu gửi trường nguồn.</div></div>', true);
+  } else {
+    if (!f.sourceSaved) {
+      html += row('Dùng làm nguồn', '<div style="display:flex;align-items:center;gap:8px;min-height:30px">' +
+        '<button type="button" class="switch" role="switch" id="f-use-source" aria-checked="' + f.useSource + '" aria-label="Dùng nhóm này làm nguồn"></button><span>' +
+        (f.useSource ? 'Có' : 'Không (nhóm chỉ dùng cho agent ở trên)') + '</span></div>', true);
+    }
+    if (f.useSource) html += renderSourceFields(f, ro);
+  }
+
+  var problems = formProblems(f);
+  return '<div class="card"><div class="card-body">' +
+      '<div class="card-head"><div><button type="button" class="btn-link btn" data-go="list">‹ Model Provider</button>' +
+      '<h3 class="page-title" style="margin-top:4px">' + title + '</h3>' +
+      '<div class="card-sub">' + (ro ? 'Chế độ chỉ đọc: chỉ System Admin sửa được.' : f.attach ? 'Nhóm cũ đang chạy cho ' + (g.agents.join(', ') || 'không agent nào') + '. Thêm phần "Dùng làm nguồn" không đổi phần agent.' : 'Một nhóm upstream custom có thể dùng cho cả agent, làm nguồn, hoặc cả hai.') + '</div></div></div>' +
+      (ro ? '<div class="alert alert-warning" style="margin-bottom:16px"><div>Chế độ chỉ đọc. Các ô bị khóa, không có nút lấy model hay lưu. Không hiện key.</div></div>' : '') +
+      '<div class="legend"><span class="tag-new">mới</span> = trường thêm trên tính năng cũ. <span class="field-key">name</span> = tên trường trong Core.</div>' +
+      '<div class="form">' + html + '</div>' +
+      '<div class="note" style="margin-top:16px">Hai phần "Dùng cho cả agent" và "Dùng làm nguồn" là hai đường độc lập (agents + model_id + enabled cũ; source_agents + source_models + source_enabled mới). ' +
+        'Một agent multi_source có thể ở cả hai. Đổi chế độ sang custom_passthrough để thấy phần nguồn bị tắt kèm nhãn "không dùng được làm nguồn".</div>' +
+    '</div>' +
+    (ro ? '<div class="form-footer"><button type="button" class="btn" data-go="list">Quay lại</button></div>'
+      : '<div class="form-footer"><button type="button" class="btn btn-primary" id="f-save" ' + (problems.length ? 'disabled' : '') + '>' + (f.mode === 'add' ? 'Thêm provider' : 'Lưu thay đổi') + '</button>' +
+        '<button type="button" class="btn" data-go="list">Hủy</button><span class="weak small" style="align-self:center" id="save-hint">' + esc(saveHint(f)) + '</span></div>') +
+    '</div>';
+}
+
+function saveHint(f) {
+  var p = formProblems(f);
+  if (p.length) return p[0];
+  var parts = [];
+  if (f.agents.length) parts.push(f.agents.join(', ') + ' dùng nhóm như hôm nay');
+  if (sourceOn(f)) parts.push(f.sourceAgents.join(', ') + ' thấy ' + onCount(f.models) + ' model ' + f.sourceName + '/*');
+  return parts.join(' · ') + '.';
+}
+
+function renderAgentPicker(f) {
+  var multi = { omp: 1, hermes: 1, openclaw: 1 };
+  return '<div class="agent-grid">' + ALL_AGENTS.map(function (a) {
+    var owner = agentOwner(a.id, f.groupId);
+    var locked = a.id === 'claude-code' || a.id === 'codex';
+    var on = f.agents.includes(a.id);
+    return '<label class="agent-chip' + (owner && !on ? ' is-taken' : '') + '">' +
+      '<input type="checkbox" data-agent="' + a.id + '" ' + (on ? 'checked' : '') + (owner && !on ? ' disabled' : '') + '> ' +
+      '<span><b>' + a.label + '</b>' + (multi[a.id] ? ' <span class="tag tag-primary" style="height:18px">multi</span>' : '') +
+      (owner && !on ? '<span class="weak small">' + (locked ? '🔒 ' + esc(owner) + ' — không đổi' : 'đang ở nhóm "' + esc(owner) + '"') + '</span>' : '') + '</span></label>';
+  }).join('') + '</div><div class="form-help">Một agent chỉ ở một nhóm cho đường này (Core chặn trùng). Agent đã ở nhóm khác bị khóa.</div>';
+}
+
+function renderSourceFields(f, ro) {
+  var html = '';
+  if (f.sourceSaved || ro) {
+    html += row('Tên nguồn' + OLD('source_name'),
+      '<input class="input mono" id="f-name" value="' + esc(f.sourceName) + '" readonly style="max-width:280px">' +
+      '<div class="form-help">Tên nằm trong model id của client nên không đổi được sau khi lưu. Muốn tên khác: tạo nhóm mới. Ví dụ model id: <code>' + esc(f.sourceName) + '/' + esc((f.models[0] && f.models[0].id) || 'model') + '</code></div>', true);
+  } else {
+    var nm = nameMessage(f), v = validateName(f.sourceName, f.groupId);
+    html += row('<label for="f-name">Tên nguồn<span class="req">*</span></label>' + OLD('source_name'),
+      '<div class="input-row"><input class="input mono' + (v.ok ? '' : ' is-error') + '" id="f-name" value="' + esc(f.sourceName) + '" autocomplete="off" spellcheck="false" aria-describedby="name-msg" style="max-width:280px">' +
+      '<button type="button" class="btn btn-sm" id="f-name-reset" ' + (f.nameTouched ? '' : 'disabled') + '>Dùng tên gợi ý</button></div>' +
+      '<div class="form-msg ' + nm.cls + '" id="name-msg">' + esc(nm.text) + '</div>' +
+      '<div class="form-help">Chữ thường, a-z, 0-9, dấu "-". Duy nhất (kể cả sub-*). <b>Không đổi được sau khi lưu.</b> Ví dụ model id: <code id="name-example">' + esc(f.sourceName || '…') + '/' + esc((f.models[0] && f.models[0].id) || 'model') + '</code></div>', true);
+  }
+  html += row('Định dạng<span class="req">*</span>' + OLD('source_formats'),
+    '<div class="tags" style="gap:12px">' + FORMAT_ORDER.map(function (k) {
+      return '<label class="check"><input type="checkbox" data-format="' + k + '" ' + (f.formats.includes(k) ? 'checked' : '') + '> ' + FORMATS[k].label + '</label>';
+    }).join('') + '</div><div class="form-help">Endpoint mà nhà cung cấp nhận. Client gọi sai định dạng sẽ nhận lỗi model_format_mismatch.</div>', true);
+  html += row('Agent được dùng nguồn này' + OLD('source_agents'), renderSourceAgents(f.sourceAgents, f.models, f.sourceName, 'data-sagent'), true);
+  html += row('Model bật' + OLD('source_models'), renderModelBlock(f, ro), true);
+  html += row('Trạng thái nguồn' + OLD('source_enabled'), '<div style="display:flex;align-items:center;gap:8px;min-height:30px">' +
+    '<button type="button" class="switch" role="switch" id="f-source-enabled" aria-checked="' + f.sourceEnabled + '" aria-label="Bật nguồn"></button><span>' +
+    (f.sourceEnabled ? 'Bật (độc lập với công tắc của phần agent)' : 'Tắt: client không thấy model của nguồn này') + '</span></div>', true);
+  return html;
+}
+
+function renderSourceAgents(list, models, name, attr) {
+  var rows = MULTI_AGENTS.map(function (a) {
+    var on = list.includes(a);
+    return '<tr><td style="width:36px"><input type="checkbox" ' + attr + '="' + a + '" ' + (on ? 'checked' : '') + ' aria-label="Cho ' + a + ' dùng nguồn này" style="width:14px;height:14px;accent-color:#0052d9"></td>' +
+      '<td><b>' + a + '</b></td><td><span class="tag tag-primary">multi_source</span></td>' +
+      '<td class="sec small">' + (on ? 'Thấy ' + onCount(models) + ' model <code>' + esc(name || '…') + '/*</code>' : 'Không thấy nguồn này') + '</td></tr>';
+  }).join('');
+  var locked = LOCKED_AGENTS.map(function (a) {
+    return '<tr class="locked"><td><span aria-hidden="true">🔒</span><span class="sr-only">Khóa</span></td><td><b>' + a.label + '</b></td>' +
+      '<td><span class="tag">Một nhà cung cấp</span></td><td class="small">Chỉ dùng ' + state.pools[a.pool].label + ' — <b>không đổi</b></td></tr>';
+  }).join('');
+  return '<div class="table-wrap" style="max-width:760px;border:1px solid var(--tea-color-border-primary-default)"><table class="tbl"><thead><tr><th></th><th>Agent</th><th>Kiểu</th><th>Kết quả</th></tr></thead><tbody>' +
+    rows + locked + '</tbody></table></div>';
+}
+
+function renderModelBlock(f, ro) {
+  var head = '';
+  if (!ro) {
+    head = '<div class="input-row" style="margin-bottom:8px">' +
+      '<button type="button" class="btn btn-primary" id="f-fetch" ' + (f.fetchState === 'loading' ? 'disabled' : '') + '>' +
+      (f.fetchState === 'loading' ? '<span class="spinner" aria-hidden="true"></span> Đang lấy…' : (f.fetchState === 'done' ? 'Làm mới' : 'Lấy danh sách model')) + '</button>' +
+      (f.fetchedAt ? '<span class="weak small">Lấy lúc ' + esc(f.fetchedAt) + ' · ' + availCount(f.models) + ' model</span>' : '') + '</div>';
+  } else if (f.fetchedAt) {
+    head = '<div class="weak small" style="margin-bottom:8px">Lấy lúc ' + esc(f.fetchedAt) + '</div>';
+  }
+  if (f.error) head += '<div class="alert alert-warning" style="margin-bottom:8px;max-width:760px"><div>' + esc(f.error) + '</div></div>';
+  if (!f.models.length) {
+    return head + '<div class="ml"><div class="ml-empty">' + (f.fetchState === 'loading' ? '<span class="spinner"></span> Đang hỏi ' + esc(f.baseUrl) + '/models …' : 'Chưa có danh sách. Điền base URL + API key rồi bấm "Lấy danh sách model". Model mới lấy về ở trạng thái tắt.') + '</div></div>';
+  }
+  return head + '<div class="ml" id="ml">' + renderModelList(f.models, f.search, f.sourceName, ro, 'checkbox') + '</div>';
+}
+
+/* Bảng model dùng chung cho form provider (checkbox) và phần nguồn của pool (switch). */
+function renderModelList(models, search, name, ro, kind) {
+  var q = (search || '').trim().toLowerCase();
+  var visible = models.filter(function (m) { return !q || m.id.toLowerCase().includes(q); });
+  var vAvail = visible.filter(function (m) { return m.available; });
+  var allOn = vAvail.length > 0 && vAvail.every(function (m) { return m.on; });
+  return '<div class="ml-toolbar">' +
+      '<input class="input" id="f-search" type="search" placeholder="Tìm model…" value="' + esc(search || '') + '" aria-label="Tìm model">' +
+      '<label class="check"><input type="checkbox" id="f-all" ' + (allOn ? 'checked' : '') + ' ' + (vAvail.length && !ro ? '' : 'disabled') + '> Chọn tất cả' + (q ? ' (kết quả lọc)' : '') + '</label>' +
+      '<span class="ml-count">Đã bật <b>' + onCount(models) + '</b>/' + availCount(models) + '</span></div>' +
+    '<div class="ml-body" role="list">' +
+      (visible.length ? visible.map(function (m) {
+        var dis = ro || !m.available;
+        var control = kind === 'switch'
+          ? '<button type="button" class="switch" role="switch" aria-checked="' + m.on + '" data-model="' + esc(m.id) + '" aria-label="Bật ' + esc(m.id) + '"' + (dis ? ' disabled' : '') + '></button>'
+          : '<input type="checkbox" data-model="' + esc(m.id) + '" ' + (m.on ? 'checked' : '') + (dis ? ' disabled' : '') + ' aria-label="Bật ' + esc(m.id) + '" style="width:14px;height:14px;accent-color:#0052d9">';
+        return '<div class="ml-row' + (m.available ? '' : ' is-gone') + '" role="listitem">' + (kind === 'switch' ? '<span></span>' : control) +
+          '<div><div class="ml-id">' + esc(m.id) + (m.available ? '' : ' <span class="tag" style="height:18px">không còn ở nhà cung cấp</span>') + '</div>' +
+          '<div class="ml-id"><span class="src">→ ' + esc(name || '…') + '/</span>' + esc(m.id) + '</div></div>' +
+          (kind === 'switch' ? control : '<span class="tag ' + (m.on && m.available ? 'tag-success' : '') + '">' + (m.on && m.available ? 'Bật' : 'Tắt') + '</span>') + '</div>';
+      }).join('') : '<div class="ml-empty">Không có model khớp "' + esc(search) + '".</div>') +
+    '</div>';
+}
+
+function bindForm() {
+  var f = state.form;
+  if (!isAdmin()) {
+    $all('#app .form input, #app .form select, #app .form .radio-card, #app .form .switch').forEach(function (el) { if (el.id !== 'f-search') el.disabled = true; });
+    bindModelSearch(f, function () { return renderModelList(f.models, f.search, f.sourceName, true, 'checkbox'); });
+    return;
+  }
+  $all('[data-mode]').forEach(function (b) { b.onclick = function () { f.groupMode = b.dataset.mode; render(); }; });
+  var prov = $('#f-provider');
+  prov.onchange = function () {
+    var oldLabel = API_PROVIDERS[f.provider].label;
+    f.provider = prov.value;
+    var p = API_PROVIDERS[f.provider];
+    if (f.mode === 'add') { f.baseUrl = p.baseUrl; f.formats = [p.format]; f.models = []; f.fetchState = 'idle'; f.fetchedAt = ''; f.error = ''; }
+    if (!f.name || f.name === oldLabel) f.name = p.label;
+    if (!f.sourceSaved && !f.nameTouched) f.sourceName = suggestName(p.slug, f.groupId);
+    render();
+  };
+  function bindText(id, key, trim) { var el = $(id); if (el) el.oninput = function () { f[key] = trim ? el.value.trim() : el.value; refreshSave(); }; }
+  bindText('#f-group', 'name'); bindText('#f-base', 'baseUrl', true); bindText('#f-key', 'key'); bindText('#f-desc', 'description'); bindText('#f-modelid', 'modelId', true);
+  $all('[data-agent]').forEach(function (c) {
+    c.onchange = function () {
+      if (c.checked) f.agents.push(c.dataset.agent); else f.agents = f.agents.filter(function (a) { return a !== c.dataset.agent; });
+      refreshSave();
+    };
+  });
+  $('#f-enabled').onclick = function () { f.enabled = !f.enabled; render(); };
+  var use = $('#f-use-source');
+  if (use) use.onclick = function () { f.useSource = !f.useSource; render(); };
+  var name = $('#f-name');
+  if (name && !f.sourceSaved) name.oninput = function () { f.sourceName = name.value; f.nameTouched = true; refreshNameUi(); };
+  var reset = $('#f-name-reset');
+  if (reset) reset.onclick = function () { f.nameTouched = false; f.sourceName = suggestName(API_PROVIDERS[f.provider].slug, f.groupId); render(); };
+  $all('[data-format]').forEach(function (c) {
+    c.onchange = function () {
+      if (c.checked) f.formats.push(c.dataset.format); else f.formats = f.formats.filter(function (x) { return x !== c.dataset.format; });
+      refreshSave();
+    };
+  });
+  $all('[data-sagent]').forEach(function (c) {
+    c.onchange = function () {
+      if (c.checked) f.sourceAgents.push(c.dataset.sagent); else f.sourceAgents = f.sourceAgents.filter(function (a) { return a !== c.dataset.sagent; });
+      render();
+    };
+  });
+  var se = $('#f-source-enabled');
+  if (se) se.onclick = function () { f.sourceEnabled = !f.sourceEnabled; render(); };
+  var fetchBtn = $('#f-fetch');
+  if (fetchBtn) fetchBtn.onclick = fetchModels;
+  bindModelList(f.models, f, function () { return renderModelList(f.models, f.search, f.sourceName, false, 'checkbox'); }, refreshSave);
+  $('#f-save').onclick = commitForm;
+}
+
+function refreshNameUi() {
+  var f = state.form, nm = nameMessage(f);
+  $('#f-name').classList.toggle('is-error', nm.cls === 'err');
+  var msg = $('#name-msg'); msg.className = 'form-msg ' + nm.cls; msg.textContent = nm.text;
+  var reset = $('#f-name-reset'); if (reset) reset.disabled = false;
+  var ex = $('#name-example'); if (ex) ex.textContent = (f.sourceName || '…') + '/' + ((f.models[0] && f.models[0].id) || 'model');
+  $all('.ml-id .src').forEach(function (el) { el.textContent = '→ ' + (f.sourceName || '…') + '/'; });
+  refreshSave();
+}
+
+function refreshSave() {
+  var f = state.form, btn = $('#f-save');
+  if (!btn) return;
+  btn.disabled = formProblems(f).length > 0;
+  $('#save-hint').textContent = saveHint(f);
+}
+
+/* Ô tìm trong bảng model: giữ con trỏ khi vẽ lại. */
+function bindModelSearch(holder, draw, after) {
+  var search = $('#f-search');
+  if (!search) return;
+  search.oninput = function () {
+    holder.search = search.value;
+    $('#ml').innerHTML = draw();
+    if (after) after(); else bindModelSearch(holder, draw);
+    var s = $('#f-search'); s.focus(); s.setSelectionRange(s.value.length, s.value.length);
+  };
+}
+
+function bindModelList(models, holder, draw, onChange) {
+  function rebind() { bindModelList(models, holder, draw, onChange); }
+  bindModelSearch(holder, draw, rebind);
+  var all = $('#f-all');
+  if (all) all.onchange = function (e) {
+    var q = (holder.search || '').trim().toLowerCase();
+    models.forEach(function (m) { if (m.available && (!q || m.id.toLowerCase().includes(q))) m.on = e.target.checked; });
+    $('#ml').innerHTML = draw(); rebind(); if (onChange) onChange();
+  };
+  $all('#ml [data-model]').forEach(function (el) {
+    el.onclick = function () {
+      var m = models.find(function (x) { return x.id === el.dataset.model; });
+      m.on = !m.on;
+      $('#ml').innerHTML = draw(); rebind(); if (onChange) onChange();
+    };
+  });
+}
+
+/* Giả lập Core groups/source-refresh: GET {baseUrl}/models bằng key của nhóm. */
+function fetchModels() {
+  var f = state.form;
+  if (!f) return;
+  f.error = '';
+  if (!/^https?:\/\/[^\s/]+/.test(f.baseUrl || '')) { f.error = 'Base URL không hợp lệ. Ví dụ: https://example-provider.internal/v1'; render(); return; }
+  if (!f.key && !f.keySet) { f.error = 'Cần nhập API key trước khi lấy danh sách model.'; render(); return; }
+  f.fetchState = 'loading';
+  render();
+  setTimeout(function () {
+    if (state.form !== f) return;
+    var prev = {};
+    f.models.forEach(function (m) { prev[m.id] = m.on; });
+    var ids = API_PROVIDERS[f.provider].models;
+    // Model mới: tắt. Model đã có: giữ lựa chọn. Model biến mất: available=false, giữ lựa chọn.
+    var next = ids.map(function (id) { return { id: id, on: prev[id] === true, available: true }; });
+    f.models.forEach(function (m) { if (!ids.includes(m.id)) next.push({ id: m.id, on: m.on, available: false }); });
+    f.models = next;
+    f.fetchState = 'done';
+    f.fetchedAt = '25/10 19:05';
+    render();
+    toast('Đã lấy ' + ids.length + ' model từ ' + API_PROVIDERS[f.provider].label + '.');
+  }, 900);
+}
+
+function commitForm() {
+  var f = state.form;
+  var source = sourceOn(f) ? { name: f.sourceName, formats: f.formats.slice(), agents: f.sourceAgents.slice(), enabled: f.sourceEnabled,
+    fetchedAt: f.fetchedAt, error: f.error, models: f.models.map(function (m) { return { id: m.id, on: m.on, available: m.available }; }) } : null;
+  var data = { name: f.name.trim(), provider: f.provider, mode: f.groupMode, baseUrl: f.baseUrl, keySet: f.keySet || !!f.key, description: f.description,
+    agents: f.agents.slice(), modelId: f.modelId, enabled: f.enabled, source: source };
+  if (f.mode === 'edit') {
+    var g = findGroup(f.groupId);
+    Object.keys(data).forEach(function (k) { g[k] = data[k]; });
+    toast(f.attach ? 'Nhóm "' + g.name + '" giờ cũng là nguồn ' + source.name + '.' : 'Đã lưu "' + g.name + '".');
+  } else {
+    data.id = 'grp-' + Date.now();
+    state.groups.push(data);
+    toast('Đã thêm provider "' + data.name + '".');
+  }
+  go('list');
+}
+
+/* ===================== Màn 5: tab Pool tài khoản thuê bao ===================== */
+var ACCOUNT_STATE = {
+  active: { tag: 'tag-success', text: '● Đang dùng' }, near_limit: { tag: 'tag-warning', text: '▲ Gần giới hạn' }, disabled: { tag: '', text: '○ Đã tắt' }
+};
+function meter(pct) {
+  var lvl = pct >= 85 ? 'full' : pct >= 70 ? 'warn' : '';
+  return '<div class="small">' + pct + '%</div><div class="pool-bar"><i class="' + lvl + '" style="width:' + pct + '%"></i><span style="left:90%"></span></div>';
+}
+
+function renderPool() {
+  var admin = isAdmin(), k = state.poolTab, p = state.pools[k], s = p.source;
+  var active = p.accounts.filter(function (a) { return a.state !== 'disabled'; }).length;
+  var head = '<div class="card"><div class="card-body"><div class="page-head" style="gap:24px">' +
+      '<h3 class="page-title">Pool tài khoản thuê bao</h3>' +
+      '<div class="agent-tabs" role="tablist" style="border-bottom:0">' + Object.keys(state.pools).map(function (x) {
+        return '<button type="button" class="agent-tab" role="tab" data-pool-tab="' + x + '" aria-selected="' + (x === k) + '">' + state.pools[x].tab + '</button>';
+      }).join('') + '</div>' +
+      '<div style="margin-left:auto;display:flex;align-items:center;gap:8px"><span class="sec small">Pool</span>' +
+        (admin ? '<button type="button" class="switch" role="switch" aria-checked="' + p.enabled + '" aria-label="Bật/tắt pool" data-pool-switch></button>' : '') +
+        '<span class="tag ' + (p.enabled ? 'tag-success' : '') + '">' + (p.enabled ? 'Đã bật — ' + p.tab + ' dùng pool này' : 'Đã tắt') + '</span></div>' +
+    '</div><div class="weak small" style="margin-top:8px">Instance "vtc-prod" · Xoay vòng tài khoản thuê bao theo phiên cho ' + p.tab + '. (Phần trên giữ nguyên như trang hiện có.)</div></div></div>';
+  var summary = '<div class="pool-summary">' +
+    [['Tài khoản', p.accounts.length], ['Khả dụng', active], ['Phiên đang chạy', 3], ['Ngưỡng chuyển', '90%']].map(function (x) {
+      return '<div class="card"><div class="card-body" style="padding:14px 16px"><div class="weak small">' + x[0] + '</div><div style="font-size:22px;font-weight:600">' + x[1] + '</div></div></div>';
+    }).join('') + '</div>';
+  var accounts = '<div class="card"><div class="card-body"><div class="card-head"><div><h4 class="card-title">Tài khoản</h4><div class="card-sub">Token đăng nhập lưu ở Core, không hiện ở đây.</div></div>' +
+      (admin ? '<div class="card-op"><button type="button" class="btn btn-primary" data-pool-add>Thêm tài khoản</button></div>' : '') + '</div>' +
+    '<div class="table-wrap"><table class="tbl" style="min-width:720px"><thead><tr><th>Tài khoản</th><th>Trạng thái</th><th>Giới hạn 5 giờ</th><th>Giới hạn tuần</th>' + (admin ? '<th>Thao tác</th>' : '') + '</tr></thead><tbody>' +
+    p.accounts.map(function (a) {
+      var st = ACCOUNT_STATE[a.state];
+      return '<tr><td><b>' + esc(a.name) + '</b><div class="weak small">' + esc(a.label) + '</div></td><td><span class="tag ' + st.tag + '">' + st.text + '</span></td>' +
+        '<td style="width:200px">' + meter(a.p5h) + '</td><td style="width:200px">' + meter(a.pw) + '</td>' +
+        (admin ? '<td><div class="actions"><button type="button" class="btn-link btn" data-pool-noop>Kiểm tra ngay</button><button type="button" class="btn-link btn" data-pool-noop>' + (a.state === 'disabled' ? 'Bật' : 'Tắt') + '</button><button type="button" class="btn btn-error btn-sm" data-pool-noop>Xóa</button></div></td>' : '') + '</tr>';
+    }).join('') + '</tbody></table></div></div></div>';
+
+  var src = renderPoolSource(admin, k, p);
+
+  return (admin ? '' : '<div class="alert alert-warning"><div>Chế độ chỉ đọc (như trang Pool hiện nay): không có công tắc pool, cột thao tác và nút sửa nguồn.</div></div>') +
+    head + '<div class="alert alert-warning"><div>Khi pool tắt hoặc mọi tài khoản đầy, ' + p.tab + ' quay về upstream mặc định.' +
+      (s ? ' Nguồn ' + esc(s.name) + ' bật/tắt theo pool.' : '') + '</div></div>' + summary + accounts + src +
+    '<div class="note">Màn này là trang Pool tài khoản thuê bao hiện có (rút gọn) cộng một thẻ mới "Dùng làm nguồn" cho từng tab Claude Code / Codex. Nguồn thuê bao không có công tắc riêng: bật/tắt theo pool. ' +
+      'Thay đổi trong thẻ ghi ngay (groups/update chỉ với trường nguồn, không gửi agents/enabled/mode). Tab Codex minh họa bước tạo tên nguồn. Nếu pool chưa từng bật, thẻ hiện hướng dẫn "thêm tài khoản và bật pool một lần".</div>';
+}
+var poolSearch = { q: '' };
+/* Bản nháp khi pool chưa có nguồn: tên sửa được tới lần lưu đầu. */
+var poolDrafts = {};
+function poolDraft(k) {
+  var p = state.pools[k];
+  if (!poolDrafts[k]) {
+    var base = 'sub-' + p.slug, taken = takenNames(null), name = base, i = 2;
+    while (taken.includes(name)) name = base + '-' + (i++);
+    poolDrafts[k] = { name: name, nameTouched: false, agents: MULTI_AGENTS.slice(), models: mk(p.models), formats: [p.format] };
+  }
+  return poolDrafts[k];
+}
+
+function poolStateRow(p, name) {
+  return row('Trạng thái nguồn', '<div style="display:flex;align-items:center;gap:8px;min-height:30px;flex-wrap:wrap">' +
+    '<span class="tag ' + (p.enabled ? 'tag-success' : '') + '">' + (p.enabled ? '● Nguồn bật' : '○ Nguồn tắt') + '</span>' +
+    '<span class="sec small">Nguồn bật/tắt theo pool (công tắc Pool ở đầu trang). Không có công tắc <code>source_enabled</code> riêng.</span></div>', true);
+}
+
+function renderPoolSource(admin, k, p) {
+  var s = p.source;
+  var offAlert = !p.enabled ? '<div class="alert alert-warning" style="margin-bottom:16px"><div><b>Nguồn đang tắt vì pool tắt.</b> omp, hermes, openclaw không thấy model ' + esc(s ? s.name : poolDraft(k).name) + '/* và nhận lỗi <code>model_source_disabled</code> nếu gọi.</div></div>' : '';
+  var head = '<div class="card-head"><div><h4 class="card-title">Dùng làm nguồn' + NEW() + '</h4><div class="card-sub">Cho omp, hermes, openclaw gọi model của pool này dạng <code>&lt;nguồn&gt;/&lt;model&gt;</code>. Không đổi luồng của ' + p.tab + '.</div></div>' +
+    (admin ? '' : '<div class="card-op"><span class="tag">Chỉ đọc</span></div>') + '</div>';
+  if (!s) {
+    if (!admin) return '<div class="card source-card"><div class="card-body">' + head + '<div class="ml-empty">Pool này chưa được dùng làm nguồn. Chỉ System Admin tạo được.</div></div></div>';
+    var d = poolDraft(k), v = validateName(d.name, null);
+    var msg = !v.ok ? { cls: 'err', text: v.msg } : d.nameTouched ? { cls: 'ok', text: 'Tên hợp lệ.' } : { cls: 'ok', text: 'Tên do hệ thống gợi ý. Có thể sửa trước khi lưu.' };
+    return '<div class="card source-card"><div class="card-body">' + head + offAlert +
+      '<div class="alert alert-info" style="margin-bottom:16px"><div>Pool này chưa là nguồn. Đặt tên rồi bấm "Tạo nguồn". <b>Tên không đổi được sau khi lưu.</b></div></div>' +
+      '<div class="form">' +
+        row('<label for="pool-name">Tên nguồn<span class="req">*</span></label>' + OLD('source_name'),
+          '<div class="input-row"><input class="input mono' + (v.ok ? '' : ' is-error') + '" id="pool-name" value="' + esc(d.name) + '" autocomplete="off" spellcheck="false" aria-describedby="pool-name-msg" style="max-width:280px"></div>' +
+          '<div class="form-msg ' + msg.cls + '" id="pool-name-msg">' + esc(msg.text) + '</div>' +
+          '<div class="form-help">Chữ thường, a-z, 0-9, dấu "-". Duy nhất (kể cả api-*). Ví dụ model id: <code id="pool-name-example">' + esc(d.name || '…') + '/' + esc(d.models[0].id) + '</code></div>', true) +
+        row('Định dạng' + OLD('source_formats'), '<div class="tags">' + fmtTags(d.formats) + '</div><div class="form-help">Cố định theo pool.</div>', true) +
+        row('Agent được dùng nguồn này' + OLD('source_agents'), renderSourceAgents(d.agents, d.models, d.name, 'data-pool-sagent'), true) +
+        row('Model bật' + OLD('source_models'), '<div class="weak small" style="margin-bottom:8px">Lấy tự động từ pool. Mặc định bật tất cả.</div>' +
+          '<div class="ml" id="ml">' + renderModelList(d.models, poolSearch.q, d.name, false, 'switch') + '</div>', true) +
+        poolStateRow(p) +
+      '</div>' +
+      '<div class="input-row" style="margin-top:16px"><button type="button" class="btn btn-primary" id="pool-create" ' + (v.ok ? '' : 'disabled') + '>Tạo nguồn</button></div>' +
+      '</div></div>';
+  }
+  return '<div class="card source-card"><div class="card-body">' + head + offAlert +
+    '<div class="form">' +
+      row('Tên nguồn' + OLD('source_name'), '<input class="input mono" value="' + esc(s.name) + '" readonly style="max-width:280px"><div class="form-help">Tên nguồn cố định sau khi tạo.</div>', true) +
+      row('Định dạng' + OLD('source_formats'), '<div class="tags">' + fmtTags(s.formats) + '</div><div class="form-help">Cố định theo pool.</div>', true) +
+      row('Agent được dùng nguồn này' + OLD('source_agents'), renderSourceAgents(s.agents, s.models, s.name, 'data-pool-sagent'), true) +
+      row('Model bật' + OLD('source_models'),
+        '<div class="input-row" style="margin-bottom:8px">' + (admin ? '<button type="button" class="btn btn-sm" data-pool-refresh>Làm mới</button>' : '') +
+        '<span class="weak small">Lấy tự động lúc ' + esc(s.fetchedAt) + '. Mặc định bật tất cả; model mới xuất hiện cũng tự bật.</span></div>' +
+        '<div class="ml" id="ml">' + renderModelList(s.models, poolSearch.q, s.name, !admin, 'switch') + '</div>', true) +
+      poolStateRow(p) +
+    '</div></div></div>';
+}
+
+function bindPool() {
+  var admin = isAdmin(), k = state.poolTab, p = state.pools[k], s = p.source;
+  var holder = s || (admin ? poolDraft(k) : null);
+  $all('[data-pool-tab]').forEach(function (b) { b.onclick = function () { state.poolTab = b.dataset.poolTab; poolSearch.q = ''; activeScreen = b.dataset.poolTab === 'codex' ? 'pool-create' : 'pool'; render(); }; });
+  function draw() { return renderModelList(holder.models, poolSearch.q, holder.name, !admin, 'switch'); }
+  if (!admin) { $all('[data-pool-sagent]').forEach(function (c) { c.disabled = true; }); if (holder) bindModelSearch(poolSearch, draw); return; }
+  $('[data-pool-switch]').onclick = function () { showPoolSwitchDialog(k); };
+  $all('[data-pool-add], [data-pool-noop]').forEach(function (b) { b.onclick = function () { toast('Phần tài khoản giữ nguyên như trang hiện có.'); }; });
+  var refresh = $('[data-pool-refresh]');
+  if (refresh) refresh.onclick = function () { toast('Đã làm mới danh sách model từ pool. Không có model mới.'); };
+  $all('[data-pool-sagent]').forEach(function (c) {
+    c.onchange = function () {
+      if (c.checked) holder.agents.push(c.dataset.poolSagent); else holder.agents = holder.agents.filter(function (a) { return a !== c.dataset.poolSagent; });
+      if (s) toast('Đã lưu agent của nguồn ' + s.name + '.');
+      render();
+    };
+  });
+  bindModelList(holder.models, poolSearch, draw, function () { if (s) toast('Đã lưu model của nguồn ' + s.name + '.'); });
+  var nameEl = $('#pool-name');
+  if (nameEl) nameEl.oninput = function () {
+    holder.name = nameEl.value; holder.nameTouched = true;
+    var v = validateName(holder.name, null), msg = $('#pool-name-msg');
+    nameEl.classList.toggle('is-error', !v.ok);
+    msg.className = 'form-msg ' + (v.ok ? 'ok' : 'err'); msg.textContent = v.ok ? 'Tên hợp lệ.' : v.msg;
+    $('#pool-name-example').textContent = (holder.name || '…') + '/' + holder.models[0].id;
+    $all('.ml-id .src').forEach(function (el) { el.textContent = '→ ' + (holder.name || '…') + '/'; });
+    $('#pool-create').disabled = !v.ok;
+  };
+  var create = $('#pool-create');
+  if (create) create.onclick = function () {
+    p.source = { name: holder.name, formats: holder.formats.slice(), agents: holder.agents.slice(), fetchedAt: '25/10 19:10', error: '', models: holder.models };
+    delete poolDrafts[k];
+    toast('Đã tạo nguồn ' + p.source.name + '. Tên này không đổi được nữa.');
+    render();
+  };
+}
+
+function showPoolSwitchDialog(k) {
+  var p = state.pools[k], turnOn = !p.enabled, name = p.source ? p.source.name : null;
+  openDialog(
+    '<h2 class="dialog-title" id="dlg-title">' + (turnOn ? 'Bật' : 'Tắt') + ' pool ' + p.tab + '?</h2>' +
+    '<p>' + (turnOn ? p.tab + ' sẽ xoay vòng ' + p.accounts.length + ' tài khoản của pool này.' : p.tab + ' quay về upstream mặc định. Các phiên đang chạy dùng tiếp tới khi kết thúc.') + '</p>' +
+    (name ? '<div class="alert ' + (turnOn ? 'alert-info' : 'alert-warning') + '" style="margin-bottom:12px"><div>' +
+      (turnOn ? 'Nguồn <code>' + esc(name) + '</code> cũng bật lại: ' + p.source.agents.join(', ') + ' thấy lại model ' + esc(name) + '/*.'
+        : 'Nguồn <code>' + esc(name) + '</code> cũng tắt theo. omp, hermes, openclaw không còn thấy model ' + esc(name) + '/* trong /v1/models và nhận lỗi <code>model_source_disabled</code> nếu gọi.') +
+      '</div></div>' : '') +
+    '<div class="dialog-footer"><button type="button" class="btn ' + (turnOn ? 'btn-primary' : 'btn-danger') + '" id="dlg-ok">' + (turnOn ? 'Bật pool' : 'Tắt pool') + '</button><button type="button" class="btn" id="dlg-cancel" data-autofocus>Hủy</button></div>',
+    function () {
+      $('#dlg-ok').onclick = function () { p.enabled = turnOn; closeDialog(); toast((turnOn ? 'Đã bật' : 'Đã tắt') + ' pool ' + p.tab + (name ? ' và nguồn ' + name : '') + '.', !turnOn); render(); };
+      $('#dlg-cancel').onclick = closeDialog;
+    });
+}
+
+/* ===================== Màn 7: Client sẽ thấy ===================== */
+function renderPreview() {
+  var agent = state.previewAgent;
+  var tabs = MULTI_AGENTS.map(function (a) {
+    return '<button type="button" class="agent-tab" role="tab" data-agent-tab="' + a + '" aria-selected="' + (agent === a) + '">' + a + ' <span class="tag" style="height:18px">' + exposedFor(a).length + '</span></button>';
+  }).join('');
+  var locked = null; // Ô xem trước chỉ có tab omp, hermes, openclaw.
+  var body;
+  if (locked) {
+    var pool = state.pools[locked.pool];
+    body = '<div class="alert alert-info" style="margin:16px 0"><div><b>' + locked.label + ' — không đổi.</b> Agent này chỉ dùng ' + pool.label + ' như hiện nay. Model ID giữ nguyên, không có tiền tố nguồn. Provider của tab này không xuất hiện ở đây.</div></div>' +
+      '<div class="table-wrap"><table class="tbl"><thead><tr><th>Model ID (client gửi)</th><th>Đi qua</th></tr></thead><tbody>' +
+      pool.models.map(function (m) { return '<tr class="locked"><td class="mono">' + esc(m) + '</td><td>' + pool.label + '</td></tr>'; }).join('') + '</tbody></table></div>';
+  } else {
+    var list = exposedFor(agent), count = {};
+    var offPools = Object.keys(state.pools).map(function (k) { return state.pools[k]; }).filter(function (p) { return p.source && !p.enabled && p.source.agents.includes(agent); });
+    list.forEach(function (x) { count[x.model] = (count[x.model] || 0) + 1; });
+    body = offPools.map(function (p) {
+        return '<div class="alert alert-warning" style="margin-top:12px"><div><b>Nguồn ' + esc(p.source.name) + ' đang tắt vì pool tắt.</b> Model ' + esc(p.source.name) + '/* không có trong danh sách; gọi sẽ nhận <code>model_source_disabled</code>.</div></div>';
+      }).join('') +
+      '<div class="weak small" style="margin-top:12px">Claude Code và Codex dùng pool riêng của chúng và được cài bằng setup-proxy như hôm nay; chúng không dùng tiền tố nguồn.</div>' +
+      '<div class="sec small" style="margin:12px 0">GET <code>/' + agent + '/&lt;space&gt;/v1/models</code> trả về ' + list.length + ' model từ ' + new Set(list.map(function (x) { return x.name; })).size + ' nguồn đang bật.</div>' +
+      (list.length ? '<div class="table-wrap"><table class="tbl" style="min-width:680px"><thead><tr><th>Model ID (client gửi)</th><th>Nguồn</th><th>Nhà cung cấp</th><th>Định dạng</th></tr></thead><tbody>' +
+        list.map(function (x) {
+          return '<tr><td class="mono"><span style="color:' + (x.kind === 'sub' ? '#5e35b1' : '#00737d') + ';font-weight:600">' + esc(x.name) + '</span>/' + esc(x.model) +
+            (count[x.model] > 1 ? ' <span class="tag tag-warning" title="Model cùng tên ở nhiều nguồn">' + count[x.model] + ' nguồn</span>' : '') + '</td>' +
+            '<td>' + (x.kind === 'sub' ? '<span class="tag tag-sub">Thuê bao</span><div class="weak small">tab Pool</div>' : '<span class="tag tag-api">API key</span><div class="weak small">tab Model Provider</div>') + '</td>' +
+            '<td>' + esc(x.provider) + '</td><td><div class="tags">' + fmtTags(x.formats) + '</div></td></tr>';
+        }).join('') + '</tbody></table></div>' : '<div class="ml-empty">Không có nguồn nào bật cho ' + agent + '.</div>');
+  }
+  var side;
+  if (agent === 'omp') {
+    side = '<div class="code-head"><h4 class="card-title">Cấu hình omp sinh ra</h4><span class="weak small"><code>~/.omp/agent/models.yml</code></span>' +
+      '<button type="button" class="btn btn-sm" id="copy-yml" style="margin-left:auto">Sao chép</button></div>' +
+      '<pre class="code" id="yml">' + highlightYaml(ompYaml()) + '</pre>' +
+      '<div class="form-help">Một provider cho mỗi định dạng. Model vào provider theo định dạng đầu tiên của nguồn. setup-proxy chỉ ghi các provider <code>memory-anthropic</code>, <code>memory-responses</code>, <code>memory-chat</code>.</div>';
+  } else if (locked) {
+    side = '<div class="alert alert-info"><div>' + locked.label + ' không cần cấu hình mới.</div></div>';
+  } else {
+    side = '<div class="alert alert-info"><div>' + agent + ' cũng nhận ba provider theo định dạng. Mockup chỉ dựng snippet cho omp; xem tab omp.</div></div>';
+  }
+  return '<div class="card"><div class="card-body">' +
+    '<div class="card-head"><div><h4 class="card-title">Client sẽ thấy</h4><div class="card-sub">Gộp nguồn thuê bao (tab Pool tài khoản thuê bao) và provider của tab này. Chỉ tính nguồn bật, model bật, agent có trong source_agents.</div></div></div>' +
+    '<div class="agent-tabs" role="tablist" aria-label="Chọn agent">' + tabs + '</div>' +
+    '<div class="two-col" style="margin-top:4px"><div>' + body + '</div><div style="padding-top:12px">' + side + '</div></div></div></div>' +
+    '<div class="note">Bảng và snippet sinh lại từ trạng thái hiện tại. Thử: tắt nguồn api-openrouter ở màn 1; tắt pool Claude ở màn 5 (sub-claude/* biến mất); tạo nguồn Codex ở màn 6 (sub-openai/* xuất hiện).</div>';
+}
+
+function ompYaml() {
+  var list = exposedFor('omp');
+  var lines = ['# Sinh bởi setup-proxy --agent omp. Không sửa tay các provider memory-*.', 'providers:'];
+  FORMAT_ORDER.forEach(function (fmt) {
+    var items = list.filter(function (x) { return x.formats[0] === fmt; });
+    if (!items.length) return;
+    var F = FORMATS[fmt];
+    lines.push('  ' + F.omp + ':', '    api: ' + (fmt === 'openai-chat' ? 'openai-completions' : fmt),
+      '    baseUrl: https://memory-proxy.example.internal' + F.path, '    apiKey: sk-••••', '    headers:',
+      '      x-team-id: <team-id>', '      x-agent-id: <agent-id>', '    compat:', '      supportsPromptCacheKey: true', '    models:');
+    items.forEach(function (x) { lines.push('      - id: ' + x.id); });
+  });
+  if (lines.length === 2) lines.push('  {}  # không có model nào cho omp');
+  return lines.join('\n');
+}
+
+function highlightYaml(text) {
+  return text.split('\n').map(function (line) {
+    var e = esc(line);
+    if (/^\s*#/.test(line)) return '<span class="c">' + e + '</span>';
+    return e.replace(/^(\s*-?\s*)([A-Za-z][\w.-]*):(\s.*)?$/, function (_, pre, k, rest) {
+      return pre + '<span class="k">' + k + '</span>:' + (rest ? '<span class="v">' + rest + '</span>' : '');
+    });
+  }).join('\n');
+}
+
+function copyText(text) {
+  function fallback() {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    toast(ok ? 'Đã sao chép models.yml.' : 'Trình duyệt chặn sao chép. Hãy chọn văn bản và nhấn Ctrl/Cmd+C.', !ok);
+  }
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(function () { toast('Đã sao chép models.yml.'); }, fallback);
+  else fallback();
+}
+
+function bindPreview() {
+  $all('[data-agent-tab]').forEach(function (b) { b.onclick = function () { state.previewAgent = b.dataset.agentTab; render(); }; });
+  var c = $('#copy-yml');
+  if (c) c.onclick = function () { copyText(ompYaml()); };
+}
+
+/* ===================== Hộp thoại ===================== */
+function openDialog(html, onReady) {
+  var root = $('#dialog-root');
+  root.innerHTML = '<div class="mask" id="mask"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title">' + html + '</div></div>';
+  var mask = $('#mask');
+  mask.onclick = function (e) { if (e.target === mask) closeDialog(); };
+  document.addEventListener('keydown', escClose);
+  if (onReady) onReady(root);
+  var first = root.querySelector('[data-autofocus]') || root.querySelector('button');
+  if (first) first.focus();
+}
+function escClose(e) { if (e.key === 'Escape') closeDialog(); }
+function closeDialog() { $('#dialog-root').innerHTML = ''; document.removeEventListener('keydown', escClose); }
+
+function showDeleteDialog(id) {
+  var g = findGroup(id), s = g.source;
+  openDialog(
+    '<h2 class="dialog-title" id="dlg-title">Xóa provider</h2>' +
+    '<p><b>Xóa nhóm "' + esc(g.name) + '"?</b> Key đã lưu cũng bị xóa.</p>' +
+    (g.agents.length ? '<p>Agent dùng nhóm như hôm nay sẽ nhận lỗi: ' + agentTags(g.agents) + '</p>' : '') +
+    (s ? '<p>' + onCount(s.models) + ' model <code>' + esc(s.name) + '/*</code> biến mất khỏi danh sách của: ' + agentTags(s.agents) + '</p>' : '') +
+    '<p class="weak small">Cấu hình client đang dùng các model này sẽ báo lỗi model không tồn tại. Muốn dừng tạm, hãy tắt công tắc.</p>' +
+    '<div class="dialog-footer"><button type="button" class="btn btn-danger" id="dlg-ok">Xóa</button><button type="button" class="btn" id="dlg-cancel" data-autofocus>Hủy</button></div>',
+    function () {
+      $('#dlg-ok').onclick = function () { state.groups = state.groups.filter(function (x) { return x.id !== id; }); closeDialog(); toast('Đã xóa "' + g.name + '".', true); render(); };
+      $('#dlg-cancel').onclick = closeDialog;
+    });
+}
+
+/* Mở thẳng một màn bằng hash: index.html#1 … index.html#7 */
+$all('.sider [data-go]').forEach(function (b) { b.onclick = function () { go(b.dataset.go); }; });
+var startScreen = SCREENS[parseInt(location.hash.slice(1), 10) - 1];
+if (startScreen) goScreen(startScreen.id); else render();
+</script>
+</body>
+</html>
