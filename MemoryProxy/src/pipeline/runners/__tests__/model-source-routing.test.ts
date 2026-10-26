@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __primeCacheForTests, type InstanceUpstreamRow } from "../../../instance-upstream-cache.js";
 import { __primeAccountCacheForTests } from "../../../subscription-pool/account-cache.js";
+import { CLAUDE_CODE_IDENTITY } from "../../../subscription-pool/claude-identity.js";
 import type { PoolAccount } from "../../../subscription-pool/types.js";
 import {
   installFetch, jsonResponse, makeApp, makeConfig, resetPoolState, type RecordedCall,
@@ -123,6 +124,7 @@ describe("model source routing in the runners", () => {
     expect(call.url).toBe("https://api.anthropic.com/v1/messages");
     expect(call.headers["authorization"]).toBe("Bearer token-src");
     expect(JSON.parse(call.body).model).toBe("claude-sonnet");
+    expect(JSON.parse(call.body).system[0]).toEqual({ type: "text", text: CLAUDE_CODE_IDENTITY });
     expect(JSON.stringify(call.headers)).not.toContain("sk-mem-user");
     expect((await res.json() as { model: string }).model).toBe("sub-claude/claude-sonnet");
   });

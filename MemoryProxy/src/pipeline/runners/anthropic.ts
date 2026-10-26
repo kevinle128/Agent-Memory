@@ -59,6 +59,7 @@ import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-req
 import { stageAuth } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
 import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
+import { withClaudeCodeIdentity } from "../../subscription-pool/claude-identity.js";
 import { stageModelGate } from "../stages/model-gate.js";
 import {
   stageWriteUsageLog,
@@ -1127,6 +1128,9 @@ export async function runAnthropicPipeline(
   if (poolRequest) {
     target.url = joinUrl(poolRequest.upstreamBase, c.req.path);
     skipCreditReport = true;
+    // A model source reached by a non-Claude-Code client must carry the Claude Code identity,
+    // or the subscription account answers 429. Claude Code itself never takes this branch.
+    if (modelSource.kind === "matched") body = withClaudeCodeIdentity(body);
   }
 
   // ── Skill selection (proxy 选择 → 客户端加载) ─────────────────────────────
