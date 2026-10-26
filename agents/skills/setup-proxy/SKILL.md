@@ -24,8 +24,9 @@ Memory Proxy 是一个 LLM 请求代理，在请求转发到上游 LLM 之前注
 | codex | `~/.codex/config.toml` | OpenAI Responses | TOML 格式，必须 `wire_api = "responses"` |
 | workbuddy | `~/.workbuddy/models.json` | OpenAI Chat / Responses | 顶层数组 |
 | dsh | `~/.dsh/settings.yaml` + `~/.dsh/.credentials.yaml` | OpenAI Chat (无 /v1) | 两个文件 + chmod 700/600 |
-| hermes | `~/.hermes/config.yaml` | OpenAI Chat | 需 header 预选 (x-team-id/agent-id/task-id) |
-| openclaw | `~/.openclaw/openclaw.json` | OpenAI Chat | 需 header 预选 + allowPrivateNetwork |
+| hermes | `~/.hermes/config.yaml` | OpenAI Chat；有来源模型时按格式分 provider | 需 header 预选 (x-team-id/agent-id/task-id) |
+| openclaw | `~/.openclaw/openclaw.json` | OpenAI Chat | 需 header 预选 |
+| omp | `~/.omp/agent/models.yml` | 三种格式各一个 provider | 读取 `/v1/models`；旧 `/pi/` baseUrl 备份后改为 `/omp/` |
 
 ## 脚本位置
 
