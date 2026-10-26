@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mockup – client sources on the API Key page</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #1f2329; background: #f2f3f5; }
+  .top { display: flex; align-items: center; gap: 16px; padding: 10px 20px; background: #fff; border-bottom: 1px solid #e5e6eb; }
+  .top h1 { font-size: 14px; margin: 0; }
+  .top .spacer { flex: 1; }
+  .seg { display: inline-flex; border: 1px solid #c9cdd4; border-radius: 4px; overflow: hidden; }
+  .seg button { border: 0; background: #fff; padding: 4px 12px; cursor: pointer; font: inherit; }
+  .seg button.on { background: #165dff; color: #fff; }
+  .tabs { display: flex; gap: 4px; padding: 0 20px; background: #fff; border-bottom: 1px solid #e5e6eb; }
+  .tabs button { border: 0; background: none; padding: 10px 14px; cursor: pointer; font: inherit; color: #4e5969; border-bottom: 2px solid transparent; }
+  .tabs button.on { color: #165dff; border-bottom-color: #165dff; }
+  .page { padding: 16px 20px 40px; display: none; }
+  .page.on { display: block; }
+  .note { background: #fff7e8; border: 1px solid #ffd591; padding: 8px 12px; border-radius: 4px; margin-bottom: 14px; color: #874d00; }
+  .card { background: #fff; border-radius: 6px; padding: 18px 22px; margin-bottom: 16px; }
+  .card h2 { font-size: 15px; margin: 0 0 4px; }
+  .muted { color: #86909c; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .ep { background: #f7f8fa; border-radius: 4px; padding: 10px 12px; }
+  .ep .row { display: flex; align-items: center; gap: 8px; }
+  .ep code { flex: 1; font: 12px Menlo, monospace; }
+  .ep .label { color: #4e5969; margin-bottom: 4px; display: flex; gap: 6px; align-items: center; }
+  .btn { border: 1px solid #c9cdd4; background: #fff; border-radius: 4px; padding: 3px 12px; cursor: pointer; font: inherit; color: #165dff; }
+  .btn:disabled { color: #c9cdd4; cursor: not-allowed; }
+  .ms { border: 1px solid #bedaff; background: #fff; }
+  .badge { font-size: 11px; padding: 0 6px; border-radius: 3px; background: #e8f3ff; color: #165dff; }
+  .badge.grey { background: #f2f3f5; color: #86909c; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+  .tag { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #c9cdd4; border-radius: 12px; padding: 1px 10px; background: #fff; }
+  .tag .k { font-size: 10px; padding: 0 5px; border-radius: 3px; }
+  .tag .k.sub { background: #e8ffea; color: #00b42a; }
+  .tag .k.api { background: #fff3e8; color: #f77234; }
+  .tag .x { cursor: pointer; color: #86909c; }
+  .add { position: relative; }
+  .menu { position: absolute; top: 26px; left: 0; z-index: 5; background: #fff; border: 1px solid #e5e6eb; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.1); min-width: 280px; display: none; }
+  .menu.on { display: block; }
+  .menu div { padding: 6px 12px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
+  .menu div:hover { background: #f2f3f5; }
+  .menu .dis { color: #c9cdd4; cursor: default; }
+  .sum { margin-top: 6px; color: #86909c; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 8px 10px; border-bottom: 1px solid #f2f3f5; }
+  th { color: #86909c; font-weight: normal; }
+  .form { display: grid; grid-template-columns: 180px 1fr; gap: 14px 20px; margin-top: 14px; }
+  .form .l { color: #4e5969; padding-top: 4px; }
+  .input { border: 1px solid #e5e6eb; background: #f7f8fa; padding: 4px 10px; border-radius: 4px; width: 260px; }
+  .sw { width: 34px; height: 18px; border-radius: 9px; background: #165dff; display: inline-block; position: relative; vertical-align: middle; }
+  .sw::after { content: ""; position: absolute; right: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; }
+  .removed { border: 1px dashed #f53f3f; background: #fff1f0; color: #cb2634; padding: 8px 12px; border-radius: 4px; }
+  .used { display: flex; gap: 6px; flex-wrap: wrap; }
+  .vn { margin-top: 18px; background: #fff; border-left: 3px solid #165dff; padding: 10px 14px; }
+  .vn h3 { margin: 0 0 6px; font-size: 13px; }
+  .vn li { margin: 2px 0; }
+  .sel { position: relative; margin-top: 6px; }
+  .sel .box { min-height: 30px; border: 1px solid #c9cdd4; border-radius: 4px; background: #fff; padding: 3px 28px 3px 6px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; cursor: pointer; }
+  .sel .box.ro { background: #f7f8fa; cursor: default; }
+  .sel .box::after { content: "▾"; position: absolute; right: 10px; top: 6px; color: #86909c; }
+  .sel .box.ro::after { content: ""; }
+  .sel .ph { color: #c9cdd4; padding-left: 4px; }
+  .sel .list { position: absolute; top: 100%; left: 0; right: 0; z-index: 5; background: #fff; border: 1px solid #e5e6eb; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.1); margin-top: 2px; display: none; max-height: 240px; overflow: auto; }
+  .sel .list.on { display: block; }
+  .sel .opt { padding: 6px 10px; display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  .sel .opt:hover { background: #f2f3f5; }
+  .sel .opt.cur { background: #e8f3ff; }
+  .sel .opt .meta { margin-left: auto; color: #86909c; font-size: 12px; }
+  .sel .search { margin: 6px; width: calc(100% - 12px); border: 1px solid #e5e6eb; border-radius: 4px; padding: 3px 8px; font: inherit; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 6px 0 8px; border-radius: 2px; background: #f2f3f5; color: #1d2129; font-size: 12px; line-height: 22px; }
+  .chip .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .chip .dot.sub, .dot.sub { background: #00b42a; }
+  .chip .dot.api, .dot.api { background: #ff7d00; }
+  .chip .n { color: #86909c; }
+  .chip .cx { color: #86909c; cursor: pointer; width: 14px; text-align: center; border-radius: 2px; visibility: hidden; }
+  .chip:hover .cx { visibility: visible; }
+  .chip .cx:hover { background: #e5e6eb; color: #1d2129; }
+  .chip.off { color: #c9cdd4; }
+  .chip .offtag { font-size: 10px; line-height: 14px; padding: 0 4px; border-radius: 2px; background: #e5e6eb; color: #4e5969; }
+  .sel .opt.dis { color: #c9cdd4; cursor: not-allowed; }
+  .sel .opt.dis:hover { background: none; }
+  .one { display: inline-flex; align-items: center; gap: 8px; padding-left: 4px; font-size: 13px; }
+  .one .n { color: #86909c; font-size: 12px; }
+  .sel .opt .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .kind { font-size: 11px; color: #86909c; }
+  .mask { position: fixed; inset: 0; background: rgba(29,33,41,.45); display: none; align-items: center; justify-content: center; z-index: 20; }
+  .mask.on { display: flex; }
+  .dlg { background: #fff; border-radius: 6px; width: 460px; padding: 20px 24px; box-shadow: 0 8px 24px rgba(0,0,0,.15); }
+  .dlg h4 { margin: 0 0 8px; font-size: 15px; }
+  .dlg ul { margin: 8px 0 12px; padding-left: 18px; }
+  .dlg .act { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .btn.pri { background: #165dff; color: #fff; border-color: #165dff; }
+  .swb { width: 34px; height: 18px; border-radius: 9px; background: #165dff; display: inline-block; position: relative; vertical-align: middle; cursor: pointer; }
+  .swb::after { content: ""; position: absolute; right: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; }
+  .poolhead { display: flex; align-items: center; gap: 10px; padding-bottom: 12px; border-bottom: 1px solid #f2f3f5; margin-bottom: 12px; }
+  .dlg.wide { width: 560px; }
+  .mlist { max-height: 320px; overflow: auto; border: 1px solid #f2f3f5; border-radius: 4px; margin-top: 8px; }
+  .mrow { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid #f7f8fa; }
+  .mrow .id { flex: 1; font: 12px Menlo, monospace; }
+  .mrow .full { color: #86909c; font: 11px Menlo, monospace; }
+  .tg { width: 30px; height: 16px; border-radius: 8px; background: #c9cdd4; position: relative; cursor: pointer; flex: none; }
+  .tg.on { background: #165dff; }
+  .tg::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .tg.on::after { left: 16px; }
+  .tg.lock { cursor: not-allowed; opacity: .6; }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Memory Hub – mockup</h1>
+  <span class="spacer"></span>
+  <span class="muted">Xem với vai trò:</span>
+  <span class="seg"><button id="r-admin" class="on" onclick="setRole('admin')">Admin</button><button id="r-member" onclick="setRole('member')">Thành viên</button></span>
+</div>
+<div class="tabs">
+  <button class="on" onclick="show('keys', this)">1. API Key (Client Access Endpoint)</button>
+  <button onclick="show('pool', this)">2. Subscription Pool – Selected models</button>
+  <button onclick="show('provider', this)">3. Model Provider – Selected models</button>
+</div>
+
+<!-- 1. API KEY -->
+<section id="keys" class="page on">
+  <div class="note">Màn hình 1: chỗ duy nhất gán nguồn cho client. Claude Code, Codex: chọn một nguồn. Các client khác: chọn nhiều. Admin sửa; thành viên chỉ xem. Gán chung cho cả instance.</div>
+  <div class="card">
+    <h2>Client Access Endpoint</h2>
+    <div class="muted">Current instance: Agent Memory (default)</div>
+    <div class="grid" id="endpoints"></div>
+  </div>
+  <div class="vn">
+    <h3>Ghi chú</h3>
+    <ul>
+      <li><b>Model sources</b> là dropdown. Client dùng nhiều nguồn: chọn nhiều (checkbox, tag hiện trong ô, × để bỏ). <b>Claude Code và Codex</b>: cùng dropdown nhưng chỉ chọn <b>một</b>. Danh sách chỉ có nguồn đúng định dạng: Claude Code thấy nguồn Anthropic (ví dụ <code>sub-claude</code>, <code>api-anthropic</code>, <code>api-deepseek</code>), Codex thấy nguồn Responses (ví dụ <code>sub-openai</code>, <code>api-openrouter</code>). Model gửi lên giữ nguyên tên, không có tiền tố.</li>
+      <li><b>Mọi client còn lại</b> (CodeBuddy, WorkBuddy, dsh, OpenCode, omp, Hermes, OpenClaw) gọi model dạng <code>&lt;source&gt;/&lt;model&gt;</code>.</li>
+      <li>Tag: chấm màu cho loại (<span class="dot sub" style="width:6px;height:6px;border-radius:50%;display:inline-block"></span> subscription, <span class="dot api" style="width:6px;height:6px;border-radius:50%;display:inline-block"></span> API key), tên nguồn, số model; × hiện khi rê chuột. Nguồn đang tắt: chữ xám kèm nhãn <b>Off</b>, model của nó không có trong <code>/v1/models</code>. Nguồn đang tắt không hiện trong danh sách chọn. Nguồn đang được client nào chọn thì <b>không tắt và không xoá được</b>: Panel báo các client đang dùng và yêu cầu gỡ ở trang API Key trước; Core cũng từ chối. Vì vậy không có trạng thái "đã chọn nhưng đang tắt".</li>
+      <li>Thêm thẻ <b>oh-my-pi (omp)</b> (đang thiếu). Thành viên chỉ xem; admin sửa.</li>
+      <li>Danh sách nguồn mẫu trong mockup (api-anthropic, api-deepseek, api-openrouter) chỉ để minh hoạ; prod hiện chỉ có sub-claude và sub-openai.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- 2. POOL -->
+<section id="pool" class="page">
+  <div class="note">Màn hình 2: tab Subscription Pool giữ nguyên giao diện hiện tại. Chỉ thêm nút <b>Selected models</b> cạnh <b>Add account</b>; chọn model trong hộp thoại.</div>
+  <div class="card">
+    <div class="poolhead"><b style="font-size:15px">claude subscription pool</b><span class="swb" onclick="tryOff('sub-claude','turn off the pool')"></span><span class="muted">Pool on</span></div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <h2 style="margin:0">Accounts</h2><span class="muted">Tokens are stored by Memory Core and never shown here.</span>
+      <span style="flex:1"></span>
+      <button class="btn" onclick="openModels('sub-claude')">Selected models <span class="muted" id="sel-count">14/14</span></button>
+      <button class="btn pri admin-only">Add account</button>
+    </div>
+    <table style="margin-top:10px">
+      <tr><th>Account</th><th>Status</th><th>Primary window (5h)</th><th>Weekly window</th><th>Sessions (2 days)</th><th>Actions</th></tr>
+      <tr><td><b>studio.vtcmobile1@gmail.com</b></td><td><span class="badge" style="background:#e8ffea;color:#00b42a">Active</span></td><td>9%</td><td>1%</td><td>29</td><td><a href="#">Check now</a> · <a href="#">Disable</a></td></tr>
+      <tr><td><b>studio.vtcmobile@gmail.com</b></td><td><span class="badge" style="background:#ffece8;color:#cb2634">Exhausted</span></td><td>0%</td><td>100%</td><td>55</td><td><a href="#">Check now</a> · <a href="#">Disable</a></td></tr>
+      <tr><td><b>truongbathang1988@gmail.com</b></td><td><span class="badge" style="background:#ffece8;color:#cb2634">Exhausted</span></td><td>0%</td><td>100%</td><td>15</td><td><a href="#">Check now</a> · <a href="#">Disable</a></td></tr>
+    </table>
+    <div class="muted" style="margin-top:8px">(Bảng Accounts rút gọn trong mockup; giao diện thật giữ nguyên như hiện tại.)</div>
+  </div>
+  <div class="vn"><h3>Ghi chú</h3><ul>
+    <li>Không còn khối "Use as a source". Tên nguồn của pool cố định: <code>sub-claude</code> / <code>sub-openai</code>.</li>
+    <li>Nút <b>Selected models</b> hiện số model đang bật / tổng. Bấm để mở hộp chọn model: tìm kiếm, bật/tắt từng model, bật/tắt tất cả, nút Refresh lấy lại danh sách từ gói.</li>
+    <li>Thành viên mở được hộp nhưng chỉ xem; công tắc bị khoá.</li>
+    <li>Bấm công tắc pool: <code>sub-claude</code> đang được Claude Code, omp, Hermes chọn nên Panel chặn và liệt kê các client đó.</li>
+  </ul></div>
+</section>
+
+<!-- 3. PROVIDER -->
+<section id="provider" class="page">
+  <div class="note">Màn hình 3: tab Model Provider giống tab pool: bảng nguồn gọn, nút <b>Selected models</b> trên từng dòng, form tạo nguồn trong hộp thoại.</div>
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:8px">
+      <h2 style="margin:0">Model providers</h2><span class="muted">API keys are stored by Memory Core and never shown here.</span>
+      <span style="flex:1"></span>
+      <button class="btn pri admin-only" onclick="document.getElementById('pmask').classList.add('on')">Add provider</button>
+    </div>
+    <table style="margin-top:10px">
+      <tr><th>Source</th><th>Provider</th><th>Base URL</th><th>Formats</th><th>Models</th><th>Status</th><th>Actions</th></tr>
+      <tr><td><b>api-deepseek</b></td><td>DeepSeek</td><td class="muted">https://api.deepseek.com/v1</td><td>Chat, Anthropic</td>
+        <td><button class="btn" onclick="openModels('api-deepseek')">Selected models <span class="muted" id="cnt-api-deepseek"></span></button></td>
+        <td><span class="swb" onclick="tryOff('api-deepseek','turn off this source')"></span></td>
+        <td><a href="#" onclick="tryOff('api-deepseek','delete this source');return false;">Delete</a></td></tr>
+      <tr><td><b>api-openrouter</b></td><td>OpenRouter</td><td class="muted">https://openrouter.ai/api/v1</td><td>Chat, Responses</td>
+        <td><button class="btn" onclick="openModels('api-openrouter')">Selected models <span class="muted" id="cnt-api-openrouter"></span></button></td>
+        <td><span class="muted">Off</span></td>
+        <td><a href="#" onclick="tryOff('api-openrouter','delete this source');return false;">Delete</a></td></tr>
+      <tr><td><b>api-anthropic</b></td><td>Anthropic</td><td class="muted">https://api.anthropic.com</td><td>Anthropic</td>
+        <td><button class="btn" onclick="openModels('api-anthropic')">Selected models <span class="muted" id="cnt-api-anthropic"></span></button></td>
+        <td><span class="swb" onclick="tryOff('api-anthropic','turn off this source')"></span></td>
+        <td><a href="#" onclick="tryOff('api-anthropic','delete this source');return false;">Delete</a></td></tr>
+    </table>
+  </div>
+  <div class="vn"><h3>Ghi chú</h3><ul>
+    <li><b>Add provider</b> mở form: provider, base URL, API key, định dạng, tên nguồn (gợi ý sẵn, sửa được tới khi lưu). Không còn ô chọn agent.</li>
+    <li>Sau khi lưu, Core lấy danh sách model; model của nguồn API key mặc định <b>tắt</b>. Bấm <b>Selected models</b> để bật model cần dùng.</li>
+    <li>Tắt hoặc xoá <code>api-deepseek</code> bị chặn vì dsh và omp đang dùng; <code>api-openrouter</code> không ai dùng nên xoá được.</li>
+    <li>Nguồn mới tạo chưa gán cho client nào; gán ở trang API Key.</li>
+  </ul></div>
+</section>
+
+<div class="mask" id="mask" onclick="closeDlg()"><div class="dlg" onclick="event.stopPropagation()">
+  <h4 id="dlg-title"></h4><div id="dlg-body"></div>
+  <div class="act"><button class="btn" onclick="closeDlg()">Close</button><button class="btn pri" id="dlg-go" onclick="closeDlg();show('keys', document.querySelector('.tabs button'))">Go to API Key page</button></div>
+</div></div>
+<div class="mask" id="mmask" onclick="closeModels()"><div class="dlg wide" onclick="event.stopPropagation()">
+  <h4 id="mtitle"></h4>
+  <div class="muted" id="mhint"></div>
+  <div style="display:flex;gap:8px;margin-top:10px"><input class="search" style="margin:0;flex:1" placeholder="Search models" oninput="filterModels(this.value)"><button class="btn admin-only" onclick="allModels(true)">Turn all on</button><button class="btn admin-only" onclick="allModels(false)">Turn all off</button><button class="btn admin-only">Refresh</button></div>
+  <div class="mlist" id="mlist"></div>
+  <div class="act"><span class="muted" style="margin-right:auto" id="mcount"></span><button class="btn pri" onclick="closeModels()">Done</button></div>
+</div></div>
+<div class="mask" id="pmask" onclick="this.classList.remove('on')"><div class="dlg wide" onclick="event.stopPropagation()">
+  <h4>Add provider</h4>
+  <div class="form" style="grid-template-columns:120px 1fr;margin-top:6px">
+    <div class="l">Provider</div><div><span class="input">DeepSeek ▾</span></div>
+    <div class="l">Base URL</div><div><span class="input">https://api.deepseek.com/v1</span></div>
+    <div class="l">API key</div><div><span class="input">••••••••••••</span></div>
+    <div class="l">Formats</div><div><label><input type="checkbox" checked> Chat</label> <label><input type="checkbox"> Responses</label> <label><input type="checkbox" checked> Anthropic</label></div>
+    <div class="l">Source name</div><div><span class="input">api-deepseek</span><div class="muted">Suggested. Part of the model id (api-deepseek/&lt;model&gt;), so it cannot change after save.</div></div>
+  </div>
+  <div class="muted" style="margin-top:10px">After save, Memory Core fetches the model list. Pick models with <b>Selected models</b>.</div>
+  <div class="act"><button class="btn" onclick="document.getElementById('pmask').classList.remove('on')">Cancel</button><button class="btn pri" onclick="document.getElementById('pmask').classList.remove('on')">Save</button></div>
+</div></div>
+<script>
+const FMT = { am: 'Anthropic', or: 'Responses', oc: 'Chat' };
+const SOURCES = [
+  { name: 'sub-claude', kind: 'sub', models: 14, on: true, formats: ['am'] },
+  { name: 'sub-openai', kind: 'sub', models: 7, on: true, formats: ['or'] },
+  { name: 'api-anthropic', kind: 'api', models: 4, on: true, formats: ['am'] },
+  { name: 'api-deepseek', kind: 'api', models: 3, on: true, formats: ['oc', 'am'] },
+  { name: 'api-openrouter', kind: 'api', models: 6, on: false, formats: ['oc', 'or'] },
+];
+// single: Claude Code and Codex use exactly one source of their own format.
+const CLIENTS = [
+  { label: 'Claude Code', path: 'claude-code', single: true, format: 'am', chosen: 'sub-claude' },
+  { label: 'Codex', path: 'codex', single: true, format: 'or', chosen: 'sub-openai' },
+  { label: 'CodeBuddy', path: 'codebuddy', added: [] },
+  { label: 'WorkBuddy', path: 'workbuddy', added: [] },
+  { label: 'DeepSeek Harness (dsh)', path: 'dsh', added: ['api-deepseek'] },
+  { label: 'OpenCode', path: 'opencode', added: [] },
+  { label: 'oh-my-pi (omp)', path: 'omp', added: ['sub-claude', 'sub-openai', 'api-deepseek'], isNew: true },
+  { label: 'Hermes', path: 'hermes', added: ['sub-claude'] },
+  { label: 'OpenClaw', path: 'openclaw', added: [] },
+];
+let role = 'admin';
+const base = 'http://vtc.taildae6a9.ts.net:8096';
+function src(n) { return SOURCES.find((s) => s.name === n); }
+function kindTag(s) { return `<span class="k ${s.kind}">${s.kind.toUpperCase()}</span>`; }
+function chip(s, removable, i) {
+  return `<span class="chip ${s.on ? '' : 'off'}" title="${s.kind === 'sub' ? 'Subscription' : 'API key'}${s.on ? '' : '. Source is off. Its models are hidden from /v1/models.'}"><span class="dot ${s.kind}"></span><span class="name">${s.name}</span><span class="n">${s.models}</span>${s.on ? '' : '<span class="offtag">Off</span>'}${removable ? `<span class="cx" onclick="event.stopPropagation();toggleSrc(${i},'${s.name}')">×</span>` : ''}</span>`;
+}
+function one(s) {
+  return `<span class="one"><span class="dot ${s.kind}" style="width:6px;height:6px;border-radius:50%;display:inline-block"></span>${s.name}<span class="n">${s.kind === 'sub' ? 'Subscription' : 'API key'} · ${s.models} models</span></span>`;
+}
+function sourceSelect(c, i) {
+  const admin = role === 'admin';
+  const options = SOURCES.filter((s) => s.on && (!c.single || s.formats.includes(c.format)));
+  const chosen = c.single ? (c.chosen ? [c.chosen] : []) : c.added;
+  const chips = c.single ? chosen.map((n) => one(src(n))).join('') : chosen.map((n) => chip(src(n), admin, i)).join('');
+  const opts = options.map((s) => {
+    const on = chosen.includes(s.name);
+    const blocked = c.single && !s.on;
+    const ctl = c.single ? `<input type="radio" ${on ? 'checked' : ''} tabindex="-1">` : `<input type="checkbox" ${on ? 'checked' : ''} tabindex="-1">`;
+    return `<div class="opt ${on ? 'cur' : ''} ${blocked ? 'dis' : ''}" onclick="event.stopPropagation();${blocked ? '' : c.single ? `choose(${i},'${s.name}')` : `toggleSrc(${i},'${s.name}')`}" title="${blocked ? 'This source is off. Turn it on before using it for this client.' : ''}">${ctl}<span class="dot ${s.kind}"></span>${s.name} <span class="kind">${s.kind === 'sub' ? 'Subscription' : 'API key'}</span><span class="meta">${s.formats.map((f) => FMT[f]).join(' / ')} · ${s.models} models${s.on ? '' : ' · off'}</span></div>`;
+  }).join('');
+  const label = c.single
+    ? `Model source <span class="badge grey">select one · ${FMT[c.format]} format</span>`
+    : `Model sources <span class="badge">select many</span>`;
+  const empty = c.single ? 'Select a source' : 'No source. The client sees no source models.';
+  const visible = chosen.map(src).filter((s) => s.on).reduce((a, s) => a + s.models, 0);
+  const sum = c.single
+    ? `Model ids stay as they are (no prefix). Only sources that serve the ${FMT[c.format]} format are listed.`
+    : `/v1/models lists ${visible} model(s) as &lt;source&gt;/&lt;model&gt;.`;
+  return `<div class="muted" style="margin-top:8px">${label}</div>
+    <div class="sel"><div class="box ${admin ? '' : 'ro'}" ${admin ? `onclick="event.stopPropagation();openList(${i})"` : ''}>${chips || `<span class="ph">${empty}</span>`}</div>
+    ${admin ? `<div class="list" id="l${i}"><input class="search" placeholder="Search sources" onclick="event.stopPropagation()">${opts}</div>` : ''}</div>
+    <div class="sum">${sum}</div>`;
+}
+function render() {
+  const box = document.getElementById('endpoints');
+  box.innerHTML = '';
+  CLIENTS.forEach((c, i) => {
+    const d = document.createElement('div');
+    d.className = 'ep' + (c.single ? '' : ' ms');
+    d.innerHTML = `<div class="label">${c.label} ${c.single ? '<span class="badge grey">one provider</span>' : '<span class="badge">multi-source</span>'}${c.isNew ? ' <span class="badge" style="background:#fff3e8;color:#f77234">new</span>' : ''}</div>
+      <div class="row"><code>${base}/${c.path}/default</code><button class="btn">Copy</button></div>` + sourceSelect(c, i);
+    box.appendChild(d);
+  });
+}
+const MODELS = {
+  'sub-claude': ['claude-haiku-5-5','claude-sonnet-5-5','claude-opus-5-5','claude-fable-5-1','claude-opus-5','claude-sonnet-5','claude-fable-5','claude-opus-4-8','claude-opus-4-7','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-5-20251101','claude-sonnet-4-5','claude-haiku-4-5-20251001'].map((id) => ({ id, on: true })),
+  'api-deepseek': [['deepseek-chat', true], ['deepseek-reasoner', true], ['deepseek-v4', true], ['deepseek-coder', false]].map(([id, on]) => ({ id, on })),
+  'api-openrouter': ['openai/gpt-4o', 'anthropic/claude-sonnet-5', 'google/gemini-3-pro', 'meta/llama-5-70b', 'qwen/qwen4-max', 'mistral/large-3', 'moonshot/kimi-k3', 'z-ai/glm-5'].map((id, i) => ({ id, on: i < 6 })),
+  'api-anthropic': ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-opus-4-8'].map((id, i) => ({ id, on: i < 4 })),
+};
+let mfilter = ''; let msrc = 'sub-claude';
+function counts() { for (const k of Object.keys(MODELS)) { const el = document.getElementById(k === 'sub-claude' ? 'sel-count' : 'cnt-' + k); if (el) el.textContent = `${MODELS[k].filter((m) => m.on).length}/${MODELS[k].length}`; } }
+function drawModels() {
+  const lock = role !== 'admin'; const list = MODELS[msrc];
+  document.getElementById('mtitle').textContent = `Selected models · ${msrc}`;
+  document.getElementById('mhint').innerHTML = msrc.startsWith('sub-')
+    ? `Models of this pool that clients can call as ${msrc}/&lt;model&gt;. Fetched automatically at 26/10 12:30. New models from the plan start on.`
+    : `Models of this provider that clients can call as ${msrc}/&lt;model&gt;. Fetched automatically at 26/10 12:30. New models start off.`;
+  document.getElementById('mlist').innerHTML = list.filter((m) => m.id.includes(mfilter)).map((m) => `<div class="mrow"><div><div class="id">${m.id}</div><div class="full">→ ${msrc}/${m.id}</div></div><span style="flex:1"></span><span class="tg ${m.on ? 'on' : ''} ${lock ? 'lock' : ''}" onclick="${lock ? '' : `toggleModel('${m.id}')`}"></span></div>`).join('');
+  document.getElementById('mcount').textContent = `On ${list.filter((m) => m.on).length}/${list.length}`;
+  counts();
+}
+function openModels(n) { msrc = n || 'sub-claude'; mfilter = ''; drawModels(); document.getElementById('mmask').classList.add('on'); }
+function closeModels() { document.getElementById('mmask').classList.remove('on'); }
+function toggleModel(id) { const m = MODELS[msrc].find((x) => x.id === id); m.on = !m.on; drawModels(); }
+function allModels(v) { MODELS[msrc].filter((m) => m.id.includes(mfilter)).forEach((m) => { m.on = v; }); drawModels(); }
+function filterModels(v) { mfilter = v.trim(); drawModels(); }
+function usedBy(n) { return CLIENTS.filter((c) => (c.single ? c.chosen === n : c.added.includes(n))).map((c) => c.label); }
+function tryOff(n, what) {
+  const users = usedBy(n);
+  document.getElementById('dlg-go').style.display = users.length ? '' : 'none';
+  document.getElementById('dlg-title').textContent = users.length ? `Cannot ${what}: ${n} is in use` : `${what[0].toUpperCase() + what.slice(1)}: ${n}?`;
+  document.getElementById('dlg-body').innerHTML = users.length
+    ? `<div>${n} is selected as a model source for:</div><ul>${users.map((u) => `<li>${u}</li>`).join('')}</ul><div class="muted">Remove it from these clients on the API Key page first${users.some((u) => u === 'Claude Code' || u === 'Codex') ? ' (Claude Code and Codex need another source picked)' : ''}. Then you can ${what}.</div>`
+    : `<div class="muted">No client uses this source, so it can be done.</div>`;
+  document.getElementById('mask').classList.add('on');
+}
+function closeDlg() { document.getElementById('mask').classList.remove('on'); }
+function choose(i, n) { CLIENTS[i].chosen = n; closeLists(); render(); }
+function toggleSrc(i, n) {
+  const c = CLIENTS[i];
+  if (c.added.includes(n)) {
+    if (!confirm(`Remove ${n} from ${c.label}? Its models disappear from this client's /v1/models.`)) return;
+    c.added = c.added.filter((x) => x !== n);
+  } else c.added.push(n);
+  render(); openList(i);
+}
+function closeLists() { document.querySelectorAll('.sel .list').forEach((l) => l.classList.remove('on')); }
+function openList(i) { const l = document.getElementById('l' + i); const was = l && l.classList.contains('on'); closeLists(); if (l && !was) l.classList.add('on'); }
+function setRole(r) { role = r; document.getElementById('r-admin').classList.toggle('on', r === 'admin'); document.getElementById('r-member').classList.toggle('on', r === 'member'); document.querySelectorAll('.admin-only').forEach((b) => { b.disabled = r !== 'admin'; }); render(); }
+function show(id, btn) { document.querySelectorAll('.page').forEach((p) => p.classList.toggle('on', p.id === id)); document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b === btn)); }
+document.addEventListener('click', closeLists);
+render();
+counts();
+</script>
+</body>
+</html>
