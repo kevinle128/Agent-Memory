@@ -45,11 +45,11 @@ export interface SupportedAgent {
  */
 export const DEFAULT_SUPPORTED_AGENTS: SupportedAgent[] = [
   { agent_source: "claude-code", protocol: "anthropic",        display_name: "Claude Code" },
-  { agent_source: "codebuddy",   protocol: "openai-chat",      display_name: "CodeBuddy" },
+  { agent_source: "codebuddy",   protocol: "openai-chat",      display_name: "CodeBuddy", multi_source: true },
   { agent_source: "codex",       protocol: "openai-responses", display_name: "Codex" },
-  { agent_source: "workbuddy",   protocol: "openai-responses", display_name: "WorkBuddy" },
-  { agent_source: "dsh",         protocol: "openai-chat",      display_name: "DeepSeek Harness" },
-  { agent_source: "opencode",    protocol: "openai-chat",      display_name: "OpenCode" },
+  { agent_source: "workbuddy",   protocol: "openai-responses", display_name: "WorkBuddy", multi_source: true },
+  { agent_source: "dsh",         protocol: "openai-chat",      display_name: "DeepSeek Harness", multi_source: true },
+  { agent_source: "opencode",    protocol: "openai-chat",      display_name: "OpenCode", multi_source: true },
   // ── header-only 客户端(通过 x-team-id / x-agent-id / x-task-id 请求头预选身份,
   //    没有交互 form UI —— 客户端不认 proxy 伪造的 ask_followup_question tool_call,
   //    preset 失败/mismatch 场景必须 bypass 而非弹 form)。

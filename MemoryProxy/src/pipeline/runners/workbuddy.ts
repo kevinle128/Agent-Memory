@@ -46,6 +46,12 @@ import {
 import { verifyUserKey } from "../../auth.js";
 import { stageAuth } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
+import {
+  stageModelSource,
+  applyModelSource,
+  modelSourceErrorResponse,
+  type ModelSourceResolution,
+} from "../stages/model-source.js";
 import { stageSessionResetPreHook } from "../stages/session-reset-pre-hook.js";
 import { stageSessionResetConfirmation } from "../stages/session-reset-confirmation.js";
 import { countHumanTurnsResponses } from "../../turnSeq.js";
@@ -476,6 +482,7 @@ async function forwardToUpstream(
   lf: LangfuseTurnContext | null,
   archiveCtx: WorkbuddyArchiveCtx | null = null,
   sessionTurn: PendingSessionTurn | null = null,
+  presetResolution?: ModelSourceResolution,
 ): Promise<Response> {
   // ── Per-agent upstream override ──
   // 对齐 codexHandler: 支持 config.upstream.agents?.workbuddy 单独指 URL/apiKey，
@@ -504,6 +511,7 @@ async function forwardToUpstream(
     spaceId,
     config,
     pathForOverride: upstreamPath,
+    presetResolution,
   });
   if (isInstanceUpstreamBlocked(_upstreamResolve)) {
     return c.json(_upstreamResolve.errorBody, 400);
@@ -1189,8 +1197,22 @@ export async function runWorkbuddyPipeline(
     if (wecomIdentity.kind !== "resolved") return wecomIdentity.response;
     wecomName = wecomIdentity.name;
   }
-  const poolRejection = poolServiceRejection(config, body.model);
-  if (poolRejection) return c.json(poolRejection, 400);
+  // `<source>/<model>`: returns `none` unless modelSources is on and the model carries a source
+  // prefix, so every other request keeps the checks below unchanged. The forward step has no
+  // subscription pool branch, so a pool source answers with a format mismatch.
+  const modelSource = await stageModelSource({
+    config, agent: "workbuddy", spaceId: extractSpaceIdFromPath(path) ?? "",
+    format: "openai-responses", model: body.model, servesPool: false,
+  });
+  // Responses clients read `error.type` and `error.message`, which the Anthropic envelope carries.
+  if (modelSource.kind === "error") return modelSourceErrorResponse(c, "anthropic", modelSource);
+  const matchedSource = modelSource.kind === "matched" ? modelSource : null;
+  if (matchedSource) applyModelSource(c, body, matchedSource, "workbuddy");
+  if (!matchedSource) {
+    const poolRejection = poolServiceRejection(config, body.model);
+    if (poolRejection) return c.json(poolRejection, 400);
+  }
+  const presetResolution = matchedSource?.resolution;
 
   // ── 3. Extract headers ───────────────────────────────────────────────────
   const headers: Record<string, string> = {};
@@ -1224,7 +1246,7 @@ export async function runWorkbuddyPipeline(
       const { getInstanceUpstreamConfigs, resolveForAgent, shouldOverride } =
         await import("../../instance-upstream-cache.js");
       const cfgs = await getInstanceUpstreamConfigs(config.coreSkill, _wbSpaceIdForGate, config.instanceUpstream);
-      _wbIsCustomUpstream = shouldOverride(resolveForAgent(cfgs, "workbuddy"));
+      _wbIsCustomUpstream = shouldOverride(presetResolution ?? resolveForAgent(cfgs, "workbuddy"));
     } catch {
       _wbIsCustomUpstream = false;
     }
@@ -1240,7 +1262,8 @@ export async function runWorkbuddyPipeline(
     }
   }
 
-  const modelId = resolveModelId(config.creditPricing, requestedModel);
+  // A source model id is the upstream's own name, never a pricing-table alias.
+  const modelId = matchedSource ? requestedModel : resolveModelId(config.creditPricing, requestedModel);
   // 对外展示名只用于客户端请求；TokenHub 只接受价目表中登记的真实服务 ID。
   if (typeof body.model === "string" && modelId !== requestedModel) {
     body.model = modelId;
@@ -1250,7 +1273,7 @@ export async function runWorkbuddyPipeline(
   // ── 5. Aux passthrough ───────────────────────────────────────────────────
   if (isAuxiliary) {
     pipe.info("WORKBUDDY_AUX", `auxiliary request → passthrough (path=${path})`);
-    return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null);
+    return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null, null, presetResolution);
   }
 
   // ── 6. Session ID + langfuse turn ctx ────────────────────────────────────
@@ -1734,5 +1757,5 @@ export async function runWorkbuddyPipeline(
     seed: sessionTurnSeed,
     sessionInfo,
     authUserId: userId,
-  });
+  }, presetResolution);
 }

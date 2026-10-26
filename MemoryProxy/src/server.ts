@@ -9,7 +9,7 @@ import { runUtilityPipeline as handleAuxiliaryEndpoint } from "./pipeline/runner
 import { runDirectPipeline as handleDirectPassthrough } from "./pipeline/runners/direct.js";
 import { runCodexPipeline, RESPONSES_SOURCE_AGENTS, runCodexPipeline as handleCodexEndpoint } from "./pipeline/runners/codex.js";
 import { handleAgentRouteMoved } from "./routes/agent-route-moved.js";
-import { runWorkbuddyPipeline as handleWorkbuddyEndpoint } from "./pipeline/runners/workbuddy.js";
+import { runWorkbuddyPipeline } from "./pipeline/runners/workbuddy.js";
 import { handleHermesShow, handleModels, handleSourceModel } from "./modelsHandler.js";
 import { apiKeyToKeyId, extractBearerToken } from "./opik.js";
 import { createSkillBridgeHandler } from "./skill/skill-bridge.js";
@@ -23,6 +23,7 @@ import { getEffectiveBackend } from "./storage/factory.js";
 import type { ProxyConfig } from "./types.js";
 
 const handleChatCompletions = withClientFacingModel(runOpenaiChatPipeline);
+const handleWorkbuddyEndpoint = withClientFacingModel(runWorkbuddyPipeline);
 const handleAnthropicMessages = withClientFacingModel(runAnthropicPipeline);
 /** Responses endpoint of the agents that choose a model source by name (not codex itself). */
 const handleResponsesForSourceAgent = withClientFacingModel(runCodexPipeline);

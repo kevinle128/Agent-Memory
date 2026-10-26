@@ -216,9 +216,14 @@ const scenarios: Scenario[] = [
     call: (app) => send(app, "claude-code", "v1/messages", anthropicBody("sub-claude/claude-sonnet"), { "x-claude-code-session-id": "s2" }),
   },
   {
-    name: "codebuddy on a custom group sending a source-looking model name",
+    name: "codebuddy on a custom group sending a model that has no prefix",
     rows: [defaultRow, apiForBuddy, apiSource, poolSource],
-    call: (app) => send(app, "codebuddy", "v1/chat/completions", chatBody("api-deepseek/deepseek-chat")),
+    call: (app) => send(app, "codebuddy", "v1/chat/completions", chatBody("buddy-plain")),
+  },
+  {
+    name: "codebuddy on a custom group sending a prefix that is no source",
+    rows: [defaultRow, apiForBuddy, apiSource, poolSource],
+    call: (app) => send(app, "codebuddy", "v1/chat/completions", chatBody("vendor/some-model")),
   },
   {
     name: "codex compact on the official upstream",
