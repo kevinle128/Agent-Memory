@@ -6,12 +6,12 @@ import { DEFAULT_SUPPORTED_AGENTS_FALLBACK } from "./default-supported-agents.js
 const agents = [...DEFAULT_SUPPORTED_AGENTS_FALLBACK];
 
 describe("default supported agents", () => {
-  it("lists omp as the only pi-family agent and marks the multi-source agents", () => {
+  it("lists omp as the only pi-family agent and marks the multi-source agents, and not claude-code or codex", () => {
     const names = agents.map((a) => a.agent_source);
     expect(names).toContain("omp");
     expect(names).not.toContain("pi");
     const multi = agents.filter((a) => a.multi_source === true).map((a) => a.agent_source).sort();
-    expect(multi).toEqual(["hermes", "omp", "openclaw"]);
+    expect(multi).toEqual(["codebuddy", "dsh", "hermes", "omp", "openclaw", "opencode", "workbuddy"]);
     expect(agents.find((a) => a.agent_source === "claude-code")?.multi_source).toBeUndefined();
     expect(agents.find((a) => a.agent_source === "codex")?.multi_source).toBeUndefined();
   });

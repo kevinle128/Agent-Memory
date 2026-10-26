@@ -281,6 +281,9 @@ describe("model list fetch on a source", () => {
       await addAccount(pool.group_id);
       const adapter = fakeAdapter({ fetchModels: async () => [{ id: "g", display_name: "g" }] });
       svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+      await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: [] }, AGENTS);
+      const def = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).find((g) => g.group_type === "default")!;
+      await store.moveAgentBetweenUpstreamGroups({ agent: "codex", from: [{ group_id: pool.group_id }], to: { group_id: def.group_id } });
       await svc.disableSubscriptionPool("codex", AGENTS);
       await expect(svc.refreshSourceModels({ group_id: pool.group_id })).rejects.toMatchObject({ code: "SOURCE_DISABLED" });
       await svc.refreshAllSourceModels();

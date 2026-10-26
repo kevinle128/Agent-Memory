@@ -431,6 +431,13 @@ const routeTable: Record<string, Handler> = {
     s.assertCanManageUsers(c);
     return s.updateSourceModels(d);
   }),
+  [`${V3_PREFIX}/instance-upstream/client-sources/list`]: bind(S.upstreamClientSourcesListSchema, async (_d, _c, s, _reqId, deps) => {
+    return s.listClientSources(deps.getSupportedAgents());
+  }),
+  [`${V3_PREFIX}/instance-upstream/client-sources/update`]: bind(S.upstreamClientSourcesUpdateSchema, async (d, c, s, _reqId, deps) => {
+    s.assertCanManageUsers(c);
+    return s.updateClientSources(d, deps.getSupportedAgents());
+  }),
   [`${V3_PREFIX}/instance-upstream/groups/source-refresh`]: bind(S.upstreamSourceRefreshSchema, async (d, c, s) => {
     s.assertCanManageUsers(c);
     return s.refreshSourceModels(d);
@@ -550,7 +557,10 @@ function mapErrorCode(code: string): number {
       return 404;
     // ── v2 InstanceUpstream 错误码(§6.E)──
     case "GROUP_NOT_FOUND":
+    case "SOURCE_NOT_FOUND":
       return 404;
+    case "SOURCE_IN_USE":
+      return 409;
     case "EXTRACTION_ALREADY_CONFIGURED":
     case "WRITE_CONFLICT":
     case "SOURCE_NAME_TAKEN":

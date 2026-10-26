@@ -26,7 +26,15 @@ describe("subscription pool service", () => {
     await store.close();
   });
 
-  it("moves codex onto a pool group and back onto the same default group", async () => {
+  /** Puts the agent back into the default group, as choosing another source does, so the pool is no longer in use. */
+  async function releaseToDefault(agent: string): Promise<void> {
+    const groups = await store.listInstanceUpstreamGroups(undefined, AGENTS);
+    const holder = groups.find((group) => group.agents.includes(agent))!;
+    const fallback = groups.find((group) => group.group_type === "default")!;
+    await store.moveAgentBetweenUpstreamGroups({ agent, from: [{ group_id: holder.group_id }], to: { group_id: fallback.group_id } });
+  }
+
+  it("moves codex onto a pool group and switches the pool off only after codex left it", async () => {
     await svc.enableSubscriptionPool("codex", AGENTS);
     const enabled = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     const defaultGroup = enabled.find((group) => group.group_type === "default");
@@ -37,13 +45,15 @@ describe("subscription pool service", () => {
     expect(pool?.base_url).toBe("");
     expect(pool?.api_key).toBe("");
 
+    await expect(svc.disableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["codex"] } });
+    await releaseToDefault("codex");
     const disabled = await svc.disableSubscriptionPool("codex", AGENTS);
     const after = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     const defaultAfter = after.find((group) => group.group_type === "default");
     expect(defaultAfter?.group_id).toBe(defaultGroup?.group_id);
     expect(defaultAfter?.agents).toContain("codex");
     expect(disabled.default_group_id).toBe(defaultGroup?.group_id);
-    expect(after.find((group) => group.group_id === pool?.group_id)?.agents).toEqual([]);
+    expect(after.find((group) => group.group_id === pool?.group_id)).toMatchObject({ agents: [], enabled: false });
   });
 
   it("refuses to enable the pool when the agent already has a custom upstream", async () => {
@@ -97,6 +107,7 @@ describe("subscription pool service", () => {
     expect(JSON.stringify(listed)).not.toContain("refresh-secret");
     expect(JSON.stringify(listed)).not.toContain("refresh_token");
 
+    await releaseToDefault("codex");
     await svc.disableSubscriptionPool("codex", AGENTS);
     expect((await svc.listSubscriptionAccountsInternal()).accounts).toEqual([]);
   });
@@ -148,6 +159,8 @@ describe("subscription pool service", () => {
     expect(started.authorize_url).not.toContain("code_verifier");
     expect(JSON.stringify(started)).not.toContain("codeVerifier");
 
+    await expect(svc.disableSubscriptionPool("claude", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
+    await releaseToDefault("claude-code");
     await svc.disableSubscriptionPool("claude", AGENTS);
     const disabled = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     expect(disabled.find((group) => group.group_type === "default")?.agents).toContain("claude-code");

@@ -40,10 +40,16 @@ const DEFAULT_API_FORMATS: SourceFormat[] = ["openai-chat"];
 export type PoolProvider = "claude" | "codex";
 
 /** What a subscription pool fixes for its source, by provider. */
-const POOL_SOURCE: Record<PoolProvider, { provider: string; format: SourceFormat }> = {
-  claude: { provider: "claude", format: "anthropic-messages" },
-  codex: { provider: "openai", format: "openai-responses" },
+const POOL_SOURCE: Record<PoolProvider, { name: string; provider: string; format: SourceFormat }> = {
+  claude: { name: "sub-claude", provider: "claude", format: "anthropic-messages" },
+  codex: { name: "sub-openai", provider: "openai", format: "openai-responses" },
 };
+
+/** Source fields a subscription pool group gets: a fixed name, provider and format. */
+export function poolSourceFields(provider: PoolProvider): Pick<InstanceUpstreamSourceFields, "source_name" | "source_provider" | "source_formats"> {
+  const fixed = POOL_SOURCE[provider];
+  return { source_name: fixed.name, source_provider: fixed.provider, source_formats: [fixed.format] };
+}
 
 export function poolProviderOfName(name: string): PoolProvider | null {
   for (const provider of ["claude", "codex"] as const) {
@@ -77,8 +83,8 @@ export interface SourceWriteContext {
 export interface SourceWriteResult {
   /** Fields to store. Empty when the write leaves the group's source state alone. */
   patch: SourceInput;
-  /** True when the group is a source with at least one source agent after the write. */
-  servesSourceAgents: boolean;
+  /** True when the group is a model source after the write. A source may have no agent yet. */
+  isSource: boolean;
 }
 
 /**
@@ -100,7 +106,7 @@ export function resolveSourceWrite(ctx: SourceWriteContext): SourceWriteResult {
         { rejected_fields: sent },
       );
     }
-    return { patch: {}, servesSourceAgents: false };
+    return { patch: {}, isSource: false };
   }
 
   if (wasSource && existing && existing.mode !== ctx.mode) {
@@ -125,7 +131,7 @@ export function resolveSourceWrite(ctx: SourceWriteContext): SourceWriteResult {
     if (sent.some((key) => key !== "source_name")) {
       throw new SourceRuleError("INVALID_SOURCE_NAME", "source_name is required before other source fields");
     }
-    return { patch: {}, servesSourceAgents: false };
+    return { patch: {}, isSource: false };
   }
 
   const patch: SourceInput = {};
@@ -142,9 +148,8 @@ export function resolveSourceWrite(ctx: SourceWriteContext): SourceWriteResult {
     patch.source_name = name;
   }
 
-  const sourceAgents = resolveSourceAgents(ctx, !storedName);
+  const sourceAgents = resolveSourceAgents(ctx);
   if (sourceAgents) patch.source_agents = sourceAgents;
-  const effectiveSourceAgents = sourceAgents ?? existing?.source_agents ?? [];
 
   if (isPool) {
     const provider = poolProviderOfName(ctx.name);
@@ -173,19 +178,13 @@ export function resolveSourceWrite(ctx: SourceWriteContext): SourceWriteResult {
     throw new SourceRuleError("MODEL_ID_UNUSED", "model_id is not used by a group that only serves as a model source");
   }
 
-  return { patch, servesSourceAgents: effectiveSourceAgents.length > 0 };
+  return { patch, isSource: true };
 }
 
-function resolveSourceAgents(ctx: SourceWriteContext, firstSet: boolean): string[] | undefined {
+function resolveSourceAgents(ctx: SourceWriteContext): string[] | undefined {
   const sent = ctx.input.source_agents;
-  if (sent === undefined) {
-    if (firstSet) throw new SourceRuleError("INVALID_SOURCE_AGENTS", "source_agents is required when a source name is first set");
-    return undefined;
-  }
+  if (sent === undefined) return undefined;
   const unique = Array.from(new Set(sent));
-  if (firstSet && unique.length === 0) {
-    throw new SourceRuleError("INVALID_SOURCE_AGENTS", "source_agents must name at least one agent when a source name is first set");
-  }
   if (ctx.supportedAgents.length > 0) {
     const multi = new Set(ctx.supportedAgents.filter((a) => a.multi_source === true).map((a) => a.agent_source));
     const rejected = unique.filter((agent) => !multi.has(agent));

@@ -45,11 +45,11 @@ import type { SupportedAgent } from "./types.js";
  */
 export const DEFAULT_SUPPORTED_AGENTS_FALLBACK: readonly SupportedAgent[] = Object.freeze([
   { agent_source: "claude-code", protocol: "anthropic",        display_name: "Claude Code" },
-  { agent_source: "codebuddy",   protocol: "openai-chat",      display_name: "CodeBuddy" },
+  { agent_source: "codebuddy",   protocol: "openai-chat",      display_name: "CodeBuddy", multi_source: true },
   { agent_source: "codex",       protocol: "openai-responses", display_name: "Codex" },
-  { agent_source: "workbuddy",   protocol: "openai-responses", display_name: "WorkBuddy" },
-  { agent_source: "dsh",         protocol: "openai-chat",      display_name: "DeepSeek Harness" },
-  { agent_source: "opencode",    protocol: "openai-chat",      display_name: "OpenCode" },
+  { agent_source: "workbuddy",   protocol: "openai-responses", display_name: "WorkBuddy", multi_source: true },
+  { agent_source: "dsh",         protocol: "openai-chat",      display_name: "DeepSeek Harness", multi_source: true },
+  { agent_source: "opencode",    protocol: "openai-chat",      display_name: "OpenCode", multi_source: true },
   { agent_source: "omp",         protocol: "openai-chat",      display_name: "oh-my-pi", multi_source: true },
   { agent_source: "hermes",      protocol: "anthropic",        display_name: "Hermes",   multi_source: true },
   { agent_source: "openclaw",    protocol: "anthropic",        display_name: "OpenClaw", multi_source: true },

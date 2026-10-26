@@ -542,6 +542,13 @@ const upstreamSourceFields = {
   source_models: z.array(sourceModelEntrySchema).optional(),
 };
 
+/** Which sources each client uses. Read-only, no key fields. */
+export const upstreamClientSourcesListSchema = z.object({}).catchall(z.unknown());
+export const upstreamClientSourcesUpdateSchema = z.object({
+  agent: z.string().min(1),
+  sources: z.array(z.string().min(1)),
+});
+
 // ── B 类:conversation groups ──
 
 /** B1 groups/list */
@@ -713,6 +720,8 @@ export const V3_SCHEMAS = {
   "/v3/meta/instance-upstream/groups/suggest-source-name": upstreamSuggestSourceNameSchema,
   "/v3/meta/instance-upstream/groups/source-models/update": upstreamSourceModelsUpdateSchema,
   "/v3/meta/instance-upstream/groups/source-refresh": upstreamSourceRefreshSchema,
+  "/v3/meta/instance-upstream/client-sources/list": upstreamClientSourcesListSchema,
+  "/v3/meta/instance-upstream/client-sources/update": upstreamClientSourcesUpdateSchema,
   "/v3/meta/instance-upstream/extraction/get": upstreamExtractionGetSchema,
   "/v3/meta/instance-upstream/extraction/create": upstreamExtractionCreateSchema,
   "/v3/meta/instance-upstream/extraction/update": upstreamExtractionUpdateSchema,

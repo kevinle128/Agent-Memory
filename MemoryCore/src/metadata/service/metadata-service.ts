@@ -37,6 +37,7 @@ import {
 import { resolveUserId } from "./resolve-user-id.js";
 import {
   SourceRuleError,
+  poolSourceFields,
   resolveSourceWrite,
   sentSourceKeys,
   suggestSourceName,
@@ -2439,6 +2440,9 @@ export class MetadataService {
     if (current?.group_type === "custom" && current.mode !== "subscription_pool") {
       throw new MetadataError("POOL_AGENT_CUSTOM_GROUP", `agent ${agent} is already in a custom upstream group`);
     }
+    if (!existingPool?.source_name && (await this.takenSourceNames(existingPool?.group_id)).has(poolSourceFields(provider).source_name)) {
+      throw new MetadataError("SOURCE_NAME_TAKEN", `source name is already used by another group: ${poolSourceFields(provider).source_name}`);
+    }
     try {
       const result = await this.store.moveAgentBetweenUpstreamGroups({
         agent,
@@ -2447,7 +2451,14 @@ export class MetadataService {
           ? { group_id: existingPool.group_id, enabled: true }
           : { create: { name: this.subscriptionPoolName(provider), mode: "subscription_pool", base_url: "", api_key: "", model_id: "", description: `${provider} subscription accounts` } },
       });
-      return this.toPublicGroup(result.to);
+      if (result.to.source_name) return this.toPublicGroup(result.to);
+      const named = await this.store.updateInstanceUpstreamGroup({
+        group_id: result.to.group_id,
+        expected_group_type: "custom",
+        ...poolSourceFields(provider),
+      });
+      this.notifySourceAttached(result.to, named);
+      return this.toPublicGroup(named);
     } catch (e) {
       throw this.translateUpstreamConflict(e);
     }
@@ -2455,18 +2466,15 @@ export class MetadataService {
 
   async disableSubscriptionPool(provider: SubscriptionProvider, supportedAgents: SupportedAgent[]): Promise<Record<string, unknown>> {
     await this.store.ensureDefaultSeeded(supportedAgents);
-    const agent = this.subscriptionAgent(provider);
     const groups = await this.store.listInstanceUpstreamGroups(undefined, supportedAgents);
-    const pool = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.agents.includes(agent));
+    const pool = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.name === this.subscriptionPoolName(provider));
     const target = groups.find((g) => g.group_type === "default");
-    if (!pool || !target) throw new MetadataError("POOL_NOT_ENABLED", `subscription pool is not enabled for ${provider}`);
+    if (!pool?.enabled || !target) throw new MetadataError("POOL_NOT_ENABLED", `subscription pool is not enabled for ${provider}`);
+    // A client that still uses the pool must pick another source first.
+    this.assertSourceNotInUse(pool);
     try {
-      const result = await this.store.moveAgentBetweenUpstreamGroups({
-        agent,
-        from: [{ group_id: pool.group_id, enabled: false }],
-        to: { group_id: target.group_id },
-      });
-      return { group_id: pool.group_id, disabled: true, default_group_id: result.to.group_id };
+      await this.store.toggleInstanceUpstreamGroup({ group_id: pool.group_id, enabled: false });
+      return { group_id: pool.group_id, disabled: true, default_group_id: target.group_id };
     } catch (e) {
       throw this.translateUpstreamConflict(e);
     }
@@ -2806,7 +2814,7 @@ export class MetadataService {
       input,
       supportedAgents,
     });
-    this.assertAgents(input.agents, supportedAgents, "custom", source.servesSourceAgents);
+    this.assertAgents(input.agents, supportedAgents, "custom", source.isSource);
     if (input.mode === "subscription_pool") {
       if (input.base_url?.trim() || input.api_key?.trim()) {
         throw new MetadataError("POOL_REJECTS_UPSTREAM_CREDENTIALS", "a subscription pool group has no base_url or api_key");
@@ -2896,6 +2904,9 @@ export class MetadataService {
       if (input.mode !== undefined) this.assertModeForGroupType("custom", input.mode);
       const existing = await this.store.getInstanceUpstreamGroup(input.group_id);
       before = existing;
+      if (existing && ((input.enabled === false && existing.enabled) || (input.source_enabled === false && existing.source_enabled))) {
+        this.assertSourceNotInUse(existing);
+      }
       const mode = input.mode ?? existing?.mode;
       if (existing && mode) {
         const agents = input.agents ?? existing.agents;
@@ -2912,7 +2923,7 @@ export class MetadataService {
         sourcePatch = source.patch;
         // A pool legitimately has no agents while it is off, so only an agents change is checked there.
         if (input.agents !== undefined || (mode !== "subscription_pool" && sentSourceKeys(input).length > 0)) {
-          this.assertAgents(agents, supportedAgents, "custom", source.servesSourceAgents);
+          this.assertAgents(agents, supportedAgents, "custom", source.isSource);
         }
       } else if (input.agents !== undefined) {
         this.assertAgents(input.agents, supportedAgents, "custom");
@@ -2963,6 +2974,10 @@ export class MetadataService {
   ): Promise<Record<string, unknown>> {
     // 存量兜底 seed (同 create 分支说明)
     await this.store.ensureDefaultSeeded(supportedAgents);
+    if (!input.enabled) {
+      const current = await this.store.getInstanceUpstreamGroup(input.group_id);
+      if (current) this.assertSourceNotInUse(current);
+    }
     try {
       const row = await this.store.toggleInstanceUpstreamGroup(input);
       return { group_id: row.group_id, enabled: row.enabled, updated_at: row.updated_at };
@@ -2997,6 +3012,7 @@ export class MetadataService {
         "use /extraction/delete for extraction row",
       );
     }
+    this.assertSourceNotInUse(existing);
     const ok = await this.store.deleteInstanceUpstreamGroup(input);
     return { deleted: ok, released_agents: existing.agents };
   }
@@ -3169,7 +3185,7 @@ export class MetadataService {
     modelId: string;
     input: SourceInput;
     supportedAgents: SupportedAgent[];
-  }): Promise<{ patch: SourceInput; servesSourceAgents: boolean }> {
+  }): Promise<{ patch: SourceInput; isSource: boolean }> {
     const needsNames = Boolean(params.input.source_name) && !params.existing?.source_name;
     const takenNames = needsNames
       ? await this.takenSourceNames(params.existing?.group_id)
@@ -3208,6 +3224,156 @@ export class MetadataService {
       .filter((r) => r.group_type === "custom" && r.mode !== "subscription_pool")
       .map((r) => this.toPublicGroup(r));
     return { items };
+  }
+
+  /** Clients that use a source group: its multi-source clients and the clients routed to it. */
+  private sourceClients(group: InstanceUpstreamConfigEntity): string[] {
+    if (group.group_type !== "custom" || (!group.source_name && group.mode !== "subscription_pool")) return [];
+    return Array.from(new Set([...group.source_agents, ...group.agents]));
+  }
+
+  /** A source that a client still uses can be neither turned off nor deleted. */
+  private assertSourceNotInUse(group: InstanceUpstreamConfigEntity): void {
+    const clients = this.sourceClients(group);
+    if (clients.length === 0) return;
+    throw new MetadataError(
+      "SOURCE_IN_USE",
+      `source ${group.source_name || group.name} is used by: ${clients.join(",")}`,
+      { source_name: group.source_name, group_id: group.group_id, clients },
+    );
+  }
+
+  private static readonly PROTOCOL_FORMAT: Record<SupportedAgent["protocol"], string> = {
+    anthropic: "anthropic-messages",
+    "openai-chat": "openai-chat",
+    "openai-responses": "openai-responses",
+  };
+
+  private clientSourceGroups(groups: InstanceUpstreamConfigEntity[]): InstanceUpstreamConfigEntity[] {
+    return groups
+      .filter((g) => g.group_type === "custom" && g.source_name && g.mode !== "custom_passthrough")
+      .sort((a, b) => (a.source_name < b.source_name ? -1 : a.source_name > b.source_name ? 1 : 0));
+  }
+
+  private static sourceIsOn(group: InstanceUpstreamConfigEntity): boolean {
+    return group.mode === "subscription_pool" ? group.enabled : group.source_enabled;
+  }
+
+  private buildClientSources(
+    groups: InstanceUpstreamConfigEntity[],
+    supportedAgents: SupportedAgent[],
+  ): { agents: Record<string, unknown>[]; sources: Record<string, unknown>[] } {
+    const sources = this.clientSourceGroups(groups);
+    return {
+      agents: supportedAgents.map((a) => {
+        const multi = a.multi_source === true;
+        const chosen = sources.filter((g) => (multi ? g.source_agents : g.agents).includes(a.agent_source));
+        return {
+          agent: a.agent_source,
+          display_name: a.display_name,
+          mode: multi ? "multi" : "single",
+          ...(multi ? {} : { format: MetadataService.PROTOCOL_FORMAT[a.protocol] }),
+          selected: chosen.map((g) => g.source_name),
+        };
+      }),
+      sources: sources.map((g) => ({
+        source_name: g.source_name,
+        source_type: g.mode === "subscription_pool" ? "subscription" : "api",
+        provider: g.source_provider,
+        formats: g.source_formats,
+        enabled: MetadataService.sourceIsOn(g),
+        models_on: g.source_models.filter((m) => m.enabled).length,
+        models_total: g.source_models.length,
+      })),
+    };
+  }
+
+  /** Which sources each client uses, for any signed-in user. No key field is returned. */
+  async listClientSources(supportedAgents: SupportedAgent[]): Promise<{ agents: Record<string, unknown>[]; sources: Record<string, unknown>[] }> {
+    const groups = await this.store.listInstanceUpstreamGroups(undefined, []);
+    return this.buildClientSources(groups, supportedAgents);
+  }
+
+  /**
+   * Set the sources of one client. A multi-source client is added to or removed from the
+   * `source_agents` of every source group. A single-source client moves into the one group
+   * that serves its format.
+   */
+  async updateClientSources(input: { agent: string; sources: string[] }, supportedAgents: SupportedAgent[]): Promise<Record<string, unknown>> {
+    const agent = supportedAgents.find((a) => a.agent_source === input.agent);
+    if (!agent) throw new MetadataError("INVALID_AGENTS", `unknown agent: ${input.agent}`, { unknown_agents: [input.agent] });
+    const names = Array.from(new Set(input.sources));
+    await this.store.ensureDefaultSeeded(supportedAgents);
+    const groups = await this.store.listInstanceUpstreamGroups(undefined, supportedAgents);
+    const sources = this.clientSourceGroups(groups);
+    const chosen = names.map((n) => sources.find((g) => g.source_name === n));
+    const unknown = names.filter((_, i) => !chosen[i]);
+    if (unknown.length > 0) {
+      throw new MetadataError("SOURCE_NOT_FOUND", `unknown sources: ${unknown.join(",")}`, { unknown_sources: unknown });
+    }
+    const off = chosen.filter((g): g is InstanceUpstreamConfigEntity => Boolean(g) && !MetadataService.sourceIsOn(g!)).map((g) => g.source_name);
+    if (off.length > 0) {
+      throw new MetadataError("SOURCE_DISABLED", `sources are off: ${off.join(",")}`, { disabled_sources: off });
+    }
+    if (agent.multi_source === true) {
+      await this.setMultiSourceClient(agent.agent_source, sources, new Set(names));
+    } else {
+      await this.setSingleSourceClient(agent, groups, chosen as InstanceUpstreamConfigEntity[]);
+    }
+    const after = await this.store.listInstanceUpstreamGroups(undefined, []);
+    const entry = this.buildClientSources(after, [agent]).agents[0]!;
+    return entry;
+  }
+
+  private async setMultiSourceClient(agent: string, sources: InstanceUpstreamConfigEntity[], wanted: Set<string>): Promise<void> {
+    try {
+      for (const group of sources) {
+        const has = group.source_agents.includes(agent);
+        if (has === wanted.has(group.source_name)) continue;
+        await this.store.updateInstanceUpstreamGroup({
+          group_id: group.group_id,
+          expected_group_type: "custom",
+          expected_version: group.version,
+          source_agents: has ? group.source_agents.filter((a) => a !== agent) : [...group.source_agents, agent],
+        });
+      }
+    } catch (e) {
+      throw this.translateUpstreamConflict(e);
+    }
+  }
+
+  private async setSingleSourceClient(
+    agent: SupportedAgent,
+    groups: InstanceUpstreamConfigEntity[],
+    chosen: InstanceUpstreamConfigEntity[],
+  ): Promise<void> {
+    if (chosen.length !== 1) {
+      throw new MetadataError("INVALID_SOURCES", `${agent.agent_source} uses exactly one source`, { agent: agent.agent_source });
+    }
+    const target = chosen[0]!;
+    const format = MetadataService.PROTOCOL_FORMAT[agent.protocol];
+    if (!target.source_formats.includes(format)) {
+      throw new MetadataError(
+        "SOURCE_FORMAT_MISMATCH",
+        `source ${target.source_name} does not serve ${format}`,
+        { source_name: target.source_name, required_format: format },
+      );
+    }
+    // The group routes the client to its upstream, so the group switch must be on as well.
+    if (!target.enabled) {
+      throw new MetadataError("SOURCE_DISABLED", `source ${target.source_name} is off`, { disabled_sources: [target.source_name] });
+    }
+    const holders = groups.filter((g) => g.agents.includes(agent.agent_source));
+    if (holders.length === 1 && holders[0]!.group_id === target.group_id) return;
+    try {
+      await this.store.moveAgentBetweenUpstreamGroups({
+        agent: agent.agent_source,
+        from: holders.filter((g) => g.group_id !== target.group_id).map((g) => ({ group_id: g.group_id })),
+        to: { group_id: target.group_id },
+      });
+    } catch (e) {
+      throw this.translateUpstreamConflict(e);
+    }
   }
 
   /** Tick models of a source on or off. Models are matched by their provider id. */
@@ -3383,8 +3549,8 @@ export class MetadataService {
     }
   }
 
-  private assertAgents(agents: string[], supported: SupportedAgent[], groupType: GroupType, servesSourceAgents = false): void {
-    if (groupType === "custom" && agents.length === 0 && !servesSourceAgents) {
+  private assertAgents(agents: string[], supported: SupportedAgent[], groupType: GroupType, isSource = false): void {
+    if (groupType === "custom" && agents.length === 0 && !isSource) {
       throw new MetadataError("INVALID_AGENTS", "custom group must have at least 1 agent");
     }
     if (supported.length === 0) return; // 无 supported 列表时跳过枚举校验(仅 boot-time 极端情况)

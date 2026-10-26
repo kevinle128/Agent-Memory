@@ -9,6 +9,7 @@ import type { MongoMemoryServer } from "mongodb-memory-server";
 import { MongoMetadataStore } from "./mongodb-adapter.js";
 import { runMetadataStoreContract } from "./metadata-store.contract.js";
 import { runModelSourceServiceContract } from "./model-source.service.contract.js";
+import { runClientSourcesServiceContract } from "./client-sources.service.contract.js";
 
 function findMongod(): string | null {
   if (process.env.MONGOMS_SYSTEM_BINARY) return process.env.MONGOMS_SYSTEM_BINARY;
@@ -62,6 +63,20 @@ if (!mongodPath) {
     async () => {
       dbSeq += 1;
       return new MongoMetadataStore(client, `meta_source_${dbSeq}`, {
+        useTransactions: false,
+        ownsClient: false,
+      });
+    },
+    async (store) => {
+      await store.close();
+    },
+  );
+
+  runClientSourcesServiceContract(
+    "mongodb",
+    async () => {
+      dbSeq += 1;
+      return new MongoMetadataStore(client, `meta_client_source_${dbSeq}`, {
         useTransactions: false,
         ownsClient: false,
       });

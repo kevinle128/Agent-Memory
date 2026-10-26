@@ -102,7 +102,6 @@ export function runModelSourceServiceContract(
       it("keeps rejecting a group with no agents and no source", async () => {
         await expect(create(unified("plain"))).rejects.toMatchObject({ code: "INVALID_AGENTS" });
         await expect(create(unified("plain", { source_agents: ["omp"] }))).rejects.toMatchObject({ code: "INVALID_SOURCE_NAME" });
-        await expect(create(unified("plain", { source_name: "x", source_agents: [] }))).rejects.toMatchObject({ code: "INVALID_SOURCE_AGENTS" });
       });
 
       it("lets one group serve agents and be a source", async () => {
@@ -117,8 +116,9 @@ export function runModelSourceServiceContract(
         await expect(source("api-two")).resolves.toMatchObject({ source_agents: ["omp"] });
       });
 
-      it("requires source_agents when the name is first set", async () => {
-        await expect(create(unified("a", { source_name: "api-a" }))).rejects.toMatchObject({ code: "INVALID_SOURCE_AGENTS" });
+      it("needs no source_agents when the name is first set", async () => {
+        await expect(create(unified("a", { source_name: "api-a" }))).resolves.toMatchObject({ source_name: "api-a", source_agents: [] });
+        await expect(create(unified("b", { source_name: "api-b", source_agents: [] }))).resolves.toMatchObject({ source_agents: [] });
       });
 
       it.each(["claude-code", "codex", "codebuddy", "ghost"])("rejects %s in source_agents", async (agent) => {
@@ -184,16 +184,16 @@ export function runModelSourceServiceContract(
       it("turns an ordinary group into a source on update, once", async () => {
         const group = await groupServing("codebuddy", "late");
         await svc.updateInstanceUpstreamGroup({ group_id: group.group_id, group_type: "custom", model_id: "m" }, AGENTS);
-        await expect(svc.updateInstanceUpstreamGroup({ group_id: group.group_id, group_type: "custom", source_name: "api-late" }, AGENTS))
-          .rejects.toMatchObject({ code: "INVALID_SOURCE_AGENTS" });
         await expect(svc.updateInstanceUpstreamGroup({ group_id: group.group_id, group_type: "custom", source_name: "api-late", source_agents: ["hermes"] }, AGENTS))
           .resolves.toMatchObject({ source_name: "api-late", source_agents: ["hermes"], agents: ["codebuddy"], model_id: "m" });
+        await expect(svc.updateInstanceUpstreamGroup({ group_id: group.group_id, group_type: "custom", source_name: "api-other" }, AGENTS))
+          .rejects.toMatchObject({ code: "SOURCE_NAME_IMMUTABLE" });
       });
 
-      it("keeps a source-only group valid and refuses to empty both lists", async () => {
+      it("keeps a source-only group valid when it has no client left", async () => {
         const group = await source("api-both-empty") as { group_id: string };
         await expect(svc.updateInstanceUpstreamGroup({ group_id: group.group_id, group_type: "custom", source_agents: [] }, AGENTS))
-          .rejects.toMatchObject({ code: "INVALID_AGENTS" });
+          .resolves.toMatchObject({ source_agents: [], agents: [] });
         await expect(svc.updateInstanceUpstreamGroup({ group_id: group.group_id, group_type: "custom", agents: [] }, AGENTS))
           .resolves.toMatchObject({ agents: [] });
       });
@@ -259,6 +259,13 @@ export function runModelSourceServiceContract(
       async function codexPool(): Promise<{ group_id: string }> {
         return await svc.enableSubscriptionPool("codex", AGENTS) as { group_id: string };
       }
+      /** Takes codex out of the pool, as choosing another source does, so the pool can be switched off. */
+      async function releaseCodex(): Promise<void> {
+        const groups = await store.listInstanceUpstreamGroups(undefined, AGENTS);
+        const pool = groups.find((g) => g.mode === "subscription_pool")!;
+        const def = groups.find((g) => g.group_type === "default")!;
+        await store.moveAgentBetweenUpstreamGroups({ agent: "codex", from: [{ group_id: pool.group_id }], to: { group_id: def.group_id } });
+      }
       const attach = (group_id: string, extra: Record<string, unknown> = {}) =>
         svc.updateInstanceUpstreamGroup({ group_id, group_type: "custom", source_name: "sub-openai", source_agents: ["omp"], ...extra }, AGENTS);
 
@@ -282,7 +289,11 @@ export function runModelSourceServiceContract(
           return result.providers[0].source;
         };
         expect(await status()).toMatchObject({ source_name: "sub-openai", source_active: true });
+        await expect(svc.disableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
+        await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: [] }, AGENTS);
+        await releaseCodex();
         await svc.disableSubscriptionPool("codex", AGENTS);
+        await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: ["omp"] }, AGENTS);
         expect(await status()).toMatchObject({ source_name: "sub-openai", source_agents: ["omp"], source_active: false });
         await svc.enableSubscriptionPool("codex", AGENTS);
         expect(await status()).toMatchObject({ source_name: "sub-openai", source_agents: ["omp"], source_formats: ["openai-responses"], source_active: true });
@@ -290,7 +301,8 @@ export function runModelSourceServiceContract(
 
       it("lets a disabled pool keep its source agents and still change them", async () => {
         const pool = await codexPool();
-        await attach(pool.group_id);
+        await attach(pool.group_id, { source_agents: [] });
+        await releaseCodex();
         await svc.disableSubscriptionPool("codex", AGENTS);
         await expect(svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: ["omp", "hermes"] }, AGENTS))
           .resolves.toMatchObject({ source_agents: ["omp", "hermes"], agents: [] });
@@ -313,6 +325,8 @@ export function runModelSourceServiceContract(
         await attach(pool.group_id);
         expect(await accounts()).toBe(onWithout);
 
+        await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: [] }, AGENTS);
+        await releaseCodex();
         await svc.disableSubscriptionPool("codex", AGENTS);
         const offWith = await accounts();
         expect(JSON.parse(offWith).accounts).toEqual([]);
