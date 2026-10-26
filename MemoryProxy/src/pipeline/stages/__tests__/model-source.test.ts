@@ -107,7 +107,7 @@ describe("stageModelSource", () => {
   });
 
   it("returns none for agents that are not multi-source, without any fetch", async () => {
-    for (const agent of ["claude-code", "codex", "codebuddy", "workbuddy", "dsh", "opencode", undefined]) {
+    for (const agent of ["claude-code", "codex", "cursor", undefined]) {
       expect(await stageModelSource(input({ agent }))).toEqual({ kind: "none" });
     }
     expect(fetchSpy).not.toHaveBeenCalled();

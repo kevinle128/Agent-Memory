@@ -7,9 +7,9 @@ describe("supported agents", () => {
     expect(isSupportedAgent("pi")).toBe(false);
   });
 
-  it("marks omp, hermes and openclaw as multi-source", () => {
-    for (const agent of ["omp", "hermes", "openclaw"]) expect(isMultiSourceAgent(agent)).toBe(true);
-    for (const agent of ["claude-code", "codex", "codebuddy", "pi", "", undefined, null]) {
+  it("marks the source-choosing agents as multi-source", () => {
+    for (const agent of ["omp", "hermes", "openclaw", "codebuddy", "workbuddy", "dsh", "opencode"]) expect(isMultiSourceAgent(agent)).toBe(true);
+    for (const agent of ["claude-code", "codex", "pi", "", undefined, null]) {
       expect(isMultiSourceAgent(agent)).toBe(false);
     }
   });
