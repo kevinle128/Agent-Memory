@@ -2283,7 +2283,7 @@ export class MetadataService {
   // Service 层职责:
   //   1. 应用层字段级校验(name 长度 / mode 合法性 / default 组不可改字段等)
   //   2. store 抛的 InstanceUpstreamWriteConflictError 翻译为 MetadataError
-  //   3. Public/Internal 两条 list 路径:public 脱敏(api_key_masked),
+  //   3. Public/Internal 两条 list 路径:public 只给 api_key_configured(不含 key 的任何部分),
   //      Internal 明文(供 Proxy 转发)
   //   4. 依赖调用方 (router 层) 提供 supported-agents 数组用于 seed 和 agents 校验;
   //      service 本身不知道 yaml/config 存在
@@ -3206,10 +3206,7 @@ export class MetadataService {
     const rows = await this.store.listInstanceUpstreamGroups(undefined, []);
     const items = rows
       .filter((r) => r.group_type === "custom" && r.mode !== "subscription_pool")
-      .map((r) => {
-        const { api_key_masked: _masked, ...rest } = this.toPublicGroup(r);
-        return { ...rest, api_key_configured: Boolean(r.api_key) };
-      });
+      .map((r) => this.toPublicGroup(r));
     return { items };
   }
 
@@ -3432,7 +3429,7 @@ export class MetadataService {
       enabled: row.enabled,
       mode: row.mode,
       base_url: row.base_url,
-      api_key_masked: row.api_key ? maskKeyValue(row.api_key) : "",
+      api_key_configured: Boolean(row.api_key),
       model_id: row.model_id,
       description: row.description,
       source_name: row.source_name,

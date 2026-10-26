@@ -373,6 +373,25 @@ export function runModelSourceServiceContract(
         expect((await post("", "groups/view", {})).status).toBe(401);
       });
 
+      it("gives an admin only api_key_configured on create, update and list, never a part of the key", async () => {
+        const created = await post("admin-key", "groups/create", {
+          group_type: "custom", name: "admin-write", agents: [], source_name: "api-write", source_agents: ["omp"], mode: "custom_unified",
+          base_url: "https://api.example.test", api_key: "sk-provider-secret-value",
+        });
+        expect(created.status).toBe(200);
+        const group = created.body.data as Record<string, unknown>;
+        expect(group.api_key_configured).toBe(true);
+        const updated = await post("admin-key", "groups/update", {
+          group_id: group.group_id, group_type: "custom", description: "changed",
+        });
+        expect(updated.status).toBe(200);
+        const listed = await post("admin-key", "groups/list", {});
+        expect(listed.status).toBe(200);
+        for (const res of [created, updated, listed]) {
+          expect(JSON.stringify(res.body)).not.toMatch(/sk-provider|api_key_masked|"api_key"/);
+        }
+      });
+
       it.each([
         ["groups/create", { group_type: "custom", ...unified("x"), source_name: "api-x", source_agents: ["omp"] }],
         ["groups/update", { group_id: "g", group_type: "custom", description: "d" }],

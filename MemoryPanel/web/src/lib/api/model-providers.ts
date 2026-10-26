@@ -96,7 +96,7 @@ export interface UpdateGroupInput extends SourceInput {
 }
 
 /** Group as the write actions return it. Admin shape: a masked key that this Panel never reads. */
-export type WrittenGroup = Omit<ProviderGroup, 'api_key_configured'> & { api_key_masked?: string };
+export type WrittenGroup = ProviderGroup;
 
 export const modelProvidersApi = {
   view: async (): Promise<ProviderGroup[]> => {
