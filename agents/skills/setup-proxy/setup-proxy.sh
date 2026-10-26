@@ -214,7 +214,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --task-id ID       Task ID (or 'no-task')"
       echo "  --conv-id ID       Conversation ID"
       echo ""
-      echo "Agents: claude-code|codebuddy|codex|workbuddy|dsh|hermes|openclaw"
+      echo "Agents: claude-code|codebuddy|codex|workbuddy|dsh|hermes|openclaw|omp"
       exit 0 ;;
     *) error "Unknown arg: $1"; exit 1 ;;
   esac
