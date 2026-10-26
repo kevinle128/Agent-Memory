@@ -10,7 +10,7 @@ import { runDirectPipeline as handleDirectPassthrough } from "./pipeline/runners
 import { runCodexPipeline, RESPONSES_SOURCE_AGENTS, runCodexPipeline as handleCodexEndpoint } from "./pipeline/runners/codex.js";
 import { handleAgentRouteMoved } from "./routes/agent-route-moved.js";
 import { runWorkbuddyPipeline as handleWorkbuddyEndpoint } from "./pipeline/runners/workbuddy.js";
-import { handleModels } from "./modelsHandler.js";
+import { handleHermesShow, handleModels, handleSourceModel } from "./modelsHandler.js";
 import { apiKeyToKeyId, extractBearerToken } from "./opik.js";
 import { createSkillBridgeHandler } from "./skill/skill-bridge.js";
 import { createMemoryBridgeHandler } from "./memory/memory-bridge.js";
@@ -400,6 +400,13 @@ export function createApp(config: ProxyConfig): Hono {
 
   // OpenAI Models API — tenant-scoped and generated locally from the public pricing catalog.
   app.get("/:agent/:spaceId/v1/models", (c) => handleModels(c, config));
+  app.get("/:agent/:spaceId/v1/models/:model{.+}", (c, next) => handleSourceModel(c, config, next));
+  // Hermes probe routes. With modelSources off they fall through to the old routing.
+  app.get("/hermes/:spaceId/api/v1/models", (c, next) => (
+    config.modelSources?.enabled === true ? handleModels(c, config) : next()
+  ));
+  app.get("/hermes/:spaceId/api/v1/models/:model{.+}", (c, next) => handleSourceModel(c, config, next));
+  app.post("/hermes/:spaceId/api/show", (c, next) => handleHermesShow(c, config, next));
   app.post("/:agent/:spaceId/v1/messages", (c) => handleAnthropicMessages(c, config));
   app.post("/:agent/:spaceId/v1/messages/count_tokens", (c) => handleAuxiliaryEndpoint(c, config));
   app.post("/:agent/:spaceId/v1/embeddings", (c) => handleAuxiliaryEndpoint(c, config));

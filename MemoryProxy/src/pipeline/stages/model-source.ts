@@ -62,7 +62,7 @@ export interface ModelSourceInput {
   servesPool: boolean;
 }
 
-function isSourceRow(row: InstanceUpstreamRow): boolean {
+export function isSourceRow(row: InstanceUpstreamRow): boolean {
   return row.group_type === "custom"
     && (row.mode === "custom_unified" || row.mode === "subscription_pool")
     && typeof row.source_name === "string"
