@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # agents/setup-proxy.sh — One-shot interactive proxy configuration for AI agents
 #
-# Supports: Claude Code | CodeBuddy | Codex | WorkBuddy | dsh | Hermes | OpenClaw | omp
+# Supports: Claude Code | CodeBuddy | Codex | WorkBuddy | dsh | Hermes | OpenClaw | omp | OpenCode
 #
 # Usage:
 #   bash agents/setup-proxy.sh            # interactive
@@ -89,7 +89,7 @@ check_jq() {
 
 # ─── Model sources (GET <proxy>/<agent>/<space>/v1/models) ────────────────────
 # Agents that list <source>/<model> entries and need one client provider per format.
-MULTI_SOURCE_AGENTS=("hermes" "openclaw" "omp")
+MULTI_SOURCE_AGENTS=("codebuddy" "workbuddy" "dsh" "opencode" "hermes" "openclaw" "omp")
 SOURCE_MODELS_JSON="[]"
 SOURCE_MODELS_LOADED=false
 
@@ -127,6 +127,12 @@ has_source_models() {
   [[ "$(printf '%s' "$SOURCE_MODELS_JSON" | jq 'length')" -gt 0 ]]
 }
 
+# Ids of every source model (one per line), whatever the source format: the client
+# speaks its own wire format and the proxy converts.
+source_ids_all() {
+  printf '%s' "$SOURCE_MODELS_JSON" | jq -r '.[].id'
+}
+
 # Ids of the source models for one format (one per line).
 source_ids_for_format() {
   printf '%s' "$SOURCE_MODELS_JSON" | jq -r --arg f "$1" '.[] | select(.format == $f) | .id'
@@ -137,12 +143,12 @@ pick_default_source_model() {
   local picked
   picked=$(printf '%s' "$SOURCE_MODELS_JSON" | jq -r --arg m "$MODEL_ID" \
     'if any(.[]; .id == $m) then $m else .[0].id end')
-  [[ "$picked" != "$MODEL_ID" ]] && warn "模型 ${MODEL_ID} 不在 /v1/models 中，默认改用 ${picked}"
+  [[ "$picked" != "$MODEL_ID" ]] && warn "模型 ${MODEL_ID} 不在 /v1/models 中，默认改用 ${picked}" >&2
   printf '%s' "$picked"
 }
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-AGENTS=("claude-code" "codebuddy" "codex" "workbuddy" "dsh" "hermes" "openclaw" "omp")
+AGENTS=("claude-code" "codebuddy" "codex" "workbuddy" "dsh" "hermes" "openclaw" "omp" "opencode")
 AGENT_LABELS=(
   "Claude Code       — Anthropic Messages, ~/.claude/settings.json"
   "CodeBuddy         — OpenAI Chat, ~/.codebuddy/models.json"
@@ -152,6 +158,7 @@ AGENT_LABELS=(
   "Hermes            — OpenAI Chat + Header预选, ~/.hermes/config.yaml"
   "OpenClaw          — OpenAI Chat + Header预选, ~/.openclaw/openclaw.json"
   "omp (oh-my-pi)    — 多来源 (Anthropic/Responses/Chat), ~/.omp/agent/models.yml"
+  "OpenCode          — OpenAI Chat 多来源, ~/.config/opencode/opencode.json"
 )
 
 DEFAULT_CONFIG_PATHS=(
@@ -163,6 +170,7 @@ DEFAULT_CONFIG_PATHS=(
   "~/.hermes/config.yaml"
   "~/.openclaw/openclaw.json"
   "~/.omp/agent/models.yml"
+  "~/.config/opencode/opencode.json"
 )
 
 # Expand ~ to $HOME for actual file operations
@@ -214,7 +222,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --task-id ID       Task ID (or 'no-task')"
       echo "  --conv-id ID       Conversation ID"
       echo ""
-      echo "Agents: claude-code|codebuddy|codex|workbuddy|dsh|hermes|openclaw|omp"
+      echo "Agents: claude-code|codebuddy|codex|workbuddy|dsh|hermes|openclaw|omp|opencode"
       exit 0 ;;
     *) error "Unknown arg: $1"; exit 1 ;;
   esac
@@ -851,42 +859,67 @@ EOF
   echo -e "  ${DIM}或: claude --model ${MODEL_ID}${RESET}"
 }
 
+# Merge entries into a models list: drops the same ids and this space's earlier <source>/<model>
+# entries, keeps everything else. $1 file, $2 base url,
+# $3 JSON array of entries, $4 jq path of the list ("." for a top-level array, ".models" for an object).
+merge_models_json() {
+  local filepath="$1" base_url="$2" entries="$3" list="$4" tmp
+  tmp=$(mktemp)
+  if [[ -f "$filepath" ]]; then
+    if [[ "$list" == "." ]]; then
+      jq --arg u "$base_url" --argjson e "$entries" \
+        '($e | map(.id)) as $ids
+         | [.[] | select(((.id | IN($ids[])) or (.url == $u and (.id | tostring | contains("/")))) | not)] + $e' "$filepath" > "$tmp"
+    else
+      jq --arg u "$base_url" --argjson e "$entries" \
+        '($e | map(.id)) as $ids
+         | .models = ([(.models // [])[] | select(((.id | IN($ids[])) or (.url == $u and (.id | tostring | contains("/")))) | not)] + $e)' "$filepath" > "$tmp"
+    fi
+  elif [[ "$list" == "." ]]; then
+    printf '%s' "$entries" > "$tmp"
+  else
+    jq -n --argjson e "$entries" '{ models: $e }' > "$tmp"
+  fi
+  mv "$tmp" "$filepath"
+}
+
 write_codebuddy() {
   local filepath="$1"
   ensure_dir "$filepath"
   backup_file "$filepath"
 
   local base_url="${PROXY_HOST}/codebuddy/${INSTANCE_ID}"
-  local new_entry
-  new_entry=$(jq -n \
-    --arg id "$MODEL_ID" \
-    --arg url "$base_url" \
-    --arg key "$USER_KEY" \
-    '{
-      id: $id,
-      name: "proxy-memory-agent",
-      vendor: "claude",
-      apiKey: $key,
-      maxInputTokens: 200000,
-      url: $url,
-      supportsToolCall: true,
-      supportsImages: true
-    }')
-
-  if [[ -f "$filepath" ]]; then
-    local tmp
-    tmp=$(mktemp)
-    # Remove existing entry with same id, then append
-    jq --arg id "$MODEL_ID" --argjson entry "$new_entry" \
-      '.models = ([(.models // [])[] | select(.id != $id)] + [$entry])' \
-      "$filepath" > "$tmp"
-    mv "$tmp" "$filepath"
+  load_source_models
+  local entries
+  if has_source_models; then
+    entries=$(source_ids_all | jq -R . | jq -s \
+      --arg url "$base_url" --arg key "$USER_KEY" \
+      'map({id: ., name: ., vendor: "claude", apiKey: $key, maxInputTokens: 200000,
+            url: $url, supportsToolCall: true, supportsImages: true})')
   else
-    jq -n --argjson entry "$new_entry" '{ models: [$entry] }' > "$filepath"
+    entries=$(jq -n \
+      --arg id "$MODEL_ID" \
+      --arg url "$base_url" \
+      --arg key "$USER_KEY" \
+      '[{
+        id: $id,
+        name: "proxy-memory-agent",
+        vendor: "claude",
+        apiKey: $key,
+        maxInputTokens: 200000,
+        url: $url,
+        supportsToolCall: true,
+        supportsImages: true
+      }]')
   fi
+  merge_models_json "$filepath" "$base_url" "$entries" ".models"
   success "已写入 ${filepath}"
   echo ""
-  info "启动方式: 在 CodeBuddy 对话框中选择模型 ${BOLD}proxy-memory-agent${RESET}"
+  if has_source_models; then
+    info "启动方式: 在 CodeBuddy 对话框中选择模型 ${BOLD}<来源>/<模型>${RESET}"
+  else
+    info "启动方式: 在 CodeBuddy 对话框中选择模型 ${BOLD}proxy-memory-agent${RESET}"
+  fi
 }
 
 codex_auth_lines() {
@@ -992,37 +1025,28 @@ write_workbuddy() {
   backup_file "$filepath"
 
   local base_url="${PROXY_HOST}/workbuddy/${INSTANCE_ID}"
-  local new_entry
-  new_entry=$(jq -n \
-    --arg id "$MODEL_ID" \
-    --arg url "$base_url" \
-    --arg key "$USER_KEY" \
-    '{
-      id: $id,
-      name: $id,
-      vendor: "Custom",
-      url: $url,
-      apiKey: $key,
-      supportsToolCall: true,
-      supportsImages: false,
-      supportsReasoning: false,
-      useCustomProtocol: false
-    }')
-
-  if [[ -f "$filepath" ]]; then
-    local tmp
-    tmp=$(mktemp)
-    # WorkBuddy models.json is a top-level array
-    jq --arg id "$MODEL_ID" --argjson entry "$new_entry" \
-      '[.[] | select(.id != $id)] + [$entry]' \
-      "$filepath" > "$tmp"
-    mv "$tmp" "$filepath"
+  load_source_models
+  local ids
+  if has_source_models; then
+    ids=$(source_ids_all)
   else
-    jq -n --argjson entry "$new_entry" '[$entry]' > "$filepath"
+    ids="$MODEL_ID"
   fi
+  local entries
+  entries=$(printf '%s\n' "$ids" | jq -R . | jq -s \
+    --arg url "$base_url" --arg key "$USER_KEY" \
+    'map({id: ., name: ., vendor: "Custom", url: $url, apiKey: $key,
+          supportsToolCall: true, supportsImages: false, supportsReasoning: false,
+          useCustomProtocol: false})')
+  # WorkBuddy models.json is a top-level array
+  merge_models_json "$filepath" "$base_url" "$entries" "."
   success "已写入 ${filepath}"
   echo ""
-  info "启动方式: 在 WorkBuddy 自定义模型列表中选择 ${BOLD}${MODEL_ID}${RESET}"
+  if has_source_models; then
+    info "启动方式: 在 WorkBuddy 自定义模型列表中选择 ${BOLD}<来源>/<模型>${RESET}"
+  else
+    info "启动方式: 在 WorkBuddy 自定义模型列表中选择 ${BOLD}${MODEL_ID}${RESET}"
+  fi
 }
 
 write_dsh() {
@@ -1037,6 +1061,16 @@ write_dsh() {
   backup_file "$credentials_path"
 
   local base_url="${PROXY_HOST}/dsh/${INSTANCE_ID}"
+  load_source_models
+  local default_model="$MODEL_ID" models_block=""
+  if has_source_models; then
+    default_model=$(pick_default_source_model)
+    models_block="  # 来源模型 (<来源>/<模型>)"$'\n'"  models:"$'\n'
+    local sid
+    while IFS= read -r sid; do
+      models_block+="    - id: $(yq_str "$sid")"$'\n'
+    done < <(source_ids_all)
+  fi
 
   cat > "$settings_path" <<EOF
 # Generated by setup-proxy.sh at $(date '+%Y-%m-%d %H:%M:%S')
@@ -1047,9 +1081,9 @@ llm-deepseek:
   # ⚠️ 尾巴不要加 /v1 —— dsh 硬编码 \${baseURL}/chat/completions
   baseURL: ${base_url}
 
-  model: ${MODEL_ID}
+  model: ${default_model}
 
-  # thinking 模式
+${models_block}  # thinking 模式
   reasoningEffort: high
 EOF
 
@@ -1337,6 +1371,41 @@ write_omp() {
   echo -e "  • x-conversation-id 标识当前会话，${BOLD}每次新对话需手动更换${RESET}"
 }
 
+# OpenCode: one openai-compatible provider listing every source model (<source>/<model>).
+write_opencode() {
+  local filepath="$1" base="${PROXY_HOST}/opencode/${INSTANCE_ID}"
+  ensure_dir "$filepath"
+  if [[ -s "$filepath" ]] && ! jq -e . "$filepath" >/dev/null 2>&1; then
+    error "${filepath} 不是严格 JSON (可能含注释)，未修改。请手动添加 provider memory-chat (baseURL ${base}/v1)"
+    return 1
+  fi
+  backup_file "$filepath"
+  load_source_models
+  local ids default_model
+  if has_source_models; then
+    ids=$(source_ids_all)
+    default_model=$(pick_default_source_model)
+  else
+    ids="$MODEL_ID"
+    default_model="$MODEL_ID"
+  fi
+  local models tmp
+  models=$(printf '%s\n' "$ids" | jq -R . | jq -s 'map({key: ., value: {name: .}}) | from_entries')
+  tmp=$(mktemp)
+  [[ -s "$filepath" ]] || echo '{}' > "$filepath"
+  jq --arg url "$base/v1" --arg key "$USER_KEY" --argjson models "$models" --arg dm "memory-chat/$default_model" \
+    '."$schema" //= "https://opencode.ai/config.json"
+     | .provider = ((.provider // {}) + {"memory-chat": {
+         npm: "@ai-sdk/openai-compatible", name: "Memory Proxy",
+         options: {baseURL: $url, apiKey: $key}, models: $models}})
+     | .model //= $dm' "$filepath" > "$tmp"
+  mv "$tmp" "$filepath"
+  chmod 600 "$filepath"
+  success "已写入 ${filepath}"
+  echo ""
+  info "启动方式: 运行 opencode，用 /models 选择 ${BOLD}memory-chat/<来源>/<模型>${RESET}"
+}
+
 # ─── Execute Write ────────────────────────────────────────────────────────────
 case "$CHOSEN_AGENT" in
   claude-code) write_claude_code "$CONFIG_PATH" ;;
@@ -1346,6 +1415,7 @@ case "$CHOSEN_AGENT" in
   dsh)         write_dsh "$CONFIG_PATH" ;;
   hermes)      write_hermes "$CONFIG_PATH" ;;
   omp)         write_omp "$CONFIG_PATH" ;;
+  opencode)    write_opencode "$CONFIG_PATH" ;;
   openclaw)    write_openclaw "$CONFIG_PATH" ;;
 esac
 
@@ -1385,7 +1455,7 @@ case "$CHOSEN_AGENT" in
   dsh)
     warn "使用时直接运行 dsh 即可，settings.yaml 已指定模型"
     ;;
-  hermes|openclaw|omp)
+  hermes|openclaw|omp|opencode)
     warn "使用时确保客户端选择的模型/provider 指向 Proxy 配置（${MODEL_ID}）"
     ;;
 esac

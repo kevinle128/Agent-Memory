@@ -11,7 +11,7 @@ triggers:
 
 # Setup Proxy — Agent 接入配置向导
 
-你正在帮助用户将一个 AI Agent 客户端（Claude Code / CodeBuddy / Codex / WorkBuddy / dsh / Hermes / OpenClaw）接入 Memory Proxy。
+你正在帮助用户将一个 AI Agent 客户端（Claude Code / CodeBuddy / Codex / WorkBuddy / dsh / Hermes / OpenClaw / omp / OpenCode）接入 Memory Proxy。
 
 ## 背景知识
 
@@ -20,13 +20,14 @@ Memory Proxy 是一个 LLM 请求代理，在请求转发到上游 LLM 之前注
 | Agent | 配置文件 | 协议 | 特殊要求 |
 |-------|----------|------|----------|
 | claude-code | `~/.claude/settings.json` | Anthropic Messages | env 字段里写 5 个模型变量 |
-| codebuddy | `~/.codebuddy/models.json` | OpenAI Chat | models 数组追加条目 |
+| codebuddy | `~/.codebuddy/models.json` | OpenAI Chat | models 数组追加条目；有来源模型时每个 `<来源>/<模型>` 一条 |
 | codex | `~/.codex/config.toml` | OpenAI Responses | TOML 格式，必须 `wire_api = "responses"` |
-| workbuddy | `~/.workbuddy/models.json` | OpenAI Chat / Responses | 顶层数组 |
-| dsh | `~/.dsh/settings.yaml` + `~/.dsh/.credentials.yaml` | OpenAI Chat (无 /v1) | 两个文件 + chmod 700/600 |
+| workbuddy | `~/.workbuddy/models.json` | OpenAI Chat / Responses | 顶层数组；有来源模型时每个 `<来源>/<模型>` 一条 |
+| dsh | `~/.dsh/settings.yaml` + `~/.dsh/.credentials.yaml` | OpenAI Chat (无 /v1) | 两个文件 + chmod 700/600；有来源模型时在 `llm-deepseek.models` 列出 `<来源>/<模型>` |
 | hermes | `~/.hermes/config.yaml` | OpenAI Chat；有来源模型时按格式分 provider | 需 header 预选 (x-team-id/agent-id/task-id) |
 | openclaw | `~/.openclaw/openclaw.json` | OpenAI Chat | 需 header 预选 |
 | omp | `~/.omp/agent/models.yml` | 三种格式各一个 provider | 读取 `/v1/models`；旧 `/pi/` baseUrl 备份后改为 `/omp/` |
+| opencode | `~/.config/opencode/opencode.json` | OpenAI Chat (openai-compatible) | 读取 `/v1/models`，provider `memory-chat` 列出全部 `<来源>/<模型>`；文件含注释时不修改 |
 
 ## 脚本位置
 
