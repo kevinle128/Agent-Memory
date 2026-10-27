@@ -29,3 +29,20 @@ mockup: ../261025-1849-multi-source-models/mockup/client-sources.html
 3. Panel: trang API Key (dropdown chọn một / chọn nhiều, endpoint lấy từ supported agents gồm omp), tab Pool (bỏ khối nguồn, nút Selected models), tab Model Provider (bảng, Add provider, Selected models), hộp chặn khi nguồn đang dùng.
 4. setup-proxy: sinh cấu hình nhiều nguồn cho các client mới có khả năng nhiều nguồn khi định dạng cấu hình của client cho phép.
 5. Test đầy đủ, e2e thật (omp, Claude Code, Codex), deploy prod có sao lưu.
+
+## Rollout results (2026-10-27)
+
+Deployed fb1de3b2 to prod: memory-core, then proxy and memory-hub. All three are healthy.
+
+- Tests at HEAD: Core 1398 pass, Proxy 930 pass, Panel 179 pass, web build passes.
+- `client-sources/list` on prod: claude-code uses sub-claude, codex uses sub-openai, and omp, hermes and openclaw use both. codebuddy, workbuddy, dsh and opencode have no source.
+- `/v1/models` for claude-code, codex, dsh and opencode is byte-identical to the capture before the deploy. omp and hermes list 22 models. The extra model is a new sub-openai model that the startup refresh fetched.
+- Real omp `-p` answers through sub-claude (sonnet-5, sonnet-4-6) and sub-openai (gpt-5.6-luna). Haiku 4.5 returns 400 because omp sends `max_tokens` 65536 and the model allows 64000. This is omp's default, not a routing fault.
+- hermes and openclaw return 200 through sub-claude.
+- `client-sources/update` works on prod: dsh with sub-claude lists 14 models, and removing it lists 0. A change takes up to 30 seconds to reach the proxy because of the instance-upstream cache.
+- Format checks: codebuddy with sub-claude and claude-code with sub-openai return 400 SOURCE_FORMAT_MISMATCH.
+- The deployed Panel bundle has the new API Key, Selected models and in-use screens.
+
+Open items:
+- dsh multi-model config from setup-proxy is not checked end to end.
+- Model Provider rows have no Edit for base URL or API key, as in the approved mockup.
