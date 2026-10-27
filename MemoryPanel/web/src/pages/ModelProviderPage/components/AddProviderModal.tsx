@@ -105,7 +105,7 @@ export function AddProviderModal({ takenNames, onClose, onCreated }: Props) {
   }
 
   return (
-    <Modal visible size="l" caption={t('modelProvider.add')} onClose={onClose} disableEscape={saving}>
+    <Modal visible size="l" caption={t('modelProvider.add.title')} onClose={onClose} disableEscape={saving}>
       <Modal.Body>
         <div className="_memory-mp-form">
           <Row label={t('modelProvider.form.provider')}>

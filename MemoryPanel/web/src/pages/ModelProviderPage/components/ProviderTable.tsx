@@ -46,7 +46,7 @@ export function ProviderTable({ groups, readOnly, busyIds, onModels, onDelete, o
             const on = sourceIsOn(g);
             return (
               <tr key={g.group_id}>
-                <td><b className="_memory-ms-mono">{g.source_name}</b></td>
+                <td style={{ whiteSpace: 'nowrap' }}><b className="_memory-ms-mono">{g.source_name}</b></td>
                 <td>{presetOf(g.source_provider || 'custom').label || t('modelProvider.provider.other')}</td>
                 <td className="_memory-ms-mono" style={{ overflowWrap: 'anywhere' }}>{g.base_url}</td>
                 <td>
@@ -54,7 +54,7 @@ export function ProviderTable({ groups, readOnly, busyIds, onModels, onDelete, o
                     {g.source_formats.map((f) => <Tag key={f}>{t(`modelSource.format.${f}`)}</Tag>)}
                   </div>
                 </td>
-                <td>
+                <td style={{ whiteSpace: 'nowrap' }}>
                   <Button onClick={() => onModels(g)}>
                     {t('selectedModels.button')}{' '}
                     <span className="_memory-ms-weak">{countEnabled(g.source_models)}/{countAvailable(g.source_models)}</span>
