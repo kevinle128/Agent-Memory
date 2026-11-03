@@ -418,8 +418,14 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
     // proxyBaseUrl 复用 skill-tools-injector 算出来的（同一 host:port）。
     if (typeof proxyBaseUrl !== "undefined") {
       registry.register(new TdaiToolsInjector({ proxyBaseUrl, profileScopeMode: config.tdai.memory.profileScopeMode }));
-      registry.register(new SubscriptionToolsInjector({ proxyBaseUrl, config }));
     }
+  }
+
+  // The Account Switch tools do not depend on memory injection: a deployment that runs only the
+  // skill injector must still show the block to a System Admin. `proxyBaseUrl` exists when the
+  // skill injector or the memory injector is on; the injector itself checks the role and the pool.
+  if (typeof proxyBaseUrl !== "undefined") {
+    registry.register(new SubscriptionToolsInjector({ proxyBaseUrl, config }));
   }
 
   // ── Asset Reflection (内部效果评估) ─────────────────────────────────────
