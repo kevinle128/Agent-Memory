@@ -522,9 +522,22 @@ describe.each(INSTALL_TOOLS)("install.sh with the %s JSON tool", (tool) => {
     expect(text.startsWith("---\ndescription: Show or switch the subscription account of this conversation\nargument-hint: [email]\n---\n")).toBe(true);
     expect(text.split(SUB_MARKER)).toHaveLength(2);
     expect(text).toContain("$ARGUMENTS");
-    expect(text).toContain("subscription_current");
-    expect(text).toContain("subscription_switch");
-    expect(text).toContain("only for System Admins on a subscription pool");
+    // The command carries its own curl recipe: the proxy address and space of the install, and
+    // the session id that Claude Code puts in place of the placeholder.
+    expect(text).toContain(`curl -sS -X POST ${proxy.origin}/subscription-bridge/v1/current`);
+    expect(text).toContain("-H 'x-tdai-service-id: default'");
+    expect(text).toContain("-H 'x-conversation-id: ${CLAUDE_SESSION_ID}'");
+    expect(text).toContain("/switch");
+    expect(text).not.toContain("@@");
+    expect(text).not.toContain("<subscription_tools>");
+    expect(text).toContain("Only a System Admin on a subscription pool can use this");
+  });
+
+  it("writes the space of the Claude Code route into the sub command", async () => {
+    writeSettings(OWN_SETTINGS());
+    const r = await runInstaller([], toolEnv({ ANTHROPIC_BASE_URL: `${proxy.origin}/claude-code/team-7/` }));
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(subPath(), "utf8")).toContain("-H 'x-tdai-service-id: team-7'");
   });
 
   it("keeps a sub command that the user wrote", async () => {

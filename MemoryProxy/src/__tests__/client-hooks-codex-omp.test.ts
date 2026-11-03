@@ -527,9 +527,24 @@ describe("install.sh --client codex", () => {
     expect(text.startsWith("---\nname: sub\ndescription: Show or switch the subscription account of this conversation\n---\n")).toBe(true);
     expect(text.split(SUB_MARKER)).toHaveLength(2);
     expect(text).toContain("the text after $sub");
-    expect(text).toContain("subscription_current");
-    expect(text).toContain("subscription_switch");
-    expect(text).toContain("only for System Admins on a subscription pool");
+    expect(text).toContain(`curl -sS -X POST ${origin}/subscription-bridge/v1/current`);
+    expect(text).toContain("-H 'x-tdai-service-id: default'");
+    expect(text).toContain('-H "x-conversation-id: $CODEX_THREAD_ID"');
+    expect(text).toContain("ask for approval to run the command outside the sandbox");
+    expect(text).not.toContain("@@");
+    expect(text).not.toContain("<subscription_tools>");
+    expect(text).toContain("Only a System Admin on a subscription pool can use this");
+  });
+
+  it.each([
+    ["a /v1 suffix", "/codex/default/v1", "default"],
+    ["the cost-guard marker", "/cost-guard/codex/default", "default"],
+    ["another space", "/codex/team2", "team2"],
+  ])("writes the space of the Codex route into the sub skill with %s", async (_label, route, space) => {
+    writeCodexConfig(USER_CONFIG.replace("/codex/default", route));
+    const r = await runInstaller(["--client", "codex"], withFakeCodex());
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(codexSubPath(), "utf8")).toContain(`-H 'x-tdai-service-id: ${space}'`);
   });
 
   it("installs the sub skill under CODEX_HOME", async () => {

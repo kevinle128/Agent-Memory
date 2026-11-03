@@ -1143,7 +1143,10 @@ omp_install() {
 # ---------------------------------------------------------------------------
 
 # Print the Claude Code command file. Claude Code puts the text after /sub in
-# place of $ARGUMENTS, so the quoted heredoc keeps it literal.
+# place of $ARGUMENTS and the session id in place of ${CLAUDE_SESSION_ID}, so the
+# quoted heredoc keeps both literal. @@ORIGIN@@ and @@SPACE@@ are filled in when the file is
+# installed. The command carries its own curl recipe, so it needs nothing that the proxy
+# injects into the system prompt.
 claude_sub_text() {
   cat <<'EOF'
 ---
@@ -1151,19 +1154,23 @@ description: Show or switch the subscription account of this conversation
 argument-hint: [email]
 ---
 <!-- agent-memory: account switch shortcut -->
-Use the subscription_current and subscription_switch tools of the <subscription_tools> block in your instructions.
+Handle this request with one Bash command and answer from its JSON output. Do not use any other tool.
 
 The text after /sub is: $ARGUMENTS
 
-- If the text after /sub is empty, use subscription_current to show the subscription account of this conversation.
-- If it is an email, use subscription_switch to switch this conversation to that account.
-- Switch only to the email that the user gave. Never switch the account on your own.
-- If your instructions have no <subscription_tools> block, do not try other tools. Say that Account Switch is only for System Admins on a subscription pool.
+- If it is empty, show the subscription account of this conversation. Run:
+  curl -sS -X POST @@ORIGIN@@/subscription-bridge/v1/current -H 'content-type: application/json' -H 'x-tdai-service-id: @@SPACE@@' -H 'x-conversation-id: ${CLAUDE_SESSION_ID}' -d '{}'
+- If it is an e-mail, switch this conversation to that account. Run the same command with /switch in place of /current and with -d '{"email": "<the e-mail>"}'. Use only the e-mail that the user gave.
+- Never switch the account on your own.
+- Show the user the e-mail and the provider of the account. If "code" in the JSON is not 0, tell the user the "message".
+- Only a System Admin on a subscription pool can use this. For other users the JSON says so: tell them that.
 EOF
 }
 
-# Print the Codex skill file. Codex does not replace arguments: the user
-# message holds "$sub <text>", so the text is literal.
+# Print the Codex skill file. Codex does not replace arguments: the user message holds
+# "$sub <text>", so the text is literal. Codex puts the id of the conversation in
+# CODEX_THREAD_ID for every command that it runs; it is the session id that the proxy sees.
+# The sandbox of Codex has no network by default, so the skill asks for approval.
 codex_sub_text() {
   cat <<'EOF'
 ---
@@ -1171,27 +1178,31 @@ name: sub
 description: Show or switch the subscription account of this conversation
 ---
 <!-- agent-memory: account switch shortcut -->
-Use the subscription_current and subscription_switch tools of the <subscription_tools> block in your instructions.
+Handle this request with one shell command and answer from its JSON output. Do not use any other tool.
 
 Read the text after $sub in the user message.
 
-- If the text after $sub is empty, use subscription_current to show the subscription account of this conversation.
-- If it is an email, use subscription_switch to switch this conversation to that account.
-- Switch only to the email that the user gave. Never switch the account on your own.
-- If your instructions have no <subscription_tools> block, do not try other tools. Say that Account Switch is only for System Admins on a subscription pool.
+- If it is empty, show the subscription account of this conversation. Run:
+  curl -sS -X POST @@ORIGIN@@/subscription-bridge/v1/current -H 'content-type: application/json' -H 'x-tdai-service-id: @@SPACE@@' -H "x-conversation-id: $CODEX_THREAD_ID" -d '{}'
+- If it is an e-mail, switch this conversation to that account. Run the same command with /switch in place of /current and with -d '{"email": "<the e-mail>"}'. Use only the e-mail that the user gave.
+- The sandbox of Codex has no network by default: ask for approval to run the command outside the sandbox.
+- Never switch the account on your own.
+- Show the user the e-mail and the provider of the account. If "code" in the JSON is not 0, tell the user the "message".
+- Only a System Admin on a subscription pool can use this. For other users the JSON says so: tell them that.
 EOF
 }
 
-# Write the shortcut file $1 with the output of the function $2. Keep a file
-# without SUB_MARKER: the user wrote it. A second run changes nothing.
+# Write the shortcut file $1 with the output of the function $2. $3 is the proxy origin and
+# $4 the space; they replace @@ORIGIN@@ and @@SPACE@@. Keep a file without SUB_MARKER: the user
+# wrote it. A second run changes nothing.
 install_sub_shortcut() {
-  local dest="$1" text="$WORK_DIR/sub-shortcut"
+  local dest="$1" text="$WORK_DIR/sub-shortcut" origin="$3" space="$4"
   if [ -e "$dest" ] && ! grep -qsF "$SUB_MARKER" "$dest"; then
     echo "Note: $dest was not written by Agent-Memory, so it is kept. The sub shortcut is not installed." >&2
     return 0
   fi
   mkdir -p "$(dirname "$dest")"
-  "$2" > "$text"
+  "$2" | sed -e "s|@@ORIGIN@@|$origin|g" -e "s|@@SPACE@@|$space|g" > "$text"
   write_if_changed "$dest" < "$text" || true
 }
 
@@ -1206,7 +1217,7 @@ remove_sub_shortcut() {
 
 main() {
   local base="" client="claude-code" session="" uninstall=0
-  local origin device token models route key keyvar
+  local origin space device token models route key keyvar
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1277,6 +1288,14 @@ main() {
   [ -n "$base" ] || fail "no proxy URL. Use --base-url, or configure the client first (claude-code: ANTHROPIC_BASE_URL in env or $SETTINGS_FILE; codex: $CODEX_CONFIG)."
   origin=$(printf '%s' "$base" | sed -nE 's|^(https?://[^/?]+).*|\1|p')
   [ -n "$origin" ] || fail "the base URL must start with http:// or https:// (got: $base)"
+  # The space is the last segment of the client route: <origin>/codex/<space> or
+  # <origin>/claude-code/<space>. A /v1 suffix and the /cost-guard marker are not part of it.
+  if [ "$client" = "codex" ]; then
+    space=$(codex_route "$base" | sed -nE 's#^https?://[^?]*/codex/([A-Za-z0-9_.-]+).*#\1#p')
+  else
+    space=$(printf '%s' "$base" | sed -E 's#/cost-guard(/|$)#\1#g' | sed -nE 's#^https?://[^?]*/claude-code/([A-Za-z0-9_.-]+).*#\1#p')
+  fi
+  [ -n "$space" ] || space="default"
 
   if [ "$client" = "omp" ]; then
     mkdir -p "$AM_DIR"
@@ -1319,7 +1338,7 @@ main() {
 
   if [ "$client" = "codex" ]; then
     codex_install
-    install_sub_shortcut "$CODEX_SUB_FILE" codex_sub_text
+    install_sub_shortcut "$CODEX_SUB_FILE" codex_sub_text "$origin" "$space"
     if [ -n "$session" ]; then
       AM_SID="$session" AM_CWD="$PWD" session_json \
         | AGENT_MEMORY_HOOK_STRICT=1 "$HOOK_FILE" codex \
@@ -1334,7 +1353,7 @@ main() {
     (umask 077; printf '{}\n' > "$SETTINGS_FILE")
   fi
   update_settings add
-  install_sub_shortcut "$CLAUDE_SUB_FILE" claude_sub_text
+  install_sub_shortcut "$CLAUDE_SUB_FILE" claude_sub_text "$origin" "$space"
 
   if [ -n "$session" ]; then
     token="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"
