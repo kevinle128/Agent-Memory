@@ -362,6 +362,12 @@ function runInstaller(args: string[], env: NodeJS.ProcessEnv, cwd?: string): Pro
   return run("bash", ["-s", "--", ...args], { env, input: fs.readFileSync(INSTALL_SH, "utf8"), cwd });
 }
 
+const SUB_MARKER = "<!-- agent-memory: account switch shortcut -->";
+
+function subPath(): string {
+  return path.join(home, ".claude", "commands", "sub.md");
+}
+
 function countOurs(groups: HookGroup[] | undefined): number {
   if (!groups) return 0;
   return groups.flatMap((g) => g.hooks).filter((h) => h.command === hookCmd()).length;
@@ -504,5 +510,68 @@ describe.each(INSTALL_TOOLS)("install.sh with the %s JSON tool", (tool) => {
     expect(r.code).toBe(0);
     expect(fs.readFileSync(settingsPath(), "utf8")).toBe(before);
     expect(listBackups()).toHaveLength(0);
+  });
+
+  it("installs the sub command for Claude Code", async () => {
+    writeSettings(OWN_SETTINGS());
+    const r = await runInstaller([], toolEnv());
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(`Agent-Memory hooks installed (device ${readDeviceId()}).\n`);
+    const text = fs.readFileSync(subPath(), "utf8");
+    expect(text.startsWith("---\ndescription: Show or switch the subscription account of this conversation\nargument-hint: [email]\n---\n")).toBe(true);
+    expect(text.split(SUB_MARKER)).toHaveLength(2);
+    expect(text).toContain("$ARGUMENTS");
+    expect(text).toContain("subscription_current");
+    expect(text).toContain("subscription_switch");
+    expect(text).toContain("only for System Admins on a subscription pool");
+  });
+
+  it("keeps a sub command that the user wrote", async () => {
+    writeSettings(OWN_SETTINGS());
+    const own = "Run my own sub command: $ARGUMENTS\n";
+    fs.mkdirSync(path.dirname(subPath()), { recursive: true });
+    fs.writeFileSync(subPath(), own);
+    const r = await runInstaller([], toolEnv());
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain(subPath());
+    expect(r.stdout).toBe(`Agent-Memory hooks installed (device ${readDeviceId()}).\n`);
+    expect(fs.readFileSync(subPath(), "utf8")).toBe(own);
+
+    const u = await runInstaller(["--uninstall"], toolEnv());
+    expect(u.code).toBe(0);
+    expect(fs.readFileSync(subPath(), "utf8")).toBe(own);
+  });
+
+  it("a second install changes nothing in the sub command", async () => {
+    writeSettings(OWN_SETTINGS());
+    await runInstaller([], toolEnv());
+    const first = fs.readFileSync(subPath(), "utf8");
+    const r = await runInstaller([], toolEnv());
+    expect(r.code).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(fs.readFileSync(subPath(), "utf8")).toBe(first);
+    expect(fs.readdirSync(path.dirname(subPath()))).toEqual(["sub.md"]);
+  });
+
+  it("updates an earlier sub command of the installer", async () => {
+    writeSettings(OWN_SETTINGS());
+    fs.mkdirSync(path.dirname(subPath()), { recursive: true });
+    fs.writeFileSync(subPath(), `old text\n${SUB_MARKER}\n`);
+    const r = await runInstaller([], toolEnv());
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(subPath(), "utf8")).toContain("$ARGUMENTS");
+  });
+
+  it("uninstall removes only the installer's sub command", async () => {
+    writeSettings(OWN_SETTINGS());
+    await runInstaller([], toolEnv());
+    const other = path.join(path.dirname(subPath()), "other.md");
+    fs.writeFileSync(other, "user command\n");
+    const r = await runInstaller(["--uninstall"], toolEnv());
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("Agent-Memory hooks removed.\n");
+    expect(fs.existsSync(subPath())).toBe(false);
+    expect(fs.readFileSync(other, "utf8")).toBe("user command\n");
   });
 });

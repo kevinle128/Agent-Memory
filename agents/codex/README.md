@@ -192,6 +192,8 @@ curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client codex --base-url 
 
 `setup-proxy.sh` 选择 codex 时会自动安装。安装位置、key 读取顺序、trust 与卸载规则见 `agents/claude-code/README.md` §11.4。
 
+安装器同时写入 skill `$CODEX_HOME/skills/sub/SKILL.md`（默认 `~/.codex`）：输入 `$sub` 查看、`$sub <email>` 切换本会话的 subscription 账号；只有 subscription pool 上的 System Admin 能用。
+
 ### 9.1.1 强制安装（hook 门禁）
 
 交互式 Codex（TUI）所在机器没有 hook 上报时，proxy 在第一个模型请求前返回一个 shell 工具调用，执行 `curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client codex --session <session_id>`，不转发上游：

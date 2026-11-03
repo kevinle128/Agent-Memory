@@ -11,6 +11,7 @@
 #   3. Add the hook to the SessionStart and UserPromptSubmit events in
 #      ~/.claude/settings.json. A backup of the file is made first.
 #   4. With --session SID: send one test report with this session id.
+#   5. Write the /sub command to ~/.claude/commands/sub.md (see "Sub shortcut").
 # Install, codex:
 #   Steps 1 and 2 as above. Then add the hook to the SessionStart and
 #   UserPromptSubmit events in $CODEX_HOME/config.toml (default ~/.codex), inside
@@ -23,6 +24,7 @@
 #   Codex itself computes and stores them as [hooks.state."<key>"] trusted_hash.
 #   Without the codex command, the hooks stay untrusted: run /hooks in Codex.
 #   The proxy URL and key come from the active model provider of the Codex config.
+#   Write the $sub skill to $CODEX_HOME/skills/sub/SKILL.md (see "Sub shortcut").
 # Install, omp (oh-my-pi):
 #   Download <proxy-origin>/setup/pi-extension.ts to
 #   $PI_CODING_AGENT_DIR/extensions/agent-memory.ts (default ~/.omp/agent), the
@@ -47,6 +49,11 @@
 #   Remove only our hook entries (and hook.sh when no other client uses it, or the
 #   omp or pi extension). Keep device.json. For omp, the compat flag stays:
 #   it may have been set before and is harmless.
+#   For claude-code and codex, also remove the sub shortcut file of this installer.
+# Sub shortcut (claude-code and codex only):
+#   The file tells the model to show or switch the subscription account of the
+#   conversation. A file without the marker line SUB_MARKER belongs to the user:
+#   install keeps it (with a note) and uninstall does not remove it.
 #
 # The script is safe to run again: it never adds a second entry.
 # Test override: AGENT_MEMORY_JSON_TOOL=jq|python3|node forces one JSON tool.
@@ -56,6 +63,9 @@ CLAUDE_DIR="$HOME/.claude"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG="$CODEX_DIR/config.toml"
+CLAUDE_SUB_FILE="$CLAUDE_DIR/commands/sub.md"
+CODEX_SUB_FILE="$CODEX_DIR/skills/sub/SKILL.md"
+SUB_MARKER="<!-- agent-memory: account switch shortcut -->"
 PI_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 PI_EXTENSION_FILE="$PI_DIR/extensions/agent-memory.ts"
 OMP_DIR="${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}"
@@ -1129,6 +1139,68 @@ omp_install() {
 }
 
 # ---------------------------------------------------------------------------
+# Sub shortcut: /sub in Claude Code, $sub in Codex
+# ---------------------------------------------------------------------------
+
+# Print the Claude Code command file. Claude Code puts the text after /sub in
+# place of $ARGUMENTS, so the quoted heredoc keeps it literal.
+claude_sub_text() {
+  cat <<'EOF'
+---
+description: Show or switch the subscription account of this conversation
+argument-hint: [email]
+---
+<!-- agent-memory: account switch shortcut -->
+Use the subscription_current and subscription_switch tools of the <subscription_tools> block in your instructions.
+
+The text after /sub is: $ARGUMENTS
+
+- If the text after /sub is empty, use subscription_current to show the subscription account of this conversation.
+- If it is an email, use subscription_switch to switch this conversation to that account.
+- Switch only to the email that the user gave. Never switch the account on your own.
+- If your instructions have no <subscription_tools> block, do not try other tools. Say that Account Switch is only for System Admins on a subscription pool.
+EOF
+}
+
+# Print the Codex skill file. Codex does not replace arguments: the user
+# message holds "$sub <text>", so the text is literal.
+codex_sub_text() {
+  cat <<'EOF'
+---
+name: sub
+description: Show or switch the subscription account of this conversation
+---
+<!-- agent-memory: account switch shortcut -->
+Use the subscription_current and subscription_switch tools of the <subscription_tools> block in your instructions.
+
+Read the text after $sub in the user message.
+
+- If the text after $sub is empty, use subscription_current to show the subscription account of this conversation.
+- If it is an email, use subscription_switch to switch this conversation to that account.
+- Switch only to the email that the user gave. Never switch the account on your own.
+- If your instructions have no <subscription_tools> block, do not try other tools. Say that Account Switch is only for System Admins on a subscription pool.
+EOF
+}
+
+# Write the shortcut file $1 with the output of the function $2. Keep a file
+# without SUB_MARKER: the user wrote it. A second run changes nothing.
+install_sub_shortcut() {
+  local dest="$1" text="$WORK_DIR/sub-shortcut"
+  if [ -e "$dest" ] && ! grep -qsF "$SUB_MARKER" "$dest"; then
+    echo "Note: $dest was not written by Agent-Memory, so it is kept. The sub shortcut is not installed." >&2
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  "$2" > "$text"
+  write_if_changed "$dest" < "$text" || true
+}
+
+# Remove the shortcut file $1 only when it holds SUB_MARKER.
+remove_sub_shortcut() {
+  if [ -f "$1" ] && grep -qF "$SUB_MARKER" "$1"; then rm -f "$1"; fi
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1168,8 +1240,16 @@ main() {
 
   if [ "$uninstall" = "1" ]; then
     case "$client" in
-      claude-code) if [ "$SETTINGS_EXISTED" = "1" ]; then update_settings remove; fi ;;
-      codex) codex_uninstall ;;
+      claude-code)
+        if [ "$SETTINGS_EXISTED" = "1" ]; then update_settings remove; fi
+        remove_sub_shortcut "$CLAUDE_SUB_FILE"
+        ;;
+      codex)
+        codex_uninstall
+        remove_sub_shortcut "$CODEX_SUB_FILE"
+        # Also remove the skill directory when it is empty.
+        rmdir "$(dirname "$CODEX_SUB_FILE")" 2>/dev/null || true
+        ;;
       pi) rm -f "$PI_EXTENSION_FILE" ;;
       omp) rm -f "$OMP_EXTENSION_FILE" ;;
     esac
@@ -1239,6 +1319,7 @@ main() {
 
   if [ "$client" = "codex" ]; then
     codex_install
+    install_sub_shortcut "$CODEX_SUB_FILE" codex_sub_text
     if [ -n "$session" ]; then
       AM_SID="$session" AM_CWD="$PWD" session_json \
         | AGENT_MEMORY_HOOK_STRICT=1 "$HOOK_FILE" codex \
@@ -1253,6 +1334,7 @@ main() {
     (umask 077; printf '{}\n' > "$SETTINGS_FILE")
   fi
   update_settings add
+  install_sub_shortcut "$CLAUDE_SUB_FILE" claude_sub_text
 
   if [ -n "$session" ]; then
     token="${ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_API_KEY:-}}"

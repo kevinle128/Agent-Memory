@@ -207,6 +207,7 @@ curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- [--base-url URL] [--client
 | `~/.agent-memory/hook.sh` | 从 `<proxy-origin>/setup/hook.sh` 下载（权限 0755） |
 | `~/.agent-memory/device.json` | `{"device_id": "<uuid>", "created_at": "<ISO-8601 UTC>"}`（目录 0700，文件 0600），标识这台机器 |
 | `~/.claude/settings.json` | `hooks.SessionStart` 与 `hooks.UserPromptSubmit` 各追加 `{"hooks":[{"type":"command","command":"<HOME>/.agent-memory/hook.sh claude-code","timeout":5}]}` |
+| `~/.claude/commands/sub.md` | 快捷命令 `/sub [email]`：查看或切换本会话的 subscription 账号；只有 subscription pool 上的 System Admin 能用（已有的无标记同名文件保留不动，卸载只删本安装器写的文件） |
 
 ### 11.2 hook 行为
 

@@ -175,6 +175,11 @@ function writeCodexConfig(content = USER_CONFIG): void {
   fs.writeFileSync(codexConfigPath(), content.replaceAll("{ORIGIN}", origin));
 }
 
+const SUB_MARKER = "<!-- agent-memory: account switch shortcut -->";
+const codexSubPath = () => path.join(home, ".codex", "skills", "sub", "SKILL.md");
+const deviceId = () =>
+  (JSON.parse(fs.readFileSync(path.join(home, ".agent-memory", "device.json"), "utf8")) as { device_id: string }).device_id;
+
 const backups = (dir: string, file: string) => fs.readdirSync(dir).filter((f) => f.startsWith(`${file}.agent-memory-backup-`));
 
 describe("hook.sh for codex", () => {
@@ -512,6 +517,69 @@ describe("install.sh --client codex", () => {
     expect(requests[0].url).toBe("/codex/default/v3/hook/report");
     expect(JSON.parse(requests[0].body)).toMatchObject({ session_id: "sess-codex-1", client: "codex", hook_event: "Install" });
   });
+
+  it("installs the sub skill for Codex", async () => {
+    writeCodexConfig();
+    const r = await runInstaller(["--client", "codex"], withFakeCodex());
+    expect(r.code).toBe(0);
+    expect(r.stdout.endsWith(`Agent-Memory hooks installed for codex (device ${deviceId()}).\n`)).toBe(true);
+    const text = fs.readFileSync(codexSubPath(), "utf8");
+    expect(text.startsWith("---\nname: sub\ndescription: Show or switch the subscription account of this conversation\n---\n")).toBe(true);
+    expect(text.split(SUB_MARKER)).toHaveLength(2);
+    expect(text).toContain("the text after $sub");
+    expect(text).toContain("subscription_current");
+    expect(text).toContain("subscription_switch");
+    expect(text).toContain("only for System Admins on a subscription pool");
+  });
+
+  it("installs the sub skill under CODEX_HOME", async () => {
+    const codexHome = mkTmp("am-codex-home-");
+    const r = await runInstaller(
+      ["--client", "codex", "--base-url", `${origin}/codex/default`],
+      { ...withFakeCodex(), CODEX_HOME: codexHome },
+    );
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(path.join(codexHome, "skills", "sub", "SKILL.md"), "utf8")).toContain(SUB_MARKER);
+    expect(fs.existsSync(codexSubPath())).toBe(false);
+  });
+
+  it("a second install changes nothing in the sub skill", async () => {
+    writeCodexConfig();
+    await runInstaller(["--client", "codex"], withFakeCodex());
+    const first = fs.readFileSync(codexSubPath(), "utf8");
+    const r = await runInstaller(["--client", "codex"], withFakeCodex());
+    expect(r.code).toBe(0);
+    expect(fs.readFileSync(codexSubPath(), "utf8")).toBe(first);
+    expect(fs.readdirSync(path.dirname(codexSubPath()))).toEqual(["SKILL.md"]);
+  });
+
+  it("keeps a sub skill that the user wrote, through install and uninstall", async () => {
+    writeCodexConfig();
+    const own = "---\nname: sub\ndescription: mine\n---\nMy own skill.\n";
+    fs.mkdirSync(path.dirname(codexSubPath()), { recursive: true });
+    fs.writeFileSync(codexSubPath(), own);
+    const r = await runInstaller(["--client", "codex"], withFakeCodex());
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain(codexSubPath());
+    expect(r.stdout).not.toContain(codexSubPath());
+    expect(fs.readFileSync(codexSubPath(), "utf8")).toBe(own);
+    const u = await runInstaller(["--client", "codex", "--uninstall"], withFakeCodex());
+    expect(u.code).toBe(0);
+    expect(fs.readFileSync(codexSubPath(), "utf8")).toBe(own);
+  });
+
+  it("uninstall removes only the installer's sub skill and its empty directory", async () => {
+    writeCodexConfig();
+    await runInstaller(["--client", "codex"], withFakeCodex());
+    const other = path.join(home, ".codex", "skills", "other", "SKILL.md");
+    fs.mkdirSync(path.dirname(other), { recursive: true });
+    fs.writeFileSync(other, "user skill\n");
+    const r = await runInstaller(["--client", "codex", "--uninstall"], withFakeCodex());
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("Agent-Memory hooks removed.\n");
+    expect(fs.existsSync(path.dirname(codexSubPath()))).toBe(false);
+    expect(fs.readFileSync(other, "utf8")).toBe("user skill\n");
+  });
 });
 
 const OMP_ROUTE = () => `${origin}/omp/default/v1`;
@@ -783,6 +851,14 @@ describe("install.sh --client omp", () => {
       expect(r.code).toBe(0);
       expect(sessionReports()[0].url).toBe("/omp/default/v3/hook/report");
     });
+  });
+
+  it("omp install writes no sub shortcut", async () => {
+    const r = await runInstaller(["--client", "omp", "--base-url", ompRoute()], baseEnv());
+    expect(r.code).toBe(0);
+    expect(fs.existsSync(path.join(home, ".claude", "commands"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".codex", "skills"))).toBe(false);
+    expect(fs.existsSync(path.join(ompDir(), "skills"))).toBe(false);
   });
 
   it("--uninstall removes the extension and leaves the models file alone", async () => {
