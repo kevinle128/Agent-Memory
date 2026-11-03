@@ -1316,7 +1316,7 @@ Authenticated users may read `status`; all other actions require System Admin. O
 
 ### POST /v3/internal/meta/subscription-pool/accounts/list
 
-Proxy service token. Accounts of enabled `subscription_pool` groups. Each row has `access_token` and `provider_account_id`. The proxy sends `provider_account_id` as the Codex `ChatGPT-Account-ID` header together with the bearer token. `refresh_token` is omitted.
+Proxy service token. Accounts of enabled `subscription_pool` groups. Each row has `access_token`, `provider_account_id`, `display_name` and `account_label` (the e-mail and plan from the provider profile). The proxy sends `provider_account_id` as the Codex `ChatGPT-Account-ID` header together with the bearer token. `refresh_token` is omitted.
 
 ### POST /v3/internal/meta/subscription-pool/report
 

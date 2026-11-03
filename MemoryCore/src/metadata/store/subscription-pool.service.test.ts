@@ -95,6 +95,7 @@ describe("subscription pool service", () => {
       provider: "codex",
       provider_account_id: "acct-codex-1",
       display_name: "Plus 1",
+      account_label: "plus1@example.test (plus)",
       access_token: "access-secret",
       refresh_token: "refresh-secret",
       token_expires_at: Date.now() + 60 * 60 * 1000,
@@ -110,7 +111,10 @@ describe("subscription pool service", () => {
     expect(listed.accounts).toEqual([expect.objectContaining({
       access_token: "access-secret",
       provider_account_id: "acct-codex-1",
+      display_name: "Plus 1",
+      account_label: "plus1@example.test (plus)",
     })]);
+    expect(listed.accounts[0]).not.toHaveProperty("refresh_token");
     expect(JSON.stringify(listed)).not.toContain("refresh-secret");
     expect(JSON.stringify(listed)).not.toContain("refresh_token");
 

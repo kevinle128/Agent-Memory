@@ -2387,6 +2387,8 @@ export class MetadataService {
       group_id: account.group_id,
       provider: account.provider,
       provider_account_id: account.provider_account_id,
+      display_name: account.display_name,
+      account_label: account.account_label,
       status: account.status,
       enabled: account.enabled,
       access_token: account.access_token,

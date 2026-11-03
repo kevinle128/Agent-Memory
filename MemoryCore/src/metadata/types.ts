@@ -954,6 +954,10 @@ export interface SubscriptionAccountProxyView {
   group_id: string;
   provider: SubscriptionProvider;
   provider_account_id: string;
+  /** Name that the admin gave the account. For display only. */
+  display_name: string;
+  /** E-mail and plan from the provider profile. The proxy finds an account by the e-mail in it. */
+  account_label: string;
   status: SubscriptionAccountStatus;
   enabled: boolean;
   access_token: string;
