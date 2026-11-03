@@ -24,7 +24,7 @@ import {
   getPoolSnapshot, markAccountExhausted, observeAccountWindows, replaceAccountToken,
 } from "./account-cache.js";
 import {
-  bindSession, countSessionsByAccount, getBinding, getCursor, rebindSession, sessionBindingKey, setCursor,
+  BINDING_TTL_MS, bindSession, countSessionsByAccount, getBinding, getCursor, rebindSession, sessionBindingKey, setCursor,
   type SessionBinding,
 } from "./binding-store.js";
 import { callPoolCore, PoolCoreError, type PoolCoreConfig } from "./core-client.js";
@@ -48,6 +48,70 @@ const REFRESH_FAILURE_COOLDOWN_MS = 60 * 1000;
 /** A binding is rewritten at most this often while its session keeps sending requests. */
 const BINDING_TOUCH_MS = 5 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
+/** Upper limit of sessions that the own-login marker remembers. */
+const MAX_CLIENT_LOGIN_MARKERS = 10_000;
+
+/**
+ * Sessions whose last main turn went to the client's own login because no pool account was left:
+ * binding key to the time of that turn. The marker lives in the memory of one Proxy, like the
+ * binding store that supports one replica. After a restart the next main turn writes it again.
+ */
+const clientLoginMarkers = new Map<string, number>();
+
+function markSessionClientLogin(bindingKey: string, now: number): void {
+  // Delete first so that a rewritten key moves to the newest position of the Map.
+  clientLoginMarkers.delete(bindingKey);
+  if (clientLoginMarkers.size >= MAX_CLIENT_LOGIN_MARKERS) {
+    const oldestKey = clientLoginMarkers.keys().next().value as string | undefined;
+    if (oldestKey !== undefined) clientLoginMarkers.delete(oldestKey);
+  }
+  clientLoginMarkers.set(bindingKey, now);
+}
+
+/** True when the last main turn of the session used the client's own login, not a pool account. */
+export function isSessionOnClientLogin(bindingKey: string, now: number): boolean {
+  const markedAt = clientLoginMarkers.get(bindingKey);
+  if (markedAt === undefined) return false;
+  if (now - markedAt > BINDING_TTL_MS) {
+    clientLoginMarkers.delete(bindingKey);
+    return false;
+  }
+  return true;
+}
+
+export function clearSessionClientLogin(bindingKey: string): void {
+  clientLoginMarkers.delete(bindingKey);
+}
+
+export function resetClientLoginMarkersForTests(): void {
+  clientLoginMarkers.clear();
+}
+
+/** Session key of a conversation in the binding store. The pool runner and the bridge must agree on it. */
+export function poolSessionKey(sessionId: string): string {
+  return `session:${sessionId}`;
+}
+
+/** Tell Core how many sessions the accounts have now. Runs in the background and never throws. */
+export function reportPoolSessionCounts(
+  config: PoolCoreConfig,
+  storage: ProxyStorage,
+  spaceId: string,
+  provider: PoolProviderId,
+  accountIds: Array<string | undefined>,
+  now: number,
+): void {
+  const ids = [...new Set(accountIds.filter((id): id is string => Boolean(id)))];
+  void countSessionsByAccount(storage, spaceId, provider, now)
+    .then((counts) => {
+      for (const id of ids) {
+        reportAccount(config, spaceId, id, { active_sessions: counts.get(id) ?? 0 });
+      }
+    })
+    .catch((err: unknown) => {
+      console.warn(`${TAG} session count failed: ${err instanceof Error ? err.message : "unknown"}`);
+    });
+}
 
 export type PoolAuth =
   | { kind: "account"; accountId: string; accessToken: string; providerAccountId: string }
@@ -155,7 +219,7 @@ class PoolRequestImpl implements PoolRequest {
     this.clientLoginAllowed = Boolean(userKeyHeader) && Boolean(bearer) && bearer !== userKeyHeader
       && bearer !== (input.userKey ?? "");
     const sessionId = input.sessionId || extractPoolSessionId(input.clientHeaders, input.body);
-    this.sessionKey = sessionId ? `session:${sessionId}` : input.userKey ? `user:${input.userKey}` : null;
+    this.sessionKey = sessionId ? poolSessionKey(sessionId) : input.userKey ? `user:${input.userKey}` : null;
     try {
       this.storage = getProxyStorage(input.config.storage);
     } catch (err) {
@@ -405,23 +469,17 @@ class PoolRequestImpl implements PoolRequest {
     }
   }
 
-  /** Tell Core how many sessions the accounts have now. Runs in the background. */
   private reportSessionCounts(storage: ProxyStorage, accountIds: Array<string | undefined>, now: number): void {
-    const ids = [...new Set(accountIds.filter((id): id is string => Boolean(id)))];
-    void countSessionsByAccount(storage, this.input.spaceId, this.provider, now)
-      .then((counts) => {
-        for (const id of ids) {
-          reportAccount(coreConfig(this.input.config), this.input.spaceId, id, { active_sessions: counts.get(id) ?? 0 });
-        }
-      })
-      .catch((err: unknown) => {
-        console.warn(`${TAG} session count failed: ${err instanceof Error ? err.message : "unknown"}`);
-      });
+    reportPoolSessionCounts(coreConfig(this.input.config), storage, this.input.spaceId, this.provider, accountIds, now);
   }
 
   // ── outcomes ─────────────────────────────────────────────────────────────
 
   private onSuccess(account: PoolAccount, headers: Headers): void {
+    if (this.input.bindSession) {
+      const key = this.bindingKey();
+      if (key) clearSessionClientLogin(key);
+    }
     const windows = this.provider === "claude"
       ? parseClaudeQuotaHeaders(headers, this.now())
       : parseCodexQuotaHeaders(headers, this.now());
@@ -468,6 +526,10 @@ class PoolRequestImpl implements PoolRequest {
   private async noAccountLeft(snapshot: PoolSnapshot, doFetch: (auth: PoolAuth) => Promise<Response>): Promise<Response> {
     if (this.clientLoginAllowed) {
       this.accountId = null;
+      if (this.input.bindSession) {
+        const key = this.bindingKey();
+        if (key) markSessionClientLogin(key, this.now());
+      }
       return doFetch({ kind: "client" });
     }
     if (snapshot.unavailable) return buildPoolUnavailableResponse();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountUsagePct, earliestReset, selectAccount } from "../selector.js";
+import { accountSwitchRejection, accountUsagePct, earliestReset, selectAccount } from "../selector.js";
 import type { PoolAccount, PoolQuotaWindow } from "../types.js";
 
 const NOW = 1_800_000_000_000;
@@ -167,5 +167,51 @@ describe("earliestReset", () => {
 
   it("returns null when no reset time is known", () => {
     expect(earliestReset([acct("a", { status: "auth_error" })], NOW, 95, "m")).toBeNull();
+  });
+});
+
+describe("accountSwitchRejection", () => {
+  it("accepts an active account below the threshold", () => {
+    expect(accountSwitchRejection(acct("a", {}, [win("primary_window", 40, HOUR)]), NOW, 95)).toBeNull();
+  });
+
+  it("rejects a disabled account", () => {
+    expect(accountSwitchRejection(acct("a", { enabled: false }), NOW, 95)).toEqual({ reason: "account_disabled" });
+    expect(accountSwitchRejection(acct("a", { status: "disabled" }), NOW, 95)).toEqual({ reason: "account_disabled" });
+  });
+
+  it("rejects an account that needs a new login", () => {
+    expect(accountSwitchRejection(acct("a", { status: "auth_error" }), NOW, 95)).toEqual({ reason: "account_needs_login" });
+  });
+
+  it("rejects an exhausted account with its reset time", () => {
+    expect(accountSwitchRejection(acct("a", { status: "exhausted", exhausted_until: NOW + HOUR }), NOW, 95))
+      .toEqual({ reason: "account_exhausted", resets_at: NOW + HOUR });
+  });
+
+  it("takes the reset time of a full shared window when an exhausted account has no exhausted_until", () => {
+    const account = acct("a", { status: "exhausted" }, [win("primary_window", 100, 2 * HOUR)]);
+    expect(accountSwitchRejection(account, NOW, 95)).toEqual({ reason: "account_exhausted", resets_at: NOW + 2 * HOUR });
+  });
+
+  it("releases an account whose exhausted_until has passed", () => {
+    const account = acct("a", { status: "exhausted", exhausted_until: NOW - 1000 }, [win("primary_window", 30, HOUR)]);
+    expect(accountSwitchRejection(account, NOW, 95)).toBeNull();
+  });
+
+  it("rejects an account at the threshold on shared windows", () => {
+    const account = acct("a", {}, [win("primary_window", 95, HOUR), win("secondary_window", 50, 24 * HOUR)]);
+    expect(accountSwitchRejection(account, NOW, 95)).toEqual({
+      reason: "account_above_threshold", usage_pct: 95, threshold_pct: 95, resets_at: NOW + HOUR,
+    });
+  });
+
+  it("ignores a full per-model window at switch time", () => {
+    const account = acct("a", {}, [win("primary_window", 20, HOUR), win("opus_window", 100, HOUR, "claude-opus-4")]);
+    expect(accountSwitchRejection(account, NOW, 95)).toBeNull();
+  });
+
+  it("ignores a full shared window whose reset time has passed", () => {
+    expect(accountSwitchRejection(acct("a", {}, [win("primary_window", 100, -1000)]), NOW, 95)).toBeNull();
   });
 });

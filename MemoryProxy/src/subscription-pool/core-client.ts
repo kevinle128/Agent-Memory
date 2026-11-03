@@ -1,13 +1,13 @@
 /**
- * Calls to the internal subscription pool endpoints of Core. Same auth and instance headers as
- * the instance-upstream fetch. Access tokens are never logged here or by callers.
+ * Calls to the internal meta endpoints of Core (subscription pool, user roles). Same auth and
+ * instance headers as the instance-upstream fetch. Access tokens are never logged here or by callers.
  */
 
 import type { CoreSkillConfig } from "../types.js";
 
 export type PoolCoreConfig = Pick<CoreSkillConfig, "endpoint" | "serviceToken" | "timeoutMs">;
 
-const BASE_PATH = "/v3/internal/meta/subscription-pool";
+const BASE_PATH = "/v3/internal/meta";
 
 export class PoolCoreError extends Error {
   constructor(readonly path: string, readonly httpStatus: number, readonly errorCode?: string) {
@@ -16,11 +16,11 @@ export class PoolCoreError extends Error {
   }
 }
 
-/** POST `body` to `/v3/internal/meta/subscription-pool/<path>` and return the envelope `data`. */
-export async function callPoolCore<T>(
+/** POST `body` to `/v3/internal/meta/<path>` and return the envelope `data`. */
+export async function callInternalMeta<T>(
   config: PoolCoreConfig,
   spaceId: string,
-  path: "accounts/list" | "report" | "refresh" | "check-usage",
+  path: string,
   body: Record<string, unknown>,
   signal?: AbortSignal,
 ): Promise<T> {
@@ -44,4 +44,15 @@ export async function callPoolCore<T>(
     throw new PoolCoreError(path, resp.status, errorCode);
   }
   return env.data as T;
+}
+
+/** POST `body` to `/v3/internal/meta/subscription-pool/<path>` and return the envelope `data`. */
+export function callPoolCore<T>(
+  config: PoolCoreConfig,
+  spaceId: string,
+  path: "accounts/list" | "report" | "refresh" | "check-usage",
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
+  return callInternalMeta<T>(config, spaceId, `subscription-pool/${path}`, body, signal);
 }

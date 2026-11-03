@@ -11,6 +11,8 @@ import { __primeCacheForTests, type InstanceUpstreamRow } from "../../instance-u
 import { __primeAccountCacheForTests } from "../account-cache.js";
 import { CORE_URL, installFetch, jsonResponse, makeApp, makeConfig, resetPoolState, type RecordedCall } from "./test-harness.js";
 import type { PoolAccount, PoolQuotaWindow } from "../types.js";
+import { sessionBindingKey } from "../binding-store.js";
+import { isSessionOnClientLogin, poolSessionKey, resetClientLoginMarkersForTests } from "../pool-request.js";
 
 const SPACE = "sp-pool";
 const CHATGPT = "https://chatgpt.com/backend-api/codex";
@@ -72,6 +74,7 @@ describe("codex pool forwarding", () => {
   let logs: string[];
   beforeEach(() => {
     resetPoolState();
+    resetClientLoginMarkersForTests();
     logs = [];
     for (const method of ["log", "warn", "error", "info", "debug"] as const) {
       vi.spyOn(console, method).mockImplementation((...args: unknown[]) => { logs.push(args.map(String).join(" ")); });
@@ -197,6 +200,21 @@ describe("codex pool forwarding", () => {
     expect(last.headers["authorization"]).toBe("Bearer chatgpt-own-token");
     expect(accountOf(last)).toBe("own-acct");
     expect(last.headers["x-tdai-user-key"]).toBeUndefined();
+  });
+
+  it("marks a session that fell back to the client login and clears the mark when the pool serves it again", async () => {
+    const key = sessionBindingKey(SPACE, "codex", poolSessionKey("s1"));
+    prime([acct("a", { status: "exhausted", exhausted_until: NOW + HOUR })]);
+    installFetch(() => sse());
+    const app = makeApp(makeConfig());
+    const t = turn("s1");
+    await (await post(app, t.path, t.headers, t.body)).text();
+    expect(isSessionOnClientLogin(key, Date.now())).toBe(true);
+    expect(isSessionOnClientLogin(sessionBindingKey(SPACE, "codex", poolSessionKey("s2")), Date.now())).toBe(false);
+
+    prime([acct("a")]);
+    await (await post(app, t.path, t.headers, t.body)).text();
+    expect(isSessionOnClientLogin(key, Date.now())).toBe(false);
   });
 
   it("answers 429 with the earliest reset when every account is out of quota and there is no client login", async () => {

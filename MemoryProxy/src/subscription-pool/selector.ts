@@ -138,3 +138,41 @@ export function earliestReset(
   }
   return earliest;
 }
+
+/** Why the pool must not take a manual switch of a session to an account. */
+export type AccountSwitchRejection =
+  | { reason: "account_disabled" }
+  | { reason: "account_needs_login" }
+  | { reason: "account_exhausted"; resets_at: number | null }
+  | { reason: "account_above_threshold"; usage_pct: number; threshold_pct: number; resets_at: number | null };
+
+/**
+ * Null when a session may be moved to `account` now, else the reason why not. A manual switch
+ * starts a new binding for the account, so it must meet the threshold like a new session.
+ *
+ * The model is empty, so only the Quota Windows that all models share count: at switch time
+ * there is no request and no model. A full per-model window is handled by the pool on the
+ * next request, the same as for any bound session.
+ */
+export function accountSwitchRejection(
+  account: PoolAccount,
+  now: number,
+  thresholdPct: number,
+): AccountSwitchRejection | null {
+  if (!account.enabled || account.status === "disabled") return { reason: "account_disabled" };
+  if (account.status === "auth_error") return { reason: "account_needs_login" };
+  if (isExhausted(account, now)) {
+    return { reason: "account_exhausted", resets_at: account.exhausted_until ?? earliestReset([account], now, thresholdPct, "") };
+  }
+  if (!isServable(account, now)) return { reason: "account_disabled" };
+  const usagePct = accountUsagePct(account, now, "");
+  if (usagePct >= thresholdPct) {
+    return {
+      reason: "account_above_threshold",
+      usage_pct: usagePct,
+      threshold_pct: thresholdPct,
+      resets_at: earliestReset([account], now, thresholdPct, ""),
+    };
+  }
+  return null;
+}

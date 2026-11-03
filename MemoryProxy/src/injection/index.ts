@@ -112,6 +112,7 @@ import { SkillInjector } from "./injectors/skill-injector.js";
 import { SkillToolsInjector } from "./injectors/skill-tools-injector.js";
 import { TdaiProfileMemoryInjector } from "./injectors/tdai-profile-memory-injector.js";
 import { TdaiToolsInjector } from "./injectors/tdai-tools-injector.js";
+import { SubscriptionToolsInjector } from "./injectors/subscription-tools-injector.js";
 import { KnowledgeToolsInjector } from "./injectors/knowledge-tools-injector.js";
 import { AssetReflectionInjector } from "./injectors/asset-reflection-injector.js";
 import type { ProtocolAdapter } from "./adapters/interface.js";
@@ -417,6 +418,7 @@ function buildPipelineBundle(config: ProxyConfig): PipelineBundle {
     // proxyBaseUrl 复用 skill-tools-injector 算出来的（同一 host:port）。
     if (typeof proxyBaseUrl !== "undefined") {
       registry.register(new TdaiToolsInjector({ proxyBaseUrl, profileScopeMode: config.tdai.memory.profileScopeMode }));
+      registry.register(new SubscriptionToolsInjector({ proxyBaseUrl, config }));
     }
   }
 

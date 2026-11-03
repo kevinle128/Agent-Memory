@@ -23,6 +23,10 @@ export interface PoolAccount {
   provider: "claude" | "codex";
   /** Sent as the Codex `chatgpt-account-id` header together with the bearer token. */
   provider_account_id: string;
+  /** Name that the admin gave the account. Absent when Core is older than this field. */
+  display_name?: string;
+  /** E-mail and plan from the provider profile. Absent when Core is older than this field. */
+  account_label?: string;
   status: PoolAccountStatus;
   enabled: boolean;
   access_token: string;
