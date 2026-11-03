@@ -26,6 +26,12 @@ interface Pending {
   requestId: string;
 }
 
+/** `crypto.randomUUID` is missing on plain-HTTP pages; `getRandomValues` works on every page. */
+function newRequestId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export function ResetCreditsDialog({ account, now, canRedeem, busyCreditId, onRedeem, onClose }: Props) {
   const { t } = useTranslation();
   const [pending, setPending] = useState<Pending | null>(null);
@@ -80,7 +86,7 @@ export function ResetCreditsDialog({ account, now, canRedeem, busyCreditId, onRe
               type="primary"
               loading={inFlight}
               disabled={busy || (pending !== null && !confirming)}
-              onClick={() => setPending({ creditId: credit.id, requestId: crypto.randomUUID() })}
+              onClick={() => setPending({ creditId: credit.id, requestId: newRequestId() })}
             >
               {t('subscriptionPool.credits.redeem')}
             </Button>
