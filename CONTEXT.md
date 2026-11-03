@@ -33,6 +33,10 @@ _Avoid_: account pool, key pool
 The link between one client session and the Subscription Account that serves it.
 _Avoid_: sticky session, assignment
 
+**Account Switch**:
+A System Admin's own change of the Subscription Account in the Session Binding of the conversation they are in. After the change, the Session Binding behaves as usual: the pool still moves it when the account reaches its quota.
+_Avoid_: pin, lock, sticky account
+
 **Quota Window**:
 One usage limit of a Subscription Account with its own used percentage and reset time, such as the 5-hour window, the 7-day window or a per-model weekly window.
 _Avoid_: quota, rate limit (alone)
