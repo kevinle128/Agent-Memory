@@ -11,7 +11,7 @@
  * Usage:
  *   ANTHROPIC_BASE_URL=http://host:8096/claude-code/<spaceId> \
  *   ANTHROPIC_AUTH_TOKEN=<proxy user key> \
- *   node scripts/verify-pool-cache-ttl.mjs [--wait-seconds 420] [--model claude-opus-5-5] [--session-id <id>]
+ *   node scripts/verify-pool-cache-ttl.mjs [--wait-seconds 420] [--model claude-haiku-4-5] [--session-id <id>]
  *
  * Optional env: ANTHROPIC_CUSTOM_HEADERS ("Name: value" lines, as Claude Code reads it).
  *
@@ -21,7 +21,7 @@
  * no session form, no hook gate, no memory injection and no L0 write. The pool
  * still serves it. The system prompt starts with the Claude Code identity line,
  * because a subscription account rejects other requests with a 429.
- * If the API rejects `thinking: {type: "disabled"}` for the model, use `--model` with a
+ * The default model is claude-haiku-4-5. Opus 5.5 and Sonnet 5.5 reject `thinking: {type: "disabled"}`, so use `--model` with a
  * model that accepts it. Do not just remove `thinking`: the request then becomes "main"
  * and gets the session form, memory injection and an L0 write.
  *
@@ -42,7 +42,7 @@ import { randomUUID } from "node:crypto";
 const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
 function parseArgs(argv) {
-  const args = { waitSeconds: null, model: "claude-opus-5-5", sessionId: null };
+  const args = { waitSeconds: null, model: "claude-haiku-4-5", sessionId: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = argv[i + 1];
