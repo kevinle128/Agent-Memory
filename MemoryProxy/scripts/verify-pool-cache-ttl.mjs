@@ -21,6 +21,9 @@
  * no session form, no hook gate, no memory injection and no L0 write. The pool
  * still serves it. The system prompt starts with the Claude Code identity line,
  * because a subscription account rejects other requests with a 429.
+ * If the API rejects `thinking: {type: "disabled"}` for the model, use `--model` with a
+ * model that accepts it. Do not just remove `thinking`: the request then becomes "main"
+ * and gets the session form, memory injection and an L0 write.
  *
  * Account choice. A sidequery does not create a session binding. Without a bound
  * session the pool picks an account by round robin, and other users can move the
