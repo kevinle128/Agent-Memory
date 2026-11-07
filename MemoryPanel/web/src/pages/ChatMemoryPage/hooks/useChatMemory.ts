@@ -19,6 +19,14 @@ import {
   type TimeRange,
 } from '../utils/memory-utils';
 import { getLayerCount } from '../utils/utils';
+import { useL0Sessions } from './useL0Sessions';
+
+/** L1 filter by source session, set from the L0 view. */
+export interface L1SessionFilter {
+  sessionId: string;
+  /** Session title for the filter chip; empty when not known. */
+  title: string;
+}
 
 export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
   const { t } = useTranslation();
@@ -54,6 +62,8 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
   const [timeRange, setTimeRange] = useState<TimeRange>(() => defaultTimeRange());
   // 后端探测到筛选范围过大时为 true，BlockDetail 显示提示而非空态
   const [rangeTooLarge, setRangeTooLarge] = useState(false);
+  // L1 shows only the memories of this session when set.
+  const [l1SessionFilter, setL1SessionFilter] = useState<L1SessionFilter | null>(null);
   const [showImport, setShowImport] = useState(false);
   const [showAllocate, setShowAllocate] = useState(false);
   // 默认展示 Agent 资产（fixed），避免用户误以为自己的资产在「团队资产」里
@@ -79,10 +89,6 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
   // 切 team 时静默刷新（保留旧列表直到新数据到达），不闪空不骨架屏；
   // 切 tab / agent 仍按原逻辑清空 + loading。
   const prevTeamIdRef = useRef(activeTeamId);
-  // L0「自动扩展时间范围」的连续次数上限：窗口内到最早时自动往前扩展 24h，
-  // 直到后端确认该记忆块在更早时间也没有记录（重新加载返回空 → l0Ended 置位）为止。
-  // 该计数作为极端兜底（防止异常情况下无限循环），用户手动调整筛选会随组件重挂载而复位。
-  const l0AutoExpandCountRef = useRef(0);
 
   const fetchBlocks = useCallback(async () => {
     if (!activeTeamId) {
@@ -223,24 +229,36 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
   useEffect(() => {
     setTimeRange(defaultTimeRange());
     setRangeTooLarge(false);
+    setL1SessionFilter(null);
   }, [selected?.id]);
 
   // 切块 / 时间范围变化时，窗口内总数缓存作废（翻页与总数必须按新窗口重新计算）
   useEffect(() => {
     setWindowTotals({});
-  }, [selected?.id, timeRange.start, timeRange.end]);
+  }, [selected?.id, timeRange.start, timeRange.end, l1SessionFilter?.sessionId]);
+
+  // L0 is the session view: useL0Sessions loads it, so the layer loader skips it.
+  const l0 = useL0Sessions({
+    blockId: selected?.id,
+    enabled: layer === 'L0',
+    timeRange,
+    refreshNonce,
+  });
 
   useEffect(() => {
-    if (!selected?.id) {
+    if (!selected?.id || layer === 'L0') {
       setLayerLoading(false);
       return;
     }
     let cancelled = false;
     setLayerLoading(true);
-    // 时间筛选仅对 L0 / L1 生效；L2 / L3 是聚合产物，不传时间参数
-    const useTimeFilter = layer === 'L0' || layer === 'L1';
-    const timeStart = useTimeFilter ? timeRange.start || undefined : undefined;
-    const timeEnd = useTimeFilter ? timeRange.end || undefined : undefined;
+    // 时间筛选仅对 L0 / L1 生效；L2 / L3 是聚合产物，不传时间参数（L0 由 useL0Sessions 加载）
+    const useTimeFilter = layer === 'L1';
+    // A session filter already narrows L1 to one conversation. Its memories can be
+    // written after the time range, so the range is not applied with the filter.
+    const sessionId = layer === 'L1' ? l1SessionFilter?.sessionId : undefined;
+    const timeStart = useTimeFilter && !sessionId ? timeRange.start || undefined : undefined;
+    const timeEnd = useTimeFilter && !sessionId ? timeRange.end || undefined : undefined;
     chatMemoryApi
       .layer(
         selected.id,
@@ -251,6 +269,7 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
         undefined,
         timeStart,
         timeEnd,
+        sessionId,
       )
       .then((res) => {
         if (cancelled) return;
@@ -275,13 +294,7 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
                 ? { layerCounts: { ...b.layerCounts, [layer]: res.total } }
                 : {}),
             };
-            if (res.layer === 'L0') {
-              updated.layers.L0 = res.items;
-              // 首屏 / 时间筛选变化重新加载时：窗口内有记录 → 重置「已到最早」，
-              // 无记录 → 置位（说明该记忆块在更早时间也没有数据，自动扩展到此为止）。
-              // 这是自动扩展时间范围的收敛条件，避免无限往前扩展。
-              updated.l0Ended = res.items.length === 0;
-            } else if (res.layer === 'L1') updated.layers.L1 = res.items.map(mapLayerItem);
+            if (res.layer === 'L1') updated.layers.L1 = res.items.map(mapLayerItem);
             else if (res.layer === 'L2') updated.layers.L2 = res.items.map(mapLayerItem);
             else if (res.layer === 'L3') updated.layers.L3 = res.items.map(mapLayerItem);
             return updated;
@@ -303,7 +316,17 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     return () => {
       cancelled = true;
     };
-  }, [selected?.id, layer, layerPage, pageSize, timeRange.start, timeRange.end, refreshNonce, t]);
+  }, [
+    selected?.id,
+    layer,
+    layerPage,
+    pageSize,
+    timeRange.start,
+    timeRange.end,
+    l1SessionFilter?.sessionId,
+    refreshNonce,
+    t,
+  ]);
 
   const handleLayerPageChange = useCallback(
     (nextPage: number) => {
@@ -316,70 +339,41 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     [selected?.id, layer],
   );
 
-  // ── L0 加载更多（下拉/滚动到顶部触发） ──
-  // L0 固定消费第 0 页（最新一批），「加载更多」用最后一条消息的时间戳做游标
-  // （before_ts）请求更早的消息，而不是用数组长度做 offset。
-  // 原因：VDB 对大 offset 的 scan+skip 成本高，用时间戳过滤可将查询从 O(offset+limit)
-  // 降为 O(limit)。数组保持后端的新→旧顺序，渲染层再反转为旧→新，追加项出现在顶部。
-  const [l0MoreLoading, setL0MoreLoading] = useState(false);
-  const handleL0LoadMore = useCallback(async () => {
-    if (!selected?.id || layer !== 'L0' || l0MoreLoading) return;
-    const items = selected.layers.L0;
-    const total = selected.layerCounts.L0 ?? items.length;
-    // 已确认在当前时间窗口内到最早：不再发请求（双保险，正常由 BlockDetail 隐藏入口）
-    if (selected.l0Ended) return;
-    if (items.length >= total) return;
-    // 游标：数组按新→旧排列，最后一条是最旧的已加载消息
-    const lastItem = items[items.length - 1];
-    const beforeTs = lastItem?.created_at;
-    setL0MoreLoading(true);
-    try {
-      // beforeTs 有值时 offset 传 0（后端按 time_end 过滤）；首屏无 beforeTs 时走 offset=0。
-      // 透传 timeStart 时间下界：加载更早消息不能越出用户设定的筛选范围，与首屏保持一致。
-      const timeStart = timeRange.start || undefined;
-      const res = await chatMemoryApi.layer(
-        selected.id,
-        'L0',
-        pageSize,
-        0,
-        undefined,
-        beforeTs,
-        timeStart,
-      );
-      const noMore = res.items.length === 0;
-      setBlocks((prev) =>
-        prev.map((b) => {
-          if (b.id !== selected.id) return b;
-          // 防御性去重：并发/刷新导致页重叠时不重复渲染同一条消息
-          const existing = new Set(b.layers.L0.map((m) => m.id));
-          const more = res.items.filter((m) => !existing.has(m.id));
-          // 注意：游标分页下后端返回的 total 是过滤后的剩余条数（time_end < beforeTs），
-          // 不是全量总数。保留首屏拿到的全量 total，避免"加载更多后总数递减"的假象。
-          return {
-            ...b,
-            layers: { ...b.layers, L0: [...b.layers.L0, ...more] },
-            // 本次无新增（去重后为空）= 当前时间窗口内已到最早，置位隐藏「加载更早」入口
-            l0Ended: b.l0Ended || more.length === 0,
-          };
-        }),
-      );
-      // 窗口内已到最早 → 自动往前扩展时间范围（提前 24h），触发 L0 重新加载，
-      // 让用户无需手改筛选器即可继续看到更早的记忆（设计意图：时间筛选不该成为
-      // 回溯历史的阻碍）。重新加载后若仍无数据，effect 会把 l0Ended 置位终止扩展。
-      // count 仅作极端兜底防死循环；正常路径靠「扩展后加载为空 → l0Ended」自然收敛。
-      if (noMore && timeRange.start && l0AutoExpandCountRef.current < 30) {
-        l0AutoExpandCountRef.current += 1;
-        const newStart = new Date(new Date(timeRange.start).getTime() - 24 * 60 * 60 * 1000);
-        setL0MoreLoading(false);
-        setTimeRange((prev) => ({ ...prev, start: newStart.toISOString() }));
-        return;
-      }
-    } catch (e: unknown) {
-      tea.notify.error((e instanceof Error ? e.message : String(e)) || t('memory.notify.layerFailed'));
-    } finally {
-      setL0MoreLoading(false);
-    }
-  }, [selected, layer, l0MoreLoading, pageSize, timeRange.start, t]);
+  // ── Links between L0 and L1 ──
+  // Page index of a layer for the selected block back to 0, so a new filter starts at page 1.
+  const resetLayerPage = useCallback(
+    (target: MemoryLayer) => {
+      if (!selected?.id) return;
+      const blockId = selected.id;
+      setLayerPages((prev) => ({ ...prev, [blockId]: { ...(prev[blockId] ?? {}), [target]: 0 } }));
+    },
+    [selected?.id],
+  );
+
+  /** From an L1 memory to its source: open L0, select the session, focus the message. */
+  const { openSession } = l0;
+  const openL1Source = useCallback(
+    (sessionId: string, messageId?: string) => {
+      openSession(sessionId, messageId);
+      setLayer('L0');
+    },
+    [openSession],
+  );
+
+  /** From an L0 session to its memories: open L1 filtered by that session. */
+  const showSessionMemories = useCallback(
+    (sessionId: string, title: string) => {
+      setL1SessionFilter({ sessionId, title });
+      resetLayerPage('L1');
+      setLayer('L1');
+    },
+    [resetLayerPage],
+  );
+
+  const clearL1SessionFilter = useCallback(() => {
+    setL1SessionFilter(null);
+    resetLayerPage('L1');
+  }, [resetLayerPage]);
 
   const handleLayerItemLoad = useCallback(
     async (itemId: string) => {
@@ -621,10 +615,14 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     layerPages,
     layerLoading,
     layerItemLoadingId,
-    l0MoreLoading,
     timeRange,
     setTimeRange,
     rangeTooLarge,
+    l0,
+    l1SessionFilter,
+    openL1Source,
+    showSessionMemories,
+    clearL1SessionFilter,
     showImport,
     setShowImport,
     showAllocate,
@@ -643,7 +641,6 @@ export function useChatMemory(props: { activeTeamId?: string | null } = {}) {
     fetchBlocks,
     refreshLayer,
     handleLayerPageChange,
-    handleL0LoadMore,
     handleLayerItemLoad,
     handleSaveLayerItem,
     searchLayer,

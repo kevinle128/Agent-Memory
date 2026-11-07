@@ -28,9 +28,27 @@ export interface ChatMemoryLayerItem {
   title: string;
   body: string;
   tags?: string[];
+  /** L1: ids of the L0 messages this memory came from. */
   refs?: string[];
+  /** L0: session of the message. L1: session of the source messages. */
+  session_id?: string;
   /** 条目创建/记录时间（ISO8601），backend 从 recorded_at_ms / created_time_ms / updated_at 转换 */
   created_at?: string;
+}
+
+/** One L0 session in the session list. */
+export interface ChatMemorySession {
+  session_id: string;
+  /** First and last message time (ISO 8601) inside the time range. */
+  first_ts?: string;
+  last_ts?: string;
+  message_count: number;
+  /** Start of the first user message. Empty when the session has no user message. */
+  title: string;
+  project_name?: string;
+  project_hash?: string;
+  /** Number of L1 memories made from this session. */
+  l1_count: number;
 }
 
 /** L1 语义搜索命中项：在分层条目基础上附带相关度 score（越大越相关） */
@@ -89,6 +107,7 @@ export const chatMemoryApi = {
     beforeTs?: string,
     timeStart?: string,
     timeEnd?: string,
+    sessionId?: string,
   ) =>
     chatMemoryCall<{
       layer: string;
@@ -106,7 +125,25 @@ export const chatMemoryApi = {
       // 详情页时间筛选器（ISO8601），仅 L0 / L1 生效，后端对 L2 / L3 忽略
       ...(timeStart ? { time_start: timeStart } : {}),
       ...(timeEnd ? { time_end: timeEnd } : {}),
+      // L0: one session in conversation order. L1: memories of one session.
+      ...(sessionId ? { session_id: sessionId } : {}),
     }),
+
+  /** L0 sessions of a memory block, newest activity first. */
+  sessions: (
+    blockId: string,
+    params: { limit?: number; offset?: number; timeStart?: string; timeEnd?: string } = {},
+  ) =>
+    chatMemoryCall<{ sessions: ChatMemorySession[]; total: number; limit: number; offset: number }>(
+      'sessions',
+      {
+        block_id: blockId,
+        limit: params.limit ?? 50,
+        offset: params.offset ?? 0,
+        ...(params.timeStart ? { time_start: params.timeStart } : {}),
+        ...(params.timeEnd ? { time_end: params.timeEnd } : {}),
+      },
+    ),
 
   /** 批量设置某个 agent 的固定 memory，后端会原子校验借入上限。 */
   setAgentFixed: (teamId: string, agentId: string, blockIds: string[]) =>

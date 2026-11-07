@@ -17,8 +17,11 @@ export interface AtomicItem {
   id: string;
   title: string;
   body: string;
+  /** L1: ids of the L0 messages this memory came from. */
   refs?: string[];
   tags?: string[];
+  /** L1: session of the source messages. */
+  session_id?: string;
   /** 条目创建/记录时间（ISO8601），仅展示，不参与排序 */
   created_at?: string;
 }
@@ -41,8 +44,6 @@ export interface MemoryBlock {
     L3: AtomicItem[];
   };
   layerCounts: Partial<Record<MemoryLayer, number>>;
-  /** L0 在当前时间筛选下是否已加载到最早（「加载更早」无新增数据时置位，用于隐藏入口） */
-  l0Ended?: boolean;
 }
 
 export interface AgentOption {

@@ -1191,3 +1191,297 @@ div[role='button']._memory-detail-atomic-head--btn:active {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ===== Layer pipeline: L0 → L1 → L2 → L3 ===== */
+/* The layer cards are steps of one process, so arrows join them in one row. */
+._memory-detail-layers {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+._memory-detail-layers ._memory-detail-layer-btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+._memory-detail-layer-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--tea-color-text-tertiary);
+}
+
+@media (max-width: 767px) {
+  ._memory-detail-layers {
+    flex-wrap: wrap;
+  }
+
+  ._memory-detail-layers ._memory-detail-layer-btn {
+    flex-basis: 40%;
+  }
+}
+
+._memory-detail-scope-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 360px;
+  padding: 1px 4px 1px 8px;
+  border: 1px solid var(--tea-color-border-brand-default);
+  border-radius: 999px;
+  background: var(--tea-color-bg-brand-lighten-default);
+  color: var(--tea-color-text-brand-default);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+._memory-detail-filter-chip-clear {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+._memory-detail-filter-chip-clear:hover {
+  background: var(--tea-color-bg-primary-default);
+}
+
+/* L1 "Source" link to the L0 session */
+._memory-detail-atomic-source {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-detail-atomic-source-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--tea-color-text-brand-default);
+  cursor: pointer;
+}
+
+._memory-detail-atomic-source-link:hover {
+  text-decoration: underline;
+}
+
+/* ===== L0: session list (left) + conversation (right) ===== */
+._memory-l0 {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--tea-color-border-primary-default);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+._memory-l0-sessions {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 280px;
+  min-height: 0;
+  border-right: 1px solid var(--tea-color-border-primary-default);
+  background: var(--tea-color-bg-secondary-default);
+}
+
+._memory-l0-sessions-filter {
+  padding: 8px;
+  border-bottom: 1px solid var(--tea-color-border-secondary-default);
+}
+
+._memory-l0-sessions-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+._memory-l0-day {
+  position: sticky;
+  top: 0;
+  padding: 6px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--tea-color-text-tertiary);
+  background: var(--tea-color-bg-secondary-default);
+}
+
+._memory-l0-session {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+._memory-l0-session:hover {
+  background: var(--tea-color-bg-primary-default);
+}
+
+._memory-l0-session--active,
+._memory-l0-session--active:hover {
+  border-left-color: var(--tea-color-border-brand-default);
+  background: var(--tea-color-bg-primary-default);
+}
+
+._memory-l0-session-title {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+._memory-l0-session-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-l0-session-meta > span:first-child {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+._memory-l0-session-meta > span:last-child {
+  flex-shrink: 0;
+}
+
+._memory-l0-l1-count {
+  font-weight: 600;
+  color: var(--tea-color-text-brand-default);
+}
+
+._memory-l0-l1-count--zero {
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-l0-conv {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+._memory-l0-conv-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--tea-color-border-secondary-default);
+}
+
+._memory-l0-conv-head-info {
+  min-width: 0;
+}
+
+._memory-l0-conv-title {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+._memory-l0-conv-meta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-l0-conv-actions {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+._memory-l0-conv-body {
+  padding: 8px 12px;
+}
+
+._memory-l0-tools {
+  align-self: flex-start;
+  margin: 2px 0;
+  padding: 2px 8px;
+  border: 1px dashed var(--tea-color-border-primary-default);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-l0-msg-l1 {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--tea-color-border-brand-default);
+  border-radius: 999px;
+  background: var(--tea-color-bg-brand-lighten-default);
+  font-size: 11px;
+  color: var(--tea-color-text-brand-default);
+  cursor: pointer;
+}
+
+/* Message opened from an L1 "Source" link */
+._memory-l0-msg--focus ._memory-chat-bubble {
+  outline: 2px solid var(--tea-color-border-warning-default, #d97706);
+  outline-offset: 2px;
+}
+
+._memory-l0-hint {
+  padding: 24px 12px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--tea-color-text-tertiary);
+}
+
+._memory-l0-more {
+  padding: 8px;
+  text-align: center;
+}
+
+@media (max-width: 960px) {
+  ._memory-l0 {
+    flex-direction: column;
+  }
+
+  ._memory-l0-sessions {
+    flex-basis: auto;
+    max-height: 280px;
+    border-right: 0;
+    border-bottom: 1px solid var(--tea-color-border-primary-default);
+  }
+}

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, useEffect } from 'react';
+import { Fragment, useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import moment, { type Moment } from 'moment';
 import { Button, DatePicker, Dropdown, Input, List, Modal, Pagination } from 'tea-component';
@@ -10,15 +10,18 @@ import { useUserDisplayName } from '@/services/user-profile-store';
 import { tea } from '@/lib/tea-bridge';
 import { MarkdownView } from '@/components/MarkdownView';
 import type { ChatMemorySearchHit } from '@/lib/teamApi';
+import type { L0SessionsStore } from '../hooks/useL0Sessions';
+import type { L1SessionFilter } from '../hooks/useChatMemory';
+import { L0SessionView } from './L0SessionView';
 import {
   AppIcon,
   UsergroupIcon,
   ChevronDownIcon,
-  InfoCircleIcon,
   TimeIcon,
   SearchIcon,
   MoreIcon,
   RefreshIcon,
+  CloseIcon,
 } from 'tea-icons-react';
 
 const { RangePicker } = DatePicker;
@@ -193,6 +196,7 @@ function AtomicList({
   timeFiltered,
   canEdit,
   onEdit,
+  onOpenSource,
 }: {
   layer: MemoryLayer;
   items: AtomicItem[];
@@ -203,6 +207,8 @@ function AtomicList({
   canEdit?: boolean;
   /** 点击编辑单条 */
   onEdit?: (item: AtomicItem) => void;
+  /** L1: open the source session in L0 and focus the first source message. */
+  onOpenSource?: (sessionId: string, messageId?: string) => void;
 }) {
   const { t } = useTranslation();
   const LAYERS = useLayers();
@@ -269,14 +275,23 @@ function AtomicList({
             ) : (
               <pre className="_memory-detail-atomic-body">{it.body}</pre>
             )}
-            {it.refs?.length || it.tags?.length ? (
+            {onOpenSource && it.session_id ? (
+              <div className="_memory-detail-atomic-source">
+                {t('memory.l1.source')}:{' '}
+                <button
+                  type="button"
+                  className="_memory-detail-atomic-source-link"
+                  title={it.session_id}
+                  onClick={() => onOpenSource(it.session_id!, it.refs?.[0])}
+                >
+                  {t('memory.l1.sourceSession', { id: shortSessionId(it.session_id) })}
+                  {it.refs?.length ? ` · ${t('memory.l1.sourceMessages', { count: it.refs.length })}` : ''} ↗
+                </button>
+              </div>
+            ) : null}
+            {it.tags?.length ? (
               <div className="_memory-detail-atomic-meta">
-                {it.refs?.map((r) => (
-                  <span key={r} className="_memory-detail-atomic-ref">
-                    {r}
-                  </span>
-                ))}
-                {it.tags?.map((tag) => (
+                {it.tags.map((tag) => (
                   <span key={tag} className="_memory-detail-atomic-tag">
                     #{tag}
                   </span>
@@ -289,6 +304,17 @@ function AtomicList({
     </ul>
   );
 }
+
+function shortSessionId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 4)}…${id.slice(-3)}` : id;
+}
+
+/** Verb on the arrow from each layer to the next one. */
+const PIPELINE_ARROWS: Partial<Record<MemoryLayer, string>> = {
+  L0: 'memory.pipeline.extract',
+  L1: 'memory.pipeline.group',
+  L2: 'memory.pipeline.distill',
+};
 
 /** L2 场景记忆列表：正文按需加载、点击标题/chevron 折叠展开（带逐渐展开动画）。 */
 function L2AtomicList({
@@ -419,8 +445,11 @@ export function BlockDetail({
   onLayerPageChange,
   onLayerItemLoad,
   layerItemLoadingId,
-  onL0LoadMore,
-  l0MoreLoading,
+  l0,
+  l1SessionFilter,
+  onOpenL1Source,
+  onShowSessionMemories,
+  onClearL1SessionFilter,
   timeRange,
   onTimeRangeChange,
   rangeTooLarge,
@@ -441,9 +470,15 @@ export function BlockDetail({
   onLayerPageChange: (page: number) => void;
   onLayerItemLoad?: (itemId: string) => void;
   layerItemLoadingId?: string | null;
-  /** L0 加载更多（追加更早的对话）；未传则不展示加载入口 */
-  onL0LoadMore?: () => void;
-  l0MoreLoading?: boolean;
+  /** L0 session list and the conversation of the selected session. */
+  l0: L0SessionsStore;
+  /** L1 shows only the memories of this session when set. */
+  l1SessionFilter: L1SessionFilter | null;
+  /** From an L1 memory to its source session and message in L0. */
+  onOpenL1Source: (sessionId: string, messageId?: string) => void;
+  /** From an L0 session to its L1 memories. */
+  onShowSessionMemories: (sessionId: string, title: string) => void;
+  onClearL1SessionFilter: () => void;
   /** 详情页时间筛选器（仅 L0 / L1 生效）。start / end 为 ISO8601 字符串 */
   timeRange?: { start: string; end: string };
   onTimeRangeChange?: (range: { start: string; end: string }) => void;
@@ -549,62 +584,6 @@ export function BlockDetail({
   function clearSearch() {
     setSearchResults(null);
     setSearchInput('');
-  }
-
-  // ── L0 滚动容器与锚点 ──
-  // l0HasMore：已加载条数 < 后端总数。初次进入/切换块时滚到底部（最新消息）；
-  // 加载更多（旧消息插入顶部）后保持视口位置不跳动。
-  const l0Total = getLayerCount(block, 'L0');
-  // 终止条件以「加载更早是否返回新增数据」为准（l0Ended），而非仅比较
-  // 已加载条数 vs 全量总数 —— 时间筛选下全量总数永远大于窗口内条数，
-  // 单靠长度比较会导致按钮一直显示且点击无反应。
-  const l0HasMore = !block.l0Ended && block.layers.L0.length < l0Total;
-  const l0ScrollRef = useRef<HTMLDivElement>(null);
-  const l0AnchorRef = useRef<'bottom' | number | null>(null);
-  const l0KeyRef = useRef<string>('');
-  const l0PrevScrollTopRef = useRef<number>(Infinity);
-
-  const l0Key = `${block.id}|${layer}`;
-  if (l0KeyRef.current !== l0Key) {
-    l0KeyRef.current = l0Key;
-    // 进入 L0 时设锚点滚到底部（最新消息）；离开 L0 也要更新 ref，
-    // 这样从 L1 切回 L0 时 key 不同才会重新触发滚到底部。
-    if (layer === 'L0') {
-      l0AnchorRef.current = 'bottom';
-    }
-  }
-
-  useLayoutEffect(() => {
-    if (layer !== 'L0') return;
-    const el = l0ScrollRef.current;
-    if (!el) return;
-    const anchor = l0AnchorRef.current;
-    if (anchor === 'bottom') {
-      el.scrollTop = el.scrollHeight;
-      l0AnchorRef.current = null;
-    } else if (typeof anchor === 'number') {
-      el.scrollTop += el.scrollHeight - anchor;
-      l0AnchorRef.current = null;
-    }
-  }, [layer, block.layers.L0.length, layerLoading]);
-
-  function triggerL0LoadMore() {
-    const el = l0ScrollRef.current;
-    if (el) l0AnchorRef.current = el.scrollHeight;
-    onL0LoadMore?.();
-  }
-
-  // 滚到顶部自动触发「加载更早」——避免用户每次都得点按钮。
-  // 用 ref 记录上一次 scrollTop 位置，跨过 atTop 阈值才触发（atTop -> atTop 不重复），
-  // 避免锚点修正引发的链式自动加载。
-  function handleL0Scroll() {
-    const el = l0ScrollRef.current;
-    if (!el) return;
-    const atTop = el.scrollTop <= 24;
-    if (atTop && l0PrevScrollTopRef.current > 24 && l0HasMore && !l0MoreLoading && !layerLoading) {
-      triggerL0LoadMore();
-    }
-    l0PrevScrollTopRef.current = el.scrollTop;
   }
 
   return (
@@ -713,30 +692,65 @@ export function BlockDetail({
 
       <div className="_memory-detail-layers">
         {LAYERS.map((l) => {
-          const active = l.id === layer;
-          const loadedLen =
-            l.id === 'L0' ? block.layers.L0.length : block.layers[l.id as MemoryLayer].length;
-          const known = block.layerCounts[l.id as MemoryLayer] !== undefined || loadedLen > 0;
-          const cnt = getLayerCount(block, l.id as MemoryLayer);
+          const id = l.id as MemoryLayer;
+          const active = id === layer;
+          const known = block.layerCounts[id] !== undefined || block.layers[id].length > 0;
+          const cnt = getLayerCount(block, id);
+          const arrow = PIPELINE_ARROWS[id];
           return (
-            <button
-              key={l.id}
-              onClick={() => onLayerChange(l.id as MemoryLayer)}
-              className={`_memory-detail-layer-btn${active ? ' _memory-detail-layer-btn--active' : ''}`}
-            >
-              <div className="_memory-detail-layer-btn-top">
-                <span className="_memory-detail-layer-label">{l.label}</span>
-                <span
-                  className="_memory-detail-layer-count"
-                  title={known ? undefined : t('memory.detail.clickToLoad')}
-                >
-                  {known ? cnt : '·'}
-                </span>
-              </div>
-              <div className="_memory-detail-layer-desc">{l.desc}</div>
-            </button>
+            <Fragment key={id}>
+              <button
+                onClick={() => onLayerChange(id)}
+                className={`_memory-detail-layer-btn${active ? ' _memory-detail-layer-btn--active' : ''}`}
+              >
+                <div className="_memory-detail-layer-btn-top">
+                  <span className="_memory-detail-layer-label">{l.label}</span>
+                  <span
+                    className="_memory-detail-layer-count"
+                    title={known ? undefined : t('memory.detail.clickToLoad')}
+                  >
+                    {known ? cnt : '·'}
+                  </span>
+                </div>
+                <div className="_memory-detail-layer-desc">{l.desc}</div>
+                {id === 'L0' && layer === 'L0' && !l0.sessionsLoading && (
+                  <div className="_memory-detail-layer-desc">
+                    {t('memory.l0.sessionsInRange', { count: l0.sessionsTotal })}
+                  </div>
+                )}
+              </button>
+              {arrow && (
+                <div className="_memory-detail-layer-arrow" aria-hidden>
+                  <span>{t(arrow)}</span>
+                  <span>→</span>
+                </div>
+              )}
+            </Fragment>
           );
         })}
+      </div>
+      <div className="_memory-detail-scope-note">
+        {layer === 'L1' && l1SessionFilter && (
+          <span className="_memory-detail-filter-chip" title={l1SessionFilter.sessionId}>
+            {t('memory.l1.filterSession', {
+              name: l1SessionFilter.title || shortSessionId(l1SessionFilter.sessionId),
+            })}
+            <button
+              type="button"
+              className="_memory-detail-filter-chip-clear"
+              aria-label={t('memory.l1.clearFilter')}
+              title={t('memory.l1.clearFilter')}
+              onClick={onClearL1SessionFilter}
+            >
+              <CloseIcon size={10} />
+            </button>
+          </span>
+        )}
+        <span>
+          {layer === 'L1' && l1SessionFilter
+            ? t('memory.l1.filterIgnoresRange')
+            : t('memory.detail.scopeNote')}
+        </span>
       </div>
 
       {/* 分层语义搜索：L0 对话 / L1 原子记忆（仅搜索模式显示） */}
@@ -877,7 +891,7 @@ export function BlockDetail({
           /* 搜索模式但尚未执行搜索：给出引导，不落到浏览列表（否则模式切换后内容不变会误导）。
              置于 rangeTooLarge 之前——搜索不受时间范围限制，不应被「范围过大」遮挡。 */
           <div className="_memory-detail-empty">{t('memory.detail.searchPrompt')}</div>
-        ) : !isSearching && rangeTooLarge ? (
+        ) : !isSearching && layer !== 'L0' && rangeTooLarge ? (
           <div className="_memory-detail-empty _memory-detail-empty--warn">
             {t('memory.detail.rangeTooLarge')}
           </div>
@@ -923,79 +937,12 @@ export function BlockDetail({
                 </div>
               </div>
             )
-          ) : block.layers.L0.length > 0 ? (
-            <div className="_memory-chat-scroll" ref={l0ScrollRef} onScroll={handleL0Scroll}>
-              {/* 顶部：加载更早的对话（滚动到顶部自动触发，也可点击）。
-                  加载中 / 还有更多 / 已到底（l0Ended）/ 超过一页 时都保留顶部提示区 */}
-              {(l0HasMore ||
-                l0MoreLoading ||
-                block.l0Ended ||
-                block.layers.L0.length > layerPageSize) && (
-                <div className="_memory-chat-more">
-                  {l0MoreLoading ? (
-                    <span className="_memory-chat-more-loading">
-                      <span className="_memory-chat-more-spinner" />
-                      {t('memory.detail.loading')}
-                    </span>
-                  ) : l0HasMore ? (
-                    <button
-                      type="button"
-                      className="_memory-chat-more-btn"
-                      onClick={triggerL0LoadMore}
-                    >
-                      {t('memory.detail.loadMore')}
-                    </button>
-                  ) : (
-                    <span className="_memory-chat-more-end">{t('memory.detail.allLoaded')}</span>
-                  )}
-                </div>
-              )}
-              <div className="_memory-chat-list">
-                {/* 后端按最新对话从上到下返回，聊天视图需要反转为「旧在上、新在下」 */}
-                {[...block.layers.L0].reverse().map((msg, idx) => {
-                  const role = extractRole(msg.role || msg.title || '');
-                  const body = msg.body;
-                  const tone = toneOfRole(role);
-                  const time = formatDisplayTime(msg.created_at);
-
-                  // system：居中通栏胶囊提示，不走头像+气泡布局
-                  if (tone === 'system') {
-                    return (
-                      <div key={msg.id || idx} className="_memory-chat-system">
-                        <InfoCircleIcon size={12} />
-                        <span className="_memory-chat-system-text">{body}</span>
-                        {time && <span className="_memory-chat-system-time">{time}</span>}
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div
-                      key={msg.id || idx}
-                      className={`_memory-chat-row _memory-chat-row--${tone}`}
-                    >
-                      <div className="_memory-chat-main">
-                        <div className="_memory-chat-meta">
-                          <span className="_memory-chat-role">{role.toUpperCase()}</span>
-                          {time && (
-                            <span className="_memory-chat-time" title={msg.created_at}>
-                              {time}
-                            </span>
-                          )}
-                        </div>
-                        <div className={`_memory-chat-bubble _memory-chat-bubble--${tone}`}>
-                          <pre className="_memory-chat-body">{body}</pre>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
           ) : (
-            <div className="_memory-detail-empty">
-              {showTimeFilter ? t('memory.detail.noL0InRange') : t('memory.detail.noL0')}
-            </div>
+            <L0SessionView
+              l0={l0}
+              timeFiltered={showTimeFilter}
+              onShowSessionMemories={onShowSessionMemories}
+            />
           )
         ) : isSearching ? (
           searchResults!.length === 0 ? (
@@ -1025,9 +972,10 @@ export function BlockDetail({
             layer={layer}
             items={block.layers[layer]}
             loadingItemId={layerItemLoadingId}
-            timeFiltered={layer === 'L1' && showTimeFilter && !isSearching}
+            timeFiltered={layer === 'L1' && showTimeFilter && !isSearching && !l1SessionFilter}
             canEdit={canEdit && !!onSaveLayerItem}
             onEdit={openEdit}
+            onOpenSource={layer === 'L1' ? onOpenL1Source : undefined}
           />
         )}
         {showPager && !isSearching && (

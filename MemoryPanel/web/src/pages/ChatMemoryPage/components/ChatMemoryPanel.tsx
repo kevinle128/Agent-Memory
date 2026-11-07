@@ -48,10 +48,14 @@ export default function ChatMemoryPanel(
     setLayer,
     layerLoading,
     layerItemLoadingId,
-    l0MoreLoading,
     timeRange,
     setTimeRange,
     rangeTooLarge,
+    l0,
+    l1SessionFilter,
+    openL1Source,
+    showSessionMemories,
+    clearL1SessionFilter,
     showImport,
     setShowImport,
     showAllocate,
@@ -69,7 +73,6 @@ export default function ChatMemoryPanel(
     // handlers
     fetchBlocks,
     handleLayerPageChange,
-    handleL0LoadMore,
     handleLayerItemLoad,
     handleSaveLayerItem,
     searchLayer,
@@ -262,8 +265,11 @@ export default function ChatMemoryPanel(
                 onLayerPageChange={handleLayerPageChange}
                 onLayerItemLoad={handleLayerItemLoad}
                 layerItemLoadingId={layerItemLoadingId}
-                onL0LoadMore={handleL0LoadMore}
-                l0MoreLoading={l0MoreLoading}
+                l0={l0}
+                l1SessionFilter={l1SessionFilter}
+                onOpenL1Source={openL1Source}
+                onShowSessionMemories={showSessionMemories}
+                onClearL1SessionFilter={clearL1SessionFilter}
                 timeRange={timeRange}
                 onTimeRangeChange={setTimeRange}
                 rangeTooLarge={rangeTooLarge}
