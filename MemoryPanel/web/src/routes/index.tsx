@@ -18,6 +18,7 @@ import { SubscriptionPoolPage } from '@/pages/SubscriptionPoolPage';
 import { ModelProviderPage } from '@/pages/ModelProviderPage';
 import { GuidePage } from '@/pages/GuidePage';
 import { AnalyticsPage } from '@/pages/AnalyticsPage';
+import { ProcessingHistoryPage } from '@/pages/ProcessingHistoryPage';
 
 export const routes: RouteObject[] = [
   {
@@ -29,6 +30,7 @@ export const routes: RouteObject[] = [
       { path: 'code', element: <CodePage /> },
       { path: 'skills', element: <SkillsPage /> },
       { path: 'memory', element: <ChatMemoryPage /> },
+      { path: 'processing-history', element: <ProcessingHistoryPage /> },
       { path: 'analytics', element: <AnalyticsPage /> },
       { path: 'team/members', element: <MembersPage /> },
       { path: 'team/agents', element: <AgentsPage /> },

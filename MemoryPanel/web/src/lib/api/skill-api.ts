@@ -548,6 +548,17 @@ export interface SkillProposal {
   owner_user_id?: string;
   owner_name?: string;
   owner_agent_name?: string;
+  /** Extractor tool calls up to the call that made the proposal (short previews). Empty for older proposals. */
+  tool_calls?: SkillProposalToolCall[];
+  /** Why the person approved or rejected. Empty when no reason was given. */
+  decision_reason?: string;
+}
+
+export interface SkillProposalToolCall {
+  name: string;
+  input: string;
+  /** Absent for the call that made the proposal. */
+  output?: string;
 }
 
 export function listSkillProposals(params: {
@@ -571,6 +582,8 @@ export function approveSkillProposal(params: {
   user_id: string;
   proposal_id: string;
   agent_id?: string;
+  /** Why the user approves. Stored with the decision. */
+  reason?: string;
 }): Promise<{ applied: boolean; proposal: SkillProposal; skill: SkillSummary }> {
   return skillCall('proposals/approve', params as unknown as Record<string, unknown>);
 }
@@ -580,6 +593,8 @@ export function rejectSkillProposal(params: {
   user_id: string;
   proposal_id: string;
   agent_id?: string;
+  /** Why the user rejects. Stored with the decision. */
+  reason?: string;
 }): Promise<{ proposal: SkillProposal }> {
   return skillCall('proposals/reject', params as unknown as Record<string, unknown>);
 }

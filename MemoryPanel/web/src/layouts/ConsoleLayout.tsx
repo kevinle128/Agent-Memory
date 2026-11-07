@@ -9,6 +9,7 @@ import { Layout, Menu } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/stores/auth';
 import { useCurrentRole, type TeamRole } from '@/services/useCurrentRole';
+import { isGlobalAdmin, isTeamAdmin, useTeams } from '@/services';
 import { usePanelAnalyticsEnabled, useAnalyticsChConfigured } from '@/services/usePanelCapabilities';
 import { GlobalHeader } from '@/layouts/GlobalHeader';
 import { TabBar } from '@/layouts/TabBar';
@@ -24,6 +25,7 @@ const PATH_TO_PAGE: Record<string, PageId> = {
   '/code': 'code',
   '/skills': 'skills',
   '/memory': 'chat_memory',
+  '/processing-history': 'processing_history',
   '/analytics': 'analytics',
   '/team/members': 'team_members',
   '/team/agents': 'team_agents',
@@ -57,6 +59,10 @@ export function ConsoleLayout() {
   const location = useLocation();
   const { auth, logout } = useAuthStore();
   const userRole: TeamRole | null = useCurrentRole();
+  const { activeTeam } = useTeams();
+  // Processing History holds prompts and memory text: team admins and system admins only.
+  const historyVisible =
+    !!auth && (isGlobalAdmin(auth.user, auth.isAdmin) || isTeamAdmin(activeTeam, auth.user_id));
   const PAGE_META = usePageMeta();
 
   const activePage: PageId = useMemo(() => {
@@ -157,6 +163,7 @@ export function ConsoleLayout() {
 
     for (const meta of Object.values(PAGE_META)) {
       if (userRole === 'reviewer' && meta.id === 'team_members') continue;
+      if (meta.id === 'processing_history' && !historyVisible) continue;
       // 「可观测」仅 system_admin 可见，且需面板开关开启 + 内核已配置 CH
       if (meta.id === 'analytics') {
         if (userRole !== 'admin' || !analyticsVisible) continue;
@@ -172,7 +179,7 @@ export function ConsoleLayout() {
         title: g,
         items: byGroup.get(g)!.sort((a, b) => a.order - b.order),
       }));
-  }, [userRole, PAGE_META, t, analyticsVisible]);
+  }, [userRole, PAGE_META, t, analyticsVisible, historyVisible]);
 
   const workbenchGroupTitle = t('menu.group.workbench');
   const pinnedGroup = menuGroups.find((g) => g.title === workbenchGroupTitle);
