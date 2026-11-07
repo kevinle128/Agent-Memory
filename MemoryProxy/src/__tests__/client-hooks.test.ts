@@ -223,7 +223,7 @@ describe("hook.sh", () => {
         git_toplevel: top,
         git_remote: "https://example.com/org/repo.git",
         hook_event: "UserPromptSubmit",
-        hook_version: "1",
+        hook_version: "2",
         client: "claude-code",
         os: os.platform(),
         arch: expect.any(String),
