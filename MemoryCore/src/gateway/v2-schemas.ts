@@ -88,11 +88,15 @@ export interface ConversationItem extends GeneratedConversationItem {
   agent_id?: string;
   /** Optional task ownership dimension for L0/L1 filtering. */
   task_id?: string;
+  /** Original message time (ISO 8601). `timestamp` is the capture time. */
+  message_time?: string;
 }
 
 export type ConversationSearchHit = ConversationItem & { score: number };
 import {
   conversationItemSchema as _conversationItemSchema,
+  conversationQueryRequestSchema as _conversationQueryRequestSchema,
+  atomicQueryRequestSchema as _atomicQueryRequestSchema,
   scenarioReadRequestSchema as _scenarioReadRequestSchema,
   scenarioWriteRequestSchema as _scenarioWriteRequestSchema,
   scenarioRmRequestSchema as _scenarioRmRequestSchema,
@@ -212,6 +216,58 @@ export interface AtomicDetail extends GeneratedAtomicDetail {
   user_id?: string;
   agent_id?: string;
   task_id?: string;
+  /** Session of the L0 messages this memory came from. */
+  session_id?: string;
+  /** L0 message ids this memory came from. Empty when the store does not keep them. */
+  source_message_ids?: string[];
+}
+
+// ============================
+// Session filter and order on the L0 / L1 query routes
+// ============================
+
+const sessionIdFilterSchema = z.string().trim().min(1).max(256);
+
+/** conversation/query plus an optional sort order ("asc" = conversation order). */
+export const conversationQueryWithOrderRequestSchema = _conversationQueryRequestSchema.and(z.object({
+  order: z.enum(["asc", "desc"]).optional(),
+}));
+
+/** atomic/query plus an optional session filter. */
+export const atomicQueryWithSessionRequestSchema = _atomicQueryRequestSchema.and(z.object({
+  session_id: sessionIdFilterSchema.optional(),
+}));
+
+// ============================
+// conversation/sessions: L0 session list
+// ============================
+
+export const conversationSessionsRequestSchema = z.object({
+  limit: z.number().int().min(1).max(100).optional(),
+  offset: z.number().int().min(0).optional(),
+  time_start: z.iso.datetime().optional(),
+  time_end: z.iso.datetime().optional(),
+});
+export type ConversationSessionsRequest = z.infer<typeof conversationSessionsRequestSchema>;
+
+export interface ConversationSessionItem {
+  session_id: string;
+  /** First and last message time (ISO 8601) inside the time range. */
+  first_ts: string;
+  last_ts: string;
+  message_count: number;
+  /** Start of the first user message, used as the session title. */
+  first_user_message: string;
+  project_key?: string;
+  project_hash?: string;
+  project_name?: string;
+  /** Number of L1 memories of this session in the same scope. */
+  l1_count: number;
+}
+
+export interface ConversationSessionsData {
+  sessions: ConversationSessionItem[];
+  total: number;
 }
 
 export interface AtomicQueryData {

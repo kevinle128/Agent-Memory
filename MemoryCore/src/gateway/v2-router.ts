@@ -34,12 +34,13 @@ import { reportRecallMetrics } from "../core/report/metric-tracking-recall.js";
 // ── Zod schemas (validated types + defaults) ──
 import {
   conversationAddRequestSchema,
-  conversationQueryRequestSchema,
+  conversationQueryWithOrderRequestSchema,
+  conversationSessionsRequestSchema,
   conversationSearchRequestSchema,
   conversationDeleteRequestSchema,
   conversationCountRequestSchema,
   atomicUpdateRequestSchema,
-  atomicQueryRequestSchema,
+  atomicQueryWithSessionRequestSchema,
   atomicSearchRequestSchema,
   atomicDeleteRequestSchema,
   atomicCountRequestSchema,
@@ -76,6 +77,7 @@ import {
   type ConversationSearchHit,
   type ConversationAddData,
   type ConversationQueryData,
+  type ConversationSessionsData,
   type ConversationSearchData,
   type ConversationDeleteData,
   type CountData,
@@ -160,6 +162,7 @@ const V3_ALLOWED_SUBPATHS = new Set<string>([
   "/conversation/search",
   "/conversation/delete",
   "/conversation/count",
+  "/conversation/sessions",
   "/atomic/update",
   "/atomic/query",
   "/atomic/search",
@@ -414,12 +417,16 @@ type RouteHandler = (
  * L0–L3 数据面 handler 映射（子路径 → handler）。历史接口同时挂载 /v2/* 与 /v3/*；
  * count 接口按 sdk-v3.yaml 仅挂载 /v3/*。/v3 走严格 isolation 校验；/v2 沿用现有 enforce/legacyCompat 配置。
  */
+/** Data-plane routes added after /v2 was frozen. They are mounted on /v3 only. */
+const V3_ONLY_SUBPATHS = new Set<string>(["/conversation/sessions"]);
+
 const DATAPLANE_HANDLERS: Record<string, RouteHandler> = {
   "/conversation/add": handleConversationAdd,
   "/conversation/query": handleConversationQuery,
   "/conversation/search": handleConversationSearch,
   "/conversation/delete": handleConversationDelete,
   "/conversation/count": handleConversationCount,
+  "/conversation/sessions": handleConversationSessions,
   "/atomic/update": handleAtomicUpdate,
   "/atomic/query": handleAtomicQuery,
   "/atomic/search": handleAtomicSearch,
@@ -440,7 +447,7 @@ const routeTable: Record<string, RouteHandler> = {
   ...Object.fromEntries(
     Object.entries(DATAPLANE_HANDLERS).flatMap(([sub, h]) => {
       const v3Route = [`${V3_PREFIX}${sub}`, h] as const;
-      if (sub.endsWith("/count")) return [v3Route];
+      if (sub.endsWith("/count") || V3_ONLY_SUBPATHS.has(sub)) return [v3Route];
       return [[`${V2_PREFIX}${sub}`, h] as const, v3Route];
     }),
   ),
@@ -833,9 +840,9 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
 }
 
 async function handleConversationQuery(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = conversationQueryRequestSchema.safeParse(body);
+  const parsed = conversationQueryWithOrderRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { session_id, time_start, time_end } = parsed.data;
+  const { session_id, time_start, time_end, order } = parsed.data;
   const limit = parsed.data.limit ?? 20;
   const offset = parsed.data.offset ?? 0;
 
@@ -859,6 +866,7 @@ async function handleConversationQuery(body: unknown, _auth: V2AuthContext, requ
       timeEndMs: time_end ? new Date(time_end).getTime() : undefined,
       limit,
       offset,
+      order,
     });
 
     const messages: ConversationItem[] = result.rows.map((r) => ({
@@ -871,6 +879,7 @@ async function handleConversationQuery(body: unknown, _auth: V2AuthContext, requ
       role: r.role as ConversationItem["role"],
       content: r.message_text,
       timestamp: r.recorded_at,
+      message_time: epochMsToIso(r.timestamp),
     }));
 
     return successEnvelope<ConversationQueryData>({ messages, total: result.total }, requestId);
@@ -901,6 +910,55 @@ async function handleConversationQuery(body: unknown, _auth: V2AuthContext, requ
   }));
 
   return successEnvelope<ConversationQueryData>({ messages, total }, requestId);
+}
+
+/** ISO 8601 for an epoch-ms value; undefined when the value is missing or 0. */
+function epochMsToIso(ms: number | undefined): string | undefined {
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : undefined;
+}
+
+/**
+ * List the L0 sessions of the caller scope (team, user, agent, task), newest
+ * activity first. The time range selects messages; a session that has messages
+ * on both sides of the range shows only the messages inside it.
+ */
+async function handleConversationSessions(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
+  const parsed = conversationSessionsRequestSchema.safeParse(body ?? {});
+  if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
+  const { time_start, time_end } = parsed.data;
+  const limit = parsed.data.limit ?? 20;
+  const offset = parsed.data.offset ?? 0;
+
+  const store = deps.getStore();
+  if (!store) return errorEnvelope(503, "Store not available", requestId);
+  if (!store.listL0Sessions) return errorEnvelope(501, "Session list is not supported by this store backend", requestId);
+
+  const iso = deps.requestIsolation;
+  const result = await store.listL0Sessions({
+    teamId: iso?.teamId,
+    userId: iso?.userId,
+    agentId: iso?.agentId,
+    taskId: iso?.taskId,
+    timeStartMs: time_start ? new Date(time_start).getTime() : undefined,
+    timeEndMs: time_end ? new Date(time_end).getTime() : undefined,
+    limit,
+    offset,
+  });
+
+  return successEnvelope<ConversationSessionsData>({
+    sessions: result.sessions.map((s) => ({
+      session_id: s.session_id,
+      first_ts: epochMsToIso(s.first_ts) ?? "",
+      last_ts: epochMsToIso(s.last_ts) ?? "",
+      message_count: s.message_count,
+      first_user_message: s.first_user_message,
+      project_key: s.project_key || undefined,
+      project_hash: s.project_hash || undefined,
+      project_name: s.project_name || undefined,
+      l1_count: s.l1_count,
+    })),
+    total: result.total,
+  }, requestId);
 }
 
 async function handleConversationCount(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
@@ -1134,9 +1192,9 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
 }
 
 async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
-  const parsed = atomicQueryRequestSchema.safeParse(body);
+  const parsed = atomicQueryWithSessionRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { type, time_start, time_end } = parsed.data;
+  const { type, time_start, time_end, session_id } = parsed.data;
   const limit = parsed.data.limit ?? 20;
   const offset = parsed.data.offset ?? 0;
 
@@ -1149,7 +1207,7 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
   // Use paginated query if available
   if (store.queryL1Paginated) {
     const result = await store.queryL1Paginated({
-      type, timeStart: time_start, timeEnd: time_end, limit, offset,
+      type, timeStart: time_start, timeEnd: time_end, limit, offset, sessionId: session_id,
       teamId: iso?.teamId, userId: iso?.userId, agentId: iso?.agentId, taskId: iso?.taskId,
     });
     const items: AtomicDetail[] = result.rows.map((r) => ({
@@ -1160,6 +1218,8 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
       user_id: r.user_id,
       agent_id: r.agent_id,
       task_id: r.task_id,
+      session_id: r.session_id || undefined,
+      source_message_ids: r.source_message_ids ?? [],
       created_at: r.created_time, updated_at: r.updated_time,
     }));
     return successEnvelope<AtomicQueryData>({ items, total: result.total }, requestId);
@@ -1169,6 +1229,7 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
   const allRecords = await store.queryL1Records();
   let filtered = allRecords;
   if (type) filtered = filtered.filter((r) => r.type === type);
+  if (session_id) filtered = filtered.filter((r) => r.session_id === session_id);
   if (iso?.teamId) filtered = filtered.filter((r) => r.team_id === iso.teamId);
   if (iso?.userId) filtered = filtered.filter((r) => r.user_id === iso.userId);
   if (iso?.agentId) filtered = filtered.filter((r) => r.agent_id === iso.agentId);
@@ -1185,6 +1246,8 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
     user_id: r.user_id,
     agent_id: r.agent_id,
     task_id: r.task_id,
+    session_id: r.session_id || undefined,
+    source_message_ids: r.source_message_ids ?? [],
     created_at: r.created_time, updated_at: r.updated_time,
   }));
 
@@ -2378,6 +2441,7 @@ export {
   handleConversationSearch,
   handleConversationDelete,
   handleConversationCount,
+  handleConversationSessions,
   handleAtomicUpdate,
   handleAtomicQuery,
   handleAtomicSearch,
