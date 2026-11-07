@@ -1361,6 +1361,7 @@ async function handleAtomicSearch(body: unknown, auth: V2AuthContext, requestId:
     user_id: r.user_id,
     agent_id: r.agent_id,
     task_id: r.task_id,
+    ...(r.project_hash ? { project_key: r.project_key ?? "", project_hash: r.project_hash } : {}),
     created_at: r.created_at, updated_at: r.updated_at, score: r.score,
   }));
 

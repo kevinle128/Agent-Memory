@@ -145,6 +145,8 @@ function toL1Hit(r: L1SearchResult | L1FtsResult): L1SearchResult {
     session_id: r.session_id,
     team_id: r.team_id,
     task_id: r.task_id,
+    project_key: r.project_key,
+    project_hash: r.project_hash,
     user_id: r.user_id,
     agent_id: r.agent_id,
     metadata_json: r.metadata_json,

@@ -228,7 +228,7 @@ export interface FtsSearchResult {
   session_id: string;
   team_id: string;
   task_id: string;
-  /** Absent for FTS hits: the FTS tables do not carry project columns. */
+  /** Read from l1_records: the FTS table does not carry project columns. Empty means no project. */
   project_key?: string;
   project_hash?: string;
   user_id: string;
@@ -1088,13 +1088,23 @@ export class VectorStore implements IMemoryStore {
 
       this.stmtL1FtsDelete = this.db.prepare("DELETE FROM l1_fts WHERE record_id = ?");
 
+      // The FTS table has no project columns. The LEFT JOIN reads them from
+      // l1_records, so a caller can scope hits by project. A hit without a
+      // record row keeps an empty project.
       this.stmtL1FtsSearch = this.db.prepare(`
-        SELECT record_id, content_original AS content, type, priority, scene_name,
-               session_key, session_id, team_id, task_id, user_id, agent_id, version,
-               timestamp_str, timestamp_start, timestamp_end,
-               metadata_json,
+        SELECT l1_fts.record_id AS record_id, l1_fts.content_original AS content,
+               l1_fts.type AS type, l1_fts.priority AS priority, l1_fts.scene_name AS scene_name,
+               l1_fts.session_key AS session_key, l1_fts.session_id AS session_id,
+               l1_fts.team_id AS team_id, l1_fts.task_id AS task_id,
+               l1_fts.user_id AS user_id, l1_fts.agent_id AS agent_id, l1_fts.version AS version,
+               l1_fts.timestamp_str AS timestamp_str, l1_fts.timestamp_start AS timestamp_start,
+               l1_fts.timestamp_end AS timestamp_end,
+               l1_fts.metadata_json AS metadata_json,
+               COALESCE(r.project_key, '') AS project_key,
+               COALESCE(r.project_hash, '') AS project_hash,
                bm25(l1_fts) AS rank
         FROM l1_fts
+        LEFT JOIN l1_records r ON r.record_id = l1_fts.record_id
         WHERE l1_fts MATCH ?
         ORDER BY rank ASC
         LIMIT ?
@@ -3256,6 +3266,8 @@ export class VectorStore implements IMemoryStore {
         timestamp_start: string;
         timestamp_end: string;
         metadata_json: string;
+        project_key: string;
+        project_hash: string;
         rank: number;
       }>;
 
@@ -3277,6 +3289,8 @@ export class VectorStore implements IMemoryStore {
           session_id: r.session_id,
           team_id: r.team_id ?? "",
           task_id: r.task_id ?? "",
+          project_key: r.project_key ?? "",
+          project_hash: r.project_hash ?? "",
           user_id: r.user_id ?? "",
           agent_id: r.agent_id ?? "",
           metadata_json: r.metadata_json,

@@ -276,7 +276,11 @@ export interface AtomicQueryData {
   total: number;
 }
 
-export type AtomicSearchHit = AtomicDetail & { score: number };
+/**
+ * `project_key` / `project_hash` are additive: they tell the caller which project the record
+ * belongs to, so it can scope hits by project. Empty or absent means no project.
+ */
+export type AtomicSearchHit = AtomicDetail & { score: number; project_key?: string; project_hash?: string };
 
 export interface AtomicSearchData {
   items: AtomicSearchHit[];

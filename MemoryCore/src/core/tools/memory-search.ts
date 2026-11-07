@@ -27,6 +27,9 @@ export interface MemorySearchResultItem {
   user_id?: string;
   agent_id?: string;
   task_id?: string;
+  /** Project of the record. Empty or absent means no project. */
+  project_key?: string;
+  project_hash?: string;
   priority: number;
   scene_name: string;
   score: number;
@@ -57,6 +60,8 @@ function toSearchItem(r: L1SearchResult): MemorySearchResultItem {
     user_id: r.user_id,
     agent_id: r.agent_id,
     task_id: r.task_id,
+    project_key: r.project_key,
+    project_hash: r.project_hash,
     version: r.version ?? 0,
     created_at: r.timestamp_start,
     updated_at: r.timestamp_end,
