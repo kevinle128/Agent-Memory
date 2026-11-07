@@ -159,6 +159,9 @@ configs:
           dbPath: /data/tdai-memory-proxy/proxy.db
       subscriptionPool:
         promptCacheTtl: "1h"
+      hookRecall:
+        enabled: true
+        allowAgentIds: ["agt-f0bzvpye01"]
       costGuard:
         enabled: false
       modelSources:
