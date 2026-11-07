@@ -12,6 +12,7 @@ import type {
   SelectionStrategiesConfig,
   SelectionStrategyConfig,
   SkillSelectionConfig,
+  SubscriptionPoolConfig,
 } from "./types.js";
 import { resolveProfileScopeMode } from "./tdai/profile-scope-mode.js";
 
@@ -203,6 +204,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   admin: { apiKey: "" },
   memCommand: {},
   modelSources: { enabled: false },
+  subscriptionPool: { promptCacheTtl: "default" },
   ccRequestRouting: { enabled: true },
   hookGate: { enabled: true },
   workbuddyRequestRouting: { enabled: true },
@@ -336,6 +338,13 @@ function parseUpstreamAgents(
  * A missing value means "scoped". A value that is present but not recognized
  * means "deny" and is logged, so a typo never restores the legacy leak.
  */
+/** Missing = "default". Any other value than "default" or "1h" stops the start, so a typo does not silently keep the old TTL. */
+function parsePromptCacheTtl(raw: unknown): SubscriptionPoolConfig["promptCacheTtl"] {
+  if (raw === undefined || raw === null) return "default";
+  if (raw === "default" || raw === "1h") return raw;
+  throw new Error(`[config] subscriptionPool.promptCacheTtl must be "default" or "1h", got ${JSON.stringify(raw)}`);
+}
+
 function parseProfileScopeMode(raw: unknown): import("./tdai/types.js").ProfileScopeMode {
   const mode = resolveProfileScopeMode(raw);
   if (mode === "deny" && raw !== "deny") {
@@ -610,6 +619,9 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
       ...(Array.isArray(yaml.modelSources?.agents)
         ? { agents: yaml.modelSources.agents.filter((a): a is string => typeof a === "string" && a !== "") }
         : {}),
+    },
+    subscriptionPool: {
+      promptCacheTtl: parsePromptCacheTtl(yaml.subscriptionPool?.promptCacheTtl),
     },
     knowledge: {
       enabled: yaml.knowledge?.enabled ?? DEFAULT_CONFIG.knowledge.enabled,

@@ -60,6 +60,7 @@ import { stageAuth } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
 import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
 import { withClaudeCodeIdentity } from "../../subscription-pool/claude-identity.js";
+import { applyPromptCacheTtl } from "../../subscription-pool/prompt-cache-ttl.js";
 import { stageModelGate } from "../stages/model-gate.js";
 import {
   stageWriteUsageLog,
@@ -1334,10 +1335,13 @@ export async function runAnthropicPipeline(
     // rateLimit gate 关闭时(codex/wb bootstrap)同样跳过。
     const rateLimitContext = (_isCustomUpstream || poolRequest || !_gates.rateLimit) ? undefined : { config, instanceId: spaceId || undefined };
     if (poolRequest) {
+      // A subscription account gets the configured cache TTL. Apply it per attempt, so a
+      // failover to another account gets it too and a fallback to the client's login does not.
+      const cacheTtl = config.subscriptionPool?.promptCacheTtl ?? "default";
       upstreamResp = await poolRequest.send((auth, signal) => fetch(target.url, {
         method: "POST",
         headers: applyPoolAuth(upstreamHeaders, c.req.raw.headers, auth, "claude"),
-        body: JSON.stringify(upstreamBody),
+        body: JSON.stringify(auth.kind === "account" ? applyPromptCacheTtl(upstreamBody, cacheTtl) : upstreamBody),
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(forwardTimeoutMs)]) : AbortSignal.timeout(forwardTimeoutMs),
       }));
       retried = false;

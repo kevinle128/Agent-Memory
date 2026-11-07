@@ -568,6 +568,15 @@ export interface ModelSourcesConfig {
   agents?: string[];
 }
 
+export interface SubscriptionPoolConfig {
+  /**
+   * Prompt cache TTL for Anthropic requests sent to a subscription account.
+   * "default" forwards `cache_control` unchanged. "1h" adds `ttl: "1h"` to each
+   * ephemeral breakpoint that has no ttl (see `applyPromptCacheTtl`).
+   */
+  promptCacheTtl: "default" | "1h";
+}
+
 export interface ProxyConfig {
   server: {
     host: string; // default: "0.0.0.0"
@@ -634,6 +643,8 @@ export interface ProxyConfig {
   instanceUpstream: InstanceUpstreamConfig;
   /** `<source>/<model>` routing for multi-source agents. Absent = disabled. */
   modelSources?: ModelSourcesConfig;
+  /** Subscription Pool request options. Absent = defaults. */
+  subscriptionPool?: SubscriptionPoolConfig;
   knowledge: KnowledgeConfig;
   skillRuntime: SkillRuntimeConfig;
   /**
@@ -1157,6 +1168,7 @@ export interface RawYamlConfig {
   coreSkill?: Partial<CoreSkillConfig>;
   instanceUpstream?: Partial<InstanceUpstreamConfig>;
   modelSources?: Partial<ModelSourcesConfig>;
+  subscriptionPool?: { promptCacheTtl?: unknown };
   knowledge?: Partial<KnowledgeConfig>;
   skillRuntime?: {
     allowLlmWrite?: boolean;
