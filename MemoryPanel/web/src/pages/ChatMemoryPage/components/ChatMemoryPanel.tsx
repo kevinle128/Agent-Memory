@@ -21,6 +21,7 @@ import {
 } from '@/components/asset/AssetListPanel';
 import { UserBadge } from '@/components/asset/UserBadge';
 import { useChatMemory } from '../hooks/useChatMemory';
+import { useSessionDeepLink } from '../hooks/useSessionDeepLink';
 import '../styles/chat-memory-panel.css';
 
 export default function ChatMemoryPanel(
@@ -31,6 +32,7 @@ export default function ChatMemoryPanel(
 ) {
   const { t } = useTranslation();
   const store = useChatMemory(props);
+  useSessionDeepLink(store);
 
   const {
     // context
