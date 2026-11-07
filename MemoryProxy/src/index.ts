@@ -33,6 +33,7 @@ import { initSystemUsers } from "./systemUser.js";
 import { checkConnectivity } from "./connectivity.js";
 import { initProxyStorage, getEffectiveBackend } from "./storage/factory.js";
 import { flushPendingWrites, pendingWriteCount } from "./tdai/pending-writes.js";
+import { startHookRecallLogCleanup } from "./db/hook-recall-log.js";
 
 const overrides = parseArgv(process.argv);
 const config = buildConfig(overrides);
@@ -72,6 +73,8 @@ initSystemUsers(config.systemUsers);
 // 必须 await —— dynamic import 是 async 的；不 await 直接进 createApp 会
 // 让首个 cos 请求 fallback 到 sqlite（backend 已经拿到但 _kernelStsFactory null）
 await initProxyStorage(config.storage);
+// Recall log of the client hook: delete rows older than 30 days now and once a day.
+startHookRecallLogCleanup(config);
 const effectiveStorage = getEffectiveBackend();
 if (config.storage.enabled && config.storage.backend === "cos" && effectiveStorage.effective !== "cos") {
   log.warn("storage.degraded", {

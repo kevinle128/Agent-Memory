@@ -56,7 +56,7 @@ const ALLOWED_SUBPATHS = new Set<string>([
   "scenario/read",        // L2 按 path 读全文
 ]);
 
-interface SessionIdFields {
+export interface SessionIdFields {
   user_id: string;
   team_id: string;
   agent_id: string;
@@ -151,7 +151,7 @@ function bindingToIdFields(
  * L1 fast path — try in-memory Map with prefix fallback.
  * Returns null on miss (caller decides whether to probe L2).
  */
-function loadSessionIdsL1(sessionId: string): SessionIdFields | null {
+export function loadSessionIdsL1(sessionId: string): SessionIdFields | null {
   for (const k of sessionKeyCandidates(sessionId)) {
     const state = getSessionStore().get(k);
     if (state) {
@@ -171,7 +171,7 @@ function loadSessionIdsL1(sessionId: string): SessionIdFields | null {
  *   2) 拍平后 binding.json 里已经存了 user_id/team_id/agent_id/agent_source/user_key,
  *      单次 GET 直接凑齐 IdFields
  */
-async function loadSessionIdsL2(
+export async function loadSessionIdsL2(
   bindingRepo: BindingRepo | null,
   spaceId: string,
   sessionId: string,
@@ -204,7 +204,7 @@ function selfCtx(ids: SessionIdFields): FixedAssetCtx {
   return { teamId: ids.team_id, userId: ids.user_id, agentId: ids.agent_id, agentName: ids.agent_id, isSelf: true };
 }
 
-async function resolveMemoryCtxs(config: ProxyConfig, ids: SessionIdFields, sessionKey: string): Promise<FixedAssetCtx[]> {
+export async function resolveMemoryCtxs(config: ProxyConfig, ids: SessionIdFields, sessionKey: string): Promise<FixedAssetCtx[]> {
   if (!ids.user_key) return [selfCtx(ids)];
   try {
     const serviceId = ids.space_id || config.tdai?.serviceId || config.coreSkill.serviceId;

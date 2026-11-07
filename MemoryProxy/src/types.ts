@@ -577,6 +577,29 @@ export interface SubscriptionPoolConfig {
   promptCacheTtl: "default" | "1h";
 }
 
+/**
+ * L1 recall for the client hook (`POST /:agent/:spaceId/v3/hook/recall`).
+ * The hook adds the answer to the prompt as context. A request gets recall only
+ * when `enabled` is true and the user id is in `allowUserIds` or the agent id
+ * of the session is in `allowAgentIds`. Empty lists allow nobody.
+ */
+export interface HookRecallConfig {
+  enabled: boolean;
+  allowAgentIds: string[];
+  allowUserIds: string[];
+  /** Maximum number of memories in one answer. */
+  topK: number;
+  /**
+   * A hit with a lower search score is not injected. The score of the FTS
+   * search is not a good relevance signal, so keep this as a coarse filter.
+   */
+  minScore: number;
+  /** Token budget of the injected block (estimate: 1 token per 3 characters). */
+  maxTokens: number;
+  /** The endpoint answers 204 when the search takes longer than this. */
+  timeoutMs: number;
+}
+
 export interface ProxyConfig {
   server: {
     host: string; // default: "0.0.0.0"
@@ -645,6 +668,8 @@ export interface ProxyConfig {
   modelSources?: ModelSourcesConfig;
   /** Subscription Pool request options. Absent = defaults. */
   subscriptionPool?: SubscriptionPoolConfig;
+  /** L1 recall for the client hook. Absent = disabled. */
+  hookRecall?: HookRecallConfig;
   knowledge: KnowledgeConfig;
   skillRuntime: SkillRuntimeConfig;
   /**
@@ -1169,6 +1194,7 @@ export interface RawYamlConfig {
   instanceUpstream?: Partial<InstanceUpstreamConfig>;
   modelSources?: Partial<ModelSourcesConfig>;
   subscriptionPool?: { promptCacheTtl?: unknown };
+  hookRecall?: Record<string, unknown>;
   knowledge?: Partial<KnowledgeConfig>;
   skillRuntime?: {
     allowLlmWrite?: boolean;

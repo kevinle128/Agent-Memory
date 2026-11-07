@@ -191,6 +191,23 @@ export function createApp(config: ProxyConfig): Hono {
   app.post("/:agent/:spaceId/v3/hook/report", (c) =>
     import("./routes/hook-report.js").then(({ createHookReportHandler }) => createHookReportHandler(config)(c)),
   );
+  // L1 recall for the hook, the hook manifest for self-update, and the admin view of the recall log.
+  app.post("/:agent/:spaceId/v3/hook/recall", (c) =>
+    import("./routes/hook-recall.js").then(({ createHookRecallHandler }) => createHookRecallHandler(config)(c)),
+  );
+  app.get("/:agent/:spaceId/v3/hook/manifest", (c) =>
+    import("./routes/setup-scripts.js").then(({ hookManifestHandler }) => hookManifestHandler(c)),
+  );
+  app.get("/v3/admin/hook-recall-log", (c) =>
+    import("./routes/hook-recall-log.js").then(({ createHookRecallLogHandler }) => createHookRecallLogHandler(config)(c)),
+  );
+  // Read hook.sh now, so the manifest hash is fixed at start and a broken asset shows in the log.
+  void import("./routes/setup-scripts.js")
+    .then(({ getHookAsset }) => {
+      const a = getHookAsset();
+      console.log(`[setup-scripts] hook.sh version=${a.version} sha256=${a.sha256}`);
+    })
+    .catch((err: unknown) => console.warn("[setup-scripts] hook.sh not available:", err instanceof Error ? err.message : String(err)));
 
   // ── Session management endpoints (mem: command 底层接口, 面板前端可复用) ──
   app.post("/v3/session/refresh-cache", (c) => {

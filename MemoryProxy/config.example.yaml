@@ -1052,3 +1052,18 @@ modelSources:
 #         upstreams, OpenAI and Codex do not change. Any other value stops the start.
 # subscriptionPool:
 #   promptCacheTtl: "1h"
+
+# ── Client hook L1 recall ────────────────────────────────────────────────────
+# The Claude Code hook (UserPromptSubmit) calls POST /<agent>/<space>/v3/hook/recall.
+# The proxy answers with L1 memories of the session project as additionalContext.
+# Only hits whose project is the session project are injected. Empty lists allow nobody.
+# Each request of an allowed user or agent is written to the recall log (30 days);
+# admins read it with GET /v3/admin/hook-recall-log (admin.apiKey).
+# hookRecall:
+#   enabled: false
+#   allowAgentIds: []          # agent ids that get recall
+#   allowUserIds: []           # user ids that get recall
+#   topK: 5                    # memories per answer (1-20)
+#   minScore: 0.94             # FTS score (0-1); a coarse filter, not a relevance guard
+#   maxTokens: 800             # budget of the block (1 token = 3 characters)
+#   timeoutMs: 1200            # from request start; slower = no recall for this prompt

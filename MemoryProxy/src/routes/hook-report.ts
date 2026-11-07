@@ -26,7 +26,7 @@ const DEVICE_REFRESH_MS = 10 * 60_000;
 const MAX_FIELD = 4096;
 const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 const CLIENT_RE = /^[a-z0-9-]{1,32}$/;
-const AGENT_RE = /^[a-z0-9-]+$/;
+export const AGENT_RE = /^[a-z0-9-]+$/;
 
 /** Validated report body. */
 export interface HookReport {

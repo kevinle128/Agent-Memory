@@ -13,6 +13,7 @@ import type {
   SelectionStrategyConfig,
   SkillSelectionConfig,
   SubscriptionPoolConfig,
+  HookRecallConfig,
 } from "./types.js";
 import { resolveProfileScopeMode } from "./tdai/profile-scope-mode.js";
 
@@ -47,6 +48,16 @@ const DEFAULT_SKILL_SELECTION: SkillSelectionConfig = {
   maxCandidates: 20,
   // 用对话 query 检索候选，让领域专项 skill 能进候选集。
   useConversationQuery: true,
+};
+
+const DEFAULT_HOOK_RECALL: HookRecallConfig = {
+  enabled: false,
+  allowAgentIds: [],
+  allowUserIds: [],
+  topK: 5,
+  minScore: 0.94,
+  maxTokens: 800,
+  timeoutMs: 1200,
 };
 
 export const DEFAULT_CONFIG: ProxyConfig = {
@@ -205,6 +216,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   memCommand: {},
   modelSources: { enabled: false },
   subscriptionPool: { promptCacheTtl: "default" },
+  hookRecall: { ...DEFAULT_HOOK_RECALL },
   ccRequestRouting: { enabled: true },
   hookGate: { enabled: true },
   workbuddyRequestRouting: { enabled: true },
@@ -338,6 +350,51 @@ function parseUpstreamAgents(
  * A missing value means "scoped". A value that is present but not recognized
  * means "deny" and is logged, so a typo never restores the legacy leak.
  */
+/**
+ * Parse `hookRecall:`. A missing key takes the default. A value of the wrong
+ * type stops the start, so a typo does not silently turn recall on or off.
+ */
+export function parseHookRecall(raw: unknown): HookRecallConfig {
+  if (raw === undefined || raw === null) return { ...DEFAULT_HOOK_RECALL };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`[config] hookRecall must be an object, got ${JSON.stringify(raw)}`);
+  }
+  const r = raw as Record<string, unknown>;
+  const fail = (key: string, want: string): never => {
+    throw new Error(`[config] hookRecall.${key} must be ${want}, got ${JSON.stringify(r[key])}`);
+  };
+  const bool = (key: keyof HookRecallConfig, def: boolean): boolean => {
+    const v = r[key];
+    if (v === undefined) return def;
+    return typeof v === "boolean" ? v : fail(key, "true or false");
+  };
+  const ids = (key: keyof HookRecallConfig): string[] => {
+    const v = r[key];
+    if (v === undefined || v === null) return [];
+    if (!Array.isArray(v) || !v.every((x) => typeof x === "string" && x.trim() !== "")) {
+      return fail(key, "a list of non-empty strings");
+    }
+    return v.map((x: string) => x.trim());
+  };
+  const num = (key: keyof HookRecallConfig, def: number, min: number, max: number, int: boolean): number => {
+    const v = r[key];
+    if (v === undefined) return def;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max || (int && !Number.isInteger(v))) {
+      return fail(key, `${int ? "an integer" : "a number"} from ${min} to ${max}`);
+    }
+    return v;
+  };
+  return {
+    enabled: bool("enabled", DEFAULT_HOOK_RECALL.enabled),
+    allowAgentIds: ids("allowAgentIds"),
+    allowUserIds: ids("allowUserIds"),
+    topK: num("topK", DEFAULT_HOOK_RECALL.topK, 1, 20, true),
+    minScore: num("minScore", DEFAULT_HOOK_RECALL.minScore, 0, 1, false),
+    maxTokens: num("maxTokens", DEFAULT_HOOK_RECALL.maxTokens, 50, 3000, true),
+    timeoutMs: num("timeoutMs", DEFAULT_HOOK_RECALL.timeoutMs, 100, 10_000, true),
+  };
+}
+
 /** Missing = "default". Any other value than "default" or "1h" stops the start, so a typo does not silently keep the old TTL. */
 function parsePromptCacheTtl(raw: unknown): SubscriptionPoolConfig["promptCacheTtl"] {
   if (raw === undefined || raw === null) return "default";
@@ -623,6 +680,7 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
     subscriptionPool: {
       promptCacheTtl: parsePromptCacheTtl(yaml.subscriptionPool?.promptCacheTtl),
     },
+    hookRecall: parseHookRecall(yaml.hookRecall),
     knowledge: {
       enabled: yaml.knowledge?.enabled ?? DEFAULT_CONFIG.knowledge.enabled,
       endpoint: yaml.knowledge?.endpoint ?? DEFAULT_CONFIG.knowledge.endpoint,
