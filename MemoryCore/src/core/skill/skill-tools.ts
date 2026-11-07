@@ -20,6 +20,11 @@ import { tool, jsonSchema } from "ai";
 import { SkillApprovalRequiredError, SkillCoreError, type SkillCore } from "./skill-core.js";
 import type { ChangePlacement } from "./skill-change-service.js";
 import { isVisibleToProject, listVisibleSkills, searchVisibleSkills } from "./skill-project-view.js";
+import {
+  MAX_PROPOSAL_TOOL_CALLS,
+  MAX_TOOL_CALL_PREVIEW_CHARS,
+  type SkillProposalToolCall,
+} from "./skill-proposal-types.js";
 
 export type ExtractedAction =
   | "create"
@@ -83,6 +88,12 @@ export function shortRepoName(projectName: string | undefined): string {
   return last.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+/** Short text form of a tool input or output, for the proposal audit view. */
+function toolCallPreview(value: unknown): string {
+  const text = typeof value === "string" ? value : (JSON.stringify(value) ?? "");
+  return text.length > MAX_TOOL_CALL_PREVIEW_CHARS ? `${text.slice(0, MAX_TOOL_CALL_PREVIEW_CHARS)}…` : text;
+}
+
 function jsonError(e: unknown): string {
   if (e instanceof SkillCoreError) {
     return JSON.stringify({ error: e.code, message: e.message });
@@ -94,11 +105,23 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
   const { core, user_id, team_id, agent_id, task_id, auditSink, logger } = opts;
   // Everything the tools write is a change of the extractor: the approval policy
   // treats it as a proposal of the system, never as a person's edit.
+  // Tool calls of this run, in call order. A change that becomes a proposal
+  // stores a copy, so the reviewer sees what the model looked at first.
+  const toolCalls: SkillProposalToolCall[] = [];
+  const traced = <A>(name: string, run: (args: A) => Promise<string>) => async (args: A): Promise<string> => {
+    const call: SkillProposalToolCall = { name, input: toolCallPreview(args) };
+    toolCalls.push(call);
+    if (toolCalls.length > MAX_PROPOSAL_TOOL_CALLS) toolCalls.shift();
+    const out = await run(args);
+    call.output = toolCallPreview(out);
+    return out;
+  };
   const note = (n: ChangeNote) => ({
     change_source: "extracted" as const,
     change_reason: n.change_reason,
     change_summary: n.change_summary,
     source_session_id: opts.source_session_id,
+    change_tool_calls: toolCalls.map((c) => ({ ...c })),
   });
   /** A change on a global skill becomes a proposal. Tell the model, so it does not retry. */
   const proposedJson = (e: unknown): string | undefined =>
@@ -161,7 +184,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
           top_k: { type: "number", description: "Max results (default 10)" },
         },
       }),
-      execute: async ({ query, top_k }) => {
+      execute: traced("skill_list", async ({ query, top_k }) => {
         try {
           if (query && query.trim()) {
             const hits = projectHash
@@ -179,7 +202,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
             skill_id: s.skill_id, name: s.name, description: s.description, version: s.version,
           })));
         } catch (e) { return jsonError(e); }
-      },
+      }),
     }),
 
     skill_view: tool({
@@ -192,7 +215,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         },
         required: ["skill_id"],
       }),
-      execute: async ({ skill_id, version }) => {
+      execute: traced("skill_view", async ({ skill_id, version }) => {
         try {
           await assertVisible(skill_id);
           const r = await core.get({ ...readIds, skill_id, version });
@@ -201,7 +224,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
             content: r.content, manifest: r.manifest,
           });
         } catch (e) { return jsonError(e); }
-      },
+      }),
     }),
 
     skill_create: tool({
@@ -215,7 +238,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         },
         required: ["name", "content", "change_reason", "change_summary"],
       }),
-      execute: async ({ name, content, ...n }) => {
+      execute: traced("skill_create", async ({ name, content, ...n }) => {
         try {
           const r = await core.create({
             ...writeIds, name, content, ...note(n),
@@ -226,7 +249,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
           logger?.info(`[skill-tools] created ${r.skill_id}`);
           return JSON.stringify({ ok: true, skill_id: r.skill_id, version: r.version });
         } catch (e) { return nameConflictJson(e, name) ?? jsonError(e); }
-      },
+      }),
     }),
 
     skill_update: tool({
@@ -241,14 +264,14 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         },
         required: ["skill_id", "content", "expected_version", "change_reason", "change_summary"],
       }),
-      execute: async ({ skill_id, content, expected_version, ...n }) => {
+      execute: traced("skill_update", async ({ skill_id, content, expected_version, ...n }) => {
         try {
           await assertVisible(skill_id);
           const r = await core.update({ ...writeIds, skill_id, content, expected_version, ...note(n) });
           auditSink.push({ action: "update", name: r.name, skill_id, version: r.version });
           return JSON.stringify({ ok: true, version: r.version });
         } catch (e) { return proposedJson(e) ?? jsonError(e); }
-      },
+      }),
     }),
 
     skill_patch: tool({
@@ -268,14 +291,14 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         },
         required: ["skill_id", "old_string", "new_string", "expected_version", "change_reason", "change_summary"],
       }),
-      execute: async ({ skill_id, old_string, new_string, replace_all, expected_version, ...n }) => {
+      execute: traced("skill_patch", async ({ skill_id, old_string, new_string, replace_all, expected_version, ...n }) => {
         try {
           await assertVisible(skill_id);
           const r = await core.patch({ ...writeIds, skill_id, old_string, new_string, replace_all, expected_version, ...note(n) });
           auditSink.push({ action: "patch", name: r.name, skill_id, version: r.version });
           return JSON.stringify({ ok: true, version: r.version });
         } catch (e) { return proposedJson(e) ?? jsonError(e); }
-      },
+      }),
     }),
 
     skill_files_write: tool({
@@ -298,7 +321,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
         },
         required: ["skill_id", "path", "content", "expected_version", "change_reason", "change_summary"],
       }),
-      execute: async ({ skill_id, path, content, encoding, mime_type, is_executable, expected_version, ...n }) => {
+      execute: traced("skill_files_write", async ({ skill_id, path, content, encoding, mime_type, is_executable, expected_version, ...n }) => {
         try {
           await assertVisible(skill_id);
           const r = await core.writeFiles({
@@ -308,7 +331,7 @@ export function createSkillTools(opts: CreateSkillToolsOptions) {
           auditSink.push({ action: "files_write", name: r.name, skill_id, version: r.version });
           return JSON.stringify({ ok: true, version: r.version });
         } catch (e) { return proposedJson(e) ?? jsonError(e); }
-      },
+      }),
     }),
   };
 }

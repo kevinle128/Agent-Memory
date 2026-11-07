@@ -34,6 +34,7 @@ import type {
   ListProposalsOptions,
   SkillChangeProposal,
   SkillProposalStatus,
+  SkillProposalToolCall,
 } from "./skill-proposal-types.js";
 import type { ISkillStore } from "./skill-store.interface.js";
 import type { AppendVersionContext, AppendVersionMutation, SkillVersioning } from "./skill-versioning.js";
@@ -49,6 +50,11 @@ const SWEEP_INTERVAL_MS = 60 * 1000;
 
 /** Longest change reason that is stored; longer text is cut. */
 const MAX_REASON_CHARS = 1000;
+
+/** Decision reason as stored: trimmed and cut to MAX_REASON_CHARS. */
+function decisionReason(reason: string | undefined): string {
+  return (reason ?? "").trim().slice(0, MAX_REASON_CHARS);
+}
 
 /** Prefix of a summary item that the system wrote, not a person or the extractor. */
 export const AUTO_SUMMARY_PREFIX = "(auto) ";
@@ -87,6 +93,8 @@ export interface SkillChange {
   /** Person who made or approved the change. Defaults to `actor.user_id` for changes a person makes. */
   approved_by?: string;
   source_session_id?: string;
+  /** Tool calls of the extraction run. Stored only when the change becomes a proposal. */
+  tool_calls?: SkillProposalToolCall[];
   /** Placement of a new skill. */
   placement?: ChangePlacement;
   /** Older version to restore (kind `rollback`). */
@@ -330,7 +338,13 @@ export class SkillChangeService {
    * proposal was written against, the proposal becomes `stale` and nothing is
    * applied. If the apply itself fails, the claim is undone.
    */
-  async approveProposal(input: { proposal_id: string; team_id?: string; approver: string }): Promise<ApproveResult> {
+  async approveProposal(input: {
+    proposal_id: string;
+    team_id?: string;
+    approver: string;
+    /** Why the person approves. Stored with the decision. */
+    reason?: string;
+  }): Promise<ApproveResult> {
     await this.sweepIfDue();
     const found = await this.requireProposal(input.proposal_id, input.team_id);
     assertProposalTransition(found, "approved");
@@ -340,6 +354,7 @@ export class SkillChangeService {
       decided_at_ms: this.now(),
       decided_by: input.approver,
       result_version: 0,
+      decision_reason: decisionReason(input.reason),
     });
     if (!claimed) {
       // Another writer decided between our read and the claim.
@@ -355,6 +370,7 @@ export class SkillChangeService {
         decided_at_ms: this.now(),
         decided_by: "",
         result_version: 0,
+        decision_reason: "",
       });
       this.logger?.info(
         `${TAG} proposal ${claimed.proposal_id} is stale: base v${claimed.base_version}, head ${head ? `v${head.version}` : "gone"}`,
@@ -409,6 +425,8 @@ export class SkillChangeService {
           decided_at_ms: conflict ? this.now() : 0,
           decided_by: "",
           result_version: 0,
+          // The approval did not happen, so its reason does not apply.
+          decision_reason: "",
         })
         .catch((undoErr) => {
           this.logger?.error(
@@ -426,7 +444,13 @@ export class SkillChangeService {
   }
 
   /** Reject a pending or stale proposal. */
-  async rejectProposal(input: { proposal_id: string; team_id?: string; decided_by: string }): Promise<SkillChangeProposal> {
+  async rejectProposal(input: {
+    proposal_id: string;
+    team_id?: string;
+    decided_by: string;
+    /** Why the person rejects. Stored with the decision. */
+    reason?: string;
+  }): Promise<SkillChangeProposal> {
     await this.sweepIfDue();
     const found = await this.requireProposal(input.proposal_id, input.team_id);
     assertProposalTransition(found, "rejected");
@@ -435,6 +459,7 @@ export class SkillChangeService {
       decided_at_ms: this.now(),
       decided_by: input.decided_by,
       result_version: 0,
+      decision_reason: decisionReason(input.reason),
     });
     if (!rejected) {
       throw new SkillCoreError("SKILL_PROPOSAL_STATE_INVALID", `proposal ${found.proposal_id} was decided by another request`);
@@ -608,6 +633,8 @@ export class SkillChangeService {
       decided_at_ms: 0,
       decided_by: "",
       result_version: 0,
+      tool_calls: change.tool_calls ?? [],
+      decision_reason: "",
     };
     // One pending proposal per skill: an older one was written against a view the newer one replaces.
     await this.staleSiblings(head.skill_id, head.team_id);

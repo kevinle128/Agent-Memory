@@ -990,7 +990,7 @@ async function handleProposalDecision(
   const event = decision === "approve" ? "skill.handleProposalApprove.done" : "skill.handleProposalReject.done";
   const pre = await precheckWrite(proposalDecisionRequestSchema, body, auth, deps, requestId);
   if (!pre.ok) { obsLogger.warn(event, { req_id: requestId, code: pre.envelope.code, dur_ms: Date.now() - t0, reason: "precheck" }); return pre.envelope; }
-  const { proposal_id, team_id, user_id, agent_id } = pre.data;
+  const { proposal_id, team_id, user_id, agent_id, reason } = pre.data;
 
   try {
     // team_id is part of the lookup: a proposal of another team reads as not found.
@@ -1006,7 +1006,7 @@ async function handleProposalDecision(
     }
 
     if (decision === "reject") {
-      const rejected = await pre.core.rejectProposal({ proposal_id, team_id, user_id });
+      const rejected = await pre.core.rejectProposal({ proposal_id, team_id, user_id, reason });
       obsLogger.info(event, { req_id: requestId, code: 0, dur_ms: Date.now() - t0, proposal_id, skill_id: rejected.skill_id });
       return successEnvelope({ proposal: toProposalView(rejected) }, requestId);
     }
@@ -1019,7 +1019,7 @@ async function handleProposalDecision(
         return errorEnvelope(4291, `Memory limit exceeded (current=${check.current}, limit=${check.limit})`, requestId);
       }
     }
-    const result = await pre.core.approveProposal({ proposal_id, team_id, user_id });
+    const result = await pre.core.approveProposal({ proposal_id, team_id, user_id, reason });
     if (result.status === "stale") {
       obsLogger.info(event, { req_id: requestId, code: 40901, dur_ms: Date.now() - t0, proposal_id, reason: "stale", current_version: result.current_version });
       return errorEnvelope(

@@ -37,6 +37,7 @@ import type {
   SkillProposalFiles,
   SkillProposalStatus,
 } from "../../skill/skill-proposal-types.js";
+import { readToolCalls } from "../../skill/skill-proposal-types.js";
 import { randomBase62 } from "../../../utils/short-id.js";
 import { tokenizeForFts, mongoSearchScoreToScore } from "../tokenize.js";
 import { COLLECTIONS } from "./collections.js";
@@ -514,7 +515,7 @@ export class MongoSkillStore implements ISkillStore {
 
   async insertProposal(p: SkillChangeProposal): Promise<void> {
     const coll = await this.proposals();
-    await coll.insertOne({ _id: p.proposal_id, ...p } as never);
+    await coll.insertOne({ _id: p.proposal_id, ...p, tool_calls: p.tool_calls ?? [], decision_reason: p.decision_reason ?? "" } as never);
   }
 
   async getProposal(proposalId: string, teamId?: string): Promise<SkillChangeProposal | null> {
@@ -553,9 +554,12 @@ export class MongoSkillStore implements ISkillStore {
     if (from.length === 0) return null;
     const coll = await this.proposals();
     // Atomic compare-and-set: the status test is part of the filter.
+    // An absent decision_reason keeps the stored one.
+    const { decision_reason, ...rest } = patch;
+    const set = decision_reason === undefined ? rest : { ...rest, decision_reason };
     const doc = await coll.findOneAndUpdate(
       { proposal_id: proposalId, status: { $in: from } } as never,
-      { $set: { ...patch } } as never,
+      { $set: set } as never,
       { returnDocument: "after" },
     );
     return doc ? docToProposal(doc) : null;
@@ -587,6 +591,8 @@ function docToProposal(doc: Document): SkillChangeProposal {
     decided_at_ms: Number(d.decided_at_ms ?? 0),
     decided_by: String(d.decided_by ?? ""),
     result_version: Number(d.result_version ?? 0),
+    tool_calls: readToolCalls(d.tool_calls),
+    decision_reason: String(d.decision_reason ?? ""),
   };
 }
 

@@ -22,6 +22,7 @@ import {
   SKILLS_ADDED_COLUMNS,
   SKILLS_SCOPE_INDEX_DDL,
   SKILL_PROPOSALS_DDL,
+  PROPOSALS_ADDED_COLUMNS,
   SKILL_FTS_DDL,
   SKILL_VEC_DDL_TEMPLATE,
   FTS_CONTENT_MAX,
@@ -34,6 +35,7 @@ import type {
   SkillProposalFiles,
   SkillProposalStatus,
 } from "../../skill/skill-proposal-types.js";
+import { readToolCalls } from "../../skill/skill-proposal-types.js";
 import { buildFtsQuery, tokenizeForFts } from "../tokenize.js";
 import type { ISkillStore, ExpiredVersionMeta, SkillStoreCapabilities, SkillSearchResult } from "../../skill/skill-store.interface.js";
 import { SkillStoreError } from "../../skill/skill-store.interface.js";
@@ -144,6 +146,8 @@ interface ProposalRowRaw {
   decided_at_ms: number;
   decided_by: string;
   result_version: number;
+  tool_calls_json?: string;
+  decision_reason?: string;
 }
 
 function toProposal(raw: ProposalRowRaw): SkillChangeProposal {
@@ -174,6 +178,8 @@ function toProposal(raw: ProposalRowRaw): SkillChangeProposal {
     decided_at_ms: raw.decided_at_ms,
     decided_by: raw.decided_by,
     result_version: raw.result_version,
+    tool_calls: readToolCalls(raw.tool_calls_json ?? "[]"),
+    decision_reason: raw.decision_reason ?? "",
   };
 }
 
@@ -237,6 +243,7 @@ export class SqliteSkillStore implements ISkillStore {
     this.migrateSkillColumns();
     this.db.exec(SKILLS_SCOPE_INDEX_DDL);
     this.db.exec(SKILL_PROPOSALS_DDL);
+    this.migrateProposalColumns();
     // 迁移：删除旧版 (team_id, name) 唯一索引（v2 重构后改为 team_id + owner_agent_id + name）
     this.db.exec("DROP INDEX IF EXISTS uniq_skills_team_name_head");
     this.db.exec(SKILL_FTS_DDL);
@@ -268,6 +275,26 @@ export class SqliteSkillStore implements ISkillStore {
       try {
         this.db.exec(`ALTER TABLE skills ADD COLUMN ${col.ddl}`);
         this.logger?.info(`[skill-store] migrated skills: added column ${col.name}`);
+      } catch (e) {
+        if (!/duplicate column name/i.test((e as Error).message)) throw e;
+      }
+    }
+  }
+
+  /**
+   * Add the columns of PROPOSALS_ADDED_COLUMNS to a `skill_change_proposals`
+   * table that lacks them. Additive only; safe to run again and with a
+   * concurrent process that adds the same column first.
+   */
+  private migrateProposalColumns(): void {
+    const existing = new Set(
+      (this.db.prepare("PRAGMA table_info('skill_change_proposals')").all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    for (const col of PROPOSALS_ADDED_COLUMNS) {
+      if (existing.has(col.name)) continue;
+      try {
+        this.db.exec(`ALTER TABLE skill_change_proposals ADD COLUMN ${col.ddl}`);
+        this.logger?.info(`[skill-store] migrated skill_change_proposals: added column ${col.name}`);
       } catch (e) {
         if (!/duplicate column name/i.test((e as Error).message)) throw e;
       }
@@ -841,14 +868,16 @@ export class SqliteSkillStore implements ISkillStore {
            proposal_id, team_id, owner_agent_id, skill_id, skill_name, base_version,
            proposed_content, proposed_description, proposed_files_json,
            change_reason, change_summary, source_session_id, created_by,
-           status, created_at_ms, decided_at_ms, decided_by, result_version
-         ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?,?)`,
+           status, created_at_ms, decided_at_ms, decided_by, result_version,
+           tool_calls_json, decision_reason
+         ) VALUES (?,?,?,?,?,?, ?,?,?, ?,?,?,?, ?,?,?,?,?, ?,?)`,
       )
       .run(
         p.proposal_id, p.team_id, p.owner_agent_id, p.skill_id, p.skill_name, p.base_version,
         p.proposed_content, p.proposed_description, JSON.stringify(p.proposed_files),
         p.change_reason, serializeChangeSummary(p.change_summary), p.source_session_id, p.created_by,
         p.status, p.created_at_ms, p.decided_at_ms, p.decided_by, p.result_version,
+        JSON.stringify(p.tool_calls ?? []), p.decision_reason ?? "",
       );
   }
 
@@ -895,10 +924,14 @@ export class SqliteSkillStore implements ISkillStore {
     const r = this.db
       .prepare(
         `UPDATE skill_change_proposals
-            SET status=?, decided_at_ms=?, decided_by=?, result_version=?
+            SET status=?, decided_at_ms=?, decided_by=?, result_version=?,
+                decision_reason=COALESCE(?, decision_reason)
           WHERE proposal_id=? AND status IN (${from.map(() => "?").join(",")})`,
       )
-      .run(patch.status, patch.decided_at_ms, patch.decided_by, patch.result_version, proposalId, ...from);
+      .run(
+        patch.status, patch.decided_at_ms, patch.decided_by, patch.result_version,
+        patch.decision_reason ?? null, proposalId, ...from,
+      );
     if ((r.changes ?? 0) === 0) return null;
     return this.getProposal(proposalId);
   }

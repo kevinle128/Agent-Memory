@@ -33,7 +33,7 @@ import {
 } from "./skill-change-service.js";
 import { diffLines, type LineDiff } from "./skill-diff.js";
 import type { ChangeApprovalPolicy } from "./change-approval-policy.js";
-import type { ListProposalsOptions, SkillChangeProposal, SkillProposalStatus } from "./skill-proposal-types.js";
+import type { ListProposalsOptions, SkillChangeProposal, SkillProposalStatus, SkillProposalToolCall } from "./skill-proposal-types.js";
 import type { MemoryPromptMode } from "../../config.js";
 import { SkillResourceStore, type SkillResourcePayload } from "./skill-resource-store.js";
 import type { ISkillStore, SkillSearchResult } from "./skill-store.interface.js";
@@ -147,6 +147,8 @@ export interface ChangeMeta {
   /** 1-5 short strings. */
   change_summary?: string[];
   source_session_id?: string;
+  /** Tool calls of the extraction run; kept only when the change becomes a proposal. */
+  change_tool_calls?: SkillProposalToolCall[];
 }
 
 // 各 action 入参类型（四个 ID 全部可选）
@@ -212,6 +214,8 @@ export interface DecideProposalInput {
   team_id?: string;
   /** User who decides. */
   user_id: string;
+  /** Why the user decides so. Optional. */
+  reason?: string;
 }
 
 export interface DeleteInput extends IdFields {
@@ -653,6 +657,7 @@ export class SkillCore {
         proposal_id: input.proposal_id,
         team_id: input.team_id,
         approver: input.user_id,
+        reason: input.reason,
       });
     } catch (e) {
       toCoreError(e);
@@ -665,6 +670,7 @@ export class SkillCore {
         proposal_id: input.proposal_id,
         team_id: input.team_id,
         decided_by: input.user_id,
+        reason: input.reason,
       });
     } catch (e) {
       toCoreError(e);
@@ -906,12 +912,14 @@ export class SkillCore {
     reason?: string;
     summary?: string[];
     source_session_id?: string;
+    tool_calls?: SkillProposalToolCall[];
   } {
     return {
       source: input.change_source ?? "manual",
       reason: input.change_reason,
       summary: input.change_summary,
       source_session_id: input.source_session_id,
+      ...(input.change_tool_calls ? { tool_calls: input.change_tool_calls } : {}),
     };
   }
 

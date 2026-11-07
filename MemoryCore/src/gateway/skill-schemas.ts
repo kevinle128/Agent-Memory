@@ -299,6 +299,8 @@ export const proposalDecisionRequestSchema = z.object({
   user_id: z.string().min(1),
   agent_id: z.string().min(1).optional(),
   proposal_id: z.string().min(1),
+  /** Why the user approves or rejects. Stored with the decision. */
+  reason: z.string().max(1000).optional(),
 });
 
 export const filesWriteRequestSchema = z.object({

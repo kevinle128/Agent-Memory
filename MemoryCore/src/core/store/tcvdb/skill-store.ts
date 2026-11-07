@@ -37,6 +37,7 @@ import type {
   SkillProposalFiles,
   SkillProposalStatus,
 } from "../../skill/skill-proposal-types.js";
+import { readToolCalls } from "../../skill/skill-proposal-types.js";
 
 // ─── Config ─────────────────────────────────────────────────────────────
 
@@ -108,6 +109,7 @@ const PROPOSAL_OUTPUT_FIELDS: string[] = [
   "proposed_content", "proposed_description", "proposed_files_json",
   "change_reason", "change_summary", "source_session_id", "created_by",
   "status", "created_at_ms", "decided_at_ms", "decided_by", "result_version",
+  "tool_calls_json", "decision_reason",
 ];
 
 /** 向量字段名 (VDB 内部名) */
@@ -1196,6 +1198,8 @@ export class TcvdbSkillStore implements ISkillStore {
         decided_at_ms: patch.decided_at_ms,
         decided_by: patch.decided_by,
         result_version: patch.result_version,
+        // An absent decision_reason keeps the stored one.
+        ...(patch.decision_reason !== undefined ? { decision_reason: patch.decision_reason } : {}),
       },
     });
     if (affected === 0) return null;
@@ -1223,6 +1227,8 @@ export class TcvdbSkillStore implements ISkillStore {
       decided_at_ms: p.decided_at_ms,
       decided_by: p.decided_by,
       result_version: p.result_version,
+      tool_calls_json: JSON.stringify(p.tool_calls ?? []),
+      decision_reason: p.decision_reason ?? "",
     };
   }
 
@@ -1254,6 +1260,8 @@ export class TcvdbSkillStore implements ISkillStore {
       decided_at_ms: Number(doc.decided_at_ms ?? 0),
       decided_by: String(doc.decided_by ?? ""),
       result_version: Number(doc.result_version ?? 0),
+      tool_calls: readToolCalls(doc.tool_calls_json ?? "[]"),
+      decision_reason: String(doc.decision_reason ?? ""),
     };
   }
 

@@ -110,6 +110,19 @@ export const SKILLS_SCOPE_INDEX_DDL = `
 //  skill_change_proposals — changes that wait for a person to approve
 // ═════════════════════════════════════════════════════════════════════
 
+/**
+ * Columns added after the first release of `skill_change_proposals`. Single
+ * source for `CREATE TABLE` (fresh database) and `ALTER TABLE ... ADD COLUMN`
+ * (existing database). Defaults describe a proposal made before the column.
+ */
+export const PROPOSALS_ADDED_COLUMNS: ReadonlyArray<{ name: string; ddl: string }> = [
+  // JSON array of SkillProposalToolCall.
+  { name: "tool_calls_json", ddl: "tool_calls_json TEXT NOT NULL DEFAULT '[]'" },
+  { name: "decision_reason", ddl: "decision_reason TEXT NOT NULL DEFAULT ''" },
+];
+
+const PROPOSALS_COLUMN_DDL = PROPOSALS_ADDED_COLUMNS.map((c) => `    ${c.ddl}`).join(",\n");
+
 export const SKILL_PROPOSALS_DDL = `
   CREATE TABLE IF NOT EXISTS skill_change_proposals (
     proposal_id           TEXT PRIMARY KEY,
@@ -129,7 +142,8 @@ export const SKILL_PROPOSALS_DDL = `
     created_at_ms         INTEGER NOT NULL,
     decided_at_ms         INTEGER NOT NULL DEFAULT 0,
     decided_by            TEXT NOT NULL DEFAULT '',
-    result_version        INTEGER NOT NULL DEFAULT 0
+    result_version        INTEGER NOT NULL DEFAULT 0,
+${PROPOSALS_COLUMN_DDL}
   );
 
   CREATE INDEX IF NOT EXISTS idx_skill_proposals_team_status

@@ -16,6 +16,46 @@ export interface SkillProposalFiles {
   remove: string[];
 }
 
+/**
+ * One tool call of the extraction run that made a proposal, in call order.
+ * The input and output are short previews, not the full text.
+ */
+export interface SkillProposalToolCall {
+  name: string;
+  input: string;
+  /** Absent for the call that made the proposal: it had not returned yet. */
+  output?: string;
+}
+
+/** Most tool calls stored on one proposal. Older calls are dropped first. */
+export const MAX_PROPOSAL_TOOL_CALLS = 30;
+/** Longest preview of a tool input or output. */
+export const MAX_TOOL_CALL_PREVIEW_CHARS = 300;
+
+/**
+ * Tool calls from a stored value: a JSON string (SQL and VDB backends) or an
+ * array (document backends). A damaged value reads as no tool calls.
+ */
+export function readToolCalls(value: unknown): SkillProposalToolCall[] {
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try { parsed = JSON.parse(value); } catch { return []; }
+  }
+  if (!Array.isArray(parsed)) return [];
+  const calls: SkillProposalToolCall[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const c = item as Record<string, unknown>;
+    if (typeof c.name !== "string") continue;
+    calls.push({
+      name: c.name,
+      input: typeof c.input === "string" ? c.input : "",
+      ...(typeof c.output === "string" ? { output: c.output } : {}),
+    });
+  }
+  return calls;
+}
+
 export interface SkillChangeProposal {
   proposal_id: string;
   team_id: string;
@@ -41,6 +81,10 @@ export interface SkillChangeProposal {
   decided_by: string;
   /** Version created by the approval. 0 when none. */
   result_version: number;
+  /** Tool calls of the extraction run up to the call that made the proposal. Empty for older proposals. */
+  tool_calls?: SkillProposalToolCall[];
+  /** Why the person approved or rejected. Empty when no reason was given. */
+  decision_reason?: string;
 }
 
 export interface ListProposalsOptions {
@@ -59,6 +103,8 @@ export interface ProposalTransitionPatch {
   decided_at_ms: number;
   decided_by: string;
   result_version: number;
+  /** Absent keeps the stored reason. */
+  decision_reason?: string;
 }
 
 /**
