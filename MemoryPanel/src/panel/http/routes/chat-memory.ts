@@ -26,6 +26,7 @@
  *   POST /chat-memory/patch-scope     改 scope（team ↔ private）
  *   POST /chat-memory/allocate        分配（借入），含 ≤ 2 校验
  *   POST /chat-memory/unbind          从 agent 解绑
+ *   POST /chat-memory/sessions        L0 session list (newest activity first)
  *   POST /chat-memory/layer           L0/L1/L2/L3 分层懒加载
  *   POST /chat-memory/layer-delete    L0/L1 列表批量删除（Owner-only）
  *   POST /chat-memory/clear           一键清空内容、保留资产（Owner-only）
@@ -37,6 +38,7 @@ import { respondControlError, respondEnvelope } from "../envelope.js";
 import type { PanelDeps } from "../../panel-deps.js";
 import {
   toKernelCredentials,
+  type KernelCredentials,
   type MetaCallContext,
 } from "../../kernel/types.js";
 import type { MetaEnvelope } from "../../kernel/envelope.js";
@@ -1026,6 +1028,84 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     );
   });
 
+  // ── L0 session list ────────────────────────────────────────
+  //
+  // POST /chat-memory/sessions  body: { block_id, limit?, offset?, time_start?, time_end? }
+  //
+  // Lists the L0 sessions of the agent behind a chat_memory asset, newest
+  // activity first. Same ACL as /chat-memory/layer. The time range selects
+  // the messages that count; a session with no message in the range is left out.
+  api.post("/chat-memory/sessions", validatePanelMetaHeaders(deps), async (c) => {
+    const ctx = buildCtx(c);
+    const body = await readJson(c);
+    const blockId = requiredBlockId(body);
+    if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
+    const limit =
+      typeof body?.limit === "number" &&
+      Number.isInteger(body.limit) &&
+      body.limit > 0 &&
+      body.limit <= 100
+        ? body.limit
+        : 50;
+    const offset =
+      typeof body?.offset === "number" &&
+      Number.isInteger(body.offset) &&
+      body.offset >= 0
+        ? body.offset
+        : 0;
+    const timeStart = normalizeTimeInput(body?.time_start);
+    const timeEnd = normalizeTimeInput(body?.time_end);
+
+    const parsed = parseChatMemoryAssetId(blockId);
+    // A user-built asset has no agent, so it has no L0 sessions.
+    if (!parsed)
+      return respondEnvelope(
+        c,
+        okEnvelope(c, { sessions: [], total: 0, limit, offset }),
+      );
+
+    const readable = await loadReadableChatMemory(c, deps, ctx, blockId);
+    if ("response" in readable) return readable.response;
+
+    const query: Record<string, unknown> = {
+      team_id: parsed.teamId,
+      agent_id: parsed.agentId,
+      user_id: readable.asset.owner_user_id,
+      limit,
+      offset,
+    };
+    if (timeStart) query.time_start = timeStart;
+    if (timeEnd) query.time_end = timeEnd;
+
+    try {
+      const env = await deps.kernelHttp.postEnvelope<{
+        sessions?: Array<Record<string, unknown>>;
+        total?: number;
+      }>(
+        "/v3/conversation/sessions",
+        query,
+        toKernelCredentials(ctx, { timeoutMs: 15_000 }),
+      );
+      if (env.code !== 0) return respondEnvelope(c, env);
+      const sessions = (env.data?.sessions ?? []).map(toSessionOut);
+      return respondEnvelope(
+        c,
+        okEnvelope(c, {
+          sessions,
+          total: env.data?.total ?? sessions.length,
+          limit,
+          offset,
+        }),
+      );
+    } catch (err) {
+      return respondControlError(
+        c,
+        500,
+        `SESSIONS_FETCH_ERROR: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  });
+
   // ── 4.4 分层懒加载 ─────────────────────────────────────────
   //
   // POST /chat-memory/layer  body: { block_id, layer, limit?, offset? }
@@ -1060,10 +1140,14 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     // L2（scenario/ls）与 L3（core/read）是聚合产物，内核无时间维度，忽略该筛选。
     const timeStart = normalizeTimeInput(body?.time_start);
     const timeEnd = normalizeTimeInput(body?.time_end);
+    // Optional session filter for L0 (one conversation) and L1 (its memories).
+    const sessionFilter = normalizeSessionId(body?.session_id);
 
     if (!blockId) return respondControlError(c, 400, "MISSING_BLOCK_ID");
     if (!["L0", "L1", "L2", "L3"].includes(layerRaw))
       return respondControlError(c, 400, "INVALID_LAYER");
+    if (sessionFilter === null)
+      return respondControlError(c, 400, "INVALID_SESSION_ID");
     const layer = layerRaw as "L0" | "L1" | "L2" | "L3";
 
     // 反解 team_id / agent_id
@@ -1076,42 +1160,10 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       );
     }
 
-    // 数据面调用需要额外传 team_id / agent_id / user_id / session_id
-    const meUserId = await resolveCallerUserId(deps, ctx);
-    if (!meUserId) return respondControlError(c, 401, "INVALID_USER_KEY");
-
-    // ── ACL 校验：防止知道 asset_id 就能读私密内容 ─────────────
-    // 允许读的条件（任一即可）：
-    //   a) caller 是 asset 的 owner（自留自用）
-    //   b) asset.visibility='team'（团队已共享）
-    //   c) asset 已被绑定到 caller 名下某个 agent（借入借关系）
-    //
-    // asset 元数据从 asset/get 拿；c 需遍历 caller 的 agent 的 fixed-list。
-    const assetEnv = await deps.metaKernel.invoke(
-      "asset/get",
-      { asset_id: blockId },
-      ctx,
-    );
-    if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
-      return respondControlError(c, 404, "BLOCK_NOT_FOUND");
-    }
-    if (assetEnv.code !== 0) return respondEnvelope(c, assetEnv);
-    const asset = assetEnv.data as AssetRaw;
-    if (asset.asset_type !== "chat_memory") {
-      return respondControlError(c, 400, "NOT_CHAT_MEMORY");
-    }
-
-    // 读权限（owner / team-shared / borrowed 任一即可）—— 抽到
-    // authorizeChatMemoryRead 复用，与 /chat-memory/search 共享同一套 ACL，避免
-    // 两处逻辑分叉导致的权限口径不一致。
-    const canRead = await authorizeChatMemoryRead(
-      deps,
-      ctx,
-      asset,
-      meUserId,
-      blockId,
-    );
-    if (!canRead) return respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE");
+    // Caller identity, asset lookup and read ACL (owner, team-shared or borrowed).
+    const readable = await loadReadableChatMemory(c, deps, ctx, blockId);
+    if ("response" in readable) return readable.response;
+    const { asset } = readable;
 
     // chat_memory 数据是 asset owner 写入（用其 user_id 隔离），caller 未必是 owner
     // （借入场景）。用 asset.owner_user_id 作为数据面 user_id。
@@ -1128,6 +1180,30 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
     };
 
     try {
+      if (layer === "L0" && sessionFilter) {
+        // One session in conversation order. The date range selects sessions in
+        // the session list; it does not cut a conversation, so it is not sent.
+        const page = await fetchSessionMessages(
+          deps,
+          cred,
+          { team_id: parsed.teamId, agent_id: parsed.agentId, user_id: ownerUserId },
+          sessionFilter,
+          limit,
+          offset,
+        );
+        if ("envelope" in page) return respondEnvelope(c, page.envelope);
+        return respondEnvelope(
+          c,
+          okEnvelope(c, {
+            layer,
+            items: page.messages.map(toL0LayerItem),
+            total: page.total,
+            limit,
+            offset,
+          }),
+        );
+      }
+
       if (layer === "L0") {
         // 关键：不传 session_id，tdai 会跨 session 聚合返 (team,user,agent) 全部消息
         // tdai 返 { messages: [...], total } 而不是 { items: [...] }
@@ -1177,25 +1253,7 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
           c,
           okEnvelope(c, {
             layer,
-            items: (data.messages ?? []).map((m) => ({
-              id: m.id ?? "",
-              role: typeof m.role === "string" ? m.role : "msg",
-              title: `${m.role ?? "msg"} @ ${m.session_id ?? ""}`,
-              body:
-                typeof m.content === "string"
-                  ? m.content
-                  : JSON.stringify(m.content ?? ""),
-              tags: m.role ? [String(m.role)] : [],
-              refs: [],
-              // L0 时间来源（v3 内核实际返回）：
-              //   - timestamp（ISO 字符串）—— 内核 conversation/query 的标准字段
-              //   - recorded_at_ms / timestamp 数值 ms —— 部分老数据/内部字段
-              created_at:
-                (typeof m.timestamp === "string" && m.timestamp) ||
-                msToIso(m.recorded_at_ms) ||
-                msToIso(m.timestamp) ||
-                undefined,
-            })),
+            items: (data.messages ?? []).map(toL0LayerItem),
             total: data.total ?? (data.messages ?? []).length,
             limit,
             offset,
@@ -1204,7 +1262,12 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
       }
 
       if (layer === "L1") {
-        const l1Query: Record<string, unknown> = { ...idFields, limit, offset };
+        // session_id narrows L1 to one session in the kernel, so it is sent
+        // only for an explicit session filter, never the "default" placeholder.
+        const { session_id: _noSid, ...l1Ids } = idFields;
+        void _noSid;
+        const l1Query: Record<string, unknown> = { ...l1Ids, limit, offset };
+        if (sessionFilter) l1Query.session_id = sessionFilter;
         if (timeStart) l1Query.time_start = timeStart;
         if (timeEnd) l1Query.time_end = timeEnd;
         const env = await deps.kernelHttp.postEnvelope<{
@@ -1231,7 +1294,13 @@ export function registerChatMemoryRoutes(api: Hono, deps: PanelDeps): void {
               title: (r.type ?? "atomic") as string,
               body: r.content ?? "",
               tags: r.tags ?? [],
-              refs: [],
+              // Source L0 message ids. Empty for memories written before the
+              // kernel kept them.
+              refs: toStringList(r.source_message_ids),
+              session_id:
+                typeof r.session_id === "string" && r.session_id
+                  ? r.session_id
+                  : undefined,
               // L1 时间来源（v3 内核实际返回）：
               //   - created_at（ISO 字符串）—— 内核 atomic/query 的标准字段
               //   - created_time_ms（数值 ms） / timestamp_str —— 老数据兼容
@@ -2067,3 +2136,153 @@ async function authorizeChatMemoryRead(
 
 // countBindings 已随 team-assets 的 N+1 优化下线；未来若右侧详情面板要按需拉
 // 单条绑定数，走独立 endpoint（body: {team_id, block_id}）实现，别再放回列表循环。
+
+// ── L0 session helpers ──────────────────────────────────────────
+
+/** Most messages the kernel conversation/query returns per call. */
+const KERNEL_L0_PAGE_MAX = 100;
+
+/**
+ * Optional session id from a request body. Returns undefined when absent or
+ * blank, null when the value is not a usable id, and the trimmed id otherwise.
+ */
+function normalizeSessionId(v: unknown): string | undefined | null {
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string") return null;
+  const trimmed = v.trim();
+  if (!trimmed) return undefined;
+  return trimmed.length <= 256 ? trimmed : null;
+}
+
+/** String array from an unknown value; other values give an empty list. */
+function toStringList(v: unknown): string[] {
+  return Array.isArray(v)
+    ? v.filter((x): x is string => typeof x === "string" && x.length > 0)
+    : [];
+}
+
+function optionalString(v: unknown): string | undefined {
+  return typeof v === "string" && v ? v : undefined;
+}
+
+/** Kernel conversation message → layer item. */
+function toL0LayerItem(m: Record<string, unknown>) {
+  return {
+    id: typeof m.id === "string" ? m.id : "",
+    role: typeof m.role === "string" ? m.role : "msg",
+    title: `${m.role ?? "msg"} @ ${m.session_id ?? ""}`,
+    body:
+      typeof m.content === "string"
+        ? m.content
+        : JSON.stringify(m.content ?? ""),
+    tags: m.role ? [String(m.role)] : [],
+    refs: [] as string[],
+    session_id: optionalString(m.session_id),
+    // Time sources, in order: original message time, capture time (ISO), old
+    // numeric fields.
+    created_at:
+      optionalString(m.message_time) ||
+      optionalString(m.timestamp) ||
+      msToIso(m.recorded_at_ms) ||
+      msToIso(m.timestamp) ||
+      undefined,
+  };
+}
+
+/** Kernel session row → panel session row. */
+function toSessionOut(s: Record<string, unknown>) {
+  return {
+    session_id: typeof s.session_id === "string" ? s.session_id : "",
+    first_ts: optionalString(s.first_ts),
+    last_ts: optionalString(s.last_ts),
+    message_count: typeof s.message_count === "number" ? s.message_count : 0,
+    title: typeof s.first_user_message === "string" ? s.first_user_message : "",
+    project_name: optionalString(s.project_name),
+    project_hash: optionalString(s.project_hash),
+    l1_count: typeof s.l1_count === "number" ? s.l1_count : 0,
+  };
+}
+
+/**
+ * Read one page of a session in conversation order. The kernel returns at most
+ * 100 messages per call, so a larger page takes more than one call.
+ */
+async function fetchSessionMessages(
+  deps: PanelDeps,
+  cred: KernelCredentials,
+  ids: { team_id: string; agent_id: string; user_id: string },
+  sessionId: string,
+  limit: number,
+  offset: number,
+): Promise<
+  | { messages: Array<Record<string, unknown>>; total: number }
+  | { envelope: MetaEnvelope<unknown> }
+> {
+  const messages: Array<Record<string, unknown>> = [];
+  let total = 0;
+  while (messages.length < limit) {
+    const pageSize = Math.min(KERNEL_L0_PAGE_MAX, limit - messages.length);
+    const env = await deps.kernelHttp.postEnvelope<{
+      messages?: Array<Record<string, unknown>>;
+      total?: number;
+    }>(
+      "/v3/conversation/query",
+      {
+        ...ids,
+        session_id: sessionId,
+        order: "asc",
+        limit: pageSize,
+        offset: offset + messages.length,
+      },
+      cred,
+    );
+    if (env.code !== 0) return { envelope: env };
+    const page = env.data?.messages ?? [];
+    total = env.data?.total ?? total;
+    messages.push(...page);
+    if (page.length < pageSize || offset + messages.length >= total) break;
+  }
+  return { messages, total };
+}
+
+/**
+ * Resolve the caller, load the asset and check the read ACL. The caller can
+ * read when one of these is true: it owns the asset, the asset is shared with
+ * the team and the caller is a member, or the asset is bound to an agent of
+ * the caller (borrowed). Returns the asset or the error response to send.
+ */
+async function loadReadableChatMemory(
+  c: import("hono").Context,
+  deps: PanelDeps,
+  ctx: MetaCallContext,
+  blockId: string,
+): Promise<{ asset: AssetRaw } | { response: Response }> {
+  const meUserId = await resolveCallerUserId(deps, ctx);
+  if (!meUserId)
+    return { response: respondControlError(c, 401, "INVALID_USER_KEY") };
+
+  const assetEnv = await deps.metaKernel.invoke(
+    "asset/get",
+    { asset_id: blockId },
+    ctx,
+  );
+  if (assetEnv.code === 404 || (assetEnv.code === 0 && !assetEnv.data)) {
+    return { response: respondControlError(c, 404, "BLOCK_NOT_FOUND") };
+  }
+  if (assetEnv.code !== 0) return { response: respondEnvelope(c, assetEnv) };
+  const asset = assetEnv.data as AssetRaw;
+  if (asset.asset_type !== "chat_memory") {
+    return { response: respondControlError(c, 400, "NOT_CHAT_MEMORY") };
+  }
+
+  const canRead = await authorizeChatMemoryRead(
+    deps,
+    ctx,
+    asset,
+    meUserId,
+    blockId,
+  );
+  if (!canRead)
+    return { response: respondControlError(c, 403, "ASSET_NOT_ACCESSIBLE") };
+  return { asset };
+}
