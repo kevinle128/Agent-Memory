@@ -132,6 +132,7 @@ export type ConversationCountRequest = z.infer<typeof conversationCountRequestSc
 
 export const atomicCountRequestSchema = z.object({
   type: z.string().optional(),
+  session_id: z.string().trim().min(1).max(256).optional(),
   time_start: z.string().optional(),
   time_end: z.string().optional(),
 });

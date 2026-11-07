@@ -1257,14 +1257,16 @@ async function handleAtomicQuery(body: unknown, _auth: V2AuthContext, requestId:
 async function handleAtomicCount(body: unknown, _auth: V2AuthContext, requestId: string, deps: V2RouterDeps): Promise<ApiResponseEnvelope> {
   const parsed = atomicCountRequestSchema.safeParse(body);
   if (!parsed.success) return errorEnvelope(400, formatZodError(parsed.error), requestId);
-  const { type, time_start, time_end } = parsed.data;
+  const { type, time_start, time_end, session_id } = parsed.data;
 
   const store = deps.getStore();
   if (!store) return errorEnvelope(503, "Store not available", requestId);
   const iso = deps.requestIsolation;
 
+  // Same session filter as atomic/query, so count and query agree.
   const total = await store.countL1({
     type,
+    sessionId: session_id,
     timeStart: time_start,
     timeEnd: time_end,
     teamId: iso?.teamId,

@@ -13,6 +13,7 @@ import type { MemoryRecord } from "../core/record/l1-writer.js";
 import { VectorStore } from "../core/store/sqlite/memory-store.js";
 import type { IMemoryStore, L0Record } from "../core/store/types.js";
 import {
+  handleAtomicCount,
   handleAtomicQuery,
   handleConversationQuery,
   handleConversationSessions,
@@ -166,6 +167,14 @@ describe("conversation/sessions and session-aware L0/L1 queries", () => {
 
     expect(res.code).toBe(0);
     expect((res.data as AtomicQueryData).items.map((i) => i.id).sort()).toEqual(["m-a", "m-b"]);
+  });
+
+  it("counts L1 by session_id like atomic/query", async () => {
+    const one = await handleAtomicCount({ session_id: "sess-a" }, auth, "r", deps);
+    const all = await handleAtomicCount({}, auth, "r", deps);
+
+    expect((one.data as { total: number }).total).toBe(1);
+    expect((all.data as { total: number }).total).toBe(2);
   });
 
   describe("routing", () => {
