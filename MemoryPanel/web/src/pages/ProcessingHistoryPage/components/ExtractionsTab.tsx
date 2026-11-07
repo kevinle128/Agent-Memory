@@ -316,6 +316,7 @@ export function ExtractionsTab(props: {
 
             <DetailSection title={t('history.feedback.title')}>
               <FeedbackBar
+                key={selected.log_id}
                 entries={feedback.of(selected.log_id)}
                 userId={feedback.userId}
                 busy={feedback.busyId === selected.log_id}

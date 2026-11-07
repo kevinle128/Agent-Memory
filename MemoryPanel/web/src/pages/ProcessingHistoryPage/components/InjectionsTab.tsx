@@ -260,6 +260,7 @@ export function InjectionsTab(props: {
 
             <DetailSection title={t('history.feedback.title')}>
               <FeedbackBar
+                key={selected.id}
                 entries={feedback.of(String(selected.id))}
                 userId={feedback.userId}
                 busy={feedback.busyId === String(selected.id)}

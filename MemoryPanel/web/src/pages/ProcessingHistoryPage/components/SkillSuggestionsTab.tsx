@@ -289,6 +289,7 @@ export function SkillSuggestionsTab(props: {
 
             <DetailSection title={t('history.feedback.title')}>
               <FeedbackBar
+                key={selected.proposal_id}
                 entries={feedback.of(selected.proposal_id)}
                 userId={feedback.userId}
                 busy={feedback.busyId === selected.proposal_id}

@@ -55,8 +55,10 @@ export function useFeedback(teamId: string | null, targetType: FeedbackTargetTyp
       setBusyId(targetId);
       try {
         const res = await processingHistoryApi.feedbackSet({ teamId, targetType, targetId, rating, note });
+        // The server answer names the user; the list may not have loaded yet.
+        const me = res.entry?.user_id ?? userId;
         setEntries((prev) => {
-          const rest = prev.filter((e) => !(e.target_id === targetId && e.user_id === userId));
+          const rest = prev.filter((e) => !(e.target_id === targetId && e.user_id === me));
           return res.entry ? [...rest, res.entry] : rest;
         });
         if (res.entry) setUserId(res.entry.user_id);
