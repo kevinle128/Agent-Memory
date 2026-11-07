@@ -144,6 +144,11 @@ export interface L1RecordRow {
   created_time: string;
   updated_time: string;
   metadata_json: string;
+  /**
+   * L0 record ids the extractor named as the source of this memory. Absent on
+   * rows written before the field existed and on backends that do not store it.
+   */
+  source_message_ids?: string[];
 }
 
 // ============================
@@ -402,7 +407,49 @@ export interface L0PaginatedFilter extends L0CountFilter {
   limit: number;
   /** Page offset. */
   offset: number;
+  /**
+   * Sort direction. "desc" (default) gives the newest message first.
+   * "asc" gives the conversation order (message time, oldest first).
+   */
+  order?: "asc" | "desc";
 }
+
+/** Filter for the L0 session list. The scope fields match `L0CountFilter`. */
+export type L0SessionListFilter = Omit<L0CountFilter, "sessionId"> & {
+  /** Page size. */
+  limit: number;
+  /** Page offset. */
+  offset: number;
+};
+
+/** One L0 session in the session list. */
+export interface L0SessionSummary {
+  session_id: string;
+  /** Message time (epoch ms) of the first message in the filter range. */
+  first_ts: number;
+  /** Message time (epoch ms) of the last message in the filter range. */
+  last_ts: number;
+  /** Number of messages of the session in the filter range. */
+  message_count: number;
+  /** Start of the first user message (at most `L0_SESSION_PREVIEW_CHARS` characters). Empty if none. */
+  first_user_message: string;
+  /** Project of the session, from its last message that has one. Empty means no project. */
+  project_key: string;
+  project_hash: string;
+  project_name: string;
+  /** Number of L1 records in the same scope that have this session id. */
+  l1_count: number;
+}
+
+/** Result of the L0 session list, sorted by `last_ts` (newest first). */
+export interface L0SessionListResult {
+  sessions: L0SessionSummary[];
+  /** Number of sessions that match the filter (for pagination). */
+  total: number;
+}
+
+/** Maximum length of `L0SessionSummary.first_user_message`. */
+export const L0_SESSION_PREVIEW_CHARS = 60;
 
 /** Result of v2 L0 paginated query. */
 export interface L0PaginatedResult {
@@ -749,6 +796,13 @@ export interface IMemoryStore extends MemoryPromptStore, MemoryGenerationRefStor
    * plus the total count of matching rows.
    */
   queryL0Paginated?(filter: L0PaginatedFilter): MaybePromise<L0PaginatedResult>;
+
+  /**
+   * List the L0 sessions in a scope, newest activity first. The backend groups
+   * the rows by session id; it must not load all rows into memory.
+   * Used by `/v3/conversation/sessions`.
+   */
+  listL0Sessions?(filter: L0SessionListFilter): MaybePromise<L0SessionListResult>;
 
   /**
    * L1 paginated query for v2 API `/atomic/query`.

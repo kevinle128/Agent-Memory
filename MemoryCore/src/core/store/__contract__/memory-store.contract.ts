@@ -264,6 +264,95 @@ export function runMemoryStoreContract(harness: MemoryStoreContractHarness): voi
       }
     });
 
+    it("listL0Sessions groups by session, sorts by last message and counts L1", async () => {
+      const store = await harness.createStore();
+      if (!store.listL0Sessions) {
+        await harness.disposeStore(store);
+        return;
+      }
+      try {
+        const scope = { teamId: "team-s", userId: "user-s", agentId: "agent-s" };
+        const t0 = Date.UTC(2026, 10, 7, 8, 0, 0);
+        const msg = (id: string, sessionId: string, role: string, text: string, ts: number, over?: Record<string, unknown>) =>
+          makeL0(id, text, { ...scope, sessionId, sessionKey: `sk-${sessionId}`, role, timestamp: ts, ...over });
+        const longText = `${"x".repeat(70)} tail`;
+        // Session A: assistant first, then two user messages; last at t0+3m.
+        await store.upsertL0(msg("a1", "sess-a", "assistant", "Hello, how can I help?", t0));
+        await store.upsertL0(msg("a2", "sess-a", "user", longText, t0 + 60_000,
+          { projectKey: "git:example/p", projectHash: "0123456789abcdef", projectName: "example/p" }));
+        await store.upsertL0(msg("a3", "sess-a", "user", "second question", t0 + 180_000));
+        // Session B: newer activity, no user message.
+        await store.upsertL0(msg("b1", "sess-b", "assistant", "only assistant", t0 + 600_000));
+        // Session C: older, outside the time range used below.
+        await store.upsertL0(msg("c1", "sess-c", "user", "old session", t0 - 86_400_000));
+        // Other tenant: must not appear.
+        await store.upsertL0(makeL0("z1", "other tenant", { teamId: "team-z", userId: "user-s", agentId: "agent-s", sessionId: "sess-z", timestamp: t0 }));
+        // L1 rows: two from sess-a in scope, one from sess-a in another scope.
+        await store.upsertL1(makeL1("l1-sa-1", "fact one", { ...scope, sessionId: "sess-a", source_message_ids: ["a2"] }));
+        await store.upsertL1(makeL1("l1-sa-2", "fact two", { ...scope, sessionId: "sess-a" }));
+        await store.upsertL1(makeL1("l1-sa-x", "other scope", { teamId: "team-z", userId: "user-s", agentId: "agent-s", sessionId: "sess-a" }));
+
+        const all = await store.listL0Sessions({ ...scope, limit: 10, offset: 0 });
+        expect(all.total).toBe(3);
+        expect(all.sessions.map((s) => s.session_id)).toEqual(["sess-b", "sess-a", "sess-c"]);
+
+        const a = all.sessions.find((s) => s.session_id === "sess-a")!;
+        expect(a.first_ts).toBe(t0);
+        expect(a.last_ts).toBe(t0 + 180_000);
+        expect(a.message_count).toBe(3);
+        expect(a.first_user_message).toBe(longText.slice(0, 60));
+        expect(a.project_hash).toBe("0123456789abcdef");
+        expect(a.project_name).toBe("example/p");
+        expect(a.l1_count).toBe(2);
+
+        const b = all.sessions.find((s) => s.session_id === "sess-b")!;
+        expect(b.first_user_message).toBe("");
+        expect(b.project_hash).toBe("");
+        expect(b.l1_count).toBe(0);
+
+        // Time range drops sess-c; pagination keeps the order.
+        const ranged = await store.listL0Sessions({ ...scope, timeStartMs: t0, timeEndMs: t0 + 600_000, limit: 1, offset: 1 });
+        expect(ranged.total).toBe(2);
+        expect(ranged.sessions.map((s) => s.session_id)).toEqual(["sess-a"]);
+      } finally {
+        await harness.disposeStore(store);
+      }
+    });
+
+    it("queryL0Paginated with order asc returns the conversation order", async () => {
+      const store = await harness.createStore();
+      try {
+        const t0 = Date.UTC(2026, 10, 7, 8, 0, 0);
+        // Same capture time for all rows, as one /conversation/add batch writes them.
+        const recordedAt = new Date(t0 + 1_000_000).toISOString();
+        for (const [id, offset] of [["m2", 2], ["m1", 1], ["m3", 3]] as const) {
+          await store.upsertL0(makeL0(id, `message ${id}`, { sessionId: "sess-o", timestamp: t0 + offset * 1000, recordedAt }));
+        }
+        const asc = await store.queryL0Paginated?.({ sessionId: "sess-o", limit: 10, offset: 0, order: "asc" });
+        if (!asc) return;
+        expect(asc.rows.map((r) => r.record_id)).toEqual(["m1", "m2", "m3"]);
+        expect(asc.total).toBe(3);
+      } finally {
+        await harness.disposeStore(store);
+      }
+    });
+
+    it("L1 keeps source_message_ids and filters the paginated query by session", async () => {
+      const store = await harness.createStore();
+      try {
+        await store.upsertL1(makeL1("l1-src", "memory with sources", { sessionId: "sess-1", source_message_ids: ["m-1", "m-2"] }));
+        await store.upsertL1(makeL1("l1-other", "memory of another session", { sessionId: "sess-2" }));
+        const page = await store.queryL1Paginated?.({ sessionId: "sess-1", limit: 10, offset: 0 });
+        if (!page) return;
+        expect(page.total).toBe(1);
+        expect(page.rows[0]?.record_id).toBe("l1-src");
+        expect(page.rows[0]?.session_id).toBe("sess-1");
+        expect(page.rows[0]?.source_message_ids).toEqual(["m-1", "m-2"]);
+      } finally {
+        await harness.disposeStore(store);
+      }
+    });
+
     it("L1 FTS (BM25) recalls by keyword", async () => {
       const store = await harness.createStore();
       try {

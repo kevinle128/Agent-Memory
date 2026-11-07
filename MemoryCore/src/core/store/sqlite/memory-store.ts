@@ -41,6 +41,9 @@ import type {
   L0CountFilter,
   L0PaginatedFilter,
   L0PaginatedResult,
+  L0SessionListFilter,
+  L0SessionListResult,
+  L0SessionSummary,
   L1CountFilter,
   L1PaginatedFilter,
   L1PaginatedResult,
@@ -58,7 +61,7 @@ import type {
   AuditEntry,
   AuditQueryFilter,
 } from "../types.js";
-import { DEFAULT_ISOLATION_ID, rowMatchesIsolation } from "../types.js";
+import { DEFAULT_ISOLATION_ID, L0_SESSION_PREVIEW_CHARS, rowMatchesIsolation } from "../types.js";
 import { SKILLS_DDL, SKILL_FTS_DDL } from "../../skill/skill-store-ddl.js";
 import type { Logger } from "../../types.js";
 import type {
@@ -171,6 +174,17 @@ const require = createRequire(import.meta.url);
 
 function requireNodeSqlite(): typeof import("node:sqlite") {
   return require("node:sqlite") as typeof import("node:sqlite");
+}
+
+/** Parse a JSON string array column. A bad or empty value gives an empty list. */
+function parseIdList(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
 }
 
 // ============================
@@ -521,7 +535,8 @@ export class VectorStore implements IMemoryStore {
         timestamp_end TEXT DEFAULT '',
         created_time TEXT DEFAULT '',
         updated_time TEXT DEFAULT '',
-        metadata_json TEXT DEFAULT '{}'
+        metadata_json TEXT DEFAULT '{}',
+        source_message_ids TEXT NOT NULL DEFAULT '[]'
       )
     `);
 
@@ -534,6 +549,7 @@ export class VectorStore implements IMemoryStore {
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN project_key TEXT DEFAULT ''"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN project_hash TEXT DEFAULT ''"); } catch { /* exists */ }
     try { this.db.exec("ALTER TABLE l1_records ADD COLUMN version INTEGER NOT NULL DEFAULT 0"); } catch { /* exists */ }
+    try { this.db.exec("ALTER TABLE l1_records ADD COLUMN source_message_ids TEXT NOT NULL DEFAULT '[]'"); } catch { /* exists */ }
     this.db.prepare("UPDATE l1_records SET team_id = ? WHERE team_id = '' OR team_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l1_records SET user_id = ? WHERE user_id = '' OR user_id IS NULL").run(DEFAULT_ISOLATION_ID);
     this.db.prepare("UPDATE l1_records SET agent_id = ? WHERE agent_id = '' OR agent_id IS NULL").run(DEFAULT_ISOLATION_ID);
@@ -581,8 +597,8 @@ export class VectorStore implements IMemoryStore {
         record_id, content, type, priority, scene_name, session_key, session_id,
         team_id, task_id, version, timestamp_str, timestamp_start, timestamp_end,
         created_time, updated_time, metadata_json,
-        user_id, agent_id, project_key, project_hash
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        user_id, agent_id, project_key, project_hash, source_message_ids
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(record_id) DO UPDATE SET
         content=excluded.content,
         type=excluded.type,
@@ -599,7 +615,8 @@ export class VectorStore implements IMemoryStore {
         user_id=excluded.user_id,
         agent_id=excluded.agent_id,
         project_key=excluded.project_key,
-        project_hash=excluded.project_hash
+        project_hash=excluded.project_hash,
+        source_message_ids=excluded.source_message_ids
     `);
 
     if (this.dimensions > 0) {
@@ -1336,6 +1353,7 @@ export class VectorStore implements IMemoryStore {
           (record as MemoryRecord & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
           record.projectKey || "",
           record.projectHash || "",
+          JSON.stringify(Array.isArray(record.source_message_ids) ? record.source_message_ids.map(String) : []),
         );
 
         if (!skipVec) {
@@ -2532,48 +2550,16 @@ export class VectorStore implements IMemoryStore {
     if (this.degraded) return { rows: [], total: 0 };
 
     try {
-      const conditions: string[] = [];
-      const params: SQLInputValue[] = [];
-
-      if (filter.sessionId) {
-        conditions.push("(session_key = ? OR session_id = ?)");
-        params.push(filter.sessionId, filter.sessionId);
-      }
-      // Isolation dimensions — see docs/l0l3-tenant-isolation-design.md.
-      if (filter.teamId !== undefined) {
-        conditions.push("team_id = ?");
-        params.push(filter.teamId);
-      }
-      if (filter.userId !== undefined) {
-        conditions.push("user_id = ?");
-        params.push(filter.userId);
-      }
-      if (filter.agentId !== undefined) {
-        conditions.push("agent_id = ?");
-        params.push(filter.agentId);
-      }
-      if (filter.taskId !== undefined) {
-        conditions.push("task_id = ?");
-        params.push(filter.taskId);
-      }
-      if (filter.timeStartMs !== undefined) {
-        conditions.push("timestamp >= ?");
-        params.push(filter.timeStartMs);
-      }
-      if (filter.timeEndMs !== undefined) {
-        conditions.push("timestamp <= ?");
-        params.push(filter.timeEndMs);
-      }
-
-      const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+      const { where, params } = this.l0FilterWhere(filter);
 
       // Count total
       const countSql = `SELECT COUNT(*) AS cnt FROM l0_conversations ${where}`;
       const countRow = this.db.prepare(countSql).get(...params) as { cnt: number } | undefined;
       const total = countRow?.cnt ?? 0;
 
-      // Fetch page
-      const dataSql = `SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, project_name, user_id, agent_id, role, message_text, recorded_at, timestamp FROM l0_conversations ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`;
+      // Fetch page. "asc" is the conversation order: message time, then capture time.
+      const orderBy = filter.order === "asc" ? "timestamp ASC, recorded_at ASC, rowid ASC" : "timestamp DESC";
+      const dataSql = `SELECT record_id, session_key, session_id, team_id, task_id, project_key, project_hash, project_name, user_id, agent_id, role, message_text, recorded_at, timestamp FROM l0_conversations ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
       const rows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as L0QueryRow[];
 
       return { rows, total };
@@ -2581,6 +2567,129 @@ export class VectorStore implements IMemoryStore {
       this.logger?.warn(`[sqlite] queryL0Paginated failed: ${err instanceof Error ? err.message : String(err)}`);
       return { rows: [], total: 0 };
     }
+  }
+
+  /**
+   * L0 session list for `/v3/conversation/sessions`.
+   * GROUP BY gives one page of sessions; the preview, project and L1 count
+   * are then read per session of that page only.
+   */
+  listL0Sessions(filter: L0SessionListFilter): L0SessionListResult {
+    if (this.degraded) return { sessions: [], total: 0 };
+
+    try {
+      const { where, params } = this.l0FilterWhere(filter);
+      const and = where ? `${where} AND` : "WHERE";
+
+      const totalRow = this.db
+        .prepare(`SELECT COUNT(DISTINCT session_id) AS cnt FROM l0_conversations ${where}`)
+        .get(...params) as { cnt: number } | undefined;
+      const total = totalRow?.cnt ?? 0;
+
+      const groups = this.db
+        .prepare(
+          `SELECT session_id, MIN(timestamp) AS first_ts, MAX(timestamp) AS last_ts, COUNT(*) AS message_count
+           FROM l0_conversations ${where}
+           GROUP BY session_id
+           ORDER BY last_ts DESC, session_id ASC
+           LIMIT ? OFFSET ?`,
+        )
+        .all(...params, filter.limit, filter.offset) as Array<{
+          session_id: string;
+          first_ts: number;
+          last_ts: number;
+          message_count: number;
+        }>;
+      if (groups.length === 0) return { sessions: [], total };
+
+      const firstUserStmt = this.db.prepare(
+        `SELECT substr(message_text, 1, ${L0_SESSION_PREVIEW_CHARS}) AS text FROM l0_conversations
+         ${and} session_id = ? AND role = 'user'
+         ORDER BY timestamp ASC, recorded_at ASC LIMIT 1`,
+      );
+      const projectStmt = this.db.prepare(
+        `SELECT project_key, project_hash, project_name FROM l0_conversations
+         ${and} session_id = ? AND project_hash != ''
+         ORDER BY timestamp DESC LIMIT 1`,
+      );
+
+      // L1 count uses the scope only: the time range selects L0 rows, not memories.
+      const scope = this.l0FilterWhere({
+        teamId: filter.teamId,
+        userId: filter.userId,
+        agentId: filter.agentId,
+        taskId: filter.taskId,
+      });
+      const ids = groups.map((g) => g.session_id);
+      const l1Rows = this.db
+        .prepare(
+          `SELECT session_id, COUNT(*) AS n FROM l1_records
+           ${scope.where ? `${scope.where} AND` : "WHERE"} session_id IN (${ids.map(() => "?").join(", ")})
+           GROUP BY session_id`,
+        )
+        .all(...scope.params, ...ids) as Array<{ session_id: string; n: number }>;
+      const l1Counts = new Map(l1Rows.map((r) => [r.session_id, Number(r.n)] as const));
+
+      const sessions: L0SessionSummary[] = groups.map((g) => {
+        const firstUser = firstUserStmt.get(...params, g.session_id) as { text: string } | undefined;
+        const project = projectStmt.get(...params, g.session_id) as
+          | { project_key: string; project_hash: string; project_name: string }
+          | undefined;
+        return {
+          session_id: g.session_id,
+          first_ts: Number(g.first_ts ?? 0),
+          last_ts: Number(g.last_ts ?? 0),
+          message_count: Number(g.message_count),
+          first_user_message: firstUser?.text ?? "",
+          project_key: project?.project_key ?? "",
+          project_hash: project?.project_hash ?? "",
+          project_name: project?.project_name ?? "",
+          l1_count: l1Counts.get(g.session_id) ?? 0,
+        };
+      });
+      return { sessions, total };
+    } catch (err) {
+      this.logger?.warn(`[sqlite] listL0Sessions failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { sessions: [], total: 0 };
+    }
+  }
+
+  /** WHERE clause for the L0 session, scope and message-time filters. */
+  private l0FilterWhere(filter: L0CountFilter): { where: string; params: SQLInputValue[] } {
+    const conditions: string[] = [];
+    const params: SQLInputValue[] = [];
+
+    if (filter.sessionId) {
+      conditions.push("(session_key = ? OR session_id = ?)");
+      params.push(filter.sessionId, filter.sessionId);
+    }
+    // Isolation dimensions — see docs/l0l3-tenant-isolation-design.md.
+    if (filter.teamId !== undefined) {
+      conditions.push("team_id = ?");
+      params.push(filter.teamId);
+    }
+    if (filter.userId !== undefined) {
+      conditions.push("user_id = ?");
+      params.push(filter.userId);
+    }
+    if (filter.agentId !== undefined) {
+      conditions.push("agent_id = ?");
+      params.push(filter.agentId);
+    }
+    if (filter.taskId !== undefined) {
+      conditions.push("task_id = ?");
+      params.push(filter.taskId);
+    }
+    if (filter.timeStartMs !== undefined) {
+      conditions.push("timestamp >= ?");
+      params.push(filter.timeStartMs);
+    }
+    if (filter.timeEndMs !== undefined) {
+      conditions.push("timestamp <= ?");
+      params.push(filter.timeEndMs);
+    }
+
+    return { where: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "", params };
   }
 
   /**
@@ -2637,8 +2746,11 @@ export class VectorStore implements IMemoryStore {
 
       // Fetch page — must include user_id / agent_id so callers can enforce
       // isolation in downstream filters / Coordinator candidate pool.
-      const dataSql = `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json FROM l1_records ${where} ORDER BY updated_time DESC LIMIT ? OFFSET ?`;
-      const rows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as L1RecordRow[];
+      const dataSql = `SELECT record_id, content, type, priority, scene_name, session_key, session_id, team_id, task_id, project_key, project_hash, user_id, agent_id, version, timestamp_str, timestamp_start, timestamp_end, created_time, updated_time, metadata_json, source_message_ids FROM l1_records ${where} ORDER BY updated_time DESC LIMIT ? OFFSET ?`;
+      const rawRows = this.db.prepare(dataSql).all(...params, filter.limit, filter.offset) as unknown as Array<
+        Omit<L1RecordRow, "source_message_ids"> & { source_message_ids?: string | null }
+      >;
+      const rows: L1RecordRow[] = rawRows.map((r) => ({ ...r, source_message_ids: parseIdList(r.source_message_ids) }));
 
       return { rows, total };
     } catch (err) {

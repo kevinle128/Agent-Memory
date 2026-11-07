@@ -131,6 +131,8 @@ export interface L1Doc {
   updated_time: string;
   updated_time_ms: number;
   metadata_json: string;
+  /** Absent on documents written before the field existed. */
+  source_message_ids?: string[];
 }
 
 export function l1RecordToDoc(record: MemoryRecord): L1Doc {
@@ -162,6 +164,7 @@ export function l1RecordToDoc(record: MemoryRecord): L1Doc {
     updated_time: record.updatedAt,
     updated_time_ms: isoToEpochMs(record.updatedAt),
     metadata_json: JSON.stringify(record.metadata ?? {}),
+    source_message_ids: Array.isArray(record.source_message_ids) ? record.source_message_ids.map(String) : [],
   };
 }
 
@@ -187,6 +190,7 @@ export function docToL1RecordRow(doc: L1Doc): L1RecordRow {
     created_time: doc.created_time ?? "",
     updated_time: doc.updated_time ?? "",
     metadata_json: doc.metadata_json ?? "{}",
+    source_message_ids: Array.isArray(doc.source_message_ids) ? doc.source_message_ids.map(String) : [],
   };
 }
 

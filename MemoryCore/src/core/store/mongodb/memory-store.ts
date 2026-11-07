@@ -41,6 +41,8 @@ import type {
   L0CountFilter,
   L0PaginatedFilter,
   L0PaginatedResult,
+  L0SessionListFilter,
+  L0SessionListResult,
   ProfileRecord,
   ProfileSyncRecord,
   ProfileFilter,
@@ -72,6 +74,12 @@ import type {
   MemoryPromptTargetType,
 } from "../../memory-prompt/types.js";
 import { DEFAULT_ISOLATION_ID } from "../isolation.js";
+import {
+  buildL0SessionListPipeline,
+  buildL1CountBySessionPipeline,
+  toL0SessionSummary,
+  type L0SessionGroupDoc,
+} from "./l0-session-pipeline.js";
 import { mongoSearchScoreToScore } from "../tokenize.js";
 import {
   type LlmCallListFilter,
@@ -574,13 +582,44 @@ export class MongoMemoryStore implements IMemoryStore {
     const coll = await this.coll(COLLECTIONS.L0);
     const q = this.l0CountQuery(filter);
     const total = await coll.countDocuments(q as never);
+    // "asc" is the conversation order: message time first, then capture time.
+    const sort: Record<string, 1 | -1> = filter.order === "asc"
+      ? { timestamp: 1, recorded_at_ms: 1, _id: 1 }
+      : { recorded_at_ms: -1 };
     const docs = await coll
       .find(q as never)
-      .sort({ recorded_at_ms: -1 })
+      .sort(sort)
       .skip(filter.offset)
       .limit(filter.limit)
       .toArray();
     return { rows: docs.map((d) => docToL0QueryRow(d as unknown as L0Doc)), total };
+  }
+
+  async listL0Sessions(filter: L0SessionListFilter): Promise<L0SessionListResult> {
+    const l0 = await this.coll(COLLECTIONS.L0);
+    const match = this.l0CountQuery(filter);
+    const [facet] = await l0
+      .aggregate<{ total: Array<{ n: number }>; page: L0SessionGroupDoc[] }>(
+        buildL0SessionListPipeline(match, filter.limit, filter.offset),
+        { allowDiskUse: true },
+      )
+      .toArray();
+    const page = facet?.page ?? [];
+    const total = facet?.total[0]?.n ?? 0;
+    if (page.length === 0) return { sessions: [], total };
+
+    // L1 count uses the scope only: the time range selects L0 rows, not memories.
+    const { timeStartMs: _start, timeEndMs: _end, ...scope } = filter;
+    void _start;
+    void _end;
+    const l1 = await this.coll(COLLECTIONS.L1);
+    const counts = await l1
+      .aggregate<{ _id: string; n: number }>(
+        buildL1CountBySessionPipeline(this.l0CountQuery(scope), page.map((g) => String(g._id))),
+      )
+      .toArray();
+    const l1Counts = new Map(counts.map((c) => [String(c._id), Number(c.n)] as const));
+    return { sessions: page.map((g) => toL0SessionSummary(g, l1Counts)), total };
   }
 
   // ════════════════════════════════════════════════════════

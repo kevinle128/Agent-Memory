@@ -1955,7 +1955,8 @@ export class TcvdbMemoryStore implements IMemoryStore {
         offset: filter.offset,
         filter: filterExpr,
         outputFields: L0_OUTPUT_FIELDS,
-        sort: [{ fieldName: "recorded_at_ms", direction: "desc" }],
+        // Only recorded_at_ms has a sort index here, so "asc" uses capture time.
+        sort: [{ fieldName: "recorded_at_ms", direction: filter.order === "asc" ? "asc" : "desc" }],
       });
       const docs = resp.documents ?? [];
 
