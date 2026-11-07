@@ -7,8 +7,8 @@
  * admin routes are open when the key is empty.)
  *
  * Query: `limit` (1-200, default 50), `offset` (default 0), and the optional
- * filters `user_id`, `agent_id`, `session_id`, `outcome` and `since` (ms epoch
- * or ISO-8601 time).
+ * filters `team_id`, `user_id`, `agent_id`, `session_id`, `outcome` and `since`
+ * (ms epoch or ISO-8601 time).
  */
 
 import type { Context } from "hono";
@@ -49,7 +49,7 @@ export function createHookRecallLogHandler(config: ProxyConfig) {
     if (offset === null) return c.json({ code: 400, message: "offset must be a non-negative integer" }, 400);
     if (since === null) return c.json({ code: 400, message: "since must be ms epoch or an ISO-8601 time" }, 400);
     const filters: Record<string, string | undefined> = {};
-    for (const key of ["user_id", "agent_id", "session_id", "outcome"]) {
+    for (const key of ["team_id", "user_id", "agent_id", "session_id", "outcome"]) {
       const v = c.req.query(key);
       if (v === undefined || v === "") continue;
       if (!FILTER_RE.test(v)) return c.json({ code: 400, message: `invalid ${key}` }, 400);
@@ -62,6 +62,7 @@ export function createHookRecallLogHandler(config: ProxyConfig) {
       const data = log.list({
         limit,
         offset,
+        teamId: filters.team_id,
         userId: filters.user_id,
         agentId: filters.agent_id,
         sessionId: filters.session_id,

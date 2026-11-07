@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS hook_recall_log (
 CREATE INDEX IF NOT EXISTS idx_hook_recall_log_created ON hook_recall_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_hook_recall_log_user ON hook_recall_log(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_hook_recall_log_session ON hook_recall_log(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_hook_recall_log_team ON hook_recall_log(team_id, created_at);
 `;
 
 /** Result of one recall request. */
@@ -106,6 +107,7 @@ export interface RecallLogRow {
 export interface RecallLogQuery {
   limit: number;
   offset: number;
+  teamId?: string;
   userId?: string;
   agentId?: string;
   sessionId?: string;
@@ -148,6 +150,7 @@ export class HookRecallLog {
   list(q: RecallLogQuery): { items: RecallLogEntry[]; total: number } {
     const where: string[] = [];
     const args: Record<string, unknown> = {};
+    if (q.teamId) { where.push("team_id = @teamId"); args.teamId = q.teamId; }
     if (q.userId) { where.push("user_id = @userId"); args.userId = q.userId; }
     if (q.agentId) { where.push("agent_id = @agentId"); args.agentId = q.agentId; }
     if (q.sessionId) { where.push("session_id = @sessionId"); args.sessionId = q.sessionId; }
