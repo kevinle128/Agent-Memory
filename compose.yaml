@@ -157,6 +157,8 @@ configs:
         backend: sqlite
         sqlite:
           dbPath: /data/tdai-memory-proxy/proxy.db
+      subscriptionPool:
+        promptCacheTtl: "1h"
       costGuard:
         enabled: false
       modelSources:
