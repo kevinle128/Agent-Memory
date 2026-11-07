@@ -17,6 +17,8 @@ export const SESSION_PAGE_SIZE = 50;
 export const SESSION_MESSAGE_PAGE_SIZE = 200;
 /** L1 memories read for one session to count them per source message (kernel maximum). */
 const SESSION_L1_LIMIT = 100;
+/** Most pages a source link may load while it looks for its message (10 x 200 = 2000 messages). */
+const MAX_FOCUS_PAGES = 10;
 
 function errorText(e: unknown, fallback: string): string {
   return (e instanceof Error ? e.message : String(e)) || fallback;
@@ -39,6 +41,9 @@ export function useL0Sessions(params: {
 
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null);
+  // Mirror of focusMessageId for the session-list effect, which must not refetch when it changes.
+  const focusMessageIdRef = useRef<string | null>(null);
+  focusMessageIdRef.current = focusMessageId;
 
   const [messages, setMessages] = useState<ChatMemoryLayerItem[]>([]);
   const [messagesTotal, setMessagesTotal] = useState(0);
@@ -76,7 +81,11 @@ export function useL0Sessions(params: {
         setSessions(res.sessions);
         setSessionsTotal(res.total);
         // Keep a session opened from an L1 source link even when it is outside the list.
-        setSelectedSessionId((cur) => cur ?? res.sessions[0]?.session_id ?? null);
+        // Otherwise a selection that the new range no longer contains moves to the first session.
+        setSelectedSessionId((cur) => {
+          if (cur && (focusMessageIdRef.current || res.sessions.some((s) => s.session_id === cur))) return cur;
+          return res.sessions[0]?.session_id ?? null;
+        });
       })
       .catch((e: unknown) => {
         if (seq !== listSeqRef.current) return;
@@ -118,6 +127,8 @@ export function useL0Sessions(params: {
   const msgSeqRef = useRef(0);
   useEffect(() => {
     if (!blockId || !enabled || !selectedSessionId) {
+      // Invalidate requests in flight so a late response cannot refill the cleared view.
+      ++msgSeqRef.current;
       setMessages([]);
       setMessagesTotal(0);
       setL1CountByMessage(new Map());
@@ -189,11 +200,18 @@ export function useL0Sessions(params: {
     }
   }, [blockId, selectedSessionId, messagesLoading, messagesLoadingMore, hasMoreMessages, messages.length, t]);
 
-  // A source link can point past the first page: load pages until the message shows.
+  // A source link can point past the first page: load pages until the message shows,
+  // but stop after a fixed number of pages so a missing message cannot load a whole long session.
+  const focusPagesRef = useRef(0);
+  useEffect(() => {
+    focusPagesRef.current = 0;
+  }, [focusMessageId, selectedSessionId]);
   useEffect(() => {
     if (!focusMessageId || messagesLoading || messagesLoadingMore) return;
     if (messages.some((m) => m.id === focusMessageId)) return;
-    if (hasMoreMessages) void loadMoreMessages();
+    if (!hasMoreMessages || focusPagesRef.current >= MAX_FOCUS_PAGES) return;
+    focusPagesRef.current += 1;
+    void loadMoreMessages();
   }, [focusMessageId, messages, messagesLoading, messagesLoadingMore, hasMoreMessages, loadMoreMessages]);
 
   /** Open a session. With `messageId`, the view scrolls to that message and highlights it. */
