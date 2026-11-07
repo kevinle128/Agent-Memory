@@ -94,6 +94,8 @@ export interface TdaiL1Memory {
   content: string;
   score?: number;
   updatedAt?: string;
+  /** Project of the record, when Core sends it. Absent means no project or an older Core. */
+  projectHash?: string;
 }
 
 export interface TdaiL2Entry {

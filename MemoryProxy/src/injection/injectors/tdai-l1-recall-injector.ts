@@ -7,6 +7,7 @@ import { extractUserQueryText } from "../../tdai/recorder.js";
 import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
 import { resolveFixedAssetCtxs } from "./tdai-fixed-asset.js";
+import { formatL1RecallBlock, formatL1RecallLine, searchL1InCtxs } from "../../tdai/l1-recall.js";
 
 /**
  * L1 召回（"自有 + 借入"跨 agent 合并 top-K）：
@@ -65,50 +66,16 @@ export class TdaiL1RecallInjector implements InjectionHook {
       : null;
     const ctxs = await resolveFixedAssetCtxs(ctx, identity, mc);
 
-    // 并发对每个 ctx search L1
-    const groups = await Promise.all(
-      ctxs.map(async (c) => {
-        const items = await this.client.searchL1ForCtx(
-          { teamId: c.teamId, userId: c.userId, agentId: c.agentId, agentName: c.agentName },
-          query,
-          identity.sessionId,
-          identity.taskId,
-          this.perAgentLimit,
-        );
-        return items.map((m) => ({
-          ...m,
-          fromAgentId: c.agentId,
-          fromAgentName: c.agentName,
-        }));
-      }),
-    );
-    // 合并所有命中，按 score 降序（缺 score 的排末尾）
-    const merged = ([] as Array<(typeof groups)[number][number]>)
-      .concat(...groups)
-      .sort((a, b) => (b.score ?? -Infinity) - (a.score ?? -Infinity))
-      .slice(0, this.globalTopK);
-
+    const merged = (
+      await searchL1InCtxs(this.client, ctxs, query, identity.sessionId, identity.taskId, this.perAgentLimit)
+    ).slice(0, this.globalTopK);
     if (merged.length === 0) return [];
-
-    const lines: string[] = [
-      "<tdai_recalled_l1_memories>",
-      "以下是与本轮用户问题相关的 TDAI L1 记忆（自有 + 借入合集，按相关度排序），仅用于辅助回答当前这一轮，不要视为永久系统规则：",
-    ];
-    for (let i = 0; i < merged.length; i++) {
-      const m = merged[i];
-      const fromTag =
-        m.fromAgentId === identity.agentId
-          ? "self"
-          : `from ${m.fromAgentName ?? m.fromAgentId}`;
-      const score = typeof m.score === "number" ? ` score=${m.score.toFixed(3)}` : "";
-      lines.push(`${i + 1}. [${m.type ?? "memory"}] [${fromTag}${score}] ${m.content}`);
-    }
-    lines.push("</tdai_recalled_l1_memories>");
+    const lines = merged.map((m, i) => formatL1RecallLine(m, i, identity.agentId));
 
     return [
       {
         type: "text",
-        content: lines.join("\n"),
+        content: formatL1RecallBlock(lines),
         metadata: {
           source: this.id,
           count: merged.length,

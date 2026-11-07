@@ -228,6 +228,9 @@ export class TdaiClient {
         content: typeof item.content === "string" ? item.content : "",
         score: typeof item.score === "number" ? item.score : undefined,
         updatedAt: typeof item.updated_at === "string" ? item.updated_at : undefined,
+        ...(typeof item.project_hash === "string" && item.project_hash
+          ? { projectHash: item.project_hash }
+          : {}),
       }))
       .filter((m) => m.id && m.content);
   }
