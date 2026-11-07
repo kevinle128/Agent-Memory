@@ -348,6 +348,9 @@ export function runMemoryStoreContract(harness: MemoryStoreContractHarness): voi
         expect(page.rows[0]?.record_id).toBe("l1-src");
         expect(page.rows[0]?.session_id).toBe("sess-1");
         expect(page.rows[0]?.source_message_ids).toEqual(["m-1", "m-2"]);
+        // The by-id read (used by atomic/update) returns them too.
+        const byId = await store.queryL1Records({ recordIds: ["l1-src"] });
+        expect(byId[0]?.source_message_ids).toEqual(["m-1", "m-2"]);
       } finally {
         await harness.disposeStore(store);
       }

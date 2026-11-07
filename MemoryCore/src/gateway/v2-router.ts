@@ -1157,7 +1157,8 @@ async function handleAtomicUpdate(body: unknown, _auth: V2AuthContext, requestId
     type: record.type as any,
     priority: record.priority ?? 50,
     scene_name: background !== undefined ? background : (record.scene_name ?? ""),
-    source_message_ids: [],
+    // An edit changes the text, not where the memory came from.
+    source_message_ids: record.source_message_ids ?? [],
     metadata: parseMetadataJson(record.metadata_json),
     timestamps: record.timestamp_str ? [record.timestamp_str] : [],
     createdAt: record.created_time,

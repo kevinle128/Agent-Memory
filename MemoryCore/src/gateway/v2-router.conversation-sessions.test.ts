@@ -15,6 +15,7 @@ import type { IMemoryStore, L0Record } from "../core/store/types.js";
 import {
   handleAtomicCount,
   handleAtomicQuery,
+  handleAtomicUpdate,
   handleConversationQuery,
   handleConversationSessions,
   handleV2Route,
@@ -167,6 +168,15 @@ describe("conversation/sessions and session-aware L0/L1 queries", () => {
 
     expect(res.code).toBe(0);
     expect((res.data as AtomicQueryData).items.map((i) => i.id).sort()).toEqual(["m-a", "m-b"]);
+  });
+
+  it("keeps source_message_ids when atomic/update edits the content", async () => {
+    const upd = await handleAtomicUpdate({ id: "m-a", content: "edited memory" }, auth, "r", deps);
+    expect(upd.code).toBe(0);
+    const res = await handleAtomicQuery({ session_id: "sess-a" }, auth, "r", deps);
+    const data = res.data as AtomicQueryData;
+    expect(data.items[0]?.content).toBe("edited memory");
+    expect(data.items[0]?.source_message_ids).toEqual(["a2"]);
   });
 
   it("counts L1 by session_id like atomic/query", async () => {

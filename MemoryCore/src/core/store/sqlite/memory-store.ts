@@ -187,6 +187,11 @@ function parseIdList(raw: string | null | undefined): string[] {
   }
 }
 
+/** L1 row read with the shared column list: the JSON source id column becomes a list. */
+function toL1RecordRow(raw: Record<string, unknown>): L1RecordRow {
+  return { ...(raw as unknown as L1RecordRow), source_message_ids: parseIdList(raw.source_message_ids as string | null | undefined) };
+}
+
 // ============================
 // FTS5 / keyword helpers
 // ============================
@@ -1147,7 +1152,7 @@ export class VectorStore implements IMemoryStore {
     const l1QueryCols = `record_id, content, type, priority, scene_name, session_key, session_id,
       team_id, task_id, project_key, project_hash, user_id, agent_id, version,
       timestamp_str, timestamp_start, timestamp_end,
-      created_time, updated_time, metadata_json`;
+      created_time, updated_time, metadata_json, source_message_ids`;
 
     this.stmtQueryByRecordId = this.db.prepare(`
       SELECT ${l1QueryCols} FROM l1_records WHERE record_id = ?
@@ -1792,7 +1797,7 @@ export class VectorStore implements IMemoryStore {
         return [];
       }
 
-      let rows = raw as unknown as L1RecordRow[];
+      let rows = raw.map(toL1RecordRow);
       // Prepared statements above optimize the common session/time predicates.
       // Isolation dimensions are optional and can be combined with any query
       // shape (notably L2 profile queries use teamId+agentId+updatedAfter
@@ -2504,7 +2509,7 @@ export class VectorStore implements IMemoryStore {
   queryL1RecordsCursor(afterId: string, pageSize: number): L1RecordRow[] {
     if (this.degraded) return [];
     try {
-      return this.stmtL1QueryMigrationCursor.all(afterId, pageSize) as unknown as L1RecordRow[];
+      return (this.stmtL1QueryMigrationCursor.all(afterId, pageSize) as Record<string, unknown>[]).map(toL1RecordRow);
     } catch (err) {
       this.logger?.warn(
         `${TAG} [L1-query-cursor] FAILED (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
