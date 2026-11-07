@@ -96,6 +96,14 @@ function parseListItem(key: string, size: number): MemoryGenerationLogListItem |
   };
 }
 
+/**
+ * Cursor that continues a list after `item`. Same format as the cursor that
+ * `MemoryGenerationLogStore.list` returns.
+ */
+export function encodeGenerationLogCursor(item: Pick<MemoryGenerationLogListItem, "finished_at_ms" | "log_id">): string {
+  return Buffer.from(JSON.stringify({ beforeMs: item.finished_at_ms, afterLogId: item.log_id }), "utf8").toString("base64url");
+}
+
 export class MemoryGenerationLogStore {
   private readonly storage: StorageAdapter;
 

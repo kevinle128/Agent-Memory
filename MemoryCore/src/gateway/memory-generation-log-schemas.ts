@@ -12,6 +12,14 @@ export const memoryGenerationLogListSchema = z.strictObject({
   end_time: z.string().datetime({ offset: true }).optional(),
   limit: queryInt(1, 100, 20),
   cursor: z.string().min(1).max(512).optional(),
+  // Filters on fields inside the log. With any of them, or with include_log,
+  // each listed log is read, and the full log is returned with its item.
+  team_id: z.string().trim().min(1).max(128).optional(),
+  agent_id: z.string().trim().min(1).max(128).optional(),
+  session_id: z.string().trim().min(1).max(256).optional(),
+  /** empty: a succeeded run that wrote no record. */
+  output: z.enum(["empty", "non_empty"]).optional(),
+  include_log: z.boolean().optional(),
 }).superRefine((value, ctx) => {
   if (!!value.start_time !== !!value.end_time) ctx.addIssue({ code: "custom", message: "start_time and end_time must be provided together" });
   if (value.start_time && value.end_time) {
