@@ -75,6 +75,13 @@ services:
       LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
       LLM_MODEL: ${MEMORY_LLM_MODEL:-}
       KNOWLEDGE_LLM_BINDING_SYNC: "0"
+      # Processing History page: the Panel server reads the recall log from
+      # the proxy with the proxy admin key. The same TDAI_PROXY_ADMIN_API_KEY
+      # value goes to the proxy below; without it the Injections tab shows
+      # that the key is not set. The Langfuse project URL is optional.
+      PANEL_PROXY_ADMIN_URL: http://proxy:8096
+      PANEL_PROXY_ADMIN_API_KEY: ${TDAI_PROXY_ADMIN_API_KEY:-}
+      PANEL_LANGFUSE_PROJECT_URL: ${PANEL_LANGFUSE_PROJECT_URL:-}
     volumes:
       - knowledge-data:/data/knowledge
     healthcheck:
