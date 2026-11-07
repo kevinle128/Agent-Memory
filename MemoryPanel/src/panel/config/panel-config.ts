@@ -115,6 +115,22 @@ export interface PanelConfig {
   /** 可选 ClickHouse API 调用审计。不配则全静默不上报。 */
   clickhouse: PanelClickHouseConfig;
   auth: PanelAuthConfig;
+  processingHistory: PanelProcessingHistoryConfig;
+}
+
+/** Sources of the Processing History page (team admins only). */
+export interface PanelProcessingHistoryConfig {
+  /** Base URL of MemoryProxy as the Panel server reaches it. Empty: the Injections tab is not configured. */
+  proxyAdminUrl: string;
+  /** Proxy admin key (the proxy reads the same value from TDAI_PROXY_ADMIN_API_KEY). Never sent to the browser. */
+  proxyAdminApiKey: string;
+  /**
+   * Langfuse project URL, for example `https://langfuse.example.com/project/<id>`.
+   * Empty hides the trace links.
+   */
+  langfuseProjectUrl: string;
+  /** JSON file that keeps the 👍/👎 ratings. Must be on a persistent volume. */
+  feedbackStorePath: string;
 }
 
 export interface PanelAuthConfig {
@@ -234,6 +250,7 @@ function buildAuthConfig(): PanelAuthConfig {
 export function loadPanelConfig(): PanelConfig {
   const level = env('LOG_LEVEL', 'info') as LogLevel;
   const format = env('LOG_FORMAT', 'json') as 'json' | 'pretty';
+  const agentTemplateDir = env('TDAI_AGENT_TEMPLATE_DIR', './data/agent-templates');
   return {
     server: {
       host: env('HOST', '0.0.0.0'),
@@ -255,7 +272,7 @@ export function loadPanelConfig(): PanelConfig {
       sync: envBool('KNOWLEDGE_LLM_BINDING_SYNC', true),
       proxyBaseUrl: env('KNOWLEDGE_LLM_PROXY_BASE_URL', 'http://127.0.0.1:8096'),
     },
-    agentTemplateDir: env('TDAI_AGENT_TEMPLATE_DIR', './data/agent-templates'),
+    agentTemplateDir,
     // 默认关闭（保守）：可观测页依赖内核 ClickHouse 埋点，未接入的部署不展示入口。
     featureAnalyticsEnabled: envBool('PANEL_FEATURE_ANALYTICS_ENABLED', false),
     clickhouse: {
@@ -271,5 +288,17 @@ export function loadPanelConfig(): PanelConfig {
       requestTimeoutMs: envInt('PANEL_CLICKHOUSE_REQUEST_TIMEOUT_MS', 5000),
     },
     auth: buildAuthConfig(),
+    processingHistory: buildProcessingHistoryConfig(agentTemplateDir),
+  };
+}
+
+function buildProcessingHistoryConfig(agentTemplateDir: string): PanelProcessingHistoryConfig {
+  // Default next to the agent templates: in the Hub image that directory is on
+  // the knowledge data volume, so ratings stay after a restart.
+  return {
+    proxyAdminUrl: env('PANEL_PROXY_ADMIN_URL', '').replace(/\/+$/, ''),
+    proxyAdminApiKey: env('PANEL_PROXY_ADMIN_API_KEY', ''),
+    langfuseProjectUrl: env('PANEL_LANGFUSE_PROJECT_URL', '').replace(/\/+$/, ''),
+    feedbackStorePath: env('PANEL_FEEDBACK_STORE_PATH', join(dirname(agentTemplateDir), 'processing-feedback.json')),
   };
 }

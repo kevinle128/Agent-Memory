@@ -20,6 +20,7 @@ import { IngestProgressStore } from './state/ingest-progress-store.js';
 import { createPanelApiCallTelemetry, type PanelApiCallTelemetry } from './infra/api-call-telemetry.js';
 import { PanelAuthService } from './auth/service.js';
 import { PanelUserIdResolver } from './infra/user-id-resolver.js';
+import { FileFeedbackStore } from './state/processing-feedback-store.js';
 
 export interface PanelDeps {
   config: PanelConfig;
@@ -44,6 +45,8 @@ export interface PanelDeps {
   auth: PanelAuthService;
   /** user_key → user_id 缓存解析器（telemetry 埋点用；auth/verify 后台刷新）。 */
   userIdResolver: PanelUserIdResolver;
+  /** 👍/👎 ratings of the Processing History page. */
+  feedbackStore: FileFeedbackStore;
 }
 
 export function buildPanelDeps(config: PanelConfig): PanelDeps {
@@ -102,6 +105,7 @@ export function buildPanelDeps(config: PanelConfig): PanelDeps {
     apiCallTelemetry,
     auth,
     userIdResolver,
+    feedbackStore: new FileFeedbackStore(config.processingHistory.feedbackStorePath),
   };
 }
 
