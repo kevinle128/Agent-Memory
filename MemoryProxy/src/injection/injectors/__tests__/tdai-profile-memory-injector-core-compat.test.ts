@@ -75,7 +75,7 @@ describe("scoped injection against Core versions", () => {
     const out = textOf(await new TdaiProfileMemoryInjector(config).execute(context(HASH, "vtc/3q-chess/3q-game-api")));
 
     expect(out).toContain('<project_memory project="vtc/3q-chess/3q-game-api">');
-    expect(out).toContain("当前项目 vtc/3q-chess/3q-game-api，");
+    expect(out).toContain("the current project vtc/3q-chess/3q-game-api.");
   });
 
   it("labels the project block with the hash prefix when the name is missing or unsafe", async () => {

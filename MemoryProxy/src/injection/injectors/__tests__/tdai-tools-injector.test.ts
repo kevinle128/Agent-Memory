@@ -25,11 +25,11 @@ describe("renderTdaiMemoryToolsBlock coverage text", () => {
     const text = renderTdaiMemoryToolsBlock(BASE, "s1", "default", "scoped", true);
     expect(text).toContain("<project_memory>");
     // The text must hold when the project has no memory and no block is rendered.
-    expect(text).toContain("若该项目有记忆");
-    expect(text).toContain("没有该块表示项目暂无可注入的记忆");
-    expect(text).not.toContain("已直接注入");
+    expect(text).toContain("if that project has memory");
+    expect(text).toContain("if the block is absent, the project has no memory to inject yet");
+    expect(text).not.toContain("already injected");
     expect(text).toContain('"scope": "?project|global"');
-    expect(text).toContain("默认先在当前项目里找该 path");
+    expect(text).toContain("it looks for the path in the current project first");
     expect(renderTdaiMemoryToolsBlock(BASE, "s1", "default", "deny", true)).toBe(
       renderTdaiMemoryToolsBlock(BASE, "s1", "default", "deny"),
     );
@@ -37,7 +37,7 @@ describe("renderTdaiMemoryToolsBlock coverage text", () => {
 
   it("keeps the earlier text in legacy mode", () => {
     expect(renderTdaiMemoryToolsBlock(BASE, "s1", "default", "legacy")).toContain(
-      "L3（persona 长期画像）与 L2 场景索引（`<l2_scene_index>`）已直接注入 system，无需查询；",
+      "The L3 (persona, long-term profile) and the L2 scene index (`<l2_scene_index>`) are already injected into the system prompt, so no query is needed;",
     );
   });
 });

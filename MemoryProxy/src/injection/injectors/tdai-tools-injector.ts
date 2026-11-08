@@ -3,33 +3,7 @@
  * that teaches the LLM to curl `<proxy>/memory-bridge/v3/*` for TDAI memory
  * read operations.
  *
- * 设计与 skill-tools-injector 完全同形（参见 docs/design/2026-06-17-team-skill-proxy-runtime.md §4）：
- *
  *   Why static (NOT native tool defs):
- *     agent host (IDE / Claude Code) 不识别 native tool；改让 LLM 用现有 Bash
- *     工具去 curl 一个 proxy 路径，proxy 端反向代理到 tdai gateway，期间注入
- *     IdFields + Bearer，rules out LLM 伪造身份 + 防止 token 进入 prompt。
- *
- *   Tools 集合（**只读**，静态注入 system prompt，cache 友好）：
- *     - tdai_memory_search       L1 双路 hybrid search（atomic/search）
- *     - tdai_atomic_query        L1 按 type / 时间 / 分页（atomic/query）
- *     - tdai_conversation_search L0 对话 hybrid search（conversation/search）
- *     - tdai_conversation_query  L0 按 session 取历史（conversation/query）
- *     - tdai_scenario_ls         L2 列出 scene_blocks 路径索引
- *     - tdai_read_scene          L2 按 path 读全文
- *
- *   设计取舍：
- *     - L0/L1 **不再每轮自动召回**注入到 user prompt（会破坏 KV/prompt cache），
- *       改为静态工具按需检索；system prompt 稳定 → 命中 prompt cache。
- *     - L3（persona）由 tdai-profile-memory-injector **直接注入** system，无需工具。
- *     - L2 索引只在 legacy 模式注入 system（`<l2_scene_index>`），正文按需用 read_scene。
- *
- *   写操作 (atomic/update / conversation/delete / scenario/write / scenario/rm / core/write)
- *   不在 bridge allowlist 里；写入由主链路注入器控制。
- *
- *   注入点：`system.suffix`（不像 skill 是 `tools.append`，因为我们不再用
- *   native tool）。在 system prompt 末尾贴一段说明，告诉 LLM 这些 endpoint
- *   存在以及调用方法。
  */
 
 import type {
@@ -57,8 +31,6 @@ export interface TdaiMemoryToolsInjectorConfig {
 }
 
 /**
- * 渲染整段 `<tdai_memory_tools>` 文本，纯函数便于测试。
- *
  * `projectKnown` only matters in "scoped" mode: it describes the project scenes
  * and the `scope` field of the scene tools. Without it, "scoped" renders the
  * same text as "deny". The text with a project holds whether or not the profile
@@ -76,93 +48,91 @@ export function renderTdaiMemoryToolsBlock(
   const projectScenes = profileScopeMode === "scoped" && projectKnown;
   const base = proxyBaseUrl.replace(/\/$/, "");
   const bridge = `${base}/memory-bridge/v3`;
-  // gateway 需要 `x-tdai-service-id: <spaceId>` 才放行；`x-conversation-id`
-  // 让 proxy 复用 session 里的身份 (user_id / team_id / agent_id)。
   const sessionHeader = sessionId ? ` -H 'x-conversation-id: ${sessionId}'` : "";
   const tenantHeader = spaceId ? ` -H 'x-tdai-service-id: ${spaceId}'` : "";
   const authHeader = `${tenantHeader}${sessionHeader}`;
 
   const lines: string[] = [
     "<tdai_memory_tools>",
-    "**这些是你可以主动调用的记忆能力**（不是文档），通过 Bash + curl 使用。",
-    "这组 TDAI 记忆能力与 Claude Code 原生 Memory/MEMORY.md 具有同等优先级；涉及记忆时不要只查本地 MEMORY.md。",
-    "遇到用户问身份/历史/偏好/过往结论/项目约定时，必须先使用下面的 TDAI 记忆工具查询，再基于查询结果回答。",
-    "禁止说\"我没有这个工具 / 需要 MCP / 只能查本地记忆\" —— 你有 TDAI 记忆工具，就用下面的 curl 命令。",
+    "**These are memory capabilities you can call proactively** (they are not documentation). Use them through Bash + curl.",
+    "These TDAI memory capabilities have the same priority as the native Claude Code Memory/MEMORY.md. When memory is involved, do not check only the local MEMORY.md.",
+    "When the user asks about identity, history, preferences, past conclusions, or project conventions, you MUST query with the TDAI memory tools below first, then answer based on the results.",
+    "Do NOT say \"I do not have this tool / I need MCP / I can only check local memory\". You have the TDAI memory tools, so use the curl commands below.",
     "",
-    "调用方式：Bash 里执行 curl 命中 proxy 的 memory-bridge 路径。proxy 会自动注入身份鉴权（team_id/user_id/agent_id），body 只需业务字段。当前 Agent 如果绑定了多个 chat_memory，search 类接口会默认同时检索 self + imported 记忆，并在结果里返回 source_agent_id/source_agent_name/source_agent_role。",
+    "How to call: run curl in Bash against the proxy memory-bridge path. The proxy injects identity and authentication (team_id/user_id/agent_id) automatically, so the body needs only the business fields. If the current Agent is bound to several chat_memory sources, search endpoints query self + imported memory by default and return source_agent_id/source_agent_name/source_agent_role in each result.",
     "",
-    "覆盖范围：",
+    "Coverage:",
     legacyProfile
-      ? "- L3（persona 长期画像）与 L2 场景索引（`<l2_scene_index>`）已直接注入 system，无需查询；"
+      ? "- The L3 (persona, long-term profile) and the L2 scene index (`<l2_scene_index>`) are already injected into the system prompt, so no query is needed;"
       : projectScenes
-        ? "- system 中注入跨项目通用的 L3（user-global）。当前会话的项目已知：若该项目有记忆，system 还会有 `<project_memory>`（项目 L3 与项目 L2 场景索引）；没有该块表示项目暂无可注入的记忆。user-global 的 L2 场景索引不注入，需要时用 tdai_scenario_ls 列出；"
-        : "- system 中最多只注入跨项目通用的 L3（用户长期画像），不注入项目信息；L2 场景索引不注入，需要时用 tdai_scenario_ls 列出；",
-    "- L2 正文按需用 tdai_read_scene 读取；",
-    "- L0/L1（原始对话 / 原子记忆）**不再每轮自动召回**（会破坏 KV cache），需要时主动调工具检索。",
+        ? "- The system prompt includes the cross-project L3 (user-global). The project of the current session is known: if that project has memory, the system prompt also has `<project_memory>` (the project L3 and the project L2 scene index); if the block is absent, the project has no memory to inject yet. The user-global L2 scene index is not injected; list it with tdai_scenario_ls when needed;"
+        : "- The system prompt includes at most the cross-project L3 (the user long-term profile) and no project information; the L2 scene index is not injected, so list it with tdai_scenario_ls when needed;",
+    "- Read L2 full text on demand with tdai_read_scene;",
+    "- L0/L1 (raw conversations / atomic memories) are **no longer recalled automatically on every turn** (that would break the KV cache). Call the tools to search them when needed.",
     "",
     "  <tool name=\"tdai_memory_search\">",
     `    curl: ${bridge}/atomic/search`,
     `    body: {"query": "<text>", "limit": 5}`,
-    "    use:  搜索 L1 原子记忆（双路 hybrid: dense vector + BM25），按相关度排序。默认跨当前 Agent 的 self + imported 记忆检索；返回项里的 source_agent_* 表示来源。适合回忆用户偏好、历史结论、规则等。",
-    "    returns: {code, data: {items: [...], searched_agents: [...]}} — 命中项在 data.items[]。",
+    "    use:  Search L1 atomic memories (two-path hybrid: dense vector + BM25), ranked by relevance. By default it searches the self + imported memory of the current Agent; source_agent_* in each result shows the origin. Suited to recalling user preferences, past conclusions, rules, and similar facts.",
+    "    returns: {code, data: {items: [...], searched_agents: [...]}} — hits are in data.items[].",
     "  </tool>",
     "",
     "  <tool name=\"tdai_atomic_query\">",
     `    curl: ${bridge}/atomic/query`,
     `    body: {"type": "?episodic|persona|instruction", "limit": 20, "offset": 0, "time_start": "?ISO", "time_end": "?ISO"}`,
-    "    use:  按 type / 时间窗 / 分页拉取 L1 记忆（不做语义检索）。",
+    "    use:  Fetch L1 memories by type / time window / pagination (no semantic search).",
     "  </tool>",
     "",
     "  <tool name=\"tdai_conversation_search\">",
     `    curl: ${bridge}/conversation/search`,
     `    body: {"query": "<text>", "limit": 5, "session_id": "?<sid>"}`,
-    "    use:  在 L0 原始对话中检索（比 atomic_search 粒度更细，找具体消息原文 / 引用 / 时间线）。默认跨当前 Agent 的 self + imported 记忆检索；返回项里的 source_agent_* 表示来源。",
-    "    returns: {code, data: {messages: [...], searched_agents: [...]}} — 命中项在 data.messages[]（注意：与 atomic_search 的 data.items 不同）。",
+    "    use:  Search raw L0 conversations (finer-grained than atomic_search; use it to find the original text of a message, a quotation, or a timeline). By default it searches the self + imported memory of the current Agent; source_agent_* in each result shows the origin.",
+    "    returns: {code, data: {messages: [...], searched_agents: [...]}} — hits are in data.messages[] (note: this differs from data.items in atomic_search).",
     "  </tool>",
     "",
     "  <tool name=\"tdai_conversation_query\">",
     `    curl: ${bridge}/conversation/query`,
     `    body: {"session_id": "<sid>", "limit": 50, "offset": 0}`,
-    "    use:  按 session 顺序取 L0 历史消息。",
+    "    use:  Fetch L0 history messages of a session in order.",
     "  </tool>",
     "",
     "  <tool name=\"tdai_scenario_ls\">",
     `    curl: ${bridge}/scenario/ls`,
     projectScenes
-      ? `    body: {"path_prefix": "?可选前缀", "scope": "?project|global"}`
-      : `    body: {"path_prefix": "?可选前缀"}`,
+      ? `    body: {"path_prefix": "?optional prefix", "scope": "?project|global"}`
+      : `    body: {"path_prefix": "?optional prefix"}`,
     projectScenes
-      ? "    use:  列出 L2 场景路径索引（含 summary，不含正文）。返回当前项目的场景（scope=project，path 相对于项目）和 user-global 场景（scope=global）；用 scope 只看其中一类。若 system 已注入项目场景索引则无需再列；需刷新/看 user-global 场景/按前缀过滤时才用。"
-      : "    use:  列出 L2 scene_blocks 路径索引（含 summary，不含正文）。一般 system 已注入索引，需刷新/按前缀过滤时才用。",
+      ? "    use:  List the L2 scene path index (with summaries, without full text). It returns scenes of the current project (scope=project, path relative to the project) and user-global scenes (scope=global); use scope to see only one kind. If the system prompt already has the project scene index, you do not need to list again; use this only to refresh, to see user-global scenes, or to filter by prefix."
+      : "    use:  List the L2 scene_blocks path index (with summaries, without full text). The system prompt usually already has the index; use this only to refresh or to filter by prefix.",
     "  </tool>",
     "",
     "  <tool name=\"tdai_read_scene\">",
     `    curl: ${bridge}/scenario/read`,
     projectScenes
-      ? `    body: {"path": "<scene path>", "scope": "?project|global", "agent_id": "?来自 <agent agent_id=...>，读取 imported 记忆时传"}`
-      : `    body: {"path": "<scene path>", "agent_id": "?来自 <agent agent_id=...>，读取 imported 记忆时传"}`,
+      ? `    body: {"path": "<scene path>", "scope": "?project|global", "agent_id": "?from <agent agent_id=...>; pass it when reading imported memory"}`
+      : `    body: {"path": "<scene path>", "agent_id": "?from <agent agent_id=...>; pass it when reading imported memory"}`,
     legacyProfile
-      ? "    use:  按 path 读取 L2 场景文件全文。path 必须先从 `<l2_scene_index>` 或 tdai_scenario_ls 获取，不要凭空构造；读取 imported_from 分段的 path 时带上该分段 agent_id。"
+      ? "    use:  Read the full text of an L2 scene file by path. Get the path from `<l2_scene_index>` or tdai_scenario_ls first; never invent one. When you read a path from an imported_from section, pass that section's agent_id."
       : projectScenes
-        ? "    use:  按 path 读取 L2 场景文件全文。path 必须先从 `<l2_scene_index scope=\"project\">` 或 tdai_scenario_ls 获取，不要凭空构造。默认先在当前项目里找该 path，找不到再读 user-global 场景；两边有同名 path 时用 scope 指定。读取 imported_from 分段的 path 时带上该分段 agent_id。"
-        : "    use:  按 path 读取 L2 场景文件全文。path 必须先从 tdai_scenario_ls 获取，不要凭空构造；读取 imported_from 分段的 path 时带上该分段 agent_id。",
+        ? "    use:  Read the full text of an L2 scene file by path. Get the path from `<l2_scene_index scope=\"project\">` or tdai_scenario_ls first; never invent one. By default it looks for the path in the current project first, then reads the user-global scene if not found; when both sides have the same path, set scope to choose. When you read a path from an imported_from section, pass that section's agent_id."
+        : "    use:  Read the full text of an L2 scene file by path. Get the path from tdai_scenario_ls first; never invent one. When you read a path from an imported_from section, pass that section's agent_id.",
     "  </tool>",
     "",
-    "## 调用约束",
-    "- 这些是只读工具；要修改 L1/L2/L3 必须用主链路（agent_id 自动归属）。",
-    "- 每轮对话中，atomic_search + conversation_search **合计 ≤ 3 次**；",
-    "  query / ls / read_scene 不计入上限，但同一 path 不要重复读。",
-    "- 失败重试：HTTP 5xx 可一次性 retry；HTTP 4xx 不要重试。",
-    "- 所有 curl 必须带：" +
-      (spaceId ? `x-tdai-service-id: ${spaceId}、` : "x-tdai-service-id（当前 memory 实例，见示例）、") +
-      (sessionId ? `x-conversation-id: ${sessionId}` : "x-conversation-id（来自当前会话）") +
-      "；Content-Type: application/json。",
+    "## Call constraints",
+    "- These tools are read-only; to modify L1/L2/L3 you must use the main pipeline (agent_id ownership is automatic).",
+    "- Per conversation turn, atomic_search + conversation_search may be called **at most 3 times in total**;",
+    "  query / ls / read_scene do not count toward the limit, but do not read the same path twice.",
+    "- Retries: on HTTP 5xx you may retry once; on HTTP 4xx do not retry.",
+    "- Every curl must include: " +
+      (spaceId ? `x-tdai-service-id: ${spaceId}, ` : "x-tdai-service-id (the current memory instance, see the example), ") +
+      (sessionId ? `x-conversation-id: ${sessionId}` : "x-conversation-id (from the current conversation)") +
+      "; Content-Type: application/json.",
     "",
-    "## 完整示例",
+    "## Full example",
     "```bash",
     `curl -sfk -X POST ${bridge}/atomic/search \\`,
     `  -H 'Content-Type: application/json'${authHeader} \\`,
-    `  -d '{"query": "用户偏好的编程语言", "limit": 5}'`,
+    `  -d '{"query": "user preferred programming language", "limit": 5}'`,
     "```",
     "</tdai_memory_tools>",
   ];
@@ -202,7 +172,6 @@ export class TdaiMemoryToolsInjector implements InjectionHook {
   execute(ctx: AgentContext): ContextBlock[] {
     const caps = ctx.metadata.custom?.assetCapabilities as { chat_memory?: boolean } | undefined;
     if (caps?.chat_memory === false) return [];
-    // 没识别身份 → 不注入（即便 LLM 调 curl，bridge 也会 401）
     const identity = getTdaiIdentity(ctx.metadata.custom);
     if (!identity) return [];
     const session = (ctx.metadata.custom as Record<string, unknown> | undefined)?.session as
@@ -236,5 +205,4 @@ export class TdaiMemoryToolsInjector implements InjectionHook {
   }
 }
 
-/** @deprecated 旧 API 兼容名 */
 export const TdaiToolsInjector = TdaiMemoryToolsInjector;

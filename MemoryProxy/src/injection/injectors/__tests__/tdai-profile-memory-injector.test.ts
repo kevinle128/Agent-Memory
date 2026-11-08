@@ -142,7 +142,7 @@ describe("TdaiProfileMemoryInjector in deny mode", () => {
 
   it("uses a tools guide that does not claim an injected L2 index", () => {
     expect(MEMORY_TOOLS_GUIDE_USER_GLOBAL).not.toEqual(MEMORY_TOOLS_GUIDE);
-    expect(MEMORY_TOOLS_GUIDE_USER_GLOBAL).not.toContain("L2 场景索引已直接注入");
+    expect(MEMORY_TOOLS_GUIDE_USER_GLOBAL).not.toContain("L2 scene index are already injected");
   });
 });
 

@@ -8,21 +8,6 @@ import type { CoreSkillConfig } from "../../types.js";
 import { getMetadataClient } from "../../meta/client.js";
 import { resolveFixedAssetCtxs, type FixedAssetCtx } from "./tdai-fixed-asset.js";
 
-/**
- * L2/L3 注入（按 openclaw / hermes 官方做法重构）：
- *   - L3 (persona) → 注入完整内容（稳定且通常较短，作为长期画像）
- *   - L2 (scenarios) → **只注入 Scene Navigation 索引（路径列表 + summary）**，
- *     不预读全文。LLM 需要细节时主动调 `tdai_read_scene` 工具按 path 拉取。
- *   - 同时附 memory-tools-guide 文案，告诉 LLM 怎么用工具 + 调用上限。
- *
- * 这样可以：
- *   1. 大幅降低首轮 token 消耗（L2 全文经常上千 chars × N 个）
- *   2. 让 LLM 按需取文，而不是被无关的场景污染上下文
- *
- * 跨 agent："自有 + 借入"按 agent 分段；每段下面 L3 + Scene 索引并列。
- *
- * 控制面不可达时降级：仅注入当前 agent 的 L3 + Scene 索引。
- */
 export class TdaiProfileMemoryInjector implements InjectionHook {
   id = "tdai-profile-memory-injector";
   point = "system.suffix" as const;
@@ -85,9 +70,6 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
 
     const session = (ctx.metadata.custom as any)?.session as { user_key?: string; space_id?: string } | undefined;
     const userKey = session?.user_key;
-    // spaceId 来自 session 注册时保存的 URL path 中的 `/proxy/<spaceId>/...`；
-    // 用作内核的 `x-tdai-service-id` 头做租户路由。空字符串会被内核拒绝（invalid_user_key）
-    // —— caller 已在 session-init 阶段做 bypass 处理。
     const spaceId = session?.space_id ?? "";
     const mc = this.coreSkillCfg && userKey
       ? getMetadataClient(this.coreSkillCfg, spaceId, userKey)
@@ -119,10 +101,8 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
       return renderScopedBlocks(this.id, l3Groups, projectHash, projectGroups, getProjectName(ctx.metadata.custom));
     }
 
-    // 对每个 agent 独立拉 L3 + L2 索引（不读 L2 全文）
     const groups = await Promise.all(ctxs.map((c) => loadAgentProfile(client, c)));
 
-    // 全部为空 → 仍注入 tools-guide（LLM 可主动 search L1 / 读 L2）
     const hasAnything = groups.some((g) => g.l3 || g.l2Entries.length > 0);
     if (!hasAnything) {
       return [{
@@ -134,7 +114,7 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
 
     const lines: string[] = [
       "<tdai_profile_memory>",
-      "以下是 TDAI 为当前 agent 维护的长期工作记忆（自有 + 借入分段；L2 仅给索引，按需用工具读全文）：",
+      "The following is the long-term working memory that TDAI maintains for the current agent (own + imported sections; for L2 only the index is given, so read the full text with tools when needed):",
     ];
 
     let l2TotalCount = 0;
@@ -153,7 +133,6 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
         lines.push("<l2_scene_index>");
         for (const e of g.l2Entries) {
           l2TotalCount++;
-          // 索引行：路径 + summary（如果有）；正文用 tool 拉
           if (e.summary) {
             lines.push(`- \`${e.path}\` — ${truncate(e.summary, 200)}`);
           } else {
@@ -166,7 +145,6 @@ export class TdaiProfileMemoryInjector implements InjectionHook {
     }
 
     lines.push("</tdai_profile_memory>");
-    // 紧跟一段 memory-tools-guide，告诉 LLM 三个工具的用法 + 调用上限
     lines.push("");
     lines.push(MEMORY_TOOLS_GUIDE);
 
@@ -203,60 +181,59 @@ function createPrewarmAgentContext(input: PrewarmInput): AgentContext {
   };
 }
 
-/** 记忆使用指南：L0/L1 按需用工具检索（不再自动召回），L3 直注、L2 索引直注。 */
 export const MEMORY_TOOLS_GUIDE = `<memory-tools-guide>
-## ⚠️ 重要：这不是文档，这是你的可用能力
+## ⚠️ Important: this is not documentation, these are capabilities you can use
 
-以下 \`<tdai_memory_tools>\` 中列出的 tdai_memory_search / tdai_conversation_search
-等，是**你可以主动调用的能力**（不是仅供参考的文档）。它们通过 **Bash + curl**
-使用（见上方 \`<tdai_memory_tools>\` 段里的完整调用说明与 URL）。
+The tdai_memory_search / tdai_conversation_search tools and the others listed in
+\`<tdai_memory_tools>\` are **capabilities you can call proactively** (they are not
+reference-only documentation). You use them through **Bash + curl** (see the full
+call instructions and URLs in the \`<tdai_memory_tools>\` section above).
 
-**禁止**回答类似"我没有这个工具 / 需要 MCP / 需要斜杠命令"。
-**正确做法**：判定需要查记忆时，直接在 Bash 里执行 curl，proxy 会自动注入身份与鉴权。
+**Never** answer with statements such as "I do not have this tool / I need MCP / I need a slash command".
+**Correct approach**: when you decide you need to check memory, run curl directly in Bash. The proxy injects identity and authentication automatically.
 
-## 记忆使用规则（遇到以下场景必须先查再答）
+## Memory usage rules (in the following situations, query first, then answer)
 
-L3（persona 长期画像）与 L2 场景索引已直接注入 system。L0/L1 需要用工具主动检索。
-已注入的 L2 内容与当前任务相关但信息不足时，按场景索引中的 path 用 \`tdai_read_scene\` 读取对应正文；内容已足够时无需再读。
+The L3 (persona, long-term profile) and the L2 scene index are already injected into the system prompt. L0/L1 must be searched actively with tools.
+When the injected L2 content is related to the current task but not detailed enough, read the full text with \`tdai_read_scene\` using the path from the scene index; if the content is already enough, do not read it again.
 
-### 必须先查记忆再回答的场景（命中任一条即触发工具调用）
+### Situations where you must query memory before answering (any match triggers a tool call)
 
-1. **用户提及历史/过去/之前**：如 "我之前说过 / 我告诉过你 / 上次 / 你还记不记得 / 我们聊过 / 之前那个"
-   → 用 \`tdai_conversation_search\`（L0 原文找具体消息）
-2. **用户涉及自己身份/偏好/习惯**：如 "我叫什么 / 我的名字 / 我喜欢 / 我的团队 / 我常用 / 我不喜欢 / 我不允许"
-   → 用 \`tdai_memory_search\`（L1 原子记忆查偏好/规则）
-3. **用户要求你回忆/找**：如 "回忆一下 / 想起 / 找出 / 有没有关于 X 的记录 / 查我们之前"
-   → 直接触发工具，不要凭空回答
-4. **答案强依赖历史事实**：如 "那个 bug 我们怎么修的 / 上次方案是啥 / 我们的约定是什么"
-   → 关键词化后 \`tdai_memory_search\`
+1. **The user refers to history / the past / earlier conversation**: for example "I said before / I told you / last time / do you remember / we talked about / that earlier thing" (in any language)
+   → use \`tdai_conversation_search\` (find the specific message in the raw L0 text)
+2. **The user asks about their own identity / preferences / habits**: for example "what is my name / my name / I like / my team / I usually use / I do not like / I do not allow" (in any language)
+   → use \`tdai_memory_search\` (look up preferences and rules in L1 atomic memories)
+3. **The user asks you to recall or find something**: for example "recall / remember / find / is there any record about X / check what we had before" (in any language)
+   → trigger the tool directly; do not answer from thin air
+4. **The answer depends strongly on historical facts**: for example "how did we fix that bug / what was the plan last time / what is our convention"
+   → turn the question into keywords and call \`tdai_memory_search\`
 
-**典型流程**（用户："我叫什么"）：
+**Typical flow** (user asks: "What is my name?"):
 \`\`\`bash
-# Step 1: 先查
+# Step 1: query first
 curl -sfk -X POST <bridge>/atomic/search \\
   -H 'Content-Type: application/json' -H 'x-conversation-id: <sid>' \\
-  -d '{"query": "用户姓名 name 身份", "limit": 5}'
-# Step 2: 从 items[].content 里提取答案后回复
-# 若为空: 明确告诉用户 "我在记忆里没找到，你叫什么？" —— 不要装作知道
+  -d '{"query": "user name identity", "limit": 5}'
+# Step 2: extract the answer from items[].content, then reply
+# If empty: tell the user plainly "I did not find it in memory. What is your name?" -- do not pretend to know
 \`\`\`
 
-### 不需要查的场景
+### Situations where you do not need to query
 
-- 不依赖历史信息或过往经验、仅凭当前输入即可完成的请求；不能仅凭任务类型判断是否需要检索
-- 当前会话上下文（同轮消息）里已能回答
-- 已经在 \`<l3_core_memory>\` 段落里直接看到答案
+- Requests that do not depend on history or past experience and can be completed from the current input alone; do not decide whether to search from the task type alone
+- The current conversation context (messages in the same turn) can already answer the question
+- The answer is already visible in the \`<l3_core_memory>\` section
 
-### ⚠️ 调用约束
+### ⚠️ Call constraints
 
-- 每轮 \`tdai_memory_search\` + \`tdai_conversation_search\` **合计 ≤ 3 次**（\`tdai_read_scene\` / \`tdai_scenario_ls\` / \`tdai_atomic_query\` 不计入）
-- 检索无果时**明确说明**"我在记忆里没找到 X"，不要幻想
-- 同一 L2 path 不要重复读
+- Per turn, \`tdai_memory_search\` + \`tdai_conversation_search\` may be called **at most 3 times in total** (\`tdai_read_scene\` / \`tdai_scenario_ls\` / \`tdai_atomic_query\` do not count)
+- When a search finds nothing, **say so plainly**: "I did not find X in memory". Do not make things up
+- Do not read the same L2 path twice
 </memory-tools-guide>`;
 
 interface AgentProfileBundle {
   ctx: FixedAssetCtx;
   l3: { content: string } | null;
-  /** L2 索引：仅 path + 可选 summary，**不**读全文。 */
   l2Entries: Array<{ path: string; summary?: string }>;
 }
 
@@ -270,8 +247,6 @@ async function loadAgentProfile(
     client.readL3ForCtx(tdaiCtx, opts.projectHash),
     opts.withL2 ? client.listL2ForCtx(tdaiCtx, opts.projectHash) : Promise.resolve([]),
   ]);
-  // L3(persona) 可能在尾部内嵌一份「Scene Navigation」场景索引（plugin 侧 read 会带导航段）。
-  // 我们已经单独注入 <l2_scene_index>，必须剥掉 persona 尾部这份，避免 L2 索引重复注入。
   const l3Stripped = l3 ? stripSceneNavigation(l3.content) : "";
   return {
     ctx: c,
@@ -280,14 +255,9 @@ async function loadAgentProfile(
   };
 }
 
-/**
- * 剥离 persona 尾部的「Scene Navigation (Scene Index)」段。
- * 与 plugin 端 scene-navigation.ts 的 NAV_HEADER 对齐（带或不带前置 `---` 都能命中）。
- */
 export function stripSceneNavigation(personaContent: string): string {
   const idx = personaContent.indexOf("## 🗺️ Scene Navigation");
   if (idx === -1) return personaContent;
-  // 连同紧邻的 `---` 分隔符与前后空白一起去掉
   let cut = personaContent.slice(0, idx);
   cut = cut.replace(/\s*-{3,}\s*$/, "");
   return cut.trimEnd();
@@ -316,21 +286,21 @@ function stripUserGlobalMarker(content: string): string {
 }
 
 const INJECTED_PROFILE_NOTE =
-  "L3（persona 长期画像）与 L2 场景索引已直接注入 system。L0/L1 需要用工具主动检索。\n" +
-  "已注入的 L2 内容与当前任务相关但信息不足时，按场景索引中的 path 用 `tdai_read_scene` 读取对应正文；内容已足够时无需再读。";
+  "The L3 (persona, long-term profile) and the L2 scene index are already injected into the system prompt. L0/L1 must be searched actively with tools.\n" +
+  "When the injected L2 content is related to the current task but not detailed enough, read the full text with `tdai_read_scene` using the path from the scene index; if the content is already enough, do not read it again.";
 
 const USER_GLOBAL_PROFILE_NOTE =
-  "system 中最多只注入跨项目通用的 L3（用户长期画像），不注入任何项目信息，也不注入 L2 场景索引。" +
-  "L0/L1/L2 需要用工具主动检索。";
+  "The system prompt includes at most the cross-project L3 (the user long-term profile). It includes no project information and no L2 scene index. " +
+  "L0/L1/L2 must be searched actively with tools.";
 
 /** Tools guide for deny mode: it does not claim that an L2 index was injected. */
 export const MEMORY_TOOLS_GUIDE_USER_GLOBAL = MEMORY_TOOLS_GUIDE.replace(INJECTED_PROFILE_NOTE, USER_GLOBAL_PROFILE_NOTE);
 
 const PROJECT_PROFILE_NOTE =
-  "system 中注入两类记忆：`<user_global_memory>` 是跨项目通用的 L3（用户长期画像），不含项目信息；" +
-  "`<project_memory>` 是当前项目的 L3 与 L2 场景索引，只适用于当前项目。" +
-  "user-global 的 L2 场景索引不注入，需要时用 tdai_scenario_ls 列出。" +
-  "已注入的项目场景按索引中的 path 用 `tdai_read_scene` 读取正文；内容已足够时无需再读。L0/L1 需要用工具主动检索。";
+  "The system prompt injects two kinds of memory: `<user_global_memory>` is the cross-project L3 (the user long-term profile) and has no project information; " +
+  "`<project_memory>` is the L3 and L2 scene index of the current project and applies only to the current project. " +
+  "The user-global L2 scene index is not injected; list it with tdai_scenario_ls when needed. " +
+  "Read an injected project scene with `tdai_read_scene` using the path from the index; if the content is already enough, do not read it again. L0/L1 must be searched actively with tools.";
 
 /** Tools guide for a session with injected project memory. */
 export const MEMORY_TOOLS_GUIDE_PROJECT = MEMORY_TOOLS_GUIDE.replace(INJECTED_PROFILE_NOTE, PROJECT_PROFILE_NOTE);
@@ -373,7 +343,7 @@ function renderUserGlobalBlocks(
   }
   const lines: string[] = [
     "<tdai_profile_memory>",
-    "以下是 TDAI 为当前 agent 维护的跨项目通用长期记忆（不含任何项目信息；项目记忆按需用工具检索）：",
+    "The following is the cross-project long-term memory that TDAI maintains for the current agent (it contains no project information; search project memory with tools when needed):",
   ];
   pushUserGlobalAgents(lines, allowed);
   lines.push("</tdai_profile_memory>", "", MEMORY_TOOLS_GUIDE_USER_GLOBAL);
@@ -425,9 +395,9 @@ function renderScopedBlocks(
   const label = projectName ?? projectHash.slice(0, 8);
   const lines: string[] = [
     "<tdai_profile_memory>",
-    "以下是 TDAI 为当前 agent 维护的长期记忆，分为两类：" +
-      "`<user_global_memory>` 是跨项目通用记忆（不含项目信息）；" +
-      `\`<project_memory>\` 只属于当前项目 ${label}，不要把它当作其他项目的事实：`,
+    "The following is the long-term memory that TDAI maintains for the current agent. It has two kinds: " +
+      "`<user_global_memory>` is the cross-project memory (it contains no project information); " +
+      `\`<project_memory>\` belongs only to the current project ${label}. Do not treat it as fact about any other project:`,
   ];
   if (allowed.length > 0) {
     lines.push("<user_global_memory>");
