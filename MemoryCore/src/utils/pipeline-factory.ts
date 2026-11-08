@@ -38,8 +38,9 @@ import {
 import {
   buildMemoryGenerationRefId,
   type MemoryGenerationLog,
+  type MemoryGenerationStatus,
 } from "../core/memory-generation-log/types.js";
-import { writeGenerationProvenanceBestEffort } from "../core/memory-generation-log/best-effort.js";
+import { generationLogErrorText, writeGenerationProvenanceBestEffort } from "../core/memory-generation-log/best-effort.js";
 import { LocalStorageBackend } from "../core/storage/local-backend.js";
 import { StoragePaths } from "../core/storage/types.js";
 import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
@@ -1047,6 +1048,51 @@ export function createPersister(
   };
 }
 
+/**
+ * Write the log of an L2 or L3 run that failed or wrote no output record.
+ * Best-effort: an error here is logged and never changes the run result.
+ */
+async function writeNoOutputGenerationLog(p: {
+  storage: StorageAdapter | undefined;
+  pluginDataDir: string;
+  instanceId: string | undefined;
+  logger: PipelineLogger;
+  layer: "l2" | "l3";
+  status: MemoryGenerationStatus;
+  /** Reuse the id of the run, so records written during the run point at this log. */
+  generationId?: string;
+  fields: Omit<
+    MemoryGenerationLog,
+    "schema_version" | "log_id" | "generation_id" | "instance_id" | "layer" | "status" | "output_refs" | "finished_at_ms" | "latency_ms"
+  >;
+}): Promise<void> {
+  try {
+    const finishedAt = Date.now();
+    const identity = buildGenerationLogIdentity(p.layer, finishedAt, undefined, p.status, p.generationId);
+    const log: MemoryGenerationLog = {
+      schema_version: 1,
+      log_id: identity.logId,
+      generation_id: identity.generationId,
+      instance_id: p.instanceId ?? "standalone",
+      layer: p.layer,
+      status: p.status,
+      ...p.fields,
+      output_refs: [],
+      finished_at_ms: finishedAt,
+      latency_ms: finishedAt - p.fields.started_at_ms,
+    };
+    const rootStorage = p.storage ?? new StorageAdapter(new LocalStorageBackend(p.pluginDataDir));
+    const logStore = new MemoryGenerationLogStore(rootStorage, p.instanceId ?? "standalone");
+    await writeGenerationProvenanceBestEffort({
+      layer: p.layer,
+      logger: p.logger,
+      writeLog: () => logStore.write(log, identity.key),
+    });
+  } catch (err) {
+    p.logger.warn(`${TAG} [${p.layer.toUpperCase()}] generation log not written; run result is not changed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // ============================
 // L2 Runner factory
 // ============================
@@ -1242,8 +1288,37 @@ export function createL2Runner(opts: {
         agentId: ctx.agentId,
         layer: "l2",
       }));
-      const extractResult = await extractor.extract(memories);
+      const writeL2NoOutputLog = (
+        status: MemoryGenerationStatus,
+        detail: { error?: { code: string; message: string }; emptyReason?: string },
+      ): Promise<void> => writeNoOutputGenerationLog({
+        storage, pluginDataDir, instanceId, logger, layer: "l2", status,
+        fields: {
+          team_id: ctx.teamId,
+          agent_id: ctx.agentId,
+          user_id: ctx.userId,
+          session_id: ctx.sessionId,
+          task_id: ctx.taskId,
+          prompt: buildPromptGenerationRef(resolvedL2Prompt, "l2"),
+          input_refs: groupRecords.map((record) => ({ layer: "l1" as const, record_id: record.id })),
+          model: cfg.persona.model,
+          prompt_mode: cfg.persona.promptMode,
+          started_at_ms: l2StartMs,
+          ...(detail.error ? { error_code: detail.error.code, error_message: detail.error.message } : {}),
+          ...(detail.emptyReason ? { empty_reason: detail.emptyReason } : {}),
+        },
+      });
+      let extractResult: Awaited<ReturnType<SceneExtractor["extract"]>>;
+      try {
+        extractResult = await extractor.extract(memories);
+      } catch (err) {
+        await writeL2NoOutputLog("failed", { error: { code: "exception", message: generationLogErrorText(err) } });
+        throw err;
+      }
       if (!extractResult.success) {
+        await writeL2NoOutputLog("failed", {
+          error: { code: "scene_extract_failed", message: generationLogErrorText(extractResult.error ?? "unknown error") },
+        });
         throw new Error(
           `${TAG} [L2] Scene extraction failed (scope=${groupScope}${projectHash ? `, project=${projectHash}` : ""}): ${extractResult.error ?? "unknown error"}`,
         );
@@ -1252,6 +1327,7 @@ export function createL2Runner(opts: {
       if (extractResult.emptyExtraction) {
         anyEmptyExtraction = true;
         logger.warn(`${TAG} [L2] Extraction produced no file changes (empty run), skipping checkpoint increment`);
+        await writeL2NoOutputLog("succeeded", { emptyReason: "no_scene_written" });
         continue;
       }
       const diagnosticsMode = cfg.persona.jev?.diagnostics?.mode ?? "off";
@@ -1369,6 +1445,7 @@ export function createL2Runner(opts: {
       };
       if (changedProfiles.length === 0) {
         logger.debug?.(`${TAG} [L2] No changed Scene profiles, skipping generation provenance`);
+        await writeL2NoOutputLog("succeeded", { emptyReason: "no_profile_change" });
         await advanceCounters();
         processedTotal += extractResult.memoriesProcessed;
         continue;
@@ -1536,7 +1613,44 @@ export function createL3Runner(opts: {
       backupKey?: string | null;
     }): Promise<L3Outcome> => {
       const { scopeIsolation, dataDir, store, profileOptions, profileBaseline, gateId, projectHash, personaBeforeHash, scopeStartedAt, jevAddedLockMs } = a;
-      const genResult = await a.generator.generateLocalPersona(a.generationReason);
+      // A run that failed or wrote no profile change still gets a log, so the
+      // log tells why the persona was not changed, kept or rejected.
+      const writeNoOutputLog = (
+        status: MemoryGenerationStatus,
+        detail: { error?: { code: string; message: string; kind?: string }; emptyReason?: string } = {},
+      ): Promise<void> => writeNoOutputGenerationLog({
+        storage, pluginDataDir, instanceId, logger, layer: "l3", status,
+        generationId: a.generator.generationId,
+        fields: {
+          team_id: scopeIsolation.teamId,
+          agent_id: scopeIsolation.agentId,
+          user_id: scopeIsolation.userId,
+          session_id: scopeIsolation.sessionId,
+          prompt: buildPromptGenerationRef(a.resolvedL3Prompt, "l3"),
+          input_refs: a.inputSceneIds.map((recordId) => ({ layer: "l2" as const, record_id: recordId })),
+          model: cfg.persona.model,
+          ...(projectHash ? { variant: "project" as const } : { prompt_mode: cfg.persona.promptMode }),
+          started_at_ms: a.l3StartMs,
+          ...(detail.error ? {
+            error_code: detail.error.code,
+            error_message: detail.error.message,
+            ...(detail.error.kind ? { error_kind: detail.error.kind } : {}),
+          } : {}),
+          ...(detail.emptyReason ? { empty_reason: detail.emptyReason } : {}),
+          // Read after the run: the generator sets it during the run.
+          ...(a.generator.scopeCheckSummary ? { scope_check: a.generator.scopeCheckSummary } : {}),
+        },
+      });
+      let genResult: Awaited<ReturnType<PersonaGenerator["generateLocalPersona"]>>;
+      try {
+        genResult = await a.generator.generateLocalPersona(a.generationReason);
+      } catch (err) {
+        // An aborted task is retried; it is not a failed run.
+        if (!context?.signal?.aborted) {
+          await writeNoOutputLog("failed", { error: { code: "exception", message: generationLogErrorText(err) } });
+        }
+        throw err;
+      }
       // An aborted task must not move the checkpoint or sync profiles: the
       // task is retried, and a moved checkpoint would hide the pending work.
       if (context?.signal?.aborted) throw abortError();
@@ -1555,41 +1669,7 @@ export function createL3Runner(opts: {
         backupKey: a.backupKey,
       });
       const l3PromptRef = buildPromptGenerationRef(a.resolvedL3Prompt, "l3");
-      // A run that wrote no profile change still gets a log when the scope
-      // check ran, so the log tells why the persona was kept or rejected.
-      const writeScopeOnlyLog = async (status: "succeeded" | "failed", error?: { code: string; message: string }): Promise<void> => {
-        if (!scopeCheck) return;
-        const finishedAt = Date.now();
-        const identity = buildGenerationLogIdentity("l3", finishedAt, undefined, status, generationId);
-        const log: MemoryGenerationLog = {
-          schema_version: 1,
-          log_id: identity.logId,
-          generation_id: identity.generationId,
-          instance_id: instanceId ?? "standalone",
-          layer: "l3",
-          status,
-          team_id: scopeIsolation.teamId,
-          agent_id: scopeIsolation.agentId,
-          user_id: scopeIsolation.userId,
-          session_id: scopeIsolation.sessionId,
-          prompt: l3PromptRef,
-          input_refs: a.inputSceneIds.map((recordId) => ({ layer: "l2" as const, record_id: recordId })),
-          output_refs: [],
-          model: cfg.persona.model,
-          prompt_mode: cfg.persona.promptMode,
-          started_at_ms: a.l3StartMs,
-          finished_at_ms: finishedAt,
-          latency_ms: finishedAt - a.l3StartMs,
-          ...(error ? { error_code: error.code, error_message: error.message } : {}),
-          scope_check: scopeCheck,
-        };
-        const rootStorage = storage ?? new StorageAdapter(new LocalStorageBackend(pluginDataDir));
-        await writeGenerationProvenanceBestEffort({
-          layer: "l3",
-          logger,
-          writeLog: () => new MemoryGenerationLogStore(rootStorage, instanceId ?? "standalone").write(log, identity.key),
-        });
-      };
+      const runDetail = a.generator.runDetail;
 
       if (genResult === "judge_failed") {
         // The judge gave no verdict and the previous persona is back in place.
@@ -1600,9 +1680,11 @@ export function createL3Runner(opts: {
           `${TAG} [L3] Scope judge gave no verdict (${a.label}, kind=${scopeCheck?.error_kind ?? "unknown"}, ` +
           `reason=${scopeCheck?.reason ?? "unknown"}); the previous persona was kept`,
         );
-        await writeScopeOnlyLog("failed", {
-          code: "SCOPE_JUDGE_FAILED",
-          message: `The scope judge gave no verdict (${scopeCheck?.reason ?? "unknown"}); the previous persona was kept.`,
+        await writeNoOutputLog("failed", {
+          error: {
+            code: "SCOPE_JUDGE_FAILED",
+            message: `The scope judge gave no verdict (${scopeCheck?.reason ?? "unknown"}); the previous persona was kept.`,
+          },
         });
         emitCheckpointDiagnostic({
           logger, cfg, instanceId, context, gateId, scopeIsolation, projectHash,
@@ -1617,6 +1699,13 @@ export function createL3Runner(opts: {
       }
 
       if (genResult === "failed") {
+        await writeNoOutputLog("failed", {
+          error: {
+            code: runDetail?.code ?? "generation_failed",
+            message: runDetail?.message ?? "Persona generation failed.",
+            kind: runDetail?.errorKind,
+          },
+        });
         emitCheckpointDiagnostic({
           logger, cfg, instanceId, context, gateId, scopeIsolation, projectHash,
           generationResult: "failed", checkpointBefore: cp.last_persona_time,
@@ -1630,6 +1719,7 @@ export function createL3Runner(opts: {
       }
       if (genResult === "unchanged") {
         logger.info(`${TAG} [L3] Persona generation skipped (no changes, ${a.label})`);
+        await writeNoOutputLog("succeeded", { emptyReason: runDetail?.code ?? "unchanged" });
         await checkpoint.markPersonaGenerated(personaMarker);
         const after = await checkpoint.read();
         emitCheckpointDiagnostic({
@@ -1654,7 +1744,7 @@ export function createL3Runner(opts: {
       }
       if (changedProfiles.length === 0) {
         logger.debug?.(`${TAG} [L3] No changed Persona profiles, skipping generation provenance`);
-        await writeScopeOnlyLog("succeeded");
+        await writeNoOutputLog("succeeded", { emptyReason: "no_profile_change" });
         await checkpoint.markPersonaGenerated(personaMarker);
         const checkpointAfterSync = await checkpoint.read();
         emitCheckpointDiagnostic({

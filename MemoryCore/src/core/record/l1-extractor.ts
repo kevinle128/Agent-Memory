@@ -38,11 +38,12 @@ import {
   buildPromptGenerationRef,
   MemoryGenerationLogStore,
 } from "../memory-generation-log/store.js";
-import { writeGenerationProvenanceBestEffort } from "../memory-generation-log/best-effort.js";
+import { generationLogErrorText, writeGenerationProvenanceBestEffort } from "../memory-generation-log/best-effort.js";
 import {
   buildMemoryGenerationRefId,
   type MemoryGenerationLog,
 } from "../memory-generation-log/types.js";
+import { classifyLlmError } from "../report/llm-error-classifier.js";
 
 const TAG = "[memory-tdai][l1-extractor]";
 
@@ -166,6 +167,69 @@ export async function extractL1Memories(params: {
   }
 
   const l1StartMs = Date.now();
+  const generationPrompt = buildPromptGenerationRef(options.memoryPrompt, "l1");
+
+  /**
+   * Write the generation log of this run. Best-effort: an error here is
+   * logged and never changes the extraction result.
+   */
+  const writeRunLog = async (run: {
+    status: MemoryGenerationLog["status"];
+    inputMessages: ConversationMessage[];
+    outputIds?: string[];
+    anchorMemoryId?: string;
+    /** Identity minted before the run wrote records; a failed run mints its own. */
+    identity?: ReturnType<typeof buildGenerationLogIdentity>;
+    finishedAtMs?: number;
+    error?: { code: string; message?: string; kind?: string };
+    emptyReason?: string;
+    writeRefs?: () => Promise<void>;
+  }): Promise<void> => {
+    try {
+      const finishedAtMs = run.finishedAtMs ?? Date.now();
+      const identity = run.identity ?? buildGenerationLogIdentity("l1", finishedAtMs, run.anchorMemoryId, run.status);
+      const log: MemoryGenerationLog = {
+        schema_version: 1,
+        log_id: identity.logId,
+        generation_id: identity.generationId,
+        instance_id: metricInstanceId ?? "standalone",
+        layer: "l1",
+        status: run.status,
+        team_id: teamId,
+        agent_id: agentId,
+        user_id: userId,
+        session_id: sessionId,
+        task_id: taskId,
+        prompt: generationPrompt,
+        anchor_memory_id: run.anchorMemoryId,
+        input_refs: run.inputMessages.map((message) => ({ layer: "l0", record_id: message.id })),
+        output_refs: (run.outputIds ?? []).map((id) => ({ layer: "l1", record_id: id })),
+        model: options.model,
+        prompt_mode: options.promptMode ?? "chat",
+        started_at_ms: l1StartMs,
+        finished_at_ms: finishedAtMs,
+        latency_ms: finishedAtMs - l1StartMs,
+        ...(run.error ? {
+          error_code: run.error.code,
+          ...(run.error.message ? { error_message: run.error.message } : {}),
+          ...(run.error.kind ? { error_kind: run.error.kind } : {}),
+        } : {}),
+        ...(run.emptyReason ? { empty_reason: run.emptyReason } : {}),
+      };
+      const logStore = new MemoryGenerationLogStore(
+        storage ?? new StorageAdapter(new LocalStorageBackend(baseDir)),
+        metricInstanceId ?? "standalone",
+      );
+      await writeGenerationProvenanceBestEffort({
+        layer: "l1",
+        logger,
+        writeLog: () => logStore.write(log, identity.key),
+        writeRefs: run.writeRefs,
+      });
+    } catch (err) {
+      logger?.warn?.(`${TAG} generation log not written; extraction result is not changed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   // Quality gate: filter messages through L1 extraction rules (length, symbols,
   // prompt injection, etc.) before sending to the LLM. L0 deliberately captures
@@ -180,6 +244,7 @@ export async function extractL1Memories(params: {
 
   if (qualifiedMessages.length === 0) {
     logger?.debug?.(`${TAG} All messages filtered out by L1 quality gate`);
+    await writeRunLog({ status: "succeeded", inputMessages: messages, emptyReason: "quality_filtered" });
     return { success: true, extractedCount: 0, storedCount: 0, records: [], sceneNames: [] };
   }
 
@@ -201,6 +266,7 @@ export async function extractL1Memories(params: {
   // never happen again.
   let scenes: SceneSegment[];
   let earlyEmptyReason: L1EmptyReason | undefined;
+  const llmStartMs = Date.now();
   try {
     const outcome = await callLlmExtraction({
       newMessages,
@@ -222,6 +288,12 @@ export async function extractL1Memories(params: {
     logger?.warn?.(
       `${TAG} l1-empty reason=llm_error sessionKey=${sessionKey} msg=${err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)}`,
     );
+    const failure = classifyLlmError(err, Date.now() - llmStartMs, L1_LLM_TIMEOUT_MS);
+    await writeRunLog({
+      status: "failed",
+      inputMessages: newMessages,
+      error: { code: "llm_error", message: generationLogErrorText(failure.message), kind: failure.kind },
+    });
     return {
       success: false,
       extractedCount: 0,
@@ -301,6 +373,14 @@ export async function extractL1Memories(params: {
     // bad JSON, wrong shape, or all memories dropped) is a failure, so the
     // caller keeps the L0 batch instead of moving the cursor past it.
     if (finalReason !== "empty_scenes") {
+      await writeRunLog({
+        status: "failed",
+        inputMessages: newMessages,
+        error: {
+          code: finalReason,
+          message: `The model reply gave no usable memory (scenes=${scenes.length}).`,
+        },
+      });
       return {
         success: false,
         extractedCount: 0,
@@ -311,6 +391,7 @@ export async function extractL1Memories(params: {
         errorReason: finalReason,
       };
     }
+    await writeRunLog({ status: "succeeded", inputMessages: newMessages, emptyReason: "empty_scenes" });
     return {
       success: true,
       extractedCount: 0,
@@ -343,7 +424,6 @@ export async function extractL1Memories(params: {
     generationFinishedAt,
     memoriesWithIds[0]?.record_id,
   );
-  const generationPrompt = buildPromptGenerationRef(options.memoryPrompt, "l1");
   const generation = buildGenerationProvenance(generationIdentity, generationPrompt);
 
   try {
@@ -419,12 +499,16 @@ export async function extractL1Memories(params: {
       storedRecords = await storeAllDirectly(memoriesWithIds, baseDir, sessionKey, sessionId, taskId, teamId, userId, agentId, logger, options.vectorStore, options.embeddingService, storage);
     }
   } catch (err) {
-    if (!isL1PersistenceError(err)) throw err;
+    if (!isL1PersistenceError(err)) {
+      await writeRunLog({ status: "failed", inputMessages: newMessages, error: { code: "exception", message: generationLogErrorText(err) } });
+      throw err;
+    }
     // A memory exists in no store. Report a failure so the caller does not
     // move the L1 cursor past its source messages. Memories of this group
     // that were stored before the failure can be written again on retry: a
     // duplicate is better than a loss.
     logger?.warn?.(`${TAG} l1-store-failed sessionKey=${sessionKey} msg=${err.message.slice(0, 200)}`);
+    await writeRunLog({ status: "failed", inputMessages: newMessages, error: { code: "store_failed", message: generationLogErrorText(err) } });
     return {
       success: false,
       extractedCount: extracted.length,
@@ -437,42 +521,25 @@ export async function extractL1Memories(params: {
     };
   }
 
-  const logStorage = storage ?? new StorageAdapter(new LocalStorageBackend(baseDir));
-  const generationLogStore = new MemoryGenerationLogStore(logStorage, metricInstanceId ?? "standalone");
-  const generationLog: MemoryGenerationLog = {
-    schema_version: 1,
-    log_id: generationIdentity.logId,
-    generation_id: generationIdentity.generationId,
-    instance_id: metricInstanceId ?? "standalone",
-    layer: "l1",
+  await writeRunLog({
     status: "succeeded",
-    team_id: teamId,
-    agent_id: agentId,
-    user_id: userId,
-    session_id: sessionId,
-    task_id: taskId,
-    prompt: generationPrompt,
-    anchor_memory_id: storedRecords[0]?.id ?? memoriesWithIds[0]?.record_id,
-    input_refs: newMessages.map((message) => ({ layer: "l0", record_id: message.id })),
-    output_refs: storedRecords.map((record) => ({ layer: "l1", record_id: record.id })),
-    model: options.model,
-    prompt_mode: options.promptMode ?? "chat",
-    started_at_ms: l1StartMs,
-    finished_at_ms: generationFinishedAt,
-    latency_ms: generationFinishedAt - l1StartMs,
-  };
-  await writeGenerationProvenanceBestEffort({
-    layer: "l1",
-    logger,
-    writeLog: () => generationLogStore.write(generationLog, generationIdentity.key),
+    identity: generationIdentity,
+    finishedAtMs: generationFinishedAt,
+    inputMessages: newMessages,
+    outputIds: storedRecords.map((record) => record.id),
+    anchorMemoryId: storedRecords[0]?.id ?? memoriesWithIds[0]?.record_id,
+    // Dedup can decide that every candidate is a duplicate of a stored memory.
+    ...(storedRecords.length === 0 ? { emptyReason: "dedup_skipped_all" } : {}),
     writeRefs: options.vectorStore?.upsertMemoryGenerationRefs && storedRecords.length > 0
-      ? () => options.vectorStore!.upsertMemoryGenerationRefs!(storedRecords.map((record) => ({
-          generation_ref_id: buildMemoryGenerationRefId("l1", record.id),
-          layer: "l1" as const,
-          memory_id: record.id,
-          ...generation,
-          created_at_ms: generationFinishedAt,
-        })))
+      ? async () => {
+          await options.vectorStore!.upsertMemoryGenerationRefs!(storedRecords.map((record) => ({
+            generation_ref_id: buildMemoryGenerationRefId("l1", record.id),
+            layer: "l1" as const,
+            memory_id: record.id,
+            ...generation,
+            created_at_ms: generationFinishedAt,
+          })));
+        }
       : undefined,
   });
 
@@ -543,6 +610,8 @@ export async function extractL1Memories(params: {
 // LLM call
 // ============================
 
+const L1_LLM_TIMEOUT_MS = 180_000;
+
 /**
  * Call LLM to extract scene-segmented memories from conversation messages.
  */
@@ -586,7 +655,7 @@ async function callLlmExtraction(params: {
       prompt: userPrompt,
       systemPrompt,
       taskId: "l1-extraction",
-      timeoutMs: 180_000,
+      timeoutMs: L1_LLM_TIMEOUT_MS,
       ...traceParams,
     });
   } else {
@@ -602,7 +671,7 @@ async function callLlmExtraction(params: {
       prompt: userPrompt,
       systemPrompt,
       taskId: "l1-extraction",
-      timeoutMs: 180_000,
+      timeoutMs: L1_LLM_TIMEOUT_MS,
       ...traceParams,
     });
   }

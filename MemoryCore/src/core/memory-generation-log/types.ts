@@ -41,6 +41,13 @@ export interface MemoryGenerationLog {
   latency_ms: number;
   error_code?: string;
   error_message?: string;
+  /** Cause of a failed LLM call (see LlmErrorKind), when the run failed at the LLM step. */
+  error_kind?: string;
+  /**
+   * Why a succeeded run wrote no output record, for example empty_scenes or
+   * quality_filtered. Absent when the run wrote output or failed.
+   */
+  empty_reason?: string;
   /** Result of the user-global scope check of an L3 run; absent for other runs. */
   scope_check?: MemoryGenerationScopeCheck;
 }

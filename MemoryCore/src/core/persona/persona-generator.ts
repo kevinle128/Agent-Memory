@@ -32,6 +32,18 @@ import {
 } from "./user-global-scope.js";
 import { newGenerationId } from "../memory-generation-log/store.js";
 import type { MemoryGenerationScopeCheck } from "../memory-generation-log/types.js";
+import { generationLogErrorText } from "../memory-generation-log/best-effort.js";
+import { classifyLlmError } from "../report/llm-error-classifier.js";
+
+/** Why a persona run failed or wrote nothing new. Goes into the L3 generation log. */
+export interface PersonaRunDetail {
+  code: string;
+  message: string;
+  /** Cause of a failed LLM call (see LlmErrorKind). */
+  errorKind?: string;
+}
+
+const PERSONA_LLM_TIMEOUT_MS = 180_000;
 
 const TAG = "[memory-tdai] [persona]";
 
@@ -53,6 +65,10 @@ export class PersonaGenerator {
   readonly generationId: string;
   /** Scope-check result of the last run; undefined for a project document or before a run. */
   scopeCheckSummary: MemoryGenerationScopeCheck | undefined;
+  /** Why the last run returned "failed" or "unchanged"; undefined after another result or before a run. */
+  runDetail: PersonaRunDetail | undefined;
+  /** Why the last writeAndRead call returned null. */
+  private lastWriteFailure: PersonaRunDetail | undefined;
 
   constructor(opts: {
     dataDir: string;
@@ -136,6 +152,7 @@ export class PersonaGenerator {
    */
   async generateLocalPersona(triggerReason?: string): Promise<"generated" | "unchanged" | "failed" | "judge_failed"> {
     this.scopeCheckSummary = undefined;
+    this.runDetail = undefined;
     const startMs = Date.now();
     this.logger?.debug?.(`${TAG} Starting generation: reason="${triggerReason ?? "none"}"`);
 
@@ -182,6 +199,7 @@ export class PersonaGenerator {
         // The file may exist. Going on would overwrite it unbacked, and a later
         // restore would not know its bytes.
         this.logger?.error(`${TAG} Could not read the existing ${targetFile}; stopping before any change: ${err instanceof Error ? err.message : String(err)}`);
+        this.runDetail = { code: "read_failed", message: generationLogErrorText(err) };
         return "failed";
       }
     }
@@ -243,6 +261,7 @@ export class PersonaGenerator {
 
     if (changedSceneContents.length === 0 && existingPersona) {
       this.logger?.debug?.(`${TAG} No scene changes and persona exists, skipping generation`);
+      this.runDetail = { code: "no_changed_scenes", message: "No scene changed since the last persona; the LLM was not called." };
       return "unchanged";
     }
 
@@ -317,7 +336,10 @@ export class PersonaGenerator {
       fileExistedBefore: existingRaw !== null && existingRaw !== "",
       personaWriteMarkerBefore,
     });
-    if (first === null) return "failed";
+    if (first === null) {
+      this.runDetail = this.lastWriteFailure;
+      return "failed";
+    }
     let personaText = first;
     let scope: ScopeCheckResult = { ok: true, leaks: [] };
     if (!isProject) {
@@ -370,6 +392,9 @@ export class PersonaGenerator {
           `keeping the previous ${targetLabel}`,
         );
         const restored = await this.restorePrevious(existingRaw, targetFile, personaFilePath);
+        if (!restored) {
+          this.runDetail = { code: "restore_failed", message: `The scope judge gave no verdict and the previous ${targetFile} could not be restored.` };
+        }
         return restored ? "judge_failed" : "failed";
       }
       this.scopeCheckSummary = summary(scope.ok ? "passed" : "rejected");
@@ -447,7 +472,11 @@ export class PersonaGenerator {
       }
     }
 
-    return personaUnchanged ? "unchanged" : "generated";
+    if (personaUnchanged) {
+      this.runDetail = { code: "persona_unchanged", message: `The LLM wrote the same ${targetFile} text again.` };
+      return "unchanged";
+    }
+    return "generated";
   }
 
   /**
@@ -466,6 +495,8 @@ export class PersonaGenerator {
     personaWriteMarkerBefore: string | undefined;
   }): Promise<string | null> {
     const { systemPrompt, userPrompt, targetFile, personaFilePath, startMs, fileExistedBefore, personaWriteMarkerBefore } = args;
+    this.lastWriteFailure = undefined;
+    const runnerStartMs = Date.now();
     try {
       this.logger?.debug?.(`${TAG} Calling LLM for ${targetFile} generation (timeout=180s, tools=enabled, workspaceDir=${this.dataDir})...`);
       // langfuse trace 语义：L3 persona 生成有独立 name / 顶级 user/session 列 / 可筛选 tags。
@@ -474,7 +505,7 @@ export class PersonaGenerator {
         systemPrompt,
         prompt: userPrompt,
         taskId: "persona-generation",
-        timeoutMs: 180_000,
+        timeoutMs: PERSONA_LLM_TIMEOUT_MS,
         // maxTokens omitted → core uses the resolved model's maxTokens from catalog
         workspaceDir: this.dataDir,
         // Service mode: LLM tools read/write via StorageAdapter (COS) instead of local FS
@@ -486,6 +517,8 @@ export class PersonaGenerator {
     } catch (err) {
       const elapsedMs = Date.now() - startMs;
       this.logger?.error(`${TAG} Persona generation failed after ${elapsedMs}ms: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+      const failure = classifyLlmError(err, Date.now() - runnerStartMs, PERSONA_LLM_TIMEOUT_MS);
+      this.lastWriteFailure = { code: "llm_error", message: generationLogErrorText(failure.message), errorKind: failure.kind };
       return null;
     }
     const personaWriteMarkerAfter = await readPersonaWriteMarker(this.dataDir, targetFile, this.storage);
@@ -502,10 +535,12 @@ export class PersonaGenerator {
     } catch {
       // LLM failed to write persona.md — treat as failure
       this.logger?.error(`${TAG} LLM did not write ${targetFile} — file not found after runner completed`);
+      this.lastWriteFailure = { code: "not_written", message: `The LLM run ended and ${targetFile} was not found.` };
       return null;
     }
     if (fileExistedBefore && personaWriteMarkerBefore && personaWriteMarkerAfter === personaWriteMarkerBefore) {
       this.logger?.error(`${TAG} LLM completed without writing ${targetFile}; preserving checkpoint for retry`);
+      this.lastWriteFailure = { code: "not_written", message: `The LLM run ended without writing ${targetFile}.` };
       return null;
     }
 
@@ -513,6 +548,7 @@ export class PersonaGenerator {
     const personaText = escapeXmlTags(stripScopeMarkers(stripSceneNavigation(raw)).trim());
     if (!personaText) {
       this.logger?.error(`${TAG} LLM wrote empty ${targetFile} — skipping`);
+      this.lastWriteFailure = { code: "empty_output", message: `The LLM wrote an empty ${targetFile}.` };
       return null;
     }
     return personaText;
