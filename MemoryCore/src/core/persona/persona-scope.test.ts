@@ -132,7 +132,7 @@ describe("PersonaGenerator user-global scope", () => {
 
     expect(result).toBe("generated");
     const prompt = runner.calls[0].prompt;
-    expect(prompt).toContain("首次生成");
+    expect(prompt).toContain("🆕 First generation");
     expect(prompt).not.toContain("Đang làm việc với Agent-Memory, quy trình video Shorts");
     expect(prompt).toContain("agent-memory-local.md");
     expect(prompt).toContain("video-pipeline.md");
@@ -192,7 +192,7 @@ describe("PersonaGenerator user-global scope", () => {
     await generator(runner, judge('{"leaks": []}')).generateLocalPersona("threshold");
 
     const prompt = runner.calls[0].prompt;
-    expect(prompt).toContain("迭代更新");
+    expect(prompt).toContain("🔄 Incremental update");
     expect(prompt).toContain("Ưu tiên bằng chứng quan sát được");
     expect(prompt).not.toContain(USER_GLOBAL_SCOPE_MARKER);
     expect(readPersona().startsWith(USER_GLOBAL_SCOPE_MARKER)).toBe(true);

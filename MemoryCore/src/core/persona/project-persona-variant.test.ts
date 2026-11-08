@@ -152,7 +152,7 @@ describe("PersonaGenerator project variant", () => {
     await generator.generateLocalPersona("test");
 
     expect(calls[0].prompt).toContain("Old decision body");
-    expect(calls[0].prompt).toContain("迭代更新");
+    expect(calls[0].prompt).toContain("🔄 Incremental update");
     expect(await scopeStore.readFile(`project_personas/${A}.md`)).toBe("# Project Memory\n\nNew decision body");
   });
 

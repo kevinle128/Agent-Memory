@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { EXTRACT_MEMORIES_SYSTEM_PROMPT, EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT } from "./l1-extraction.js";
 import { buildSceneExtractionPrompt } from "./scene-extraction.js";
 
-const marker = "仅针对单次任务的指令";
-const keep = "只有当内容被明确表述为长期规则";
+const marker = "instructions that apply only to a single task";
+const keep = "only when the content is explicitly stated as a long-term rule";
 
 describe("one-task directive rule in L1 prompts", () => {
   it("is present in the chat prompt", () => {
@@ -15,8 +15,8 @@ describe("one-task directive rule in L1 prompts", () => {
   it("is present in the work prompt, including the work_task and work_method sections", () => {
     expect(EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT).toContain(marker);
     expect(EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT).toContain(keep);
-    expect(EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT).toContain("不是项目的 work_task");
-    expect(EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT).toContain("不是 work_method");
+    expect(EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT).toContain("is not a project work_task");
+    expect(EXTRACT_WORK_MEMORIES_SYSTEM_PROMPT).toContain("is not a work_method");
   });
 });
 
@@ -31,7 +31,7 @@ describe("one-task directive rule in scene prompts", () => {
   it("is present in the work variant", () => {
     const { systemPrompt } = buildSceneExtractionPrompt({ ...params, promptMode: "code" });
     expect(systemPrompt).toContain(marker);
-    expect(systemPrompt).toContain("SOP、禁忌和原则章节不得包含单次任务指令");
+    expect(systemPrompt).toContain("sections must not contain instructions that apply only to a single task");
     expect(systemPrompt).toContain(keep);
   });
 

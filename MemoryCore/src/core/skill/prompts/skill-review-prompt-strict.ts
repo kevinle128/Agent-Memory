@@ -1,28 +1,6 @@
 /**
  * Skill Review Agent prompt — STRICT variant.
  *
- * 场景:冷启动 / 批量导入(agents/setup-proxy.sh → asset-import.ts 灌入历史
- * 会话时)。日常实时抽取仍走 SKILL_REVIEW_PROMPT (v2 宽松版)。
- *
- * 与 v2 的哲学差异(v2 = 2026-08-10 引入的当前生产版本):
- *   v2 优化"召回":任何 SOP / Background / Preference 都可写,默认 "When in
- *   doubt, capture"。适合实时抽取(单会话一次,写多写少影响小)。
- *
- *   本 STRICT 版恢复 v1 (2026-07-28 之前) 的三道硬 gate,专治冷启动场景:
- *   一次灌入几十~几百个 session,v2 会抽出成百上千低价值 skill 淹没高价值
- *   SOP。STRICT 只捕获 executable capability + 4-维度 ≥72 分,把 Background
- *   / Preference / 单次调试全部拒之门外,默认 "When in doubt, silence"。
- *
- * 复用来源: git 2026-07-28 commit 7ed721c3 之前的 SKILL_REVIEW_PROMPT
- * (即 MR 107 之前的老严格版),常量重命名为 SKILL_REVIEW_PROMPT_STRICT。
- *
- * 保留的 v1 硬约束:
- *   - 5-class 分类 gate (Skill / Memory / Wiki / Code-Graph / Temporary)
- *   - 5-条件 minimum gate (条件 1+2+5 必须都真, 3 或 4 至少一)
- *   - 4-维度 ≥72 分 acceptance gate (每维 ≥12)
- *   - Required SKILL.md 模板 (必须能填大部分 section 才可保存)
- *   - "When in doubt, silence" 默认
- *
  * Drives the AI SDK tool-calling loop wired by `createSkillTools()`. The agent
  * is given six tools and persists every change through them:
  *   skill_list / skill_view  (read)

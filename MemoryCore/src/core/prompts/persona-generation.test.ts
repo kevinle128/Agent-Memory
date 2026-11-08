@@ -21,7 +21,7 @@ describe("buildPersonaPrompt variants", () => {
     expect(chat.systemPrompt).toContain("Project Memory Architect");
     expect(code.systemPrompt).toBe(chat.systemPrompt);
     expect(chat.systemPrompt).toContain("1500");
-    expect(chat.systemPrompt).not.toContain("跨项目通用");
+    expect(chat.systemPrompt).not.toContain("Scope: Cross-Project");
   });
 
   it("keeps the file-tool contract and bans personal traits and navigation", () => {
@@ -29,10 +29,10 @@ describe("buildPersonaPrompt variants", () => {
 
     expect(systemPrompt).toContain("**write**");
     expect(systemPrompt).toContain("**edit**");
-    expect(systemPrompt).toContain("只能操作 `persona.md` 这一个文件");
-    expect(systemPrompt).toContain("不要添加场景导航");
-    expect(systemPrompt).toContain("个人画像");
-    expect(systemPrompt).toContain("与变化场景内容相同的语言");
+    expect(systemPrompt).toContain("only one file, `persona.md`");
+    expect(systemPrompt).toContain("Do not add scene navigation");
+    expect(systemPrompt).toContain("No personal profile");
+    expect(systemPrompt).toContain("in the same language as the changed scene content");
   });
 
   it("covers the six project sections", () => {
@@ -53,7 +53,7 @@ describe("buildPersonaPrompt variants", () => {
 
     expect(userPrompt).toContain("Existing body");
     expect(userPrompt).toContain("1500");
-    expect(userPrompt).not.toContain("2000字");
+    expect(userPrompt).not.toContain("2000 characters");
   });
 
   it("leaves the user-global prompts unchanged when no variant is given", () => {
@@ -68,8 +68,8 @@ describe("buildPersonaPrompt variants", () => {
 });
 
 describe("one-task directive rule", () => {
-  const marker = "仅针对单次任务的指令";
-  const keep = "只有当内容被明确表述为长期规则";
+  const marker = "instructions that apply only to a single task";
+  const keep = "only when the content is explicitly stated as a long-term rule";
 
   it("is present in the project, team and user-global persona prompts", () => {
     const project = buildPersonaPrompt({ ...base, variant: "project" }).systemPrompt;
@@ -78,7 +78,7 @@ describe("one-task directive rule", () => {
 
     for (const prompt of [project, team, user]) {
       expect(prompt).toContain(marker);
-      expect(prompt).toContain("不要提交");
+      expect(prompt).toContain("do not commit");
       expect(prompt).toContain(keep);
     }
   });
