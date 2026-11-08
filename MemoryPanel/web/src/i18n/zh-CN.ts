@@ -2407,6 +2407,7 @@ export const zhCN = {
   'history.extractions.inputFrom': 'Agent {{agent}} · 会话 {{session}}',
   'history.extractions.output': '输出（{{count}}）',
   'history.extractions.emptyOutput': '抽取成功，但没有写入任何记录。',
+  'history.extractions.emptyReason': '原因：{{reason}}',
   'history.extractions.moreRefs': '另有 {{count}} 条',
   'history.extractions.scopeCheck': '范围检查',
   'history.extractions.judgeAttempts': '判定调用 {{count}} 次',

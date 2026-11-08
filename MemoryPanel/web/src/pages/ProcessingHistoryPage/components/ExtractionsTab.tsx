@@ -247,7 +247,8 @@ export function ExtractionsTab(props: {
             {(selected.error_code || selected.error_message) && (
               <DetailSection title={t('history.extractions.error')}>
                 <div className="_ph-error">
-                  {selected.error_code} {selected.error_message}
+                  {selected.error_code}
+                  {selected.error_kind ? ` (${selected.error_kind})` : ''} {selected.error_message}
                 </div>
               </DetailSection>
             )}
@@ -271,7 +272,15 @@ export function ExtractionsTab(props: {
 
             <DetailSection title={t('history.extractions.output', { count: selected.output_refs.length })}>
               {isEmptyRun(selected) ? (
-                <div className="_ph-mut">{t('history.extractions.emptyOutput')}</div>
+                <div className="_ph-mut">
+                  {t('history.extractions.emptyOutput')}
+                  {selected.empty_reason && (
+                    <>
+                      {' '}
+                      {t('history.extractions.emptyReason', { reason: selected.empty_reason })}
+                    </>
+                  )}
+                </div>
               ) : (
                 <RefList refs={selected.output_refs} />
               )}

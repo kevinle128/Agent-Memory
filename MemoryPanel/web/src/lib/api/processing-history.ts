@@ -111,6 +111,10 @@ export interface GenerationLog {
   latency_ms: number;
   error_code?: string;
   error_message?: string;
+  /** Cause of a failed LLM call, for example timeout or rate_limit. */
+  error_kind?: string;
+  /** Why a succeeded run wrote no record, for example empty_scenes. */
+  empty_reason?: string;
   scope_check?: {
     result: 'passed' | 'rejected' | 'judge_failed';
     error_kind?: string;

@@ -2451,6 +2451,7 @@ export const enUS = {
   'history.extractions.inputFrom': 'Agent {{agent}} · session {{session}}',
   'history.extractions.output': 'Output ({{count}})',
   'history.extractions.emptyOutput': 'The run succeeded but wrote no record.',
+  'history.extractions.emptyReason': 'Reason: {{reason}}',
   'history.extractions.moreRefs': '+{{count}} more',
   'history.extractions.scopeCheck': 'Scope check',
   'history.extractions.judgeAttempts': '{{count}} judge calls',
