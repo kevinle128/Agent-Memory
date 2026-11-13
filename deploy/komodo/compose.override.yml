@@ -1,0 +1,20 @@
+# Komodo override for the VTC dev server. Komodo runs compose.yaml with this file.
+# The three images are built on the server (run build on) and exist on no registry,
+# so `compose pull` must skip them. Set MEMORY_BUILD_REVISION in the stack
+# environment to the commit you deploy; it names the image tags.
+#
+# Core reads its Langfuse settings from the stack environment here, because the
+# optional server-only Langfuse file next to core.yaml is not in git and Komodo
+# cannot read host files.
+services:
+  memory-core:
+    pull_policy: never
+    environment:
+      LANGFUSE_ENABLED: ${CORE_LANGFUSE_ENABLED:-false}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  memory-hub:
+    pull_policy: never
+  proxy:
+    pull_policy: never
