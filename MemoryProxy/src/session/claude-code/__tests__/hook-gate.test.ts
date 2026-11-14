@@ -405,8 +405,34 @@ describe("runHookGate: install result with an error", () => {
   it("answers with the manual command when the install call was denied", async () => {
     const denied = { role: "user", content: [{ type: "tool_result", is_error: true, tool_use_id: `${GATE_INSTALL_PREFIX}2`, content: "Permission to use Bash has been denied." }] };
     const result = await runHookGate(params({ waitMs: 20 }, { messages: [prompt("hello"), formCall, answer(INSTALL_LABEL), installCall, denied] }));
-    expect(result).toMatchObject({ action: "respond", reason: "install-failed" });
-    expect(await sse(result)).toContain("typing ! before it");
+    expect(result).toMatchObject({ action: "respond", reason: "install-denied" });
+    expect(await sse(result)).toContain("the command was rejected");
+  });
+
+  it("says that auto mode blocked the installer, without waiting for a report", async () => {
+    const blocked = {
+      role: "user",
+      content: [{
+        type: "tool_result",
+        is_error: true,
+        tool_use_id: `${GATE_INSTALL_PREFIX}2`,
+        content: "Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Code from External].",
+      }],
+    };
+    const started = Date.now();
+    const result = await runHookGate(params({ waitMs: 2000 }, { messages: [prompt("hello"), formCall, answer(INSTALL_LABEL), installCall, blocked] }));
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(result).toMatchObject({ action: "respond", reason: "install-blocked-auto-mode" });
+    const stream = await sse(result);
+    expect(stream).toContain("auto mode blocked the command");
+    expect(stream).toContain("hooks.sh");
+  });
+
+  it("passes when the report exists although the install call was blocked", async () => {
+    await store.put(KEY, report());
+    const blocked = { role: "user", content: [{ type: "tool_result", is_error: true, tool_use_id: `${GATE_INSTALL_PREFIX}2`, content: "Permission for this action was denied by the Claude Code auto mode classifier." }] };
+    const result = await runHookGate(params({}, { messages: [prompt("hello"), formCall, answer(INSTALL_LABEL), installCall, blocked] }));
+    expect(result).toMatchObject({ action: "pass", reason: "installed" });
   });
 });
 

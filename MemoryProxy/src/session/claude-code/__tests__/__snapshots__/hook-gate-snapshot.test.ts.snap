@@ -168,7 +168,7 @@ event: content_block_start
 data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}
 
 event: content_block_delta
-data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"[Agent-Memory hook gate] The installer did not finish: the proxy has no hook report for this session yet. The command may have been blocked (for example by auto mode) or it failed (the installer needs curl and one of jq, python3 or node). Run the command yourself, either in a terminal or here by typing ! before it, then send your prompt again.\\n\\n    curl -fsSL http://127.0.0.1:8096/setup/hooks.sh | bash -s -- --client claude-code --session 11111111-2222-3333-4444-555555555555"}}
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"[Agent-Memory hook gate] The installer did not finish: the proxy has no hook report for this session yet. The command ran but failed (the installer needs curl and one of jq, python3 or node). Run the command yourself, either in a terminal or here by typing ! before it, then send your prompt again.\\n\\n    curl -fsSL http://127.0.0.1:8096/setup/hooks.sh | bash -s -- --client claude-code --session 11111111-2222-3333-4444-555555555555"}}
 
 event: content_block_stop
 data: {"type":"content_block_stop","index":1}

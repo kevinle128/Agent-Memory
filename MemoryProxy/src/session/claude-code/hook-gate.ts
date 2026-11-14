@@ -13,7 +13,8 @@
  *   3. The tool result comes back: read the report again (wait a short time).
  *      If it exists, remove the synthetic turns from the conversation and let
  *      the original prompt through. If not, answer with the error and the
- *      manual command.
+ *      manual command. When Claude Code refused the tool call (auto mode or a
+ *      denial), the installer never ran: say that at once, with no wait.
  *   4. "Exit": every request of the session gets a fixed text answer.
  *
  * The state is the conversation itself. Claude Code replays every synthetic
@@ -176,6 +177,9 @@ export async function runHookGate(params: HookGateParams): Promise<HookGateResul
   if (state.exited) return text(exitText(command), "exited");
 
   if (state.pending === "install") {
+    // A denied tool call never ran the installer, so no report can arrive: answer at once.
+    if (state.installOutcome === "auto-mode") return text(autoModeBlockedText(command), "install-blocked-auto-mode");
+    if (state.installOutcome === "denied") return text(installDeniedText(command), "install-denied");
     const waited = await waitForReport(params.config, key, params.waitMs);
     if (waited) return pass("installed-in-session");
     return text(installFailedText(command), "install-failed");
@@ -239,7 +243,16 @@ interface GateState {
   answer: string | null;
   /** Form results in the history that were errors or text the gate cannot read. */
   unreadable: number;
+  /** How the last install tool call ended, when `pending` is "install". */
+  installOutcome: InstallOutcome;
 }
+
+/**
+ * "auto-mode": the auto mode classifier of Claude Code refused the command.
+ * "denied": the user or a permission rule refused it.
+ * "ran": the command ran (it can still have failed).
+ */
+type InstallOutcome = "auto-mode" | "denied" | "ran";
 
 interface RawBlock {
   type?: unknown;
@@ -247,6 +260,7 @@ interface RawBlock {
   tool_use_id?: unknown;
   content?: unknown;
   text?: unknown;
+  is_error?: unknown;
 }
 
 function blocksOf(message: unknown): RawBlock[] {
@@ -273,7 +287,7 @@ function recognisedAnswer(text: string): string | null {
 }
 
 function readGateState(messages: unknown[]): GateState {
-  const state: GateState = { exited: false, pending: null, answer: null, unreadable: 0 };
+  const state: GateState = { exited: false, pending: null, answer: null, unreadable: 0, installOutcome: "ran" };
   // Claude Code adds trailing `system` messages (for example the token budget
   // reminder). The conversation ends at the last user or assistant message.
   let lastTurn = -1;
@@ -296,10 +310,24 @@ function readGateState(messages: unknown[]): GateState {
         }
       } else if (isLast && block.tool_use_id.startsWith(GATE_INSTALL_PREFIX)) {
         state.pending = "install";
+        state.installOutcome = installOutcomeOf(block);
       }
     }
   });
   return state;
+}
+
+// Texts of the tool results that Claude Code returns when it does not run a command.
+// Auto mode: "Permission for this action was denied by the Claude Code auto mode classifier."
+// User or rule: "The user doesn't want to proceed with this tool use." / "Permission to use Bash has been denied."
+const AUTO_MODE_DENIAL_RE = /auto mode classifier/i;
+const DENIAL_RE = /doesn't want to proceed|permission (?:for|to) [^.]*denied/i;
+
+function installOutcomeOf(block: RawBlock): InstallOutcome {
+  const text = toolResultText(block);
+  if (AUTO_MODE_DENIAL_RE.test(text)) return "auto-mode";
+  if (block.is_error === true && DENIAL_RE.test(text)) return "denied";
+  return "ran";
 }
 
 // ── History cleaning ───────────────────────────────────────────────────────────
@@ -386,8 +414,26 @@ function exitText(command: string | null): string {
 function installFailedText(command: string | null): string {
   return (
     "The installer did not finish: the proxy has no hook report for this session yet. " +
-    "The command may have been blocked (for example by auto mode) or it failed (the installer needs curl and one of jq, python3 or node). " +
+    "The command ran but failed (the installer needs curl and one of jq, python3 or node). " +
     "Run the command yourself, either in a terminal or here by typing ! before it, then send your prompt again." +
+    commandBlock(command)
+  );
+}
+
+function autoModeBlockedText(command: string | null): string {
+  return (
+    "The installer did not run: Claude Code auto mode blocked the command, because it downloads and runs a script. " +
+    "This is not an error of the installer. Type ! and then the command below in the prompt box: " +
+    "a command after ! runs directly, without auto mode. Then send your prompt again." +
+    commandBlock(command)
+  );
+}
+
+function installDeniedText(command: string | null): string {
+  return (
+    "The installer did not run: the command was rejected. " +
+    "To install the hook, type ! and then the command below in the prompt box, or run it in a terminal. " +
+    "Then send your prompt again." +
     commandBlock(command)
   );
 }

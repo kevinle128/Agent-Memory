@@ -237,7 +237,7 @@ echo '{"session_id":"test","cwd":"'"$PWD"'","hook_event_name":"Manual"}' \
 交互式会话所在机器没有安装 hook 时，proxy 在第一个模型请求前返回一个 `AskUserQuestion` 表单：
 
 - **Install now**：proxy 返回一个 `Bash` 工具调用，执行 `curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client claude-code --session <session_id>`（Claude Code 会先让你批准这条命令）。命令结束后 proxy 再查一次上报（最多等约 3 秒）：已有上报则去掉这几轮合成对话，继续回答原来的问题；没有则返回错误说明和手动安装命令
-- auto mode 的分类器可能拒绝执行安装命令（"Unauthorized Persistence"）。此时 proxy 返回错误说明和手动命令，在终端执行，或在 Claude Code 里在命令前加 `!` 直接执行，然后重新发送问题即可
+- auto mode 的分类器可能拒绝执行安装命令（例如 "Code from External"、"Unauthorized Persistence"）。proxy 从工具结果识别这种拒绝，不再等待上报，直接说明"auto mode 拦截了安装命令"并给出手动命令；命令被你或权限规则拒绝时，说明"命令被拒绝"。在终端执行该命令，或在 Claude Code 里在命令前加 `!` 直接执行（`!` 命令不经过 auto mode），然后重新发送问题即可。命令执行了但没有上报时，仍返回"installer did not finish"
 - **Exit**：本会话之后的每个请求都只收到一条固定说明，不会发给模型；只要 proxy 收到该会话的上报（例如在终端或用 `!` 执行说明里的安装命令），同一个会话再发消息即可继续，不必新开会话
 - 在表单里选 "Other" 输入自由文本时，proxy 会重新弹出表单
 - 请求里没有 `Bash` 工具（例如 `--disallowedTools Bash`）时不弹表单，直接返回带安装命令的说明，由你在终端执行
