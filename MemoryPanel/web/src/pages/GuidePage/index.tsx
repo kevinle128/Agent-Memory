@@ -83,6 +83,8 @@ interface ManualIde {
   ) => string;
   /** 配置是否用到 Model ID；不用时隐藏 Model ID 输入框 */
   usesModel?: boolean;
+  /** Hook install command (same call as setup-proxy.sh install_project_hooks); run after the config is written. */
+  hookCommand?: (base: string, instanceId: string) => string;
   /** 启动/注意事项（可空） */
   notes?: string[];
 }
@@ -96,6 +98,8 @@ const MANUAL_IDES: ManualIde[] = [
     config: (base, instanceId, mode, _model, _own, apiKey) =>
       `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${proxyEndpoint(base, 'claude', instanceId, mode)}",\n    "ANTHROPIC_AUTH_TOKEN": "${apiKey}"\n  }\n}`,
     usesModel: false,
+    hookCommand: (base, instanceId) =>
+      `curl -fsSL ${base}/setup/hooks.sh | bash -s -- --client claude-code --base-url ${base}/claude-code/${instanceId}`,
     notes: ['guide.manual.note.claude'],
   },
   {
@@ -121,6 +125,8 @@ const MANUAL_IDES: ManualIde[] = [
       return `model_provider = "team-proxy"\n[model_providers.team-proxy]\nname       = "TDAI team-proxy"\nwire_api   = "responses"\nbase_url   = "${proxyEndpoint(base, 'codex', instanceId, mode)}"\n${auth}\n\nrequest_max_retries    = 2\nstream_max_retries     = 3\nstream_idle_timeout_ms = 120000`;
     },
     usesModel: false,
+    hookCommand: (base) =>
+      `curl -fsSL ${base}/setup/hooks.sh | bash -s -- --client codex --base-url ${base}`,
     notes: ['guide.manual.note.codex'],
   },
   {
@@ -646,6 +652,19 @@ export function GuidePage() {
                     </header>
                     <pre>{manualConfigShown}</pre>
                   </div>
+                  {manualIde.hookCommand && (
+                    <div className="guide-manual-fields">
+                      <b>{t('guide.manual.hookTitle')}</b>
+                      <small>{t('guide.manual.hookHint')}</small>
+                      <div className="guide-command secondary">
+                        <code>{manualIde.hookCommand(proxyBase || proxyFallback, instanceId)}</code>
+                        <CopyButton
+                          value={manualIde.hookCommand(proxyBase || proxyFallback, instanceId)}
+                          label={t('guide.copyCmd')}
+                        />
+                      </div>
+                    </div>
+                  )}
                   {manualIde.notes && manualIde.notes.length > 0 && (
                     <ul className="guide-manual-notes">
                       {manualIde.notes.map((note) => (

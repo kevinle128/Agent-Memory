@@ -540,7 +540,7 @@ asset tool it actually invoked this turn** (`<skill_tools>`,
 or not (what key info it got, what detour it avoided, or why the call
 missed). Tools that were **not** invoked are omitted; if nothing was
 invoked, the reply must still emit the fixed line
-`【资产反思】本轮未使用任何云端资产工具。`
+`[Asset reflection] No cloud asset tool was used in this turn.`
 
 This is designed as an **internal effectiveness probe**: you point a
 subset of traffic (a benchmark run, an ad-hoc curl, a Team's staging

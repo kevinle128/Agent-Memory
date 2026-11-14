@@ -1781,6 +1781,9 @@ export const enUS = {
   'guide.practice.personal.step4.point3': 'Don\'t save small talk, guesses, keys, or personal sensitive info',
 
   // Manual config notes
+  'guide.manual.hookTitle': 'Install the session hook',
+  'guide.manual.hookHint':
+    'Run this after you save the config. The hook sends the working directory and git project of each session to the Proxy and adds recalled memories to your prompts.',
   'guide.manual.note.claude': 'Start claude directly — it reads env from settings.json',
   'guide.manual.note.codebuddy': 'Select the proxy-memory-agent model in the CodeBuddy dialog',
   'guide.manual.note.codex': 'Switch to Plan mode (Shift+Tab) to pick Team→Agent→Task before the first chat, then switch back to Agent mode',

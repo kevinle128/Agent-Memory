@@ -1731,6 +1731,8 @@ export const zhCN = {
   'guide.practice.personal.step4.point3': '不保存寒暄、猜测、密钥和个人敏感信息',
 
   // 手动配置注意事项
+  'guide.manual.hookTitle': '安装会话 hook',
+  'guide.manual.hookHint': '保存配置后运行。hook 会把每个会话的工作目录和 git 项目上报给 Proxy，并把召回的记忆加到你的提问中。',
   'guide.manual.note.claude': '直接启动 claude 即可从 settings.json 读取环境变量',
   'guide.manual.note.codebuddy': '在 CodeBuddy 对话框中选择模型 proxy-memory-agent',
   'guide.manual.note.codex':
