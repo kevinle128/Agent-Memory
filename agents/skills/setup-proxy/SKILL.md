@@ -222,7 +222,7 @@ cat <config_path>
 |-------|----------|
 | Claude Code | 无需操作，`settings.json` 的 env 启动时自动加载 |
 | CodeBuddy | 对话框中切换模型为 **proxy-memory-agent**（即配置的模型 ID） |
-| Codex | 无需操作，`config.toml` 已指定 model |
+| Codex | 无需操作，`config.toml` 已指定 `model_provider = "team-proxy"` |
 | WorkBuddy | 模型选择器中切换到自定义模型列表里的对应模型 |
 | dsh | 无需操作，`settings.yaml` 已指定模型 |
 | Hermes / OpenClaw | 确保客户端选择的 provider/模型指向 Proxy 配置 |

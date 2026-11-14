@@ -24,8 +24,7 @@ claude --model <PROXY_UPSTREAM_MODEL 里配的上游模型>
 {
   "env": {
     "ANTHROPIC_AUTH_TOKEN": "<业务用户的 sk-mem-... user_key>",
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8096/claude-code/default",
-    "ANTHROPIC_MODEL": "claude-opus-4.7"
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8096/claude-code/default"
   }
 }
 ```
@@ -36,7 +35,6 @@ claude --model <PROXY_UPSTREAM_MODEL 里配的上游模型>
 
 - `ANTHROPIC_BASE_URL`：把 CC 的 API 从 anthropic.com 改指到 proxy；路径里的 `default` 是 memory 实例 ID（`x-tdai-service-id`），本地部署固定叫 `default`
 - `ANTHROPIC_AUTH_TOKEN`：**业务用户**的 user_key（从面板 "API Key" 页获取；不建议直接使用 admin key）
-- `ANTHROPIC_MODEL`：上游模型名（也可以用 `--model` 命令行参数指定）
 
 Proxy 会依次做：`auth`（校验 user_key）→ `sessionInit`（选 team/agent/task 表单）→ `injection`（把 L2/L3 记忆、skill、knowledge 注入 system prompt）→ 转发到上游 LLM。
 

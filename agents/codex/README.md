@@ -13,9 +13,6 @@ Codex 通过**配置文件** `~/.codex/config.toml` 配置：
 ```toml
 # ~/.codex/config.toml
 model_provider = "team-proxy"
-model = "claude-opus-4.7"
-model_reasoning_effort = "high"
-disable_response_storage = true
 
 [model_providers.team-proxy]
 name       = "TDAI team-proxy"
@@ -32,7 +29,6 @@ stream_idle_timeout_ms = 120000
 - `wire_api = "responses"` — **必填**，Codex 使用 OpenAI Responses API 协议
 - `base_url` — Proxy 地址 + `/codex/<spaceId>`；`default` 是 memory 实例 ID
 - `experimental_bearer_token` — 业务用户的 `user_key`（从面板获取）
-- `disable_response_storage = true` — 关闭本地缓存，确保每轮都经过 Proxy 注入
 - `stream_idle_timeout_ms = 120000` — session-init 等待用户操作时避免被超时
 
 **保留自己的 ChatGPT 登录作为回退（订阅账号池可选）**：先执行 `codex login`，再把

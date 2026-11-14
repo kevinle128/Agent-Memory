@@ -8,9 +8,10 @@
  * 底部提供「引导回放」入口：与「我的资料 → 回顾引导」一致，重看首次使用引导。
  *
  * 手动配置的配置文件路径与内容与 agents/setup-proxy.sh 的 write_* 函数保持一致
- * （本页为只读展示，不执行写入）。API Key 一律使用占位符，不出现真实密钥。
+ * （本页为只读展示，不执行写入）。user_key 登录时复制的配置带当前 key，页面上只显示掩码；
+ * IdP 登录没有明文 key，保留占位符。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/stores/auth';
@@ -48,9 +49,15 @@ const QUICK_SETUP_SCRIPT = 'bash agents/setup-proxy.sh';
 const QUICK_SETUP_SKILL_PREP = 'cp -r agents ~/agents';
 const QUICK_SETUP_SKILL_PROMPT =
   '请阅读 ~/agents/skills/setup-proxy/SKILL.md，然后按照里面的步骤引导我完成 Agent 接入 Memory Proxy 的配置。';
-const HISTORY_IMPORT_SCRIPT = 'tsx agents/asset-import.ts --source <agent> --agent-id <id> --team-id <tid>';
+const HISTORY_IMPORT_SCRIPT =
+  'tsx agents/asset-import.ts --source <agent> --agent-id <id> --team-id <tid>';
 const HISTORY_SOURCES = 'claude-code, codebuddy, codex, workbuddy, dsh, hermes, openclaw';
 const KEY_PLACEHOLDER = '<your-team-memory-api-key>';
+
+/** 页面上只显示 key 的首尾几位，避免明文出现在屏幕/截图里 */
+function maskKey(key: string) {
+  return key.length > 12 ? `${key.slice(0, 8)}…${key.slice(-4)}` : '••••••••';
+}
 
 /** 接入地址：{base}/{agent}/{instanceId}(/analyse)，与 Proxy 白名单形态一致。
  * 注意 Claude Code 的代理路由段是 `claude-code`（见 MemoryProxy whitelist.ts 的
@@ -65,8 +72,17 @@ interface ManualIde {
   name: string;
   file: string;
   protocol: string;
-  /** 生成配置文件内容（占位符，不含真实密钥）。第二个参数为接入地址。 */
-  config: (base: string, instanceId: string, mode: ProxyMode, model: string, ownLoginFallback: boolean) => string;
+  /** 生成配置文件内容。apiKey 为当前登录 user_key（无则为占位符）。 */
+  config: (
+    base: string,
+    instanceId: string,
+    mode: ProxyMode,
+    model: string,
+    ownLoginFallback: boolean,
+    apiKey: string,
+  ) => string;
+  /** 配置是否用到 Model ID；不用时隐藏 Model ID 输入框 */
+  usesModel?: boolean;
   /** 启动/注意事项（可空） */
   notes?: string[];
 }
@@ -77,8 +93,9 @@ const MANUAL_IDES: ManualIde[] = [
     name: 'Claude Code',
     file: '~/.claude/settings.json',
     protocol: 'Anthropic Messages',
-    config: (base, instanceId, mode, model) =>
-      `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${proxyEndpoint(base, 'claude', instanceId, mode)}",\n    "ANTHROPIC_AUTH_TOKEN": "${KEY_PLACEHOLDER}",\n    "ANTHROPIC_MODEL": "${model}",\n    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${model}",\n    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${model}",\n    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${model}",\n    "CLAUDE_CODE_SUBAGENT_MODEL": "${model}"\n  }\n}`,
+    config: (base, instanceId, mode, _model, _own, apiKey) =>
+      `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${proxyEndpoint(base, 'claude', instanceId, mode)}",\n    "ANTHROPIC_AUTH_TOKEN": "${apiKey}"\n  }\n}`,
+    usesModel: false,
     notes: ['guide.manual.note.claude'],
   },
   {
@@ -86,8 +103,8 @@ const MANUAL_IDES: ManualIde[] = [
     name: 'CodeBuddy',
     file: '~/.codebuddy/models.json',
     protocol: 'OpenAI Chat',
-    config: (base, instanceId, mode, model) =>
-      `{\n  "models": [\n    {\n      "id": "${model}",\n      "name": "proxy-memory-agent",\n      "vendor": "claude",\n      "apiKey": "${KEY_PLACEHOLDER}",\n      "maxInputTokens": 200000,\n      "url": "${proxyEndpoint(base, 'codebuddy', instanceId, mode)}",\n      "supportsToolCall": true,\n      "supportsImages": true\n    }\n  ]\n}`,
+    config: (base, instanceId, mode, model, _own, apiKey) =>
+      `{\n  "models": [\n    {\n      "id": "${model}",\n      "name": "proxy-memory-agent",\n      "vendor": "claude",\n      "apiKey": "${apiKey}",\n      "maxInputTokens": 200000,\n      "url": "${proxyEndpoint(base, 'codebuddy', instanceId, mode)}",\n      "supportsToolCall": true,\n      "supportsImages": true\n    }\n  ]\n}`,
     notes: ['guide.manual.note.codebuddy'],
   },
   {
@@ -95,14 +112,15 @@ const MANUAL_IDES: ManualIde[] = [
     name: 'Codex CLI',
     file: '~/.codex/config.toml',
     protocol: 'OpenAI Responses',
-    config: (base, instanceId, mode, model, ownLoginFallback) => {
+    config: (base, instanceId, mode, _model, ownLoginFallback, apiKey) => {
       // 保留自己的 ChatGPT 登录作为备用时：用户 key 走 x-tdai-user-key 请求头，
       // Authorization 留给 Codex 自己的登录（requires_openai_auth）。
       const auth = ownLoginFallback
-        ? `requires_openai_auth = true\nhttp_headers = { "x-tdai-user-key" = "${KEY_PLACEHOLDER}" }`
-        : `experimental_bearer_token = "${KEY_PLACEHOLDER}"`;
-      return `model_provider = "team-proxy"\nmodel = "${model}"\nmodel_reasoning_effort = "high"\ndisable_response_storage = true\n\n[model_providers.team-proxy]\nname       = "TDAI team-proxy"\nwire_api   = "responses"\nbase_url   = "${proxyEndpoint(base, 'codex', instanceId, mode)}"\n${auth}\n\nrequest_max_retries    = 2\nstream_max_retries     = 3\nstream_idle_timeout_ms = 120000`;
+        ? `requires_openai_auth = true\nhttp_headers = { "x-tdai-user-key" = "${apiKey}" }`
+        : `experimental_bearer_token = "${apiKey}"`;
+      return `model_provider = "team-proxy"\n[model_providers.team-proxy]\nname       = "TDAI team-proxy"\nwire_api   = "responses"\nbase_url   = "${proxyEndpoint(base, 'codex', instanceId, mode)}"\n${auth}\n\nrequest_max_retries    = 2\nstream_max_retries     = 3\nstream_idle_timeout_ms = 120000`;
     },
+    usesModel: false,
     notes: ['guide.manual.note.codex'],
   },
   {
@@ -110,8 +128,8 @@ const MANUAL_IDES: ManualIde[] = [
     name: 'WorkBuddy',
     file: '~/.workbuddy/models.json',
     protocol: 'OpenAI Responses/Chat',
-    config: (base, instanceId, mode, model) =>
-      `[\n  {\n    "id": "${model}",\n    "name": "${model}",\n    "vendor": "Custom",\n    "url": "${proxyEndpoint(base, 'workbuddy', instanceId, mode)}",\n    "apiKey": "${KEY_PLACEHOLDER}",\n    "supportsToolCall": true,\n    "supportsImages": false,\n    "supportsReasoning": false,\n    "useCustomProtocol": false\n  }\n]`,
+    config: (base, instanceId, mode, model, _own, apiKey) =>
+      `[\n  {\n    "id": "${model}",\n    "name": "${model}",\n    "vendor": "Custom",\n    "url": "${proxyEndpoint(base, 'workbuddy', instanceId, mode)}",\n    "apiKey": "${apiKey}",\n    "supportsToolCall": true,\n    "supportsImages": false,\n    "supportsReasoning": false,\n    "useCustomProtocol": false\n  }\n]`,
     notes: ['guide.manual.note.workbuddy'],
   },
   {
@@ -119,21 +137,17 @@ const MANUAL_IDES: ManualIde[] = [
     name: 'dsh (DeepSeek Harness)',
     file: '~/.dsh/settings.yaml + ~/.dsh/.credentials.yaml',
     protocol: 'OpenAI Chat',
-    config: (base, instanceId, mode, model) =>
-      `# ~/.dsh/settings.yaml\nllm-deepseek:\n  apiKeyEnv: PROXY_USER_KEY\n  # 尾巴不要加 /v1 —— dsh 硬编码 baseURL/chat/completions\n  baseURL: ${proxyEndpoint(base, 'dsh', instanceId, mode)}\n  model: ${model}\n  reasoningEffort: high\n\n# ~/.dsh/.credentials.yaml\nPROXY_USER_KEY: ${KEY_PLACEHOLDER}`,
-    notes: [
-      'guide.manual.note.dsh.0',
-      'guide.manual.note.dsh.1',
-      'guide.manual.note.dsh.2',
-    ],
+    config: (base, instanceId, mode, model, _own, apiKey) =>
+      `# ~/.dsh/settings.yaml\nllm-deepseek:\n  apiKeyEnv: PROXY_USER_KEY\n  # 尾巴不要加 /v1 —— dsh 硬编码 baseURL/chat/completions\n  baseURL: ${proxyEndpoint(base, 'dsh', instanceId, mode)}\n  model: ${model}\n  reasoningEffort: high\n\n# ~/.dsh/.credentials.yaml\nPROXY_USER_KEY: ${apiKey}`,
+    notes: ['guide.manual.note.dsh.0', 'guide.manual.note.dsh.1', 'guide.manual.note.dsh.2'],
   },
   {
     id: 'hermes',
     name: 'Hermes',
     file: '~/.hermes/config.yaml',
     protocol: 'OpenAI Chat + Header 预选',
-    config: (base, instanceId, mode, model) =>
-      `model:\n  default: ${model}\n  provider: custom\n  base_url: ${proxyEndpoint(base, 'hermes', instanceId, mode)}\n  api_key: ${KEY_PLACEHOLDER}\n  extra_headers:\n    x-team-id: "<team-id>"\n    x-agent-id: "<agent-id>"\n    x-task-id: "no-task"\n    x-conversation-id: "<conv-id>"`,
+    config: (base, instanceId, mode, model, _own, apiKey) =>
+      `model:\n  default: ${model}\n  provider: custom\n  base_url: ${proxyEndpoint(base, 'hermes', instanceId, mode)}\n  api_key: ${apiKey}\n  extra_headers:\n    x-team-id: "<team-id>"\n    x-agent-id: "<agent-id>"\n    x-task-id: "no-task"\n    x-conversation-id: "<conv-id>"`,
     notes: [
       'guide.manual.note.hermes.0',
       'guide.manual.note.hermes.1',
@@ -145,8 +159,8 @@ const MANUAL_IDES: ManualIde[] = [
     name: 'OpenClaw',
     file: '~/.openclaw/openclaw.json',
     protocol: 'OpenAI Chat + Header 预选',
-    config: (base, instanceId, mode, model) =>
-      `{\n  "models": {\n    "mode": "merge",\n    "providers": {\n      "memory-proxy": {\n        "baseUrl": "${proxyEndpoint(base, 'openclaw', instanceId, mode)}",\n        "apiKey": "${KEY_PLACEHOLDER}",\n        "api": "openai-completions",\n        "headers": {\n          "x-team-id": "<team-id>",\n          "x-agent-id": "<agent-id>",\n          "x-task-id": "no-task",\n          "x-conversation-id": "<conv-id>"\n        },\n        "request": { "allowPrivateNetwork": true },\n        "models": [\n          {\n            "id": "${model}",\n            "name": "${model}",\n            "reasoning": false,\n            "input": ["text"],\n            "contextWindow": 128000,\n            "maxTokens": 32000,\n            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }\n          }\n        ]\n      }\n    }\n  }\n}`,
+    config: (base, instanceId, mode, model, _own, apiKey) =>
+      `{\n  "models": {\n    "mode": "merge",\n    "providers": {\n      "memory-proxy": {\n        "baseUrl": "${proxyEndpoint(base, 'openclaw', instanceId, mode)}",\n        "apiKey": "${apiKey}",\n        "api": "openai-completions",\n        "headers": {\n          "x-team-id": "<team-id>",\n          "x-agent-id": "<agent-id>",\n          "x-task-id": "no-task",\n          "x-conversation-id": "<conv-id>"\n        },\n        "request": { "allowPrivateNetwork": true },\n        "models": [\n          {\n            "id": "${model}",\n            "name": "${model}",\n            "reasoning": false,\n            "input": ["text"],\n            "contextWindow": 128000,\n            "maxTokens": 32000,\n            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }\n          }\n        ]\n      }\n    }\n  }\n}`,
     notes: [
       'guide.manual.note.openclaw.0',
       'guide.manual.note.openclaw.1',
@@ -334,10 +348,21 @@ export function GuidePage() {
   const manualIde = MANUAL_IDES.find((item) => item.id === manualIdeId) ?? MANUAL_IDES[0];
   const proxyFallback = t('guide.proxyFallback');
   const modelFallback = t('guide.modelFallback');
-  const manualConfig = useMemo(
-    () => manualIde.config(proxyBase || proxyFallback, instanceId, proxyMode, modelId || modelFallback, ownLoginFallback),
-    [manualIde, modelId, proxyBase, proxyMode, instanceId, proxyFallback, modelFallback, ownLoginFallback],
-  );
+  // user_key 登录时会话里有明文 key：复制的配置直接带真实 key，页面上只显示掩码。
+  // IdP 登录不下发 user_key，保留占位符让用户自己填。
+  const sessionKey = getPanelSession()?.userKey ?? '';
+  const shownKey = sessionKey ? maskKey(sessionKey) : KEY_PLACEHOLDER;
+  const buildManualConfig = (apiKey: string) =>
+    manualIde.config(
+      proxyBase || proxyFallback,
+      instanceId,
+      proxyMode,
+      modelId || modelFallback,
+      ownLoginFallback,
+      apiKey,
+    );
+  const manualConfig = buildManualConfig(sessionKey || KEY_PLACEHOLDER);
+  const manualConfigShown = buildManualConfig(shownKey);
   const practiceSteps = PRACTICE_STEPS[practice];
   const activePracticeStep = practiceSteps[practiceStep] ?? practiceSteps[0];
 
@@ -395,7 +420,9 @@ export function GuidePage() {
                     aria-current={isCurrent ? 'step' : undefined}
                     onClick={() => {
                       setQuickTab(step.id);
-                      setVisitedSteps((prev) => (prev.includes(step.id) ? prev : [...prev, step.id]));
+                      setVisitedSteps((prev) =>
+                        prev.includes(step.id) ? prev : [...prev, step.id],
+                      );
                     }}
                   >
                     <span className="guide-stepper-badge">{isDone ? '✓' : index + 1}</span>
@@ -419,7 +446,7 @@ export function GuidePage() {
               {/* 使用根相对路径而非绝对路径：HashRouter 下绝对路径会被解析为路由
                   跳到 /downloads/... 而不是触发文件下载。
                   加 ?v= 版本参数强制浏览器绕过缓存下载最新 ZIP，避免下载到修复前的旧包 */}
-              <a href="./downloads/tdai-memory-agents.zip?v=2" download>
+              <a href="./downloads/tdai-memory-agents.zip?v=3" download>
                 {t('guide.download.button')}
               </a>
             </div>
@@ -431,7 +458,9 @@ export function GuidePage() {
               <div className="guide-prepare">
                 <div className="guide-prepare-row">
                   <b>{t('guide.prepare.proxy')}</b>
-                  <code className="guide-prepare-value">{proxyBase || t('guide.prepare.reading')}</code>
+                  <code className="guide-prepare-value">
+                    {proxyBase || t('guide.prepare.reading')}
+                  </code>
                   <CopyButton value={proxyBase} />
                 </div>
                 <small className="guide-prepare-hint">{urlHint}</small>
@@ -461,21 +490,27 @@ export function GuidePage() {
                   </div>
                   <small>{t('guide.mode.analyseHint')}</small>
                   {proxyMode === 'analyse' && (
-                    <small className="guide-mode-notice">
-                      {t('guide.mode.analyseNotice')}
-                    </small>
+                    <small className="guide-mode-notice">{t('guide.mode.analyseNotice')}</small>
                   )}
                 </div>
 
                 <div className="guide-prepare-row">
                   <b>{t('guide.prepare.key')}</b>
-                  <button type="button" className="guide-key-link" onClick={() => navigate('/team/api-keys')}>
+                  <button
+                    type="button"
+                    className="guide-key-link"
+                    onClick={() => navigate('/team/api-keys')}
+                  >
                     {t('guide.prepare.keyLink')} →
                   </button>
                 </div>
               </div>
 
-              <div className="guide-method-picker" role="radiogroup" aria-label={t('guide.method.aria')}>
+              <div
+                className="guide-method-picker"
+                role="radiogroup"
+                aria-label={t('guide.method.aria')}
+              >
                 <button
                   type="button"
                   className={method === 'skill' ? 'active' : ''}
@@ -557,14 +592,16 @@ export function GuidePage() {
                     ))}
                   </div>
                   <div className="guide-manual-fields">
-                    <label>
-                      <b>{t('guide.manual.model')}</b>
-                      <input
-                        value={modelId}
-                        onChange={(event) => setModelId(event.target.value.toLowerCase())}
-                      />
-                      <small>{t('guide.manual.modelHint')}</small>
-                    </label>
+                    {manualIde.usesModel !== false && (
+                      <label>
+                        <b>{t('guide.manual.model')}</b>
+                        <input
+                          value={modelId}
+                          onChange={(event) => setModelId(event.target.value.toLowerCase())}
+                        />
+                        <small>{t('guide.manual.modelHint')}</small>
+                      </label>
+                    )}
                     {manualIde.id === 'codex' && (
                       <label className="guide-manual-switch">
                         <span>
@@ -579,9 +616,21 @@ export function GuidePage() {
                       </label>
                     )}
                     <div className="guide-command secondary">
-                      <code>{proxyEndpoint(proxyBase || proxyFallback, manualIde.id, instanceId, proxyMode)}</code>
+                      <code>
+                        {proxyEndpoint(
+                          proxyBase || proxyFallback,
+                          manualIde.id,
+                          instanceId,
+                          proxyMode,
+                        )}
+                      </code>
                       <CopyButton
-                        value={proxyEndpoint(proxyBase || proxyFallback, manualIde.id, instanceId, proxyMode)}
+                        value={proxyEndpoint(
+                          proxyBase || proxyFallback,
+                          manualIde.id,
+                          instanceId,
+                          proxyMode,
+                        )}
                       />
                     </div>
                   </div>
@@ -595,7 +644,7 @@ export function GuidePage() {
                       </div>
                       <CopyButton value={manualConfig} label={t('guide.copyConfig')} />
                     </header>
-                    <pre>{manualConfig}</pre>
+                    <pre>{manualConfigShown}</pre>
                   </div>
                   {manualIde.notes && manualIde.notes.length > 0 && (
                     <ul className="guide-manual-notes">
@@ -772,7 +821,10 @@ export function GuidePage() {
                   <li key={point}>{t(point)}</li>
                 ))}
               </ul>
-              <nav className="guide-practice-links" aria-label={`${t(activePracticeStep.title)} ${t('guide.practice.linksAria')}`}>
+              <nav
+                className="guide-practice-links"
+                aria-label={`${t(activePracticeStep.title)} ${t('guide.practice.linksAria')}`}
+              >
                 <span>{t('guide.practice.related')}</span>
                 {activePracticeStep.links.map((link) => (
                   <button type="button" key={link.path} onClick={() => navigate(link.path)}>
