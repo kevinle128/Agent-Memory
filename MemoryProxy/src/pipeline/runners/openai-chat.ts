@@ -24,7 +24,7 @@ import {
   buildLangfuseInputChat,
   buildRequestDebugMetadata,
 } from "../../common/langfuse-debug.js";
-import { countHumanTurns, resolveMonotonicTurnSeq } from "../../turnSeq.js";
+import { countHumanTurns, resolveMonotonicTurnSeq, turnTraceScope } from "../../turnSeq.js";
 import type { ProxyConfig } from "../../types.js";
 import {
   resolveForwardTarget,
@@ -986,6 +986,10 @@ export async function runOpenaiChatPipeline(
         config, sessionKey, messages, protocol: "openai",
       })
     : undefined;
+  // Trace id scope of this request (compaction epoch). Computed here from the
+  // client messages, before injection edits them, and passed to the three
+  // observation entries so that they derive the same trace id.
+  const traceScope = turnTraceScope(messages as unknown[]);
 
   // 请求分类：OpenAI 协议不做 CC 的 fork/sidequery 分流（handler.ts 没接 CC
   // routing），所有请求都视为 main —— 与 codebuddy adapter classifyRequest 一致。
@@ -1014,6 +1018,7 @@ export async function runOpenaiChatPipeline(
       // Langfuse trace, 治理前走 inline countHumanTurns fallback 在 compaction
       // 场景会漂移。
       preResolvedTurnSeq: resolvedTurnSeq,
+      turnTraceScope: traceScope,
     });
     if (memResp) return memResp;
   }
@@ -1070,6 +1075,7 @@ export async function runOpenaiChatPipeline(
       // 同一条 Langfuse trace 下。治理前走 stateless countHumanTurns, 和 lf
       // 的 resolveMonotonicTurnSeq 在 compaction 场景会分家。
       turnSeqOverride: resolvedTurnSeq,
+      turnTraceScope: traceScope,
     });
     body = injected.body;
     messages = injected.messages;
@@ -1172,6 +1178,7 @@ export async function runOpenaiChatPipeline(
     userQueryOverride: opencodeUserQuery,
     wecomName,
     preResolvedTurnSeq: resolvedTurnSeq,
+    turnTraceScope: traceScope,
   });
   stageReportAnalyzerTrace({ config, target, traceId, lf, keyId, sessionKey, turnSeq, startTime, spaceId });
 

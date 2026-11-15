@@ -20,6 +20,7 @@
  * 开了 Redis 时由 `resolveMonotonicTurnSeq()` 把本地推导值换成会话级单调序号。
  */
 
+import { createHash } from "node:crypto";
 import type { ProxyConfig } from "./types.js";
 import { getRedisClient } from "./db/redis-client.js";
 import { log } from "./report/log.js";
@@ -58,6 +59,57 @@ export function countHumanTurns(messages: unknown[], protocol: "openai" | "anthr
     }
   }
   return count;
+}
+
+/** First text of a human user message that is not a `<system-reminder>`. */
+function firstHumanText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  for (const block of content) {
+    const b = block as Record<string, unknown>;
+    if (b && typeof b === "object" && b.type === "text") {
+      const text = typeof b.text === "string" ? b.text : "";
+      if (!text.startsWith("<system-reminder>")) return text;
+    }
+  }
+  return "";
+}
+
+/**
+ * Conversation epoch marker for the turn trace id.
+ *
+ * `countHumanTurns` starts again near 1 after a client compaction (the history
+ * becomes summary + new prompt), so `sessionKey:turnSeq` alone repeats the ids
+ * of turns written before the compaction. The epoch is a short hash of the
+ * first human text of the first human user message: the first prompt before a
+ * compaction, the summary after it. Clients that resend full history do not
+ * change that text between the requests of one turn, so a turn keeps one id.
+ *
+ * Only the text is hashed: `cache_control` markers, images and
+ * `<system-reminder>` blocks do not change the epoch. Returns "" when the
+ * history has no human user message.
+ */
+export function conversationEpoch(messages: unknown[]): string {
+  for (const msg of messages) {
+    const m = msg as Record<string, unknown> | null;
+    if (m?.role !== "user" || !isHumanUserContent(m.content)) continue;
+    const text = firstHumanText(m.content);
+    return createHash("sha256").update(text).digest("hex").slice(0, 12);
+  }
+  return "";
+}
+
+/**
+ * Scope that goes into the turn trace id seed (see `langfuseTurnTraceId`).
+ *
+ * Requests on a lane other than "main" (Claude Code fork / sidequery) get the
+ * lane in the scope. A fork carries the full history plus one extra prompt, so
+ * its turn count is the count that the next main turn uses; without the lane
+ * it writes its prompt over that turn's trace input.
+ */
+export function turnTraceScope(messages: unknown[], lane = "main"): string {
+  const epoch = conversationEpoch(messages);
+  return lane === "main" ? epoch : `${epoch}:${lane}`;
 }
 
 /**

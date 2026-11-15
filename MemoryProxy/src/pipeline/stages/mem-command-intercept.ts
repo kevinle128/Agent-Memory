@@ -93,6 +93,8 @@ export interface MemCommandInterceptInput {
    *     行为与治理前完全一致
    */
   preResolvedTurnSeq?: number;
+  /** Turn trace scope (`turnTraceScope()`), same value as the lf trace of this request. */
+  turnTraceScope?: string;
 }
 
 /**
@@ -226,7 +228,7 @@ export async function stageMemCommandIntercept(
     const memTurnSeq = input.preResolvedTurnSeq !== undefined
       ? input.preResolvedTurnSeq
       : countHumanTurns(messages, protocol === "anthropic" ? "anthropic" : "openai");
-    lfTraceId = langfuseTurnTraceId(sessionKey, memTurnSeq);
+    lfTraceId = langfuseTurnTraceId(sessionKey, memTurnSeq, input.turnTraceScope);
     lfUserId = keyId;
     lfSessionId = sessionKey;
     lfTags = [

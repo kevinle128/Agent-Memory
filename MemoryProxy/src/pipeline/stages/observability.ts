@@ -86,6 +86,14 @@ export interface LangfuseTurnContextBuildInput {
    * fallback 这套老路径一字不改, 现网老 caller 零改动。
    */
   preResolvedTurnSeq?: number;
+  /**
+   * Turn trace scope from `turnTraceScope()`, computed by the runner from the
+   * client messages before injection. Injection can edit the first user
+   * message on the first request of a session, so this stage cannot compute
+   * the scope from its (post-injection) `messages`. Not given: legacy
+   * `sessionKey:turnSeq` trace id.
+   */
+  turnTraceScope?: string;
 }
 
 export interface LangfuseTurnBundle {
@@ -131,9 +139,12 @@ export async function stageBuildLangfuseTurnContext(
   }
 
   const lf: LangfuseTurnContext = {
-    traceId: langfuseTurnTraceId(input.sessionKey, turnSeq),
+    traceId: langfuseTurnTraceId(input.sessionKey, turnSeq, input.turnTraceScope),
     turnSeq,
-    traceName: `${input.target.model} / ${input.wecomName || input.keyId}`,
+    // Fork / sidequery requests have their own trace; the suffix keeps them
+    // apart from user turns in the trace list.
+    traceName: `${input.target.model} / ${input.wecomName || input.keyId}`
+      + (input.lane && input.lane !== "main" ? ` [${input.lane}]` : ""),
     userId: input.wecomName || input.keyId,
     sessionId: input.sessionKey,
     // 空字符串按"无实例"处理（老 /proxy 前缀 + 单租户部署）。
