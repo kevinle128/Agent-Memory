@@ -9,9 +9,10 @@
  *     quota permits switching; otherwise keep retrying within 30 seconds total.
  *   - 401: the token is refreshed through Core (`held_expires_at` makes concurrent 401s one
  *     provider refresh) and the request is retried once. If the refresh fails, the account is
- *     skipped and the request moves to another account.
- *   - When no account is left: the client's own login if it sent `x-tdai-user-key`, else a 429
- *     with the earliest reset time.
+ *     skipped and the request moves to another account. A failed refresh is not a quota state.
+ *   - When no account is left: the client's own login if it sent `x-tdai-user-key`; else a 429
+ *     with the earliest reset time only when every account is at its usage limit, and a 503 with
+ *     a short Retry-After when an account below its limit was held back by a transient failure.
  *
  * Access tokens are only put into request headers. Logs carry the account id.
  */
@@ -21,7 +22,7 @@ import type { InstanceUpstreamRow } from "../instance-upstream-cache.js";
 import { getProxyStorage } from "../storage/factory.js";
 import type { ProxyStorage } from "../storage/proxy-storage.js";
 import {
-  getPoolSnapshot, markAccountExhausted, observeAccountWindows, replaceAccountToken,
+  getPoolSnapshot, markAccountUnavailable, observeAccountWindows, replaceAccountToken, unavailableAccountIds,
 } from "./account-cache.js";
 import {
   BINDING_TTL_MS, bindSession, countSessionsByAccount, getBinding, getCursor, rebindSession, sessionBindingKey, setCursor,
@@ -33,7 +34,7 @@ import { parseClaudeQuotaHeaders, parseCodexQuotaHeaders } from "./quota-signals
 import { reportAccount } from "./reporter.js";
 import { recordPoolUpstreamError, sanitizeErrorText } from "./upstream-error.js";
 import { POOL_RETRY_BUDGET_MS, POOL_RETRY_MAX_WAIT_MS, PoolRetryDeadline, withinRetryDeadline, waitForPoolRetry, notePoolRetryAfter, poolRetryBlockedUntil, originalRateLimitResponse, sharedPoolUsageCheck, readPoolErrorBody } from "./retry.js";
-import { earliestReset, selectAccount, type Selection } from "./selector.js";
+import { earliestReset, hasAccountBelowQuota, selectAccount, type Selection } from "./selector.js";
 import type { PoolAccount, PoolSnapshot } from "./types.js";
 
 const TAG = "[subscription-pool]";
@@ -43,7 +44,7 @@ export const CLAUDE_API_BASE_URL = "https://api.anthropic.com";
 const OAUTH_BETA = "oauth-2025-04-20";
 
 export type PoolProviderId = "claude" | "codex";
-/** After a failed token refresh the account is skipped for this long. */
+/** After a failed token refresh the account is skipped for this long. It does not count as quota. */
 const REFRESH_FAILURE_COOLDOWN_MS = 60 * 1000;
 /** A binding is rewritten at most this often while its session keeps sending requests. */
 const BINDING_TOUCH_MS = 5 * 60 * 1000;
@@ -229,6 +230,8 @@ class PoolRequestImpl implements PoolRequest {
 
   async send(doFetch: (auth: PoolAuth, signal?: AbortSignal) => Promise<Response>): Promise<Response> {
     const excluded = new Set<string>();
+    // Accounts that Check now confirmed at their usage limit during this request.
+    const quotaReached = new Set<string>();
     let switches = 0;
     let refreshes = 0;
     let poolRechecked = false;
@@ -256,7 +259,7 @@ class PoolRequestImpl implements PoolRequest {
             account = await bounded(() => this.pick(snapshot!, excluded));
           }
         }
-        if (!account) return await bounded(async (signal) => this.noAccountLeft(snapshot ?? await this.snapshot(), (auth) => doFetch(auth, signal)));
+        if (!account) return await bounded(async (signal) => this.noAccountLeft(snapshot ?? await this.snapshot(), quotaReached, (auth) => doFetch(auth, signal)));
 
         const auth: PoolAuth = {
           kind: "account", accountId: account.account_id,
@@ -278,6 +281,7 @@ class PoolRequestImpl implements PoolRequest {
           if (result.response.status === 429) last429 = result.response.clone();
           if (result.quotaConfirmed) {
             excluded.add(account.account_id);
+            quotaReached.add(account.account_id);
             if (switches++ >= 1) break;
             continue;
           }
@@ -305,7 +309,7 @@ class PoolRequestImpl implements PoolRequest {
       }
 
       // Out of attempts after a limit: the client's login, or the 429 with the earliest reset.
-      return await bounded(async (signal) => this.noAccountLeft(await this.snapshot(), (auth) => doFetch(auth, signal)));
+      return await bounded(async (signal) => this.noAccountLeft(await this.snapshot(), quotaReached, (auth) => doFetch(auth, signal)));
     } catch (error) {
       if (error instanceof PoolRetryDeadline && last429) return last429;
       throw error;
@@ -423,7 +427,9 @@ class PoolRequestImpl implements PoolRequest {
       }
     }
 
-    const selection = selectAccount(snapshot.accounts, binding?.account_id ?? null, now, snapshot.thresholdPct, this.model, cursor, excluded);
+    // Accounts in a refresh cooldown are skipped like the ones this request already left.
+    const skipped = new Set([...excluded, ...unavailableAccountIds(this.input.spaceId, now)]);
+    const selection = selectAccount(snapshot.accounts, binding?.account_id ?? null, now, snapshot.thresholdPct, this.model, cursor, skipped);
     if (!selection) return null;
     if (this.input.bindSession && storage && key) {
       await this.persist(storage, key, selection, binding, snapshot, now);
@@ -518,12 +524,16 @@ class PoolRequestImpl implements PoolRequest {
     } catch (err) {
       const reason = err instanceof PoolCoreError ? `${err.httpStatus} ${err.errorCode ?? ""}`.trim() : "unreachable";
       console.warn(`${TAG} token refresh failed for account_id=${account.account_id} (${reason})`);
-      markAccountExhausted(this.input.spaceId, account.account_id, this.now() + REFRESH_FAILURE_COOLDOWN_MS);
+      markAccountUnavailable(this.input.spaceId, account.account_id, this.now() + REFRESH_FAILURE_COOLDOWN_MS);
       return null;
     }
   }
 
-  private async noAccountLeft(snapshot: PoolSnapshot, doFetch: (auth: PoolAuth) => Promise<Response>): Promise<Response> {
+  private async noAccountLeft(
+    snapshot: PoolSnapshot,
+    quotaReached: ReadonlySet<string>,
+    doFetch: (auth: PoolAuth) => Promise<Response>,
+  ): Promise<Response> {
     if (this.clientLoginAllowed) {
       this.accountId = null;
       if (this.input.bindSession) {
@@ -534,6 +544,12 @@ class PoolRequestImpl implements PoolRequest {
     }
     if (snapshot.unavailable) return buildPoolUnavailableResponse();
     const now = this.now();
+    // No account was selected, but one is below its usage limit: a transient failure held it
+    // back. A quota answer would make the client wait for a reset that does not apply.
+    if (hasAccountBelowQuota(snapshot.accounts, now, this.model, quotaReached)) {
+      console.warn(`${TAG} no account selectable but one is below its usage limit; answering unavailable`);
+      return buildPoolUnavailableResponse();
+    }
     return buildPoolExhaustedResponse(earliestReset(snapshot.accounts, now, snapshot.thresholdPct, this.model), now);
   }
 }

@@ -20,6 +20,8 @@ const MAX_ENTRIES = 256;
 interface Overlay {
   exhaustedUntil: number | null;
   exhaustedObservedAt: number | null;
+  /** End of a short hold after a non-quota failure, such as a failed token refresh. Not a quota state. */
+  unavailableUntil: number | null;
   windows: Map<string, PoolQuotaWindow>;
   token: { accessToken: string; expiresAt: number | null } | null;
 }
@@ -46,7 +48,7 @@ function overlayFor(spaceId: string, accountId: string): Overlay {
   }
   let overlay = perSpace.get(accountId);
   if (!overlay) {
-    overlay = { exhaustedUntil: null, exhaustedObservedAt: null, windows: new Map(), token: null };
+    overlay = { exhaustedUntil: null, exhaustedObservedAt: null, unavailableUntil: null, windows: new Map(), token: null };
     perSpace.set(accountId, overlay);
   }
   return overlay;
@@ -61,6 +63,24 @@ export function markAccountExhausted(spaceId: string, accountId: string, until: 
   const overlay = overlayFor(spaceId, accountId);
   overlay.exhaustedUntil = Math.max(overlay.exhaustedUntil ?? 0, until);
   overlay.exhaustedObservedAt = Math.max(overlay.exhaustedObservedAt ?? 0, observedAt);
+}
+
+/**
+ * Hold an account back until `until` (epoch ms) after a non-quota failure. The account keeps its
+ * quota state, so a request that finds no other account gets the 503 answer, not a quota reset.
+ */
+export function markAccountUnavailable(spaceId: string, accountId: string, until: number): void {
+  const overlay = overlayFor(spaceId, accountId);
+  overlay.unavailableUntil = Math.max(overlay.unavailableUntil ?? 0, until);
+}
+
+/** Ids of the accounts of a space that are held back by `markAccountUnavailable` at `now`. */
+export function unavailableAccountIds(spaceId: string, now: number): Set<string> {
+  const ids = new Set<string>();
+  for (const [accountId, overlay] of overlays.get(spaceId) ?? []) {
+    if (overlay.unavailableUntil !== null && overlay.unavailableUntil > now) ids.add(accountId);
+  }
+  return ids;
 }
 
 /** Record window readings seen in a response or a 429. Per window the newest observation wins. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountSwitchRejection, accountUsagePct, earliestReset, selectAccount } from "../selector.js";
+import { accountSwitchRejection, accountUsagePct, earliestReset, hasAccountBelowQuota, selectAccount } from "../selector.js";
 import type { PoolAccount, PoolQuotaWindow } from "../types.js";
 
 const NOW = 1_800_000_000_000;
@@ -213,5 +213,31 @@ describe("accountSwitchRejection", () => {
 
   it("ignores a full shared window whose reset time has passed", () => {
     expect(accountSwitchRejection(acct("a", {}, [win("primary_window", 100, -1000)]), NOW, 95)).toBeNull();
+  });
+});
+
+describe("hasAccountBelowQuota", () => {
+  it("is true for a servable account below its usage limit", () => {
+    expect(hasAccountBelowQuota([acct("a", {}, [win("primary_window", 99, HOUR)])], NOW, "gpt-5")).toBe(true);
+  });
+
+  it("is false when every account is exhausted, full, disabled, or needs a new login", () => {
+    const accounts = [
+      acct("a", { status: "exhausted", exhausted_until: NOW + HOUR }),
+      acct("b", {}, [win("secondary_window", 100, 47 * HOUR)]),
+      acct("c", { enabled: false }),
+      acct("d", { status: "auth_error" }),
+    ];
+    expect(hasAccountBelowQuota(accounts, NOW, "gpt-5")).toBe(false);
+  });
+
+  it("does not count an account that this request confirmed at its limit", () => {
+    expect(hasAccountBelowQuota([acct("a")], NOW, "gpt-5", new Set(["a"]))).toBe(false);
+  });
+
+  it("counts only the windows that apply to the requested model", () => {
+    const account = acct("a", {}, [win("opus_window", 100, HOUR, "claude-opus-4")]);
+    expect(hasAccountBelowQuota([account], NOW, "claude-opus-4")).toBe(false);
+    expect(hasAccountBelowQuota([account], NOW, "claude-sonnet-4")).toBe(true);
   });
 });

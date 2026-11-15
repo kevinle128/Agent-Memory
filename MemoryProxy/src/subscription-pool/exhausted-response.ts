@@ -7,12 +7,14 @@
 /** Seconds to wait when no account reports a reset time. Same as the 15 minute default hold in Core. */
 export const UNKNOWN_RESET_RETRY_AFTER_SEC = 900;
 
-/** Seconds to wait when the account list could not be read from Core. */
+/** Seconds to wait when the pool cannot serve for a reason other than quota. */
 export const UNAVAILABLE_RETRY_AFTER_SEC = 30;
 
 /**
- * The 503 the proxy returns when Core cannot list the pool accounts and no earlier list exists.
- * It is not a quota answer, so the client does not wait for a reset that will not come.
+ * The 503 the proxy returns when the pool cannot serve for a reason other than quota: Core cannot
+ * list the pool accounts and no earlier list exists, or an account below its usage limit is held
+ * back by a transient failure such as a failed token refresh. It is not a quota answer, so the
+ * client retries soon and does not wait for a reset that will not come.
  */
 export function buildPoolUnavailableResponse(): Response {
   return new Response(JSON.stringify({

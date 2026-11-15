@@ -159,6 +159,37 @@ describe("claude pool forwarding", () => {
     expect(logs.join("\n")).not.toContain("secret-token-");
   });
 
+  it("answers count_tokens with 503, not a quota 429, while an account recovers from a failed token refresh", async () => {
+    const full = {
+      ...acct("b"),
+      usage: { windows: [{ name: "seven_day", model_scope: null, used_pct: 100, resets_at: NOW + 47 * 3_600_000, observed_at: NOW, source: "usage_api" }] },
+    };
+    prime([acct("a"), full]);
+    const { upstreamCalls } = installFetch(
+      () => new Response("{}", { status: 401 }),
+      (call) => (call.url.endsWith("/refresh")
+        ? jsonResponse({ code: 502, message: "token_refresh_failed: try another account" }, 502)
+        : call.url.endsWith("/accounts/list")
+          ? jsonResponse({ code: 0, data: { threshold_pct: 95, accounts: [acct("a"), full] } })
+          : jsonResponse({ code: 0, data: {} })),
+    );
+    const app = makeApp(makeConfig());
+    const headers = { "content-type": "application/json", authorization: "Bearer sk-mem-user", "x-claude-code-session-id": "s1" };
+    const turn = await app.request(`/claude-code/${SPACE}/v1/messages`, {
+      method: "POST", headers, body: JSON.stringify({ model: "claude-x", max_tokens: 8, messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(turn.status).toBe(503);
+
+    const count = await app.request(`/claude-code/${SPACE}/v1/messages/count_tokens`, {
+      method: "POST", headers, body: JSON.stringify({ model: "claude-x", messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(count.status).toBe(503);
+    expect(count.headers.get("x-tdai-pool-status")).toBe("unavailable");
+    expect(Number(count.headers.get("retry-after"))).toBeLessThanOrEqual(60);
+    expect(await count.text()).not.toContain("usage_limit_reached");
+    expect(upstreamCalls).toHaveLength(1);
+  });
+
   it("does not send a codex account token to Anthropic", async () => {
     __primeCacheForTests(SPACE, [defaultRow, poolRow]);
     __primeAccountCacheForTests(SPACE, {

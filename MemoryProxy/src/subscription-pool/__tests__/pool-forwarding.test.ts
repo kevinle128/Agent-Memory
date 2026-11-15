@@ -234,6 +234,50 @@ describe("codex pool forwarding", () => {
     expect(Number(res.headers.get("x-tdai-pool-earliest-reset"))).toBe(Math.ceil((NOW + HOUR) / 1000));
   });
 
+  it("answers 503, not an exhausted 429, when the only account under quota failed its token refresh", async () => {
+    prime([
+      acct("a"),
+      acct("b", { usage: { windows: [win("primary_window", 10, HOUR), win("secondary_window", 100, 47 * HOUR)] } }),
+    ]);
+    const { upstreamCalls } = installFetch(
+      () => new Response("{}", { status: 401 }),
+      (call) => (call.url.endsWith("/refresh")
+        ? jsonResponse({ code: 502, message: "token_refresh_failed: try another account" }, 502)
+        : jsonResponse({ code: 0, data: {} })),
+    );
+    const app = makeApp(makeConfig());
+    const t = turn("s1");
+    const headers = { authorization: "Bearer sk-mem-user", "session-id": "s1" };
+
+    const first = await post(app, t.path, headers, t.body);
+    expect(first.status).toBe(503);
+    expect(first.headers.get("x-tdai-pool-status")).toBe("unavailable");
+    expect(Number(first.headers.get("retry-after"))).toBeLessThanOrEqual(60);
+    expect(first.headers.get("x-tdai-pool-earliest-reset")).toBeNull();
+    expect(await first.text()).not.toContain("usage_limit_reached");
+    expect(upstreamCalls.map(accountOf)).toEqual(["chatgpt-a"]);
+
+    // Later requests in the refresh cooldown skip the account but still do not get a quota answer.
+    const second = await post(app, t.path, headers, t.body);
+    expect(second.status).toBe(503);
+    expect(second.headers.get("x-tdai-pool-status")).toBe("unavailable");
+    expect(upstreamCalls).toHaveLength(1);
+  });
+
+  it("answers 429 with the real reset when the other accounts are at quota and the failed account needs a new login", async () => {
+    prime([
+      acct("a", { status: "auth_error" }),
+      acct("b", { usage: { windows: [win("secondary_window", 100, 47 * HOUR)] } }),
+    ]);
+    const { upstreamCalls } = installFetch(() => sse());
+    const t = turn("s1");
+    const res = await post(makeApp(makeConfig()), t.path, { authorization: "Bearer sk-mem-user", "session-id": "s1" }, t.body);
+    expect(res.status).toBe(429);
+    expect(upstreamCalls).toHaveLength(0);
+    expect(res.headers.get("x-tdai-pool-status")).toBe("exhausted");
+    expect(Number(res.headers.get("x-tdai-pool-earliest-reset"))).toBe(Math.ceil((NOW + 47 * HOUR) / 1000));
+  });
+
   it("answers 503, not an exhausted 429, when Core cannot list the accounts", async () => {
     __primeCacheForTests(SPACE, [defaultRow, poolRow]);
     const { upstreamCalls } = installFetch(() => sse(), () => { throw new Error("core down"); });
