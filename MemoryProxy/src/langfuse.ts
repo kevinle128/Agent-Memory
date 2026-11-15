@@ -7,8 +7,8 @@
  *   - 同一 turn 内的工具循环（model → tool → model → …）会产生多次 upstream 请求，
  *     它们共享同一个确定性 traceId，因此在 Langfuse 里归并到同一个 trace 下，
  *     每次 LLM 调用是该 trace 下的一个 generation observation。
- *   - traceId 由 `sessionKey + turnSeq` 经 SHA-256 派生（确定性），与官方
- *     `createTraceId(seed)` 的算法逐字节一致（取 SHA-256 hex 前 32 位）。
+ *   - traceId 由 `sessionKey + 会话 epoch scope + turnSeq` 经 SHA-256 派生（确定性），
+ *     与官方 `createTraceId(seed)` 的算法逐字节一致（取 SHA-256 hex 前 32 位）。
  *
  * 跨请求归并的机制：
  *   一个 turn 的多次请求是彼此独立的 HTTP handler 调用，没有共享的 async context。
@@ -113,14 +113,20 @@ export async function shutdownLangfuse(): Promise<void> {
 // ============================
 
 /**
- * 由 `sessionKey + turnSeq` 派生确定性 traceId（32 位小写 hex）。
+ * 由 `sessionKey + scope + turnSeq` 派生确定性 traceId（32 位小写 hex）。
  *
  * 与官方 `createTraceId(seed)` 算法一致：SHA-256(seed) 的 hex 取前 32 位。
- * 同一 turn 内每次请求都用相同 (sessionKey, turnSeq) → 得到相同 traceId →
+ * 同一 turn 内每次请求都用相同 (sessionKey, scope, turnSeq) → 得到相同 traceId →
  * 在 Langfuse 中归并到同一个 trace。
+ *
+ * `scope` comes from `turnTraceScope()`. It changes at each client compaction,
+ * where the stateless turn count starts again, so a post-compaction turn does
+ * not upsert into a trace from before the compaction. Every caller of one
+ * request (generation, injection spans, mem-command) must pass the same scope.
+ * An empty scope gives the legacy `sessionKey:turnSeq` seed.
  */
-export function langfuseTurnTraceId(sessionKey: string, turnSeq: number): string {
-  const seed = `${sessionKey}:${turnSeq}`;
+export function langfuseTurnTraceId(sessionKey: string, turnSeq: number, scope = ""): string {
+  const seed = scope ? `${sessionKey}:${scope}:${turnSeq}` : `${sessionKey}:${turnSeq}`;
   return createHash("sha256").update(seed).digest("hex").slice(0, 32);
 }
 

@@ -16,7 +16,7 @@
 
 import type { AgentContextMetadata, ContextBlock, InjectionHook, InjectionPoint } from "./types.js";
 import { log } from "../report/log.js";
-import { createHash } from "node:crypto";
+import { langfuseTurnTraceId } from "../langfuse.js";
 import { TraceFlags } from "@opentelemetry/api";
 import { startObservation, LangfuseOtelSpanAttributes } from "@langfuse/tracing";
 
@@ -220,14 +220,6 @@ export class LoggingInjectionObserver implements InjectionObserver {
 
 // ── Langfuse implementation ───────────────────────────────────────────────────
 
-/**
- * 确定性派生 Langfuse traceId（与 langfuse.ts 中 langfuseTurnTraceId 算法一致）。
- * 由 sessionKey + turnSeq 经 SHA-256 派生，取 hex 前 32 位。
- */
-function deriveLangfuseTraceId(sessionKey: string, turnSeq: number): string {
-  return createHash("sha256").update(`${sessionKey}:${turnSeq}`).digest("hex").slice(0, 32);
-}
-
 /** 派生 phantom parent spanId（与 langfuse.ts 中 deriveParentSpanId 一致）。 */
 function deriveParentSpanId(traceId: string): string {
   return traceId.slice(0, 16);
@@ -242,7 +234,7 @@ function deriveParentSpanId(traceId: string): string {
  * 每个 hook 产生一条 span observation：
  *   - name: `[inject] {hookId}` 或 `[inject] {hookId} (error)`
  *   - metadata: hookId, point, cacheStrategy, durationMs, blockCount, blocks 摘要
- *   - traceId: 由 sessionKey + turnSeq 确定性派生（与上游 LLM generation 共享同一 trace）
+ *   - traceId: langfuseTurnTraceId(sessionKey, turnSeq, turnTraceScope)（与上游 LLM generation 共享同一 trace）
  *
  * 安全保证：所有方法内部 try/catch，绝不抛异常；observer 不存在或降级时 fallback noop。
  */
@@ -416,6 +408,6 @@ export class LangfuseInjectionObserver implements InjectionObserver {
   /** Derive Langfuse traceId from stored metadata, or null if unavailable. */
   private getLangfuseTraceId(): string | null {
     if (!this.meta?.sessionKey || this.meta.turnSeq === undefined) return null;
-    return deriveLangfuseTraceId(this.meta.sessionKey, this.meta.turnSeq);
+    return langfuseTurnTraceId(this.meta.sessionKey, this.meta.turnSeq, this.meta.turnTraceScope);
   }
 }

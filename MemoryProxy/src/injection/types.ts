@@ -107,6 +107,12 @@ export interface AgentContextMetadata {
    */
   turnSeq?: number;
   /**
+   * Turn trace scope (`turnTraceScope()`). Combined with sessionKey and turnSeq
+   * to derive the Langfuse turn-trace ID; must equal the scope of the LLM
+   * generation of the same request.
+   */
+  turnTraceScope?: string;
+  /**
    * Raw request URL path (e.g. `/codebuddy/default/analyse/v1/messages`).
    * Optional —— 用于需要按 URL marker 决定行为的 injector（如
    * `AssetReflectionInjector` 用它调 `hasAnalyseMarker`）。缺省时

@@ -54,6 +54,8 @@ export interface InjectionRunnerInput {
    * 未传时行为与现状完全一致, 老 caller 不需要改动。
    */
   turnSeqOverride?: number;
+  /** Turn trace scope (`turnTraceScope()`) for the injection spans' trace id. */
+  turnTraceScope?: string;
 }
 
 export interface InjectionRunnerResult {
@@ -93,6 +95,7 @@ export async function stageInjectionRunner(
       spaceId: input.spaceId,
       sessionKey: input.sessionKey,
       turnSeq: injectionTurnSeq,
+      turnTraceScope: input.turnTraceScope,
       requestPath: input.requestPath,
       custom: input.sessionInfo
         ? {

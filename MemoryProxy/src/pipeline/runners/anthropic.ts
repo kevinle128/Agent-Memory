@@ -25,7 +25,7 @@ import {
   langfuseTurnTraceId,
   type LangfuseTurnContext,
 } from "../../langfuse.js";
-import { countHumanTurns, resolveMonotonicTurnSeq } from "../../turnSeq.js";
+import { countHumanTurns, resolveMonotonicTurnSeq, turnTraceScope } from "../../turnSeq.js";
 import type { ProxyConfig } from "../../types.js";
 import {
   resolveForwardTarget,
@@ -977,6 +977,10 @@ export async function runAnthropicPipeline(
         config, sessionKey, messages, protocol: "anthropic", lane: requestKind,
       })
     : undefined;
+  // Trace id scope of this request (compaction epoch + lane). Computed here
+  // from the client messages, before injection edits them, and passed to the
+  // three observation entries so that they derive the same trace id.
+  const traceScope = turnTraceScope(messages as unknown[], requestKind);
 
   // ── mem: command intercept ────────────────────────────────────────────────
   // 在 session init 完成后、injection pipeline 之前检测。
@@ -1019,6 +1023,7 @@ export async function runAnthropicPipeline(
       // Langfuse trace, 治理前走 inline countHumanTurns fallback 在 compaction
       // 场景会漂移。
       preResolvedTurnSeq: resolvedTurnSeq,
+      turnTraceScope: traceScope,
     });
     if (memResp) return stageResponseTailFix(memResp, agentSource, isStream);
   }
@@ -1070,6 +1075,7 @@ export async function runAnthropicPipeline(
       // countHumanTurns, 和 lf 的 resolveMonotonicTurnSeq 在 compaction
       // 场景会分家。
       turnSeqOverride: resolvedTurnSeq,
+      turnTraceScope: traceScope,
     });
     body = injected.body;
     messages = injected.messages;
@@ -1201,6 +1207,7 @@ export async function runAnthropicPipeline(
     wecomName,
     spaceId,
     preResolvedTurnSeq: resolvedTurnSeq,
+    turnTraceScope: traceScope,
   });
   stageReportAnalyzerTrace({ config, target, traceId, lf, keyId, sessionKey, turnSeq, startTime, spaceId });
 
