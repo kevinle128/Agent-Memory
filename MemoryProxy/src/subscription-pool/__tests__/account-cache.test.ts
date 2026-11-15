@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  clearAccountCache, getPoolSnapshot, markAccountExhausted, observeAccountWindows, replaceAccountToken,
+  clearAccountCache, getPoolSnapshot, markAccountExhausted, markAccountUnavailable, observeAccountWindows, replaceAccountToken,
+  unavailableAccountIds,
 } from "../account-cache.js";
 import type { PoolAccount } from "../types.js";
 
@@ -158,5 +159,15 @@ describe("pool account cache", () => {
     replaceAccountToken("sp1", "a", "fresh", null);
     const snap = await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 0);
     expect(snap.accounts[0]).toMatchObject({ access_token: "fresh", token_expires_at: null });
+  });
+
+  it("holds an account back after a transient failure without marking it exhausted", async () => {
+    vi.stubGlobal("fetch", coreReturns([acct("a"), acct("b")]));
+    markAccountUnavailable("sp1", "a", 60_000);
+    expect(unavailableAccountIds("sp1", 59_999)).toEqual(new Set(["a"]));
+    expect(unavailableAccountIds("sp1", 60_000)).toEqual(new Set());
+    expect(unavailableAccountIds("sp2", 0)).toEqual(new Set());
+    const snap = await getPoolSnapshot(CORE, "sp1", { cacheTtlSec: 30 }, 0);
+    expect(snap.accounts.map((a) => [a.account_id, a.status, a.exhausted_until])).toEqual([["a", "active", null], ["b", "active", null]]);
   });
 });

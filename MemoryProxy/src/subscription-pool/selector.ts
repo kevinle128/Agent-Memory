@@ -112,6 +112,22 @@ export function selectAccount(
 }
 
 /**
+ * True when an enabled account in a servable state is below its usage limit for the request.
+ * When selection found no account but this is true, a non-quota cause (a failed token refresh,
+ * the attempt limit of one request) held the account back, so the pool must not answer with a
+ * quota reset. `quotaReached` holds accounts that this request confirmed at their limit.
+ */
+export function hasAccountBelowQuota(
+  accounts: readonly PoolAccount[],
+  now: number,
+  requestedModel: string,
+  quotaReached: ReadonlySet<string> = new Set(),
+): boolean {
+  return accounts.some((account) => !quotaReached.has(account.account_id)
+    && isServable(account, now) && accountUsagePct(account, now, requestedModel) < QUOTA_REACHED_PCT);
+}
+
+/**
  * Earliest moment an account of the pool may serve again, in epoch milliseconds, or null when
  * no account has a known reset (all disabled or needing a new login, or no reset time reported).
  */
