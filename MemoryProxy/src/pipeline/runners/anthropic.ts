@@ -106,6 +106,7 @@ import { triggerSkillExtractIfReady } from "../../skill/handler-glue.js";
 import { emitModelIntentTelemetry } from "../../session/model-intent-telemetry.js";
 import { isExtractionAllowed, logExtractionSkipped } from "../../extraction-gate.js";
 import type { CcRequestKind } from "../../common/cc-request-classifier.js";
+import { MEMORY_MODE_HEADER, resolveMemoryGates } from "../../common/memory-mode.js";
 import { buildRequestDebugMetadata } from "../../common/langfuse-debug.js";
 import { resolveAgentAdapter } from "../../agent-adapters/index.js";
 import { resolveAgentStrategy } from "../strategies/agent/index.js";
@@ -551,8 +552,13 @@ export async function runAnthropicPipeline(
   // 画像弹表单、拦 mem 命令、注入资产比不做更糟，因此记忆类功能一律关闭。
   // 压缩、路由与计费不在这条门控下，照常生效。
   const legacyProxy = isLegacyProxyPath(c.req.path);
+  // `x-memory-mode: off` closes the same memory gates as the legacy route, on the normal
+  // route, so the request still uses the account pool and tracing.
+  const memoryGates = resolveMemoryGates({
+    requestKind, legacyProxy, memoryModeHeader: c.req.header(MEMORY_MODE_HEADER),
+  });
   /** 本轮是否允许触碰记忆：mem 命令、session-init、injection、L0、skill。 */
-  const memoryTurn = requestKind === "main" && !legacyProxy;
+  const memoryTurn = memoryGates.memoryTurn;
 
   // ── Model gate: reject requests whose `model` is not a registered display name ──
   // 价目表已配置时，客户端 `model` 必须匹配某条 entry 的 `modelName`（展示名，
@@ -753,7 +759,7 @@ export async function runAnthropicPipeline(
   }
 
   // ── mem:session-reset pre-hook (via shared stage) ──
-  // anthropic 用 memoryTurn 作 gate (requestKind=main && !legacyProxy).
+  // anthropic 用 memoryTurn 作 gate (requestKind=main, not legacy route, no `x-memory-mode: off`).
   // header-only agent 拒绝分支 + 主 reset 流程都收敛在 stage 内部。
   // a08d67e9 dsh SSE tail fix 在 stage 内部的 header-only 拒绝响应处套 wrapper。
   const _resetResp = await stageSessionResetPreHook({
@@ -773,7 +779,7 @@ export async function runAnthropicPipeline(
   // CC 分流：SIDEQUERY 完全跳过 session-init（独立小请求无对话概念）。
   //          FORK 允许走 L2b recovery 复用 MAIN 已建的 session，但不进 form 交互路径
   //          （借用 MAIN 的 sessionInfo，见下方的 kind === 'fork' 分支保护）。
-  const skipSessionInit = requestKind === "sidequery" || legacyProxy;
+  const skipSessionInit = memoryGates.skipSessionInit;
   if (config.sessionInit?.enabled && conversationId && !skipSessionInit) {
     try {
       // Round 18: session-init 主编排走 shared stageSessionInitOrchestrate;
@@ -1052,9 +1058,9 @@ export async function runAnthropicPipeline(
   //   - SIDEQUERY: 完全跳过 (skip=true)
   //   - FORK:      readOnly=true (miss 时不 self-heal)
   //   - MAIN:      完整 pipeline
-  const skipInjection = requestKind === "sidequery" || legacyProxy;
+  const skipInjection = memoryGates.skipInjection;
   if (skipInjection) {
-    console.log(`[injection-debug] skipping injection for kind=sidequery session=${sessionKey}`);
+    console.log(`[injection-debug] skipping injection for kind=${requestKind} legacy=${legacyProxy} memoryMode=${c.req.header(MEMORY_MODE_HEADER) ?? ""} session=${sessionKey}`);
   }
   {
     const injected = await stageInjectionRunner({
