@@ -1481,6 +1481,7 @@ export async function runAnthropicPipeline(
       spaceId,
       upstreamRequestId,
       requestKind,
+      memoryTurn,
       langfuseDebug,
       debugMetadata,
       preparedStats,
@@ -1924,6 +1925,8 @@ interface AnthropicTapContext {
   upstreamRequestId?: string;
   /** CC 请求分流类别，决定 stream 完成后是否触发 skill/L0 副作用。 */
   requestKind: CcRequestKind;
+  /** The turn may touch memory (main kind, not legacy route, no `x-memory-mode: off`); gates L0 and skill. */
+  memoryTurn: boolean;
   /** `config.langfuse.debug === true` 的求值结果，透传避免流内重复读 config。 */
   langfuseDebug: boolean;
   /** buildRequestDebugMetadata 求值结果；debug=false 时为 {}。 */
@@ -2043,7 +2046,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
       }
 
       // CC 分流：FORK/SIDEQUERY 不是真实对话轮，跳过 L0/skill。Credit 仍上报。
-      const isMainDialog = ctx.requestKind === "main";
+      const isMainDialog = ctx.memoryTurn;
 
       // Tdai L0 write
       if (isMainDialog && ctx.l0Capture.skip) {

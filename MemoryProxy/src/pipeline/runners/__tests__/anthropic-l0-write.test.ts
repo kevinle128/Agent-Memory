@@ -37,6 +37,18 @@ const upstreamReply = () => jsonResponse({
   stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 },
 });
 
+const upstreamStream = () => new Response(
+  [
+    `event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "claude-opus-4-8", content: [], usage: { input_tokens: 1, output_tokens: 0 } } })}\n\n`,
+    `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`,
+    `event: content_block_delta\ndata: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "on it" } })}\n\n`,
+    `event: content_block_stop\ndata: ${JSON.stringify({ type: "content_block_stop", index: 0 })}\n\n`,
+    `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } })}\n\n`,
+    `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
+  ].join(""),
+  { status: 200, headers: { "content-type": "text/event-stream" } },
+);
+
 const marked = { type: "text", text: "fix the login bug", cache_control: { type: "ephemeral" } };
 const body = {
   model: "claude-opus-4-8", max_tokens: 1000, stream: false,
@@ -44,7 +56,7 @@ const body = {
   messages: [{ role: "user", content: [marked] }],
 };
 
-async function send(headers: Record<string, string>): Promise<ReturnType<typeof installFetch>> {
+async function send(headers: Record<string, string>, stream = false): Promise<ReturnType<typeof installFetch>> {
   const config = makeConfig();
   config.sessionInit = { ...(config.sessionInit ?? {}), enabled: true } as typeof config.sessionInit;
   config.injection = { ...(config.injection ?? {}), enabled: false } as typeof config.injection;
@@ -52,11 +64,11 @@ async function send(headers: Record<string, string>): Promise<ReturnType<typeof 
     ...config.tdai, enabled: true, endpoint: CORE_URL,
     memory: { ...config.tdai.memory, enabled: true, writeL0: true, recallL1: false, injectL2L3: false },
   };
-  const calls = installFetch(() => upstreamReply());
+  const calls = installFetch(() => (stream ? upstreamStream() : upstreamReply()));
   const res = await makeApp(config).request("/claude-code/default/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": "k", "x-claude-code-session-id": SESSION, ...headers },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, stream }),
   });
   expect(res.status).toBe(200);
   await res.text();
@@ -107,4 +119,13 @@ describe("anthropic runner L0 write", () => {
     expect(l0Writes(calls)).toHaveLength(0);
     expect(skillTrigger).not.toHaveBeenCalled();
   });
+
+  for (const stream of [false, true]) {
+    it(`writes no L0 and no skill buffer with x-memory-mode: off (stream=${stream})`, async () => {
+      const calls = await send({ "x-memory-mode": "off" }, stream);
+      expect(calls.upstreamCalls).toHaveLength(1);
+      expect(l0Writes(calls)).toHaveLength(0);
+      expect(skillTrigger).not.toHaveBeenCalled();
+    });
+  }
 });
