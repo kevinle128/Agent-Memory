@@ -1174,8 +1174,10 @@ edit_agy_hooks() {
   local mode="$1"
   case "$JSON_TOOL" in
     jq)
-      jq --arg name "$AGY_HOOK_NAME" --arg cmd "$HOOK_CMD" --arg mode "$mode" '
-        if type != "object" then error("root is not an object")
+      # -n with inputs: an empty file counts as {}, as in the python3 and node branches.
+      jq -n --arg name "$AGY_HOOK_NAME" --arg cmd "$HOOK_CMD" --arg mode "$mode" '
+        ([inputs] | if length == 0 then {} elif length == 1 then .[0] else error("multiple JSON values") end)
+        | if type != "object" then error("root is not an object")
         elif ((.[$name] // {}) | type) != "object" then error("entry is not an object")
         else . end
         | . as $orig

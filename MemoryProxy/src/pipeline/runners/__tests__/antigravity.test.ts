@@ -196,6 +196,8 @@ describe("antigravity wire helpers", () => {
     });
     expect(openaiModelList(models)).toEqual({ object: "list", data: [{ id: "claude-opus-5-5-high", object: "model" }, { id: "gemini-3.8-flash-medium", object: "model" }] });
     expect(modelsFromUpstream({ models: [{ model: "a" }, { name: "chat_1" }] })).toEqual([{ id: "a", displayName: "a" }]);
+    expect(modelsFromUpstream({ models: { "gemini-x": { isInternal: true }, "gemini-y": {} } })).toEqual([{ id: "gemini-y", displayName: "gemini-y" }]);
+    expect(modelsFromUpstream({ models: [{ name: "models/gemini-z" }] })).toEqual([{ id: "gemini-z", displayName: "gemini-z" }]);
   });
 
   it("reads the user message of a request and skips tool-loop steps", () => {
@@ -501,7 +503,8 @@ describe("antigravity hook gate and session", () => {
     expect(event.candidates[0].finishReason).toBe("STOP");
     const shown: string = event.candidates[0].content.parts[0].text;
     expect(shown.startsWith(GATE_TEXT_MARKER)).toBe(true);
-    expect(shown).toContain(`curl -fsSL https://proxy.example.test/setup/hooks.sh | bash -s -- --client antigravity --session ${SESSION} --base-url https://proxy.example.test`);
+    expect(shown).toContain(`curl -fsSL https://proxy.example.test/setup/hooks.sh | bash -s -- --client antigravity --session ${SESSION}`);
+    expect(shown).not.toContain("--base-url");
     expect(upstreamCalls).toHaveLength(0);
     expect(sessionInit).not.toHaveBeenCalled();
   });

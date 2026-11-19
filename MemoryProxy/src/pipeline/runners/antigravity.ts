@@ -23,7 +23,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { gunzipSync } from "node:zlib";
+import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
 import type { Context } from "hono";
 import type { ProxyConfig } from "../../types.js";
 import { verifyUserKey } from "../../auth.js";
@@ -195,14 +196,19 @@ export function isUsableModelId(id: string): boolean {
 /** Models of a `fetchAvailableModels` answer: `models` is an object keyed by id, or an array. */
 export function modelsFromUpstream(payload: unknown): Array<{ id: string; displayName: string }> {
   const models = (payload as { models?: unknown } | null)?.models;
-  const entries: Array<[unknown, { displayName?: unknown } | undefined]> = Array.isArray(models)
-    ? (models as Array<{ model?: unknown; name?: unknown; displayName?: unknown }>).map((m) => [m?.model ?? m?.name, m])
+  type Entry = { displayName?: unknown; isInternal?: unknown } | undefined;
+  const entries: Array<[unknown, Entry]> = Array.isArray(models)
+    ? (models as Array<{ model?: unknown; name?: unknown; displayName?: unknown; isInternal?: unknown }>).map((m) => [
+        typeof m?.model === "string" ? m.model : typeof m?.name === "string" ? m.name.replace(/^models\//, "") : undefined,
+        m,
+      ])
     : models && typeof models === "object"
-      ? Object.entries(models as Record<string, { displayName?: unknown } | undefined>)
+      ? Object.entries(models as Record<string, Entry>)
       : [];
   const out: Array<{ id: string; displayName: string }> = [];
   for (const [key, value] of entries) {
-    if (typeof key !== "string" || !isUsableModelId(key)) continue;
+    // Same filter as Core's parseAntigravityModels: internal models are not for clients.
+    if (typeof key !== "string" || value?.isInternal === true || !isUsableModelId(key)) continue;
     out.push({ id: key, displayName: typeof value?.displayName === "string" && value.displayName ? value.displayName : key });
   }
   return out;
@@ -241,11 +247,17 @@ function googleError(status: number, message: string, code = "INVALID_ARGUMENT")
   });
 }
 
+const gunzipAsync = promisify(gunzip);
+/** Largest decompressed gzip body. A small gzip bomb must not exhaust the memory of the shared proxy. */
+const MAX_GUNZIP_BYTES = 64 * 1024 * 1024;
+
 /** Request body bytes, with a gzip body decompressed. Chunked bodies are handled by the server. */
 async function readJsonBody(c: Context): Promise<Record<string, unknown> | null> {
   try {
     let bytes = Buffer.from(await c.req.arrayBuffer());
-    if ((c.req.header("content-encoding") ?? "").toLowerCase().includes("gzip")) bytes = gunzipSync(bytes);
+    if ((c.req.header("content-encoding") ?? "").toLowerCase().includes("gzip")) {
+      bytes = await gunzipAsync(bytes, { maxOutputLength: MAX_GUNZIP_BYTES });
+    }
     const parsed: unknown = JSON.parse(bytes.toString("utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
   } catch {

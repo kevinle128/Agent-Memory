@@ -2041,7 +2041,7 @@ export const zhCN = {
   'subscriptionPool.add.antigravity.redirectNote': '在浏览器中用 Google 登录。登录后会跳转到 localhost:51121 并显示无法加载，这是正常的。请复制地址栏中的完整 URL 并粘贴到此处。',
   'subscriptionPool.add.antigravity.step1': '第 1 步 — 打开此链接并登录 Google 账号',
   'subscriptionPool.add.antigravity.step2': '第 2 步 — 复制 localhost:51121 页面（无法加载）的完整 URL 并粘贴到此处',
-  'subscriptionPool.add.antigravity.pastePlaceholder': 'http://localhost:51121/oauth-callback?code=…&state=…',
+  'subscriptionPool.add.antigravity.pastePlaceholder': 'http://localhost:51121/callback?code=…&state=…',
   'subscriptionPool.add.antigravity.terms': '这里使用 AntiGravity CLI 的公开登录方式。若 Google 调整，可能失效；汇集个人账号也可能违反 Google 的条款。',
   'subscriptionPool.add.submit': '添加账号',
   'subscriptionPool.add.restart': '重新开始',

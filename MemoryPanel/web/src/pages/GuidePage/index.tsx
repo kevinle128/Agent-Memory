@@ -51,7 +51,7 @@ const QUICK_SETUP_SKILL_PROMPT =
   '请阅读 ~/agents/skills/setup-proxy/SKILL.md，然后按照里面的步骤引导我完成 Agent 接入 Memory Proxy 的配置。';
 const HISTORY_IMPORT_SCRIPT =
   'tsx agents/asset-import.ts --source <agent> --agent-id <id> --team-id <tid>';
-const HISTORY_SOURCES = 'claude-code, codebuddy, codex, workbuddy, dsh, hermes, openclaw, antigravity';
+const HISTORY_SOURCES = 'claude-code, codebuddy, codex, workbuddy, dsh, hermes, openclaw';
 const KEY_PLACEHOLDER = '<your-team-memory-api-key>';
 
 /** 页面上只显示 key 的首尾几位，避免明文出现在屏幕/截图里 */
@@ -84,7 +84,7 @@ interface ManualIde {
   /** 配置是否用到 Model ID；不用时隐藏 Model ID 输入框 */
   usesModel?: boolean;
   /** Hook install command (same call as setup-proxy.sh install_project_hooks); run after the config is written. */
-  hookCommand?: (base: string, instanceId: string) => string;
+  hookCommand?: (base: string, instanceId: string, mode: ProxyMode, apiKey: string) => string;
   /** 启动/注意事项（可空） */
   notes?: string[];
 }
@@ -138,8 +138,9 @@ const MANUAL_IDES: ManualIde[] = [
     config: (base, instanceId, mode, _model, _own, apiKey) =>
       `export AGY_LLM_GATEWAY_URL=${proxyEndpoint(base, 'antigravity', instanceId, mode)}/${apiKey}`,
     usesModel: false,
-    hookCommand: (base) =>
-      `curl -fsSL ${base}/setup/hooks.sh | bash -s -- --client antigravity --base-url ${base}`,
+    // install.sh needs the full gateway URL <proxy>/antigravity/<space>[/analyse]/<key> in --base-url.
+    hookCommand: (base, instanceId, mode, apiKey) =>
+      `curl -fsSL ${base}/setup/hooks.sh | bash -s -- --client antigravity --base-url ${proxyEndpoint(base, 'antigravity', instanceId, mode)}/${apiKey}`,
     notes: [
       'guide.manual.note.antigravity.0',
       'guide.manual.note.antigravity.1',
@@ -676,9 +677,9 @@ export function GuidePage() {
                       <b>{t('guide.manual.hookTitle')}</b>
                       <small>{t('guide.manual.hookHint')}</small>
                       <div className="guide-command secondary">
-                        <code>{manualIde.hookCommand(proxyBase || proxyFallback, instanceId)}</code>
+                        <code>{manualIde.hookCommand(proxyBase || proxyFallback, instanceId, proxyMode, shownKey)}</code>
                         <CopyButton
-                          value={manualIde.hookCommand(proxyBase || proxyFallback, instanceId)}
+                          value={manualIde.hookCommand(proxyBase || proxyFallback, instanceId, proxyMode, sessionKey || KEY_PLACEHOLDER)}
                           label={t('guide.copyCmd')}
                         />
                       </div>

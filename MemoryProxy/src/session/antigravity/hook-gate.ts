@@ -109,10 +109,9 @@ export async function runAntigravityHookGate(params: AntigravityGateParams): Pro
     return { action: "pass", reason: "installed-in-session" };
   }
 
-  // `--base-url` pins the installer to the proxy that served it, as for the other gated clients.
-  const origin = resolveOrigin(params.config, params.origin);
-  const base = buildInstallCommand(origin, sessionId, "antigravity");
-  const command = base ? `${base} --base-url ${origin}` : null;
+  // No `--base-url`: install.sh needs the full gateway URL with the key there, and a bare origin
+  // makes it fail. Without it the installer reads AGY_LLM_GATEWAY_URL or the URL file of agy.
+  const command = buildInstallCommand(resolveOrigin(params.config, params.origin), sessionId, "antigravity");
   const text = attempts === 0 ? manualInstallText(command) : installNotDoneText(command, false);
   return {
     action: "respond",

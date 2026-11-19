@@ -418,8 +418,9 @@ if ! $SCAN_FOUND; then
     if [[ "$_agy_url" == *"/antigravity/"* ]]; then
       SCAN_PROXY=$(echo "$_agy_url" | sed -E 's|(/antigravity/.*)$||')
       SCAN_INSTANCE=$(echo "$_agy_url" | sed -E 's|.*/antigravity/([^/]+).*|\1|')
-      SCAN_KEY=$(echo "$_agy_url" | sed -E 's|.*/antigravity/[^/]+(/analyse)?/([^/]+)/?$|\2|')
-      [[ -n "$SCAN_PROXY" ]] && SCAN_FOUND=true && SCAN_SOURCES+=("antigravity → $_agy_path")
+      # -n ... p: a URL without the key segment gives an empty key, not the whole URL.
+      SCAN_KEY=$(echo "$_agy_url" | sed -nE 's|^https?://[^/?]+/antigravity/[^/]+(/analyse)?/([^/?]+)/?$|\2|p')
+      [[ -n "$SCAN_PROXY" && -n "$SCAN_KEY" ]] && SCAN_FOUND=true && SCAN_SOURCES+=("antigravity → $_agy_path")
     fi
   fi
 fi
@@ -594,8 +595,8 @@ if [[ "$HTTP_CODE" == "000" ]]; then
   exit 1
 elif [[ "$HTTP_CODE" =~ ^2 ]]; then
   success "Proxy 连通正常，请求成功 (HTTP ${HTTP_CODE})"
-  if [[ "$CHOSEN_AGENT" == "antigravity" ]] && ! jq -e '.models | type == "array"' "$PROBE_RESPONSE_FILE" >/dev/null 2>&1; then
-    warn "响应里没有 models 列表：订阅池可能没有 AntiGravity 账号，或该分组未包含 antigravity agent"
+  if [[ "$CHOSEN_AGENT" == "antigravity" ]] && ! jq -e 'type == "object" and (.models | type == "array" and length > 0)' "$PROBE_RESPONSE_FILE" >/dev/null 2>&1; then
+    warn "响应里没有可用模型：订阅池可能没有可用 AntiGravity 账号/模型，或该分组未包含 antigravity agent"
   fi
 elif [[ "$HTTP_CODE" =~ ^4 && "$CHOSEN_AGENT" != "antigravity" ]]; then
   # 4xx = proxy alive, show response for transparency
@@ -1443,6 +1444,11 @@ write_opencode() {
 # and ~/.agent-memory/antigravity.url, and backs up each file it changes. The user key goes in
 # AGENT_MEMORY_KEY, so it does not appear in the process list.
 write_antigravity() {
+  # The hook installer picks the shell profile itself, so a --config-path cannot change it.
+  if [[ -n "$ARG_CONFIG_PATH" && "$ARG_CONFIG_PATH" != "$CHOSEN_CONFIG_PATH" ]]; then
+    warn "antigravity 由 hook 安装器固定写入 ${CHOSEN_CONFIG_PATH}，已忽略 --config-path (${ARG_CONFIG_PATH})"
+  fi
+  CONFIG_DISPLAY="$CHOSEN_CONFIG_PATH"
   local gateway_base="${PROXY_HOST}/antigravity/${INSTANCE_ID}"
   case "$PROXY_HOST" in
     http://localhost* | http://127.0.0.1* | "http://[::1]"* | https://*) ;;

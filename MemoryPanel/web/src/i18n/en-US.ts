@@ -2086,7 +2086,7 @@ export const enUS = {
   'subscriptionPool.add.antigravity.redirectNote': 'Sign in with Google in the browser. It will redirect to localhost:51121 and fail to load. This is normal. Copy the full URL from the address bar and paste it here.',
   'subscriptionPool.add.antigravity.step1': 'Step 1 — Open this link and sign in with the Google account',
   'subscriptionPool.add.antigravity.step2': 'Step 2 — Copy the full URL of the page on localhost:51121 (it fails to load) and paste it here',
-  'subscriptionPool.add.antigravity.pastePlaceholder': 'http://localhost:51121/oauth-callback?code=…&state=…',
+  'subscriptionPool.add.antigravity.pastePlaceholder': 'http://localhost:51121/callback?code=…&state=…',
   'subscriptionPool.add.antigravity.terms': 'This uses the AntiGravity CLI public login. It may stop working if Google changes it, and pooling personal accounts may break Google\'s terms.',
   'subscriptionPool.add.submit': 'Add account',
   'subscriptionPool.add.restart': 'Start again',

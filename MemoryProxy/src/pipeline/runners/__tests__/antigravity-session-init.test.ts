@@ -17,7 +17,7 @@ import { __resetSessionStoreForTests, getSessionStore } from "../../../session/s
 import { setMetadataClient, type MetadataClient } from "../../../meta/client.js";
 import { isHeaderOnlyAgent } from "../../../session/preset.js";
 import { detectClientCapabilities } from "../../../session/client-capabilities.js";
-import { SESSION_INIT_MARKER, contentsToMessages, stripSessionInitTurns } from "../../../session/antigravity/session-init-text.js";
+import { SESSION_INIT_BYPASS_MARKER, SESSION_INIT_MARKER, contentsToMessages, stripSessionInitTurns } from "../../../session/antigravity/session-init-text.js";
 import { isAgySystemNotice, userRequestText } from "../../../session/antigravity/user-request.js";
 import { extractUserMessage } from "../antigravity.js";
 import { installFetch, makeConfig, resetPoolState } from "../../../subscription-pool/__tests__/test-harness.js";
@@ -338,6 +338,13 @@ describe("session init helpers", () => {
     expect(stripSessionInitTurns(input)).toEqual({ ...input, contents: [user("a"), model("b"), user("c")] });
     const plain = { contents: [user("a"), model("b")] };
     expect(stripSessionInitTurns(plain)).toBe(plain);
+  });
+
+  it("removes a bypass notice but keeps the real prompt that follows it", () => {
+    const q = model(`${SESSION_INIT_MARKER}\nquestion`);
+    const bypass = model(`${SESSION_INIT_BYPASS_MARKER}\nnotice`);
+    const input = { contents: [user("a"), q, user("zzz"), q, user("zzz"), q, user("zzz"), bypass, user("real prompt")] };
+    expect(stripSessionInitTurns(input)).toEqual({ ...input, contents: [user("a"), user("real prompt")] });
   });
 
   it("keeps the header-only path of other agents and puts antigravity on the text mode", () => {

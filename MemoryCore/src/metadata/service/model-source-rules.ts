@@ -20,6 +20,8 @@ export class SourceRuleError extends Error {
 
 export const SOURCE_FORMATS = ["anthropic-messages", "openai-chat", "openai-responses", "gemini"] as const;
 export type SourceFormat = (typeof SOURCE_FORMATS)[number];
+/** Wire formats an API-key source may speak. `gemini` is only spoken by the AntiGravity subscription pool. */
+export const API_SOURCE_FORMATS = ["anthropic-messages", "openai-chat", "openai-responses"] as const;
 
 /** Source fields a caller may send on create and update. Fetch results are written by Core only. */
 export const SOURCE_INPUT_KEYS = [
@@ -202,12 +204,12 @@ function resolveSourceAgents(ctx: SourceWriteContext): string[] | undefined {
 
 function resolveApiFormats(formats: string[]): string[] {
   const unique = Array.from(new Set(formats));
-  const allowed = new Set<string>(SOURCE_FORMATS);
+  const allowed = new Set<string>(API_SOURCE_FORMATS);
   const rejected = unique.filter((f) => !allowed.has(f));
   if (unique.length === 0 || rejected.length > 0) {
     throw new SourceRuleError(
       "INVALID_SOURCE_FORMATS",
-      `source_formats must be a non-empty subset of ${SOURCE_FORMATS.join(", ")}`,
+      `source_formats must be a non-empty subset of ${API_SOURCE_FORMATS.join(", ")}`,
       { rejected_formats: rejected },
     );
   }

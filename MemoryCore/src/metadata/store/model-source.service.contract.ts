@@ -141,6 +141,7 @@ export function runModelSourceServiceContract(
       it("checks source_formats", async () => {
         await expect(source("api-f1", { source_formats: [] })).rejects.toMatchObject({ code: "INVALID_SOURCE_FORMATS" });
         await expect(source("api-f2", { source_formats: ["openai-chat", "grpc"] })).rejects.toMatchObject({ code: "INVALID_SOURCE_FORMATS" });
+        await expect(source("api-f4", { source_formats: ["gemini"] })).rejects.toMatchObject({ code: "INVALID_SOURCE_FORMATS" });
         await expect(source("api-f3", { source_formats: ["anthropic-messages", "openai-responses"] }))
           .resolves.toMatchObject({ source_formats: ["anthropic-messages", "openai-responses"] });
       });

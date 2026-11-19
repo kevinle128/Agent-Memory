@@ -21,6 +21,11 @@ import { isAgySystemNotice, userRequestText } from "./user-request.js";
 
 /** First characters of every question turn, so later requests can find and remove it. */
 export const SESSION_INIT_MARKER = "[Agent-Memory session init]";
+/**
+ * First characters of the bypass notice. It asks nothing, so the user turn after it is the next real
+ * prompt: only the notice itself is removed.
+ */
+export const SESSION_INIT_BYPASS_MARKER = "[Agent-Memory session init bypass]";
 
 type Content = { role?: unknown; parts?: unknown };
 
@@ -31,10 +36,18 @@ function textOf(turn: Content | undefined): string {
     .join("\n");
 }
 
-function isQuestionTurn(turn: Content | undefined): boolean {
+function startsWithMarker(turn: Content | undefined, marker: string): boolean {
   if (turn?.role !== "model" || !Array.isArray(turn.parts)) return false;
   const first = (turn.parts[0] as { text?: unknown } | undefined)?.text;
-  return typeof first === "string" && first.startsWith(SESSION_INIT_MARKER);
+  return typeof first === "string" && first.startsWith(marker);
+}
+
+function isQuestionTurn(turn: Content | undefined): boolean {
+  return startsWithMarker(turn, SESSION_INIT_MARKER);
+}
+
+function isBypassTurn(turn: Content | undefined): boolean {
+  return startsWithMarker(turn, SESSION_INIT_BYPASS_MARKER);
 }
 
 /**
@@ -56,14 +69,16 @@ export function contentsToMessages(body: Record<string, unknown>): Array<Record<
 
 /**
  * The body without the question turns and every user turn that follows one, up to the next model
- * turn: the typed replies and the system notices that agy adds as further `user` entries. Returns
- * the same object when there is nothing to remove.
+ * turn: the typed replies and the system notices that agy adds as further `user` entries. A bypass
+ * notice is removed alone, because the user turn after it is a new prompt. Returns the same object
+ * when there is nothing to remove.
  */
 export function stripSessionInitTurns(body: Record<string, unknown>): Record<string, unknown> {
   const contents = Array.isArray(body.contents) ? body.contents as Content[] : [];
-  if (!contents.some(isQuestionTurn)) return body;
+  if (!contents.some((turn) => isQuestionTurn(turn) || isBypassTurn(turn))) return body;
   const kept: Content[] = [];
   for (let i = 0; i < contents.length; i++) {
+    if (isBypassTurn(contents[i])) continue;
     if (isQuestionTurn(contents[i])) {
       while (contents[i + 1]?.role === "user") i++;
       continue;
@@ -95,7 +110,7 @@ export function renderSessionInitText(result: SessionInitResult): string | null 
     };
     return `${SESSION_INIT_MARKER}\n${renderTextForm(form, { retry: fd.retry ? {} : undefined })}`;
   }
-  if (result.intercepted && result.bypassed) return `${SESSION_INIT_MARKER}\n${renderBypassNotice()}`;
+  if (result.intercepted && result.bypassed) return `${SESSION_INIT_BYPASS_MARKER}\n${renderBypassNotice()}`;
   return null;
 }
 
