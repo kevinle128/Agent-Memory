@@ -123,7 +123,8 @@ describe("anthropic runner L0 write", () => {
   for (const stream of [false, true]) {
     it(`writes no L0 and no skill buffer with x-memory-mode: off (stream=${stream})`, async () => {
       const calls = await send({ "x-memory-mode": "off" }, stream);
-      expect(calls.upstreamCalls).toHaveLength(1);
+      // Count model forwards only: the credit report to the billing gateway is async and may or may not have run yet.
+      expect(calls.upstreamCalls.filter((c) => c.url.endsWith("/v1/messages"))).toHaveLength(1);
       expect(l0Writes(calls)).toHaveLength(0);
       expect(skillTrigger).not.toHaveBeenCalled();
     });
