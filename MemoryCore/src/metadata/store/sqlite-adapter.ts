@@ -186,11 +186,12 @@ const INSTANCE_UPSTREAM_SINGLETON_INDEX_DDL = `
     WHERE group_type IN ('default','extraction');
 `;
 
-const SUBSCRIPTION_ACCOUNT_TABLE_DDL = `
-  CREATE TABLE IF NOT EXISTS meta_upstream_subscription_account (
+function subscriptionAccountTableDdl(table: string): string {
+  return `
+  CREATE TABLE IF NOT EXISTS ${table} (
     account_id TEXT PRIMARY KEY,
     group_id TEXT NOT NULL,
-    provider TEXT NOT NULL CHECK (provider IN ('claude','codex')),
+    provider TEXT NOT NULL CHECK (provider IN ('claude','codex','antigravity')),
     display_name TEXT NOT NULL,
     account_label TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -199,6 +200,7 @@ const SUBSCRIPTION_ACCOUNT_TABLE_DDL = `
     refresh_token TEXT NOT NULL DEFAULT '',
     token_expires_at INTEGER,
     provider_account_id TEXT NOT NULL,
+    project_id TEXT,
     usage_json TEXT NOT NULL DEFAULT '{"windows":[]}',
     reset_credits_json TEXT,
     usage_updated_at INTEGER,
@@ -215,6 +217,7 @@ const SUBSCRIPTION_ACCOUNT_TABLE_DDL = `
     UNIQUE(group_id, display_name)
   );
 `;
+}
 
 type Row = Record<string, SQLInputValue>;
 
@@ -562,7 +565,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       }
     }
 
-    this.db.exec(SUBSCRIPTION_ACCOUNT_TABLE_DDL);
+    this.db.exec(subscriptionAccountTableDdl("meta_upstream_subscription_account"));
 
     // An account table from an earlier build has no session counter column.
     const hasSessionColumn = this.all<{ name: string }>(
@@ -578,6 +581,40 @@ export class SqliteMetadataStore implements IMetadataStore {
     );
     if (hasResetCreditsColumn.length === 0) {
       this.db.exec("ALTER TABLE meta_upstream_subscription_account ADD COLUMN reset_credits_json TEXT");
+    }
+
+    this.migrateSubscriptionAccountProviders();
+  }
+
+  /**
+   * SQLite cannot change a CHECK constraint in place. A table made before the AntiGravity provider
+   * only allows claude and codex, so it is rebuilt with the new constraint and the project column.
+   * Every existing column is copied by name, because older tables have another column order.
+   */
+  private migrateSubscriptionAccountProviders(): void {
+    const tableSql = this.get(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'meta_upstream_subscription_account'",
+    )?.sql;
+    if (typeof tableSql !== "string" || tableSql.includes("'antigravity'")) return;
+
+    const copiedColumns = this.all<{ name: string }>(
+      "SELECT name FROM pragma_table_info('meta_upstream_subscription_account')",
+    ).map((column) => column.name).filter((name) => name !== "project_id").join(", ");
+    // Dropping the old table with foreign keys on would cascade into its dependants.
+    this.db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      this.withImmediateTx(() => {
+        this.db.exec("DROP TABLE IF EXISTS meta_upstream_subscription_account_rebuild");
+        this.db.exec(subscriptionAccountTableDdl("meta_upstream_subscription_account_rebuild"));
+        this.db.exec(
+          `INSERT INTO meta_upstream_subscription_account_rebuild (${copiedColumns})
+           SELECT ${copiedColumns} FROM meta_upstream_subscription_account`,
+        );
+        this.db.exec("DROP TABLE meta_upstream_subscription_account");
+        this.db.exec("ALTER TABLE meta_upstream_subscription_account_rebuild RENAME TO meta_upstream_subscription_account");
+      });
+    } finally {
+      this.db.exec("PRAGMA foreign_keys = ON");
     }
   }
 
@@ -2956,6 +2993,7 @@ export class SqliteMetadataStore implements IMetadataStore {
         this.run(
           `UPDATE meta_upstream_subscription_account
            SET access_token = ?, refresh_token = ?, token_expires_at = ?, account_label = ?,
+               project_id = COALESCE(?, project_id),
                status = ?, refresh_fail_count = 0, last_error = NULL,
                version = version + 1, updated_at = ?
            WHERE account_id = ?`,
@@ -2963,6 +3001,7 @@ export class SqliteMetadataStore implements IMetadataStore {
           input.refresh_token,
           input.token_expires_at,
           input.account_label ?? String(existing.account_label ?? ""),
+          input.project_id ?? null,
           nextStatus,
           now,
           String(existing.account_id),
@@ -2978,9 +3017,9 @@ export class SqliteMetadataStore implements IMetadataStore {
       this.run(
         `INSERT INTO meta_upstream_subscription_account
           (account_id, group_id, provider, display_name, account_label, enabled, status,
-           access_token, refresh_token, token_expires_at, provider_account_id,
+           access_token, refresh_token, token_expires_at, provider_account_id, project_id,
            usage_json, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, 1, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         accountId,
         input.group_id,
         input.provider,
@@ -2990,6 +3029,7 @@ export class SqliteMetadataStore implements IMetadataStore {
         input.refresh_token,
         input.token_expires_at,
         input.provider_account_id,
+        input.project_id ?? null,
         JSON.stringify({ windows: [] }),
         now,
         now,
@@ -3132,6 +3172,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       refresh_token: String(r.refresh_token ?? ""),
       token_expires_at: nullableNumber(r.token_expires_at),
       provider_account_id: String(r.provider_account_id),
+      project_id: r.project_id == null ? null : String(r.project_id),
       usage,
       reset_credits: resetCredits,
       usage_updated_at: nullableNumber(r.usage_updated_at),

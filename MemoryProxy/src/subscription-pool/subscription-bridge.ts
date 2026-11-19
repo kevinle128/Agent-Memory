@@ -56,7 +56,7 @@ const TAG = "[subscription-bridge]";
 const PATH_PREFIX = "/subscription-bridge/v1/";
 const MAX_EMAIL_LENGTH = 254;
 /** Agents that a Subscription Pool serves. The session key in the session store has this prefix. */
-const POOL_AGENTS = ["claude-code", "codex"] as const;
+const POOL_AGENTS = ["claude-code", "codex", "antigravity"] as const;
 
 type Action = "current" | "switch";
 
@@ -89,7 +89,7 @@ function errorResponse(err: BridgeError): Response {
 }
 
 const notPoolSession = (): BridgeError =>
-  new BridgeError(409, 40901, "not_pool_session", "This conversation is not served by a Claude Code or Codex Subscription Pool.");
+  new BridgeError(409, 40901, "not_pool_session", "This conversation is not served by a Claude Code, Codex or AntiGravity Subscription Pool.");
 
 const storageUnavailable = (): BridgeError =>
   new BridgeError(503, 50301, "storage_unavailable", "The Proxy storage is not available. Try again later.");
@@ -147,8 +147,9 @@ async function findSession(sessionId: string, headerSpaceId: string): Promise<Po
     throw new BridgeError(401, 40101, "session_not_initialized", "The Proxy does not know this conversation yet.");
   }
   // An old binding without an agent gives no provider. Never guess one.
-  if (binding.agentSource !== "claude-code" && binding.agentSource !== "codex") throw notPoolSession();
-  return { sessionId, spaceId: headerSpaceId, userId: binding.userId, agentSource: binding.agentSource };
+  const boundAgent = binding.agentSource;
+  if (!boundAgent || !(POOL_AGENTS as readonly string[]).includes(boundAgent)) throw notPoolSession();
+  return { sessionId, spaceId: headerSpaceId, userId: binding.userId, agentSource: boundAgent };
 }
 
 async function readEmail(c: Context): Promise<string> {

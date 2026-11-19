@@ -149,3 +149,45 @@ export function parseClaudeLimitBody(headers: Headers, now: number): CodexLimitI
   if (resetsAt === null || resetsAt <= now) return { resetsAt: null, retryAfterSec: null };
   return { resetsAt, retryAfterSec: Math.ceil((resetsAt - now) / 1000) };
 }
+
+/** Google duration text such as "30s", "1.5s" or "2h3m4s", in seconds. Null when it does not parse. */
+function parseGoogleDuration(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  const match = /^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(raw.trim());
+  if (!match || (match[1] === undefined && match[2] === undefined && match[3] === undefined)) return null;
+  return Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0);
+}
+
+/**
+ * Reset time of an AntiGravity 429 (`RESOURCE_EXHAUSTED`). The body usually carries no retry
+ * information, but Google error details can hold a `RetryInfo.retryDelay` or an
+ * `ErrorInfo.metadata.quotaResetDelay`; the `retry-after` header is the last source.
+ */
+export function parseAntigravityLimitBody(bodyText: string, headers: Headers, now: number): CodexLimitInfo {
+  let delaySec: number | null = null;
+  try {
+    const parsed = JSON.parse(bodyText) as { error?: { details?: unknown } };
+    const details = Array.isArray(parsed?.error?.details) ? parsed.error.details as Array<Record<string, unknown>> : [];
+    for (const detail of details) {
+      const type = typeof detail?.["@type"] === "string" ? detail["@type"] : "";
+      const metadata = detail?.metadata as { quotaResetDelay?: unknown } | undefined;
+      const candidate = type.endsWith("RetryInfo") ? parseGoogleDuration(detail.retryDelay) : parseGoogleDuration(metadata?.quotaResetDelay);
+      if (candidate !== null) {
+        delaySec = delaySec === null ? candidate : Math.min(delaySec, candidate);
+      }
+    }
+  } catch {
+    // A body that is not JSON carries no reset time.
+  }
+  if (delaySec === null) delaySec = finiteNumber(headers.get("retry-after"));
+  if (delaySec === null || delaySec <= 0) return { resetsAt: null, retryAfterSec: null };
+  return { resetsAt: now + delaySec * 1000, retryAfterSec: Math.ceil(delaySec) };
+}
+
+/**
+ * True for the transient 503 of Google ("UNAVAILABLE", "No capacity available for model ..."). It
+ * is a shortage on the server side, not an account quota, so the account is not marked exhausted.
+ */
+export function isAntigravityCapacityError(status: number, bodyText: string): boolean {
+  return status === 503 && /UNAVAILABLE|No capacity available/i.test(bodyText);
+}

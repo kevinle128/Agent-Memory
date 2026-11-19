@@ -31,8 +31,13 @@ services:
     # Optional server-only file with LANGFUSE_ENABLED, LANGFUSE_HOST,
     # LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY, so Core LLM calls are traced.
     # It is not in git; without it Langfuse stays off.
+    # The second optional server-only file holds ANTIGRAVITY_OAUTH_CLIENT_ID and
+    # ANTIGRAVITY_OAUTH_CLIENT_SECRET (the Google OAuth app of AntiGravity).
+    # It is not in git either; without it AntiGravity accounts cannot sign in.
     env_file:
       - path: ./deploy/compose/core-langfuse.env
+        required: false
+      - path: ./deploy/compose/core-antigravity.env
         required: false
     volumes:
       - core-data:/data/tdai-memory

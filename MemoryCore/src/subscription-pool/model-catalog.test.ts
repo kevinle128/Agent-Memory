@@ -190,7 +190,17 @@ describe("fetchPoolSourceModels", () => {
     expect(result.models.map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
     expect(result.models.find((m) => m.id === "m2")?.display_name).toBe("M2");
     expect(result.succeeded).toBe(2);
-    expect(adapter.fetchModels).toHaveBeenCalledWith("token-a", "p-a", undefined);
+    expect(adapter.fetchModels).toHaveBeenCalledWith("token-a", "p-a", { projectId: undefined });
+  });
+
+  it("passes the project of each account to the model call", async () => {
+    const adapter = fakeAdapter({ fetchModels: async () => [] });
+    await fetchPoolSourceModels([account("a", { access_token: "token-a", provider_account_id: "p-a", project_id: "proj-a" })], {
+      adapterFor: () => adapter,
+      refreshAfterUnauthorized: async () => null,
+      options: { codexClientVersion: "9.9.9" },
+    });
+    expect(adapter.fetchModels).toHaveBeenCalledWith("token-a", "p-a", { codexClientVersion: "9.9.9", projectId: "proj-a" });
   });
 
   it("refreshes the token once after a 401 and retries that account", async () => {

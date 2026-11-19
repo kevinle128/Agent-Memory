@@ -1,12 +1,27 @@
 import { createHash, randomBytes } from "node:crypto";
 import { CLAUDE_OAUTH } from "../../subscription-pool/providers/claude.js";
+import { ANTIGRAVITY_OAUTH } from "../../subscription-pool/providers/antigravity.js";
 import { CODEX_OAUTH } from "../../subscription-pool/providers/codex.js";
 import type { SubscriptionProvider } from "../types.js";
 
 const OAUTH_PROFILES = {
   claude: CLAUDE_OAUTH,
   codex: CODEX_OAUTH,
+  antigravity: ANTIGRAVITY_OAUTH,
 } as const;
+
+/** A profile without `PKCE: false` logs in with a code challenge and a verifier. */
+function usesPkce(provider: SubscriptionProvider): boolean {
+  return (OAUTH_PROFILES[provider] as { PKCE?: boolean }).PKCE !== false;
+}
+
+/**
+ * True when the pasted redirect must carry the `state`. Without PKCE nothing else binds a pasted
+ * code to the login that was started, so the state is the only check.
+ */
+export function subscriptionOAuthRequiresPastedState(provider: SubscriptionProvider): boolean {
+  return !usesPkce(provider);
+}
 
 export const SUBSCRIPTION_OAUTH_TTL_MS = 10 * 60 * 1000;
 
@@ -22,7 +37,7 @@ export function createPendingSubscriptionOAuth(
   provider: SubscriptionProvider,
   now = Date.now(),
 ): PendingSubscriptionOAuth {
-  const codeVerifier = randomBytes(32).toString("base64url");
+  const codeVerifier = usesPkce(provider) ? randomBytes(32).toString("base64url") : "";
   const state = randomBytes(32).toString("base64url");
   return {
     provider,
@@ -33,17 +48,18 @@ export function createPendingSubscriptionOAuth(
   };
 }
 
-/** Authorize URL of the provider's public CLI login. The verifier stays on the server. */
+/** Authorize URL of the provider's public CLI login. The verifier, when there is one, stays on the server. */
 export function subscriptionAuthorizeUrl(pending: PendingSubscriptionOAuth): string {
   const profile = OAUTH_PROFILES[pending.provider];
-  const challenge = createHash("sha256").update(pending.codeVerifier).digest("base64url");
   const url = new URL(profile.AUTHORIZE_URL);
   url.searchParams.set("client_id", profile.CLIENT_ID);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", pending.redirectUri);
   url.searchParams.set("scope", profile.SCOPE);
-  url.searchParams.set("code_challenge", challenge);
-  url.searchParams.set("code_challenge_method", "S256");
+  if (usesPkce(pending.provider)) {
+    url.searchParams.set("code_challenge", createHash("sha256").update(pending.codeVerifier).digest("base64url"));
+    url.searchParams.set("code_challenge_method", "S256");
+  }
   url.searchParams.set("state", pending.state);
   for (const [key, value] of Object.entries(profile.extraParams)) url.searchParams.set(key, value);
   return url.toString();

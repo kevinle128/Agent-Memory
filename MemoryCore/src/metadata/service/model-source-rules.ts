@@ -18,7 +18,7 @@ export class SourceRuleError extends Error {
   }
 }
 
-export const SOURCE_FORMATS = ["anthropic-messages", "openai-chat", "openai-responses"] as const;
+export const SOURCE_FORMATS = ["anthropic-messages", "openai-chat", "openai-responses", "gemini"] as const;
 export type SourceFormat = (typeof SOURCE_FORMATS)[number];
 
 /** Source fields a caller may send on create and update. Fetch results are written by Core only. */
@@ -37,12 +37,13 @@ export const SOURCE_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const SOURCE_PROVIDER_RE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 const DEFAULT_API_FORMATS: SourceFormat[] = ["openai-chat"];
 
-export type PoolProvider = "claude" | "codex";
+export type PoolProvider = "claude" | "codex" | "antigravity";
 
 /** What a subscription pool fixes for its source, by provider. */
 const POOL_SOURCE: Record<PoolProvider, { name: string; provider: string; format: SourceFormat }> = {
   claude: { name: "sub-claude", provider: "claude", format: "anthropic-messages" },
   codex: { name: "sub-openai", provider: "openai", format: "openai-responses" },
+  antigravity: { name: "sub-antigravity", provider: "antigravity", format: "gemini" },
 };
 
 /** Source fields a subscription pool group gets: a fixed name, provider and format. */
@@ -52,7 +53,7 @@ export function poolSourceFields(provider: PoolProvider): Pick<InstanceUpstreamS
 }
 
 export function poolProviderOfName(name: string): PoolProvider | null {
-  for (const provider of ["claude", "codex"] as const) {
+  for (const provider of ["claude", "codex", "antigravity"] as const) {
     if (name === `${provider} subscription pool`) return provider;
   }
   return null;
@@ -154,7 +155,7 @@ export function resolveSourceWrite(ctx: SourceWriteContext): SourceWriteResult {
   if (isPool) {
     const provider = poolProviderOfName(ctx.name);
     if (!provider) {
-      throw new SourceRuleError("SOURCE_MODE_NOT_ALLOWED", "only the claude and codex subscription pools can be model sources");
+      throw new SourceRuleError("SOURCE_MODE_NOT_ALLOWED", "only the claude, codex and antigravity subscription pools can be model sources");
     }
     patch.source_provider = POOL_SOURCE[provider].provider;
     patch.source_formats = [POOL_SOURCE[provider].format];
@@ -220,7 +221,7 @@ function slugify(value: string): string {
 }
 
 /**
- * Propose a source name: `sub-claude`, `sub-openai` or `api-<provider>`, with `-2`, `-3`, ...
+ * Propose a source name: `sub-claude`, `sub-openai`, `sub-antigravity` or `api-<provider>`, with `-2`, `-3`, ...
  * appended while the name is taken.
  */
 export function suggestSourceName(kind: "subscription" | "api", provider: string, taken: ReadonlySet<string>): string {
@@ -229,7 +230,8 @@ export function suggestSourceName(kind: "subscription" | "api", provider: string
     const slug = slugify(provider);
     if (slug === "claude") base = "sub-claude";
     else if (slug === "openai" || slug === "codex") base = "sub-openai";
-    else throw new SourceRuleError("INVALID_SOURCE_PROVIDER", "a subscription source provider is claude or openai");
+    else if (slug === "antigravity") base = "sub-antigravity";
+    else throw new SourceRuleError("INVALID_SOURCE_PROVIDER", "a subscription source provider is claude, openai or antigravity");
   } else {
     const slug = slugify(provider);
     base = slug ? `api-${slug}` : "api";

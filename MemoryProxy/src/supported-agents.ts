@@ -25,7 +25,7 @@
  *   3. 部署 Core → 部署 Proxy(顺序不能反,否则 Core seed default 组时会引用不存在的 agent)
  */
 
-export type SupportedAgentProtocol = "anthropic" | "openai-chat" | "openai-responses";
+export type SupportedAgentProtocol = "anthropic" | "openai-chat" | "openai-responses" | "gemini";
 
 export interface SupportedAgent {
   /** 内部枚举值,与 Proxy URL 路径首段一致(如 /codebuddy/:spaceId/...);数据库 agents 数组里存的就是这个 */
@@ -61,6 +61,10 @@ export const DEFAULT_SUPPORTED_AGENTS: SupportedAgent[] = [
   { agent_source: "omp",         protocol: "openai-chat",      display_name: "oh-my-pi", multi_source: true },
   { agent_source: "hermes",      protocol: "anthropic",        display_name: "Hermes",   multi_source: true },
   { agent_source: "openclaw",    protocol: "anthropic",        display_name: "OpenClaw", multi_source: true },
+  // AntiGravity CLI (agy): Gemini API wire through its gateway setting. The path carries the user
+  // key (`/antigravity/<space>/<key>/...`) because agy sends no auth header. Not multi-source:
+  // the pool group of the agent decides the account, and the model list comes from the pool.
+  { agent_source: "antigravity", protocol: "gemini",           display_name: "AntiGravity" },
 ];
 
 /** O(1) 查表:agent_source → SupportedAgent。 */

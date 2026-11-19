@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPendingSubscriptionOAuth,
   parseSubscriptionOAuthCode,
   subscriptionAuthorizeUrl,
+  subscriptionOAuthRequiresPastedState,
 } from "./authorize-url.js";
 
 describe("subscription authorize url", () => {
@@ -31,6 +32,36 @@ describe("subscription authorize url", () => {
     expect(url.searchParams.get("originator")).toBe("codex_cli_rs");
     expect(url.searchParams.get("codex_cli_simplified_flow")).toBe("true");
     expect(url.toString()).not.toContain(pending.codeVerifier);
+  });
+});
+
+describe("antigravity login without PKCE", () => {
+  beforeEach(() => {
+    vi.stubEnv("ANTIGRAVITY_OAUTH_CLIENT_ID", "test-client-id.apps.googleusercontent.com");
+    vi.stubEnv("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "test-secret");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("sends state and offline access, but no code challenge, and keeps no verifier", () => {
+    const pending = createPendingSubscriptionOAuth("antigravity", 1_800_000_000_000);
+    expect(pending.codeVerifier).toBe("");
+    expect(pending.redirectUri).toBe("http://localhost:51121/callback");
+    const url = new URL(subscriptionAuthorizeUrl(pending));
+    expect(url.origin + url.pathname).toBe("https://accounts.google.com/o/oauth2/v2/auth");
+    expect(url.searchParams.get("state")).toBe(pending.state);
+    expect(url.searchParams.get("access_type")).toBe("offline");
+    expect(url.searchParams.get("prompt")).toBe("consent");
+    expect(url.searchParams.get("client_id")).toBe("test-client-id.apps.googleusercontent.com");
+    expect(url.searchParams.has("code_challenge")).toBe(false);
+    expect(url.searchParams.has("code_challenge_method")).toBe(false);
+  });
+
+  it("requires the pasted state only for a login without PKCE", () => {
+    expect(subscriptionOAuthRequiresPastedState("antigravity")).toBe(true);
+    expect(subscriptionOAuthRequiresPastedState("claude")).toBe(false);
+    expect(subscriptionOAuthRequiresPastedState("codex")).toBe(false);
   });
 });
 

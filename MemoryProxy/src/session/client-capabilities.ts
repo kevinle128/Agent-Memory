@@ -69,6 +69,12 @@ export function detectClientCapabilities(
   agentSource: string,
   body: unknown,
 ): ClientCapabilities {
+  // AntiGravity: agy has no tool that the proxy can call to ask the user, so the session-init
+  // questions are plain text turns (the same text mode as a WorkBuddy without the ask tool).
+  if (agentSource === "antigravity") {
+    return { askUserQuestion: false };
+  }
+
   // 仅对 workbuddy 做能力判定；其他客户端一律走原路径。
   if (agentSource !== "workbuddy") {
     return { askUserQuestion: true };

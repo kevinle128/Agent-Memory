@@ -30,7 +30,9 @@ import {
 } from "./binding-store.js";
 import { callPoolCore, PoolCoreError, type PoolCoreConfig } from "./core-client.js";
 import { buildPoolExhaustedResponse, buildPoolUnavailableResponse } from "./exhausted-response.js";
-import { parseClaudeQuotaHeaders, parseCodexQuotaHeaders } from "./quota-signals.js";
+import {
+  isAntigravityCapacityError, parseAntigravityLimitBody, parseClaudeQuotaHeaders, parseCodexQuotaHeaders,
+} from "./quota-signals.js";
 import { reportAccount } from "./reporter.js";
 import { recordPoolUpstreamError, sanitizeErrorText } from "./upstream-error.js";
 import { POOL_RETRY_BUDGET_MS, POOL_RETRY_MAX_WAIT_MS, PoolRetryDeadline, withinRetryDeadline, waitForPoolRetry, notePoolRetryAfter, poolRetryBlockedUntil, originalRateLimitResponse, sharedPoolUsageCheck, readPoolErrorBody } from "./retry.js";
@@ -41,9 +43,11 @@ const TAG = "[subscription-pool]";
 
 export const CODEX_CHATGPT_BASE_URL = "https://chatgpt.com/backend-api/codex";
 export const CLAUDE_API_BASE_URL = "https://api.anthropic.com";
+/** Cloud Code host that AntiGravity uses. The prod host answers 429 for the same requests. */
+export const ANTIGRAVITY_BASE_URL = "https://daily-cloudcode-pa.googleapis.com";
 const OAUTH_BETA = "oauth-2025-04-20";
 
-export type PoolProviderId = "claude" | "codex";
+export type PoolProviderId = "claude" | "codex" | "antigravity";
 /** After a failed token refresh the account is skipped for this long. It does not count as quota. */
 const REFRESH_FAILURE_COOLDOWN_MS = 60 * 1000;
 /** A binding is rewritten at most this often while its session keeps sending requests. */
@@ -115,7 +119,7 @@ export function reportPoolSessionCounts(
 }
 
 export type PoolAuth =
-  | { kind: "account"; accountId: string; accessToken: string; providerAccountId: string }
+  | { kind: "account"; accountId: string; accessToken: string; providerAccountId: string; projectId?: string }
   | { kind: "client" };
 
 export interface PoolRequestInput {
@@ -194,6 +198,30 @@ export function applyPoolAuth(
   return headers;
 }
 
+function accountAuth(account: PoolAccount): PoolAuth {
+  return {
+    kind: "account", accountId: account.account_id, accessToken: account.access_token,
+    providerAccountId: account.provider_account_id,
+    ...(account.project_id ? { projectId: account.project_id } : {}),
+  };
+}
+
+const DEFAULT_BASE_URLS: Record<PoolProviderId, string> = {
+  codex: CODEX_CHATGPT_BASE_URL,
+  claude: CLAUDE_API_BASE_URL,
+  antigravity: ANTIGRAVITY_BASE_URL,
+};
+
+/** Headers that carry the rate-limit hint of a 429: AntiGravity puts it in the body, not in a header. */
+function limitHeaders(provider: PoolProviderId, headers: Headers, body: string, now: number): Headers {
+  if (provider !== "antigravity" || headers.has("retry-after")) return headers;
+  const info = parseAntigravityLimitBody(body, headers, now);
+  if (info.retryAfterSec === null) return headers;
+  const out = new Headers(headers);
+  out.set("retry-after", String(info.retryAfterSec));
+  return out;
+}
+
 function coreConfig(config: ProxyConfig): PoolCoreConfig {
   return config.coreSkill;
 }
@@ -211,7 +239,7 @@ class PoolRequestImpl implements PoolRequest {
   constructor(private readonly input: PoolRequestInput) {
     this.now = input.now ?? Date.now;
     this.provider = input.provider ?? "codex";
-    this.upstreamBase = input.row.base_url || (this.provider === "claude" ? CLAUDE_API_BASE_URL : CODEX_CHATGPT_BASE_URL);
+    this.upstreamBase = input.row.base_url || DEFAULT_BASE_URLS[this.provider];
     this.model = typeof input.body?.model === "string" ? input.body.model : "";
     // The client's own login is used only when the user key came in its own header and the
     // bearer is something else; otherwise the bearer is the proxy user key and must not go upstream.
@@ -238,6 +266,8 @@ class PoolRequestImpl implements PoolRequest {
     let pinned: PoolAccount | null = null;
     let deadline: number | undefined;
     let last429: Response | null = null;
+    // The last transient 503 of an AntiGravity account. It is returned as is when no other account is left.
+    let lastCapacity503: Response | null = null;
     const bounded = <T>(run: (signal?: AbortSignal) => Promise<T>): Promise<T> => deadline === undefined
       ? run(this.input.signal) : withinRetryDeadline(run, deadline, this.input.signal);
 
@@ -259,12 +289,10 @@ class PoolRequestImpl implements PoolRequest {
             account = await bounded(() => this.pick(snapshot!, excluded));
           }
         }
+        if (!account && lastCapacity503) return lastCapacity503;
         if (!account) return await bounded(async (signal) => this.noAccountLeft(snapshot ?? await this.snapshot(), quotaReached, (auth) => doFetch(auth, signal)));
 
-        const auth: PoolAuth = {
-          kind: "account", accountId: account.account_id,
-          accessToken: account.access_token, providerAccountId: account.provider_account_id,
-        };
+        const auth = accountAuth(account);
         this.accountId = account.account_id;
         let resp: Response;
         try {
@@ -304,9 +332,24 @@ class PoolRequestImpl implements PoolRequest {
           return new Response(text, { status: resp.status, headers: resp.headers });
         }
 
+        // A capacity 503 is a shortage on the server side: try the next account and leave this one
+        // as it is (not exhausted, not on cooldown), because the shortage is gone a moment later.
+        if (this.provider === "antigravity" && resp.status === 503) {
+          const text = await bounded(() => resp.text());
+          if (isAntigravityCapacityError(resp.status, text)) {
+            console.warn(`${TAG} account_id=${account.account_id} got a transient capacity 503; trying another account`);
+            excluded.add(account.account_id);
+            lastCapacity503 = new Response(text, { status: resp.status, headers: resp.headers });
+            continue;
+          }
+          return new Response(text, { status: resp.status, headers: resp.headers });
+        }
+
         if (resp.status < 400) this.onSuccess(account, resp.headers);
         return resp;
       }
+
+      if (lastCapacity503) return lastCapacity503;
 
       // Out of attempts after a limit: the client's login, or the 429 with the earliest reset.
       return await bounded(async (signal) => this.noAccountLeft(await this.snapshot(), quotaReached, (auth) => doFetch(auth, signal)));
@@ -333,11 +376,12 @@ class PoolRequestImpl implements PoolRequest {
       account.access_token, this.input.userKey, coreConfig(this.input.config).serviceToken,
       this.input.clientHeaders.get("authorization") ?? "", this.input.clientHeaders.get("x-api-key") ?? "",
     ]), lastHeaders, key);
-    const auth: PoolAuth = { kind: "account", accountId: account.account_id, accessToken: account.access_token, providerAccountId: account.provider_account_id };
+    const auth = accountAuth(account);
     try {
       body = await readPoolErrorBody(initial, deadline, this.input.signal);
+      lastHeaders = limitHeaders(this.provider, initial.headers, body, this.now());
       this.onLimitReached(account, body, response.headers);
-      notePoolRetryAfter(key, response.headers);
+      notePoolRetryAfter(key, lastHeaders);
       while (Date.now() < deadline) {
         // Check now after four retries, or at once when Retry-After forbids every retry in
         // this request's budget: waiting could never reach the check, so the session would
@@ -354,9 +398,9 @@ class PoolRequestImpl implements PoolRequest {
         response = await withinRetryDeadline((signal) => doFetch(auth, signal), deadline, this.input.signal);
         if (response.status !== 429) return { response, quotaConfirmed: false };
         body = await readPoolErrorBody(response, deadline, this.input.signal);
-        lastHeaders = response.headers;
+        lastHeaders = limitHeaders(this.provider, response.headers, body, this.now());
         this.onLimitReached(account, body, response.headers);
-        notePoolRetryAfter(key, response.headers);
+        notePoolRetryAfter(key, lastHeaders);
         retries++;
       }
     } catch (error) {
@@ -486,9 +530,12 @@ class PoolRequestImpl implements PoolRequest {
       const key = this.bindingKey();
       if (key) clearSessionClientLogin(key);
     }
+    // AntiGravity answers send no quota headers; Core reads the usage of its accounts itself.
     const windows = this.provider === "claude"
       ? parseClaudeQuotaHeaders(headers, this.now())
-      : parseCodexQuotaHeaders(headers, this.now());
+      : this.provider === "antigravity"
+        ? []
+        : parseCodexQuotaHeaders(headers, this.now());
     if (windows.length === 0) return;
     observeAccountWindows(this.input.spaceId, account.account_id, windows);
     reportAccount(coreConfig(this.input.config), this.input.spaceId, account.account_id, { windows });

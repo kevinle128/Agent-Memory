@@ -26,7 +26,7 @@ import './style.css';
 type MainTab = 'quick' | 'practice' | 'commands';
 type QuickTab = 'download' | 'ide' | 'history';
 type PracticeId = 'team' | 'personal';
-type ManualIdeId = 'claude' | 'codebuddy' | 'codex' | 'workbuddy' | 'dsh' | 'hermes' | 'openclaw';
+type ManualIdeId = 'claude' | 'codebuddy' | 'codex' | 'workbuddy' | 'dsh' | 'hermes' | 'openclaw' | 'antigravity';
 type ProxyMode = 'default' | 'analyse';
 
 interface PracticeStep {
@@ -51,7 +51,7 @@ const QUICK_SETUP_SKILL_PROMPT =
   '请阅读 ~/agents/skills/setup-proxy/SKILL.md，然后按照里面的步骤引导我完成 Agent 接入 Memory Proxy 的配置。';
 const HISTORY_IMPORT_SCRIPT =
   'tsx agents/asset-import.ts --source <agent> --agent-id <id> --team-id <tid>';
-const HISTORY_SOURCES = 'claude-code, codebuddy, codex, workbuddy, dsh, hermes, openclaw';
+const HISTORY_SOURCES = 'claude-code, codebuddy, codex, workbuddy, dsh, hermes, openclaw, antigravity';
 const KEY_PLACEHOLDER = '<your-team-memory-api-key>';
 
 /** 页面上只显示 key 的首尾几位，避免明文出现在屏幕/截图里 */
@@ -128,6 +128,25 @@ const MANUAL_IDES: ManualIde[] = [
     hookCommand: (base) =>
       `curl -fsSL ${base}/setup/hooks.sh | bash -s -- --client codex --base-url ${base}`,
     notes: ['guide.manual.note.codex'],
+  },
+  {
+    id: 'antigravity',
+    name: 'AntiGravity CLI (agy)',
+    file: '~/.zshrc or ~/.bashrc',
+    protocol: 'Gemini (gateway URL)',
+    // agy sends no auth header to its gateway, so the user key travels as the last path segment.
+    config: (base, instanceId, mode, _model, _own, apiKey) =>
+      `export AGY_LLM_GATEWAY_URL=${proxyEndpoint(base, 'antigravity', instanceId, mode)}/${apiKey}`,
+    usesModel: false,
+    hookCommand: (base) =>
+      `curl -fsSL ${base}/setup/hooks.sh | bash -s -- --client antigravity --base-url ${base}`,
+    notes: [
+      'guide.manual.note.antigravity.0',
+      'guide.manual.note.antigravity.1',
+      'guide.manual.note.antigravity.2',
+      'guide.manual.note.antigravity.3',
+      'guide.manual.note.antigravity.4',
+    ],
   },
   {
     id: 'workbuddy',

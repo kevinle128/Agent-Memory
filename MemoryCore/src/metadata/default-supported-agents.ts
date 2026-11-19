@@ -53,4 +53,5 @@ export const DEFAULT_SUPPORTED_AGENTS_FALLBACK: readonly SupportedAgent[] = Obje
   { agent_source: "omp",         protocol: "openai-chat",      display_name: "oh-my-pi", multi_source: true, formats: ["anthropic-messages", "openai-responses", "openai-chat"] },
   { agent_source: "hermes",      protocol: "anthropic",        display_name: "Hermes",   multi_source: true, formats: ["anthropic-messages", "openai-responses", "openai-chat"] },
   { agent_source: "openclaw",    protocol: "anthropic",        display_name: "OpenClaw", multi_source: true, formats: ["anthropic-messages", "openai-responses", "openai-chat"] },
+  { agent_source: "antigravity", protocol: "gemini",           display_name: "AntiGravity", formats: ["gemini"] },
 ]) as readonly SupportedAgent[];

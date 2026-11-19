@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { Alert, Button, Modal, Tag, Text } from 'tea-component';
 import i18n from '@/i18n';
 import type { SubscriptionAccount } from '@/lib/api/subscription-pool';
-import { describeCreditExpiry, type PoolResetCredit } from '@/lib/subscription-pool-display';
+import { describeCreditExpiry, supportsResetCredits, type PoolResetCredit } from '@/lib/subscription-pool-display';
 
 interface Props {
   account: SubscriptionAccount;
@@ -32,7 +32,9 @@ function newRequestId(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export function ResetCreditsDialog({ account, now, canRedeem, busyCreditId, onRedeem, onClose }: Props) {
+export function ResetCreditsDialog({ account, now, canRedeem: canRedeemProp, busyCreditId, onRedeem, onClose }: Props) {
+  // A provider without reset credits never offers the redeem action, even if a caller allows it.
+  const canRedeem = canRedeemProp && supportsResetCredits(account.provider);
   const { t } = useTranslation();
   const [pending, setPending] = useState<Pending | null>(null);
   const data = account.reset_credits;

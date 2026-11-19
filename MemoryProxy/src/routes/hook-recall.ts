@@ -13,8 +13,9 @@
  *
  * Every other result is 204 with no body, and the hook then prints nothing.
  * The rules, in order:
- *   1. `hookRecall.enabled` and a Claude Code client. Codex stays silent until
- *      its hook output contract is confirmed.
+ *   1. `hookRecall.enabled` and a Claude Code or AntiGravity client. Codex stays silent until
+ *      its hook output contract is confirmed. AntiGravity gets
+ *      `{"injectSteps":[{"ephemeralMessage":"..."}]}`, the output shape of its hook contract.
  *   2. The user key is valid (same check as the hook report).
  *   3. The session is registered and belongs to the same user and space. The
  *      agent comes from the session, never from the request.
@@ -65,6 +66,14 @@ export function estimateTokens(text: string): number {
 export function hookOutput(additionalContext: string): { hookSpecificOutput: { hookEventName: string; additionalContext: string } } {
   return { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext } };
 }
+
+/** The JSON body that the AntiGravity hook prints: an ephemeral message added to the prompt. */
+export function antigravityHookOutput(text: string): { injectSteps: Array<{ ephemeralMessage: string }> } {
+  return { injectSteps: [{ ephemeralMessage: text }] };
+}
+
+/** Clients whose hook the recall route serves. */
+const RECALL_CLIENTS: ReadonlySet<string> = new Set(["claude-code", "antigravity"]);
 
 export interface RecallSelection {
   candidates: RecallCandidate[];
@@ -154,7 +163,7 @@ export function createHookRecallHandler(config: ProxyConfig) {
     const prompt = (raw as Record<string, unknown>).prompt;
     if (typeof prompt !== "string" || prompt.length > MAX_PROMPT) return c.json({ error: "invalid prompt" }, 400);
 
-    if (!cfg?.enabled || report.client !== "claude-code" || !auth.userId) return c.body(null, 204);
+    if (!cfg?.enabled || !RECALL_CLIENTS.has(report.client) || !auth.userId) return c.body(null, 204);
     if (cfg.allowAgentIds.length === 0 && cfg.allowUserIds.length === 0) return c.body(null, 204);
     const userId = auth.userId;
     const spaceId = auth.spaceId || c.req.param("spaceId") || "";
@@ -242,7 +251,7 @@ export function createHookRecallHandler(config: ProxyConfig) {
     if (sel.lines.length === 0) return finish("empty", noContent(), { candidates: sel.candidates });
 
     const text = formatL1RecallBlock(sel.lines);
-    return finish("injected", c.json(hookOutput(text), 200), {
+    return finish("injected", c.json(report.client === "antigravity" ? antigravityHookOutput(text) : hookOutput(text), 200), {
       candidates: sel.candidates,
       injectedText: text,
       injectedCount: sel.lines.length,

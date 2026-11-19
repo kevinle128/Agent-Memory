@@ -13,7 +13,7 @@ import i18n from '@/i18n';
 import { tea } from '@/lib/tea-bridge';
 import { copyToClipboard } from '@/pages/ChatMemoryPage/utils/memory-utils';
 import { subscriptionPoolApi, type OAuthStart, type PoolProvider } from '@/lib/api/subscription-pool';
-import { formatClock, oauthCompleteInput } from '@/lib/subscription-pool-display';
+import { addAccountKeyPrefix, formatClock, oauthCompleteInput } from '@/lib/subscription-pool-display';
 import { poolErrorCode, poolErrorMessage } from '../pool-errors';
 
 interface Props {
@@ -91,9 +91,7 @@ export function AddAccountDialog({ provider, reloginName, onClose, onDone }: Pro
     }
   }
 
-  const addKey = (name: string) => provider === 'claude'
-    ? t(`subscriptionPool.add.claude.${name}`)
-    : t(`subscriptionPool.add.${name}`);
+  const addKey = (name: string) => t(`${addAccountKeyPrefix(provider)}.${name}`);
 
   const openLogin = () => {
     if (start) window.open(start.authorize_url, '_blank', 'noopener,noreferrer');

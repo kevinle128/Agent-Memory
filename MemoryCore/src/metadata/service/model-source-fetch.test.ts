@@ -195,7 +195,7 @@ describe("model list fetch on a source", () => {
 
       const first = await svc.refreshSourceModels({ group_id: pool.group_id }) as unknown as Group;
       expect(ids(first.source_models)).toEqual([["gpt-a", true, true], ["gpt-b", true, true]]);
-      expect(adapter.fetchModels).toHaveBeenCalledWith("access-1", "acct-1", { codexClientVersion: "0.170.0" });
+      expect(adapter.fetchModels).toHaveBeenCalledWith("access-1", "acct-1", { codexClientVersion: "0.170.0", projectId: null });
 
       await svc.updateSourceModels({ group_id: pool.group_id, models: [{ id: "gpt-b", enabled: false }] });
       listed = [...listed, { id: "gpt-c", display_name: "C" }];

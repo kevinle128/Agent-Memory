@@ -23,7 +23,7 @@ import {
 } from "../../instance-upstream-cache.js";
 import { isMultiSourceAgent } from "../../supported-agents.js";
 
-export type ModelSourceFormat = "anthropic-messages" | "openai-chat" | "openai-responses";
+export type ModelSourceFormat = "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini";
 
 export type ModelSourceErrorCode =
   | "model_source_not_allowed"

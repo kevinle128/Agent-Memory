@@ -989,7 +989,7 @@ export function loadGatewayConfig(overrides?: GatewayConfigOverrides): GatewayCo
         .filter((e): e is Record<string, unknown> => typeof e === "object" && e !== null)
         .map((e) => ({
           agent_source: String(e.agent_source ?? ""),
-          protocol: (e.protocol as "anthropic" | "openai-chat" | "openai-responses") ?? "openai-chat",
+          protocol: (e.protocol as "anthropic" | "openai-chat" | "openai-responses" | "gemini") ?? "openai-chat",
           display_name: String(e.display_name ?? ""),
           ...(e.multi_source === true ? { multi_source: true } : {}),
           ...(Array.isArray(e.formats) && e.formats.length > 0 ? { formats: e.formats.map(String) } : {}),

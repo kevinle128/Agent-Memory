@@ -19,6 +19,7 @@ import {
   windowColumns,
   latestObservation,
   nearestExpiringCredit,
+  supportsResetCredits,
   thresholdMark,
   usageCheckFailing,
   type AccountState,
@@ -147,9 +148,11 @@ export function AccountTable({
   }
 
   const visible = windowColumns(accounts);
+  // The pool page lists one provider at a time, so the column goes only when none of the rows can have credits.
+  const showCredits = accounts.some((account) => supportsResetCredits(account.provider));
   // Every column has a fixed width. When their sum is wider than the page, the table scrolls
   // sideways instead of squeezing the account name into one letter per line.
-  const minWidth = 220 + 150 + (visible.primary ? 220 : 0) + 220 + (visible.models ? 220 : 0) + 170 + 120 + 150 + 260;
+  const minWidth = 220 + 150 + (visible.primary ? 220 : 0) + 220 + (visible.models ? 220 : 0) + (showCredits ? 170 : 0) + 120 + 150 + 260;
 
   return (
     <Table
@@ -166,6 +169,9 @@ export function AccountTable({
             <div className="_memory-pool-account">
               <b>{account.display_name}</b>
               <Text theme="weak" parent="div" className="_memory-pool-small">{account.account_label}</Text>
+              {account.project_id && (
+                <Text theme="weak" parent="div" className="_memory-pool-small">{account.project_id}</Text>
+              )}
             </div>
           ),
         },
@@ -253,7 +259,7 @@ export function AccountTable({
             );
           },
         }] : []),
-        {
+        ...(showCredits ? [{
           key: 'credits',
           header: t('subscriptionPool.col.credits'),
           width: 170,
@@ -287,7 +293,7 @@ export function AccountTable({
               </div>
             );
           },
-        },
+        }] : []),
         {
           key: 'sessions',
           header: t('subscriptionPool.col.sessions'),

@@ -22,6 +22,8 @@ export interface SubscriptionAccount {
   status: PoolAccountStatus;
   token_expires_at: number | null;
   provider_account_id: string;
+  /** Google Cloud project of an AntiGravity account. Absent or null for other providers. */
+  project_id?: string | null;
   usage: { windows: PoolWindow[] };
   usage_updated_at: number | null;
   /** Null until the first usage check reads the credits, or when the provider gives none. */

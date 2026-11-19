@@ -29,6 +29,7 @@ export function PoolHeader({ readOnly, provider, onProviderChange, poolEnabled, 
             tabs={[
               { id: 'claude', label: t('subscriptionPool.tab.claude') },
               { id: 'codex', label: t('subscriptionPool.tab.codex') },
+              { id: 'antigravity', label: t('subscriptionPool.tab.antigravity') },
             ]}
             activeId={provider}
             disableTabScrolling

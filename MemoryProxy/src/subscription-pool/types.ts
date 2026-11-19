@@ -20,9 +20,11 @@ export type PoolAccountStatus = "active" | "exhausted" | "auth_error" | "disable
 export interface PoolAccount {
   account_id: string;
   group_id: string;
-  provider: "claude" | "codex";
+  provider: "claude" | "codex" | "antigravity";
   /** Sent as the Codex `chatgpt-account-id` header together with the bearer token. */
   provider_account_id: string;
+  /** Google Cloud project of an AntiGravity account. It goes into the request envelope. */
+  project_id?: string;
   /** Name that the admin gave the account. Absent when Core is older than this field. */
   display_name?: string;
   /** E-mail and plan from the provider profile. Absent when Core is older than this field. */

@@ -116,10 +116,12 @@ import type {
 import {
   createPendingSubscriptionOAuth,
   parseSubscriptionOAuthCode,
+  subscriptionOAuthRequiresPastedState,
   subscriptionAuthorizeUrl,
   type PendingSubscriptionOAuth,
 } from "../subscription-pool/authorize-url.js";
 import { applyQuotaReport, type SubscriptionQuotaReport } from "../subscription-pool/quota-report.js";
+import { antigravityOAuthCredentials, AntigravityOAuthNotConfiguredError } from "../../subscription-pool/providers/antigravity.js";
 import { subscriptionAdapterFor, SUPPORTED_SUBSCRIPTION_PROVIDERS } from "../../subscription-pool/providers/index.js";
 import { SubscriptionProviderError, type SourceModelReading, type SubscriptionFetch, type SubscriptionProviderAdapter } from "../../subscription-pool/providers/types.js";
 import { DEFAULT_CODEX_CLIENT_VERSION } from "../../subscription-pool/config.js";
@@ -2345,6 +2347,7 @@ export class MetadataService {
       status: account.status,
       token_expires_at: account.token_expires_at,
       provider_account_id: account.provider_account_id,
+      project_id: account.project_id,
       usage: account.usage,
       reset_credits: account.reset_credits,
       usage_updated_at: account.usage_updated_at,
@@ -2387,6 +2390,7 @@ export class MetadataService {
       group_id: account.group_id,
       provider: account.provider,
       provider_account_id: account.provider_account_id,
+      project_id: account.project_id,
       display_name: account.display_name,
       account_label: account.account_label,
       status: account.status,
@@ -2407,7 +2411,7 @@ export class MetadataService {
     const groups = await this.store.listInstanceUpstreamGroups(undefined, []);
     const accounts = await this.store.listSubscriptionAccounts();
     const threshold_pct = await this.subscriptionThreshold();
-    const providers = provider ? [provider] : ["claude", "codex"] as const;
+    const providers = provider ? [provider] : ["claude", "codex", "antigravity"] as const;
     return {
       threshold_pct,
       providers: providers.map((p) => {
@@ -2572,8 +2576,20 @@ export class MetadataService {
     return { account_id: updated.account_id, exhausted_until: updated.exhausted_until, status: updated.status };
   }
 
+  /** A provider whose login client comes from the environment fails with a clear message when it is missing. */
+  private assertSubscriptionLoginConfigured(provider: SubscriptionProvider): void {
+    if (provider !== "antigravity") return;
+    try {
+      antigravityOAuthCredentials();
+    } catch (e) {
+      if (e instanceof AntigravityOAuthNotConfiguredError) throw new MetadataError("PROVIDER_NOT_CONFIGURED", e.message);
+      throw e;
+    }
+  }
+
   startSubscriptionOAuth(provider: SubscriptionProvider): { provider: SubscriptionProvider; state: string; authorize_url: string; expires_at: number } {
     this.subscriptionAdapter(provider);
+    this.assertSubscriptionLoginConfigured(provider);
     const now = Date.now();
     for (const [state, pending] of this.subscriptionOAuthPending) {
       if (pending.expiresAt <= now) this.subscriptionOAuthPending.delete(state);
@@ -2596,12 +2612,16 @@ export class MetadataService {
    */
   async completeSubscriptionOAuth(input: { provider: SubscriptionProvider; state: string; code?: string; redirect_url?: string; display_name?: string }): Promise<Record<string, unknown>> {
     const adapter = this.subscriptionAdapter(input.provider);
+    this.assertSubscriptionLoginConfigured(input.provider);
     const pending = this.subscriptionOAuthPending.get(input.state);
     if (!pending || pending.expiresAt <= Date.now() || pending.provider !== input.provider) {
       throw new MetadataError("INVALID_OAUTH_STATE", "subscription login state is missing or expired");
     }
     const parsed = parseSubscriptionOAuthCode(input.code, input.redirect_url);
     if (!parsed.code) throw new MetadataError("INVALID_OAUTH_CODE", "paste the provider code or the redirect URL");
+    if (!parsed.pastedState && subscriptionOAuthRequiresPastedState(input.provider)) {
+      throw new MetadataError("INVALID_OAUTH_STATE", "paste the full redirect URL; it carries the login state");
+    }
     if (parsed.pastedState && parsed.pastedState !== pending.state) {
       throw new MetadataError("INVALID_OAUTH_STATE", "pasted state does not match the login that was started");
     }
@@ -2640,6 +2660,7 @@ export class MetadataService {
         access_token: exchanged.accessToken,
         refresh_token: exchanged.refreshToken,
         token_expires_at: exchanged.expiresAt,
+        project_id: exchanged.projectId ?? null,
       });
       // A re-login replaces tokens, so it waits for a running refresh of the same account.
       const existing = (await this.store.listSubscriptionAccounts(group.group_id))
@@ -3263,6 +3284,7 @@ export class MetadataService {
     anthropic: "anthropic-messages",
     "openai-chat": "openai-chat",
     "openai-responses": "openai-responses",
+    gemini: "gemini",
   };
 
   private clientSourceGroups(groups: InstanceUpstreamConfigEntity[]): InstanceUpstreamConfigEntity[] {

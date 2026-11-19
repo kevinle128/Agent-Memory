@@ -253,6 +253,46 @@ http_headers = { "x-tdai-user-key" = "<user key>" }
 **Usage record.** When ClickHouse is configured, the usage row has `subscription_account_id` (empty for
 traffic outside a pool). The proxy adds the column to an existing table at start.
 
+## AntiGravity (agy) gateway
+
+The AntiGravity CLI (`agy`) connects through its gateway setting. The client does not sign in to
+Google: the proxy picks an AntiGravity account from the subscription pool (provider `antigravity`,
+sticky per conversation) and calls Google Cloud Code with that account's token. agy sends no auth
+header, so the user key is a path segment.
+
+```bash
+export AGY_LLM_GATEWAY_URL=https://<proxy-host>/antigravity/<spaceId>/<user-key>
+```
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET`  | `/antigravity/<spaceId>[/analyse]/<key>/v1/models` | pool models, `{"data":[{"id":...}]}` |
+| `GET`  | `/antigravity/<spaceId>[/analyse]/<key>/v1beta/models` | pool models, Gemini list format |
+| `POST` | `/antigravity/<spaceId>[/analyse]/<key>/v1beta/models/<model>:streamGenerateContent` | model call (SSE); `:generateContent` for a single answer |
+
+Any other path under `/antigravity/<spaceId>/` answers 404. The key is verified like any user key and
+is masked in logs and traces. The request body goes upstream as agy sent it inside the Cloud Code
+envelope; the answer is unwrapped line by line. A missing `-low|-medium|-high` model suffix is put
+back from `generationConfig.thinkingConfig.thinkingLevel`. The host is
+`https://daily-cloudcode-pa.googleapis.com`; override it with the pool group `base_url` or
+`upstream.agents.antigravity.url`. Models come from the model catalog of the pool group, else from
+`fetchAvailableModels`; noisy ids (`chat_*`, `tab_*`, `*-disabled`, `*-tiered`, `*-sonar`, image
+models) are removed.
+
+Errors: a 401 refreshes the token once; a 429 `RESOURCE_EXHAUSTED` retries on the same account, then
+runs Check now and switches accounts when the quota is full; a 503 `UNAVAILABLE` ("No capacity ...")
+moves to the next account without marking the account exhausted.
+
+Session init follows the order of Claude Code and Codex: account default, header preset, auto-select
+of a single team, agent or task, and only then a question. agy cannot show a tool question, so the
+question is a text turn (Gemini SSE) and the user answers with a number in the next turn; the question
+and reply turns are removed from `contents` before the request goes upstream.
+
+Memory: the conversation id is `labels.cascade_id`, the id that the agy hooks report. The hook gate
+answers with a Gemini SSE message that holds the install command while the session has no hook report
+(it gives up after two answers). Hook recall answers `{"injectSteps":[{"ephemeralMessage":"..."}]}` for
+the `antigravity` client. The L0 row is written from the request and the answer; no skill extraction.
+
 ## FAQ
 
 ### Is an API key mandatory?

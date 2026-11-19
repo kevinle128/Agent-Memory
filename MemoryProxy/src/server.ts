@@ -10,6 +10,7 @@ import { runDirectPipeline as handleDirectPassthrough } from "./pipeline/runners
 import { runCodexPipeline, RESPONSES_SOURCE_AGENTS, runCodexPipeline as handleCodexEndpoint } from "./pipeline/runners/codex.js";
 import { handleAgentRouteMoved } from "./routes/agent-route-moved.js";
 import { runWorkbuddyPipeline } from "./pipeline/runners/workbuddy.js";
+import { runAntigravityModels, runAntigravityPipeline } from "./pipeline/runners/antigravity.js";
 import { handleHermesShow, handleModels, handleSourceModel } from "./modelsHandler.js";
 import { apiKeyToKeyId, extractBearerToken } from "./opik.js";
 import { createSkillBridgeHandler } from "./skill/skill-bridge.js";
@@ -275,6 +276,21 @@ export function createApp(config: ProxyConfig): Hono {
     app.post("/:agent/:spaceId/analyse/v1/messages", (c) => handleAnthropicMessages(c, config));
     app.post("/:agent/:spaceId/analyse/v1/chat/completions", (c) => handleChatCompletions(c, config));
   }
+
+  // ── AntiGravity (agy) endpoints (must precede generic /:agent/:spaceId routes) ──────────────
+  // agy sends no auth header, so the user key is a path segment: `AGY_LLM_GATEWAY_URL` is
+  // `<proxy>/antigravity/<space>[/analyse]/<key>` and agy appends `/v1/models`, `/v1beta/models`
+  // and `/v1beta/models/<model>:streamGenerateContent`. The model segment holds a `:`, so the
+  // generate routes use a wildcard. The runner reads the key from the path; nothing else may log it.
+  for (const prefix of ["/antigravity/:spaceId/analyse/:accessKey", "/antigravity/:spaceId/:accessKey"]) {
+    app.get(`${prefix}/v1/models`, (c) => runAntigravityModels(c, config));
+    app.get(`${prefix}/v1beta/models`, (c) => runAntigravityModels(c, config));
+    app.post(`${prefix}/v1beta/models/*`, (c) => runAntigravityPipeline(c, config));
+  }
+  // Any other keyed antigravity path ends here. Without this the catch-all `POST /*` would hand
+  // the request to the chat runner, whose logs and traces would carry the path key. The hook
+  // routes above (`/v3/hook/...`) are registered earlier and still win.
+  app.all("/antigravity/:spaceId/*", (c) => c.json({ error: { code: 404, message: "Unknown AntiGravity endpoint.", status: "NOT_FOUND" } }, 404));
 
   // ── Codex endpoints (must precede generic /:agent/:spaceId routes) ────────
   // Codex CLI 客户端走 OpenAI Responses API，第三条独立协议路径。
