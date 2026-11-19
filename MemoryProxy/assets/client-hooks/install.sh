@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- \
-#     [--base-url URL] [--client claude-code|codex|omp] [--session SID] [--uninstall]
+#     [--base-url URL] [--client claude-code|codex|omp|antigravity] [--key KEY] [--session SID] [--uninstall]
 #
 # Install, claude-code (default):
 #   1. Download <proxy-origin>/setup/hook.sh to ~/.agent-memory/hook.sh.
@@ -43,6 +43,18 @@
 #   compat value) is left as is, with a note. With --session SID: send one report
 #   with this session id, using the apiKey of that provider (an environment
 #   variable name, or the key itself).
+# Install, antigravity (agy CLI):
+#   Steps 1 and 2 as above. Then add the hook entry "agent-memory" to
+#   ~/.gemini/config/hooks.json (events SessionStart and PreInvocation), after a
+#   backup, and keep every other hook. Write the gateway URL
+#   <proxy>/antigravity/<space>/<key> to ~/.agent-memory/antigravity.url (mode 600;
+#   the hook reads it when agy does not pass the environment on), and write
+#   `export AGY_LLM_GATEWAY_URL=...` to the shell profile (~/.zshrc when SHELL is zsh,
+#   else ~/.bashrc) inside a marked block that a second run replaces. The URL comes
+#   from --base-url (the full gateway URL, or <proxy>/antigravity/<space> with the key
+#   in --key or in AGENT_MEMORY_KEY), else from AGY_LLM_GATEWAY_URL, else from the file
+#   of an earlier install. A run without a key stops with exit 1.
+#   Uninstall removes the entry, the profile block (in ~/.zshrc and ~/.bashrc) and the URL file.
 # pi is no longer a supported client: --client pi exits with an error. Only
 #   --uninstall --client pi still works, and removes the extension of an earlier pi install.
 # Uninstall:
@@ -63,6 +75,10 @@ CLAUDE_DIR="$HOME/.claude"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG="$CODEX_DIR/config.toml"
+AGY_HOOKS_FILE="$HOME/.gemini/config/hooks.json"
+AGY_HOOK_NAME="agent-memory"
+AGY_BEGIN="# >>> agent-memory: antigravity gateway >>>"
+AGY_END="# <<< agent-memory: antigravity gateway <<<"
 CLAUDE_SUB_FILE="$CLAUDE_DIR/commands/sub.md"
 CODEX_SUB_FILE="$CODEX_DIR/skills/sub/SKILL.md"
 SUB_MARKER="<!-- agent-memory: account switch shortcut -->"
@@ -73,6 +89,7 @@ OMP_EXTENSION_FILE="$OMP_DIR/extensions/agent-memory.ts"
 AM_DIR="$HOME/.agent-memory"
 HOOK_FILE="$AM_DIR/hook.sh"
 DEVICE_FILE="$AM_DIR/device.json"
+AGY_URL_FILE="$AM_DIR/antigravity.url"
 TMP_FILE=""
 BACKED_UP_FILE=""
 LAST_BACKUP=""
@@ -429,6 +446,7 @@ backup_file() {
 remove_hook_file_if_unused() {
   if [ -f "$SETTINGS_FILE" ] && grep -qF "$HOOK_FILE" "$SETTINGS_FILE"; then return; fi
   if [ -f "$CODEX_CONFIG" ] && grep -qF "$HOOK_FILE" "$CODEX_CONFIG"; then return; fi
+  if [ -f "$AGY_HOOKS_FILE" ] && grep -qF "$HOOK_FILE" "$AGY_HOOKS_FILE"; then return; fi
   rm -f "$HOOK_FILE"
 }
 
@@ -1139,6 +1157,191 @@ omp_install() {
 }
 
 # ---------------------------------------------------------------------------
+# AntiGravity: hooks.json and the shell profile
+# ---------------------------------------------------------------------------
+
+# Print "<origin>|<space>|<analyse or empty>|<key>" for a gateway URL
+# <origin>/antigravity/<space>[/analyse]/<key>. Print nothing for any other URL.
+# Keep this the same as the function in hook.sh.
+agy_parse() {
+  printf '%s' "$1" | sed -nE 's#^(https?://[^/?]+)/antigravity/([A-Za-z0-9_.-]+)(/analyse)?/([A-Za-z0-9_.-]+)/?$#\1|\2|\3|\4#p'
+}
+
+# Edit hooks.json. Read the file on stdin. $1 is "add" or "remove". Our entry is
+# the key AGY_HOOK_NAME. Print the new document, or nothing when it does not change.
+# Exit non-zero when the document has an unexpected structure.
+edit_agy_hooks() {
+  local mode="$1"
+  case "$JSON_TOOL" in
+    jq)
+      # -n with inputs: an empty file counts as {}, as in the python3 and node branches.
+      jq -n --arg name "$AGY_HOOK_NAME" --arg cmd "$HOOK_CMD" --arg mode "$mode" '
+        ([inputs] | if length == 0 then {} elif length == 1 then .[0] else error("multiple JSON values") end)
+        | if type != "object" then error("root is not an object")
+        elif ((.[$name] // {}) | type) != "object" then error("entry is not an object")
+        else . end
+        | . as $orig
+        | (if $mode == "add" then
+             .[$name] = ((.[$name] // {}) + {
+               SessionStart: [{type: "command", command: $cmd, timeout: 5}],
+               PreInvocation: [{type: "command", command: $cmd, timeout: 10}]})
+           else del(.[$name]) end) as $new
+        | if $new == $orig then empty else $new end'
+      ;;
+    python3)
+      python3 -c '
+import json, sys
+
+name, cmd, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+raw = sys.stdin.buffer.read().decode("utf-8")
+doc = json.loads(raw) if raw.strip() else {}
+if not isinstance(doc, dict):
+    sys.exit("hooks.json root is not an object")
+if name in doc and not isinstance(doc[name], dict):
+    sys.exit("hooks.json entry is not an object")
+before = json.dumps(doc)
+if mode == "add":
+    entry = doc.setdefault(name, {})
+    entry["SessionStart"] = [{"type": "command", "command": cmd, "timeout": 5}]
+    entry["PreInvocation"] = [{"type": "command", "command": cmd, "timeout": 10}]
+else:
+    doc.pop(name, None)
+if json.dumps(doc) != before:
+    sys.stdout.buffer.write((json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+' "$AGY_HOOK_NAME" "$HOOK_CMD" "$mode"
+      ;;
+    node)
+      node -e '
+const fs = require("fs");
+const [name, cmd, mode] = process.argv.slice(1);
+const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const raw = fs.readFileSync(0, "utf8");
+const doc = raw.trim() ? JSON.parse(raw) : {};
+if (!isObj(doc)) { console.error("hooks.json root is not an object"); process.exit(1); }
+if (name in doc && !isObj(doc[name])) { console.error("hooks.json entry is not an object"); process.exit(1); }
+const before = JSON.stringify(doc);
+if (mode === "add") {
+  const entry = doc[name] || {};
+  entry.SessionStart = [{ type: "command", command: cmd, timeout: 5 }];
+  entry.PreInvocation = [{ type: "command", command: cmd, timeout: 10 }];
+  doc[name] = entry;
+} else {
+  delete doc[name];
+}
+if (JSON.stringify(doc) !== before) process.stdout.write(JSON.stringify(doc, null, 2) + "\n");
+' "$AGY_HOOK_NAME" "$HOOK_CMD" "$mode"
+      ;;
+    *)
+      fail "unknown JSON tool: $JSON_TOOL"
+      ;;
+  esac
+}
+
+# Apply edit_agy_hooks "$1" to hooks.json. A missing file counts as {} for add and
+# is left alone for remove. write_if_changed makes the backup of an existing file.
+update_agy_hooks() {
+  local mode="$1" new
+  if [ ! -f "$AGY_HOOKS_FILE" ]; then
+    [ "$mode" = "add" ] || return 0
+    # No file, so no backup: build the first document from {}.
+    new=$(printf '{}\n' | edit_agy_hooks add) || fail "cannot create $AGY_HOOKS_FILE"
+    mkdir -p "$(dirname "$AGY_HOOKS_FILE")"
+    printf '%s\n' "$new" > "$AGY_HOOKS_FILE"
+    return 0
+  fi
+  new=$(edit_agy_hooks "$mode" < "$AGY_HOOKS_FILE") \
+    || fail "cannot update $AGY_HOOKS_FILE. Is it valid JSON? The file is not changed."
+  if [ -n "$new" ]; then
+    printf '%s\n' "$new" | write_if_changed "$AGY_HOOKS_FILE" || true
+  fi
+}
+
+# Print the shell profile that gets the gateway block.
+agy_profile() {
+  case "${SHELL:-}" in
+    */zsh) printf '%s' "$HOME/.zshrc" ;;
+    *) printf '%s' "$HOME/.bashrc" ;;
+  esac
+}
+
+# Write the gateway block with the URL $1 into the profile $2, or replace the block
+# that is there. A block with broken markers stops the install.
+agy_profile_add() {
+  local url="$1" profile="$2" plain="$WORK_DIR/profile-plain"
+  if [ -f "$profile" ]; then
+    [ "$(block_state "$profile" "$AGY_BEGIN" "$AGY_END")" != "bad" ] \
+      || fail "$profile has a damaged agent-memory block (a marker is missing or repeated). Fix it by hand, then run this command again."
+    strip_block "$AGY_BEGIN" "$AGY_END" < "$profile" > "$plain"
+  else
+    : > "$plain"
+  fi
+  {
+    cat "$plain"
+    # A blank line before the block, unless the file is empty or ends with one.
+    if [ -s "$plain" ] && [ -n "$(tail -n 1 "$plain")" ]; then printf '\n'; fi
+    printf '%s\n' "$AGY_BEGIN" "export AGY_LLM_GATEWAY_URL='$url'" "$AGY_END"
+  } | write_if_changed "$profile" || true
+}
+
+# Remove the gateway block from the profile $1. Nothing else changes.
+agy_profile_remove() {
+  local profile="$1"
+  [ -f "$profile" ] || return 0
+  case "$(block_state "$profile" "$AGY_BEGIN" "$AGY_END")" in
+    none) return 0 ;;
+    bad) echo "Note: $profile has a damaged agent-memory block. It is left as is." >&2; return 0 ;;
+  esac
+  strip_block "$AGY_BEGIN" "$AGY_END" < "$profile" | write_if_changed "$profile" || true
+}
+
+# Install for agy. $1 is --base-url, $2 --key, $3 --session.
+antigravity_install() {
+  local base="$1" key="$2" session="$3" parsed origin space analyse url profile device
+  parsed=$(agy_parse "$base")
+  if [ -z "$base" ]; then
+    parsed=$(agy_parse "${AGY_LLM_GATEWAY_URL:-}")
+    if [ -z "$parsed" ] && [ -f "$AGY_URL_FILE" ]; then parsed=$(agy_parse "$(cat "$AGY_URL_FILE")"); fi
+    [ -n "$parsed" ] || fail "no gateway URL. Use --base-url <proxy>/antigravity/<space>/<key> (or <proxy>/antigravity/<space> with --key), or set AGY_LLM_GATEWAY_URL."
+  elif [ -z "$parsed" ]; then
+    # <proxy>/antigravity/<space> without a key.
+    [ -n "$key" ] || key="${AGENT_MEMORY_KEY:-}"
+    [ -n "$key" ] || fail "no key. Use the full gateway URL <proxy>/antigravity/<space>/<key> in --base-url, or give the key with --key or AGENT_MEMORY_KEY."
+    parsed=$(agy_parse "${base%/}/${key}")
+    [ -n "$parsed" ] || fail "the base URL must look like http(s)://<proxy>/antigravity/<space> (got: $base), and the key may hold only letters, digits, . _ -"
+  fi
+  IFS='|' read -r origin space analyse key <<AGYEOF
+$parsed
+AGYEOF
+  url="$origin/antigravity/$space$analyse/$key"
+
+  mkdir -p "$AM_DIR"
+  chmod 700 "$AM_DIR"
+  fetch_file "$origin" "/setup/hook.sh" "$HOOK_FILE" "#!"
+  device=$(ensure_device_id)
+
+  update_agy_hooks add
+  (umask 077; printf '%s\n' "$url" > "$AGY_URL_FILE")
+  profile=$(agy_profile)
+  agy_profile_add "$url" "$profile"
+
+  if [ -n "$session" ]; then
+    AM_SID="$session" AM_CWD="$PWD" session_json \
+      | AGENT_MEMORY_HOOK_STRICT=1 AGY_LLM_GATEWAY_URL="$url" "$HOOK_FILE" antigravity \
+      || exit 1
+  fi
+  echo "Agent-Memory hooks installed for antigravity (device $device)."
+  echo "The gateway URL is in $profile. Open a new shell, run agy, and type /hooks to check that the agent-memory hooks are active."
+}
+
+# Remove the entry, the profile blocks and the URL file.
+antigravity_uninstall() {
+  update_agy_hooks remove
+  agy_profile_remove "$HOME/.zshrc"
+  agy_profile_remove "$HOME/.bashrc"
+  rm -f "$AGY_URL_FILE"
+}
+
+# ---------------------------------------------------------------------------
 # Sub shortcut: /sub in Claude Code, $sub in Codex
 # ---------------------------------------------------------------------------
 
@@ -1216,7 +1419,7 @@ remove_sub_shortcut() {
 # ---------------------------------------------------------------------------
 
 main() {
-  local base="" client="claude-code" session="" uninstall=0
+  local base="" client="claude-code" session="" uninstall=0 agykey=""
   local origin space device token models route key keyvar
 
   while [ $# -gt 0 ]; do
@@ -1224,17 +1427,18 @@ main() {
       --base-url) [ $# -ge 2 ] || fail "--base-url needs a value"; base="$2"; shift 2 ;;
       --client) [ $# -ge 2 ] || fail "--client needs a value"; client="$2"; shift 2 ;;
       --session) [ $# -ge 2 ] || fail "--session needs a value"; session="$2"; shift 2 ;;
+      --key) [ $# -ge 2 ] || fail "--key needs a value"; agykey="$2"; shift 2 ;;
       --uninstall) uninstall=1; shift ;;
       *) fail "unknown argument: $1" ;;
     esac
   done
 
   case "$client" in
-    claude-code | codex | omp) ;;
+    claude-code | codex | omp | antigravity) ;;
     pi)
       [ "$uninstall" = "1" ] || fail "pi is no longer supported. Use --client omp (oh-my-pi)."
       ;;
-    *) fail "unsupported client: $client (use claude-code, codex or omp)" ;;
+    *) fail "unsupported client: $client (use claude-code, codex, omp or antigravity)" ;;
   esac
   case "$HOME" in /*) ;; *) fail "HOME must be an absolute path" ;; esac
 
@@ -1263,9 +1467,15 @@ main() {
         ;;
       pi) rm -f "$PI_EXTENSION_FILE" ;;
       omp) rm -f "$OMP_EXTENSION_FILE" ;;
+      antigravity) antigravity_uninstall ;;
     esac
     remove_hook_file_if_unused
     echo "Agent-Memory hooks removed."
+    return
+  fi
+
+  if [ "$client" = "antigravity" ]; then
+    antigravity_install "$base" "$agykey" "$session"
     return
   fi
 

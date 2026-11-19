@@ -819,7 +819,7 @@ export interface InstanceUpstreamConfigFilter {
 /** supported-agents 单元(Core yaml 里读出来,也是本模块 seed default agents 的来源)。 */
 export interface SupportedAgent {
   agent_source: string;
-  protocol: "anthropic" | "openai-chat" | "openai-responses";
+  protocol: "anthropic" | "openai-chat" | "openai-responses" | "gemini";
   display_name: string;
   /** true = the agent picks one of many model sources by the `<source>/<model>` prefix. */
   multi_source?: boolean;
@@ -850,7 +850,7 @@ export class InstanceUpstreamWriteConflictError extends Error {
 // `subscription_pool` mode uses on behalf of its members. Tokens are stored in plain
 // text, like `api_key` of an upstream group. They must never be returned by a public API.
 
-export type SubscriptionProvider = "claude" | "codex";
+export type SubscriptionProvider = "claude" | "codex" | "antigravity";
 export type SubscriptionAccountStatus = "active" | "exhausted" | "auth_error" | "disabled";
 
 /**
@@ -921,6 +921,8 @@ export interface SubscriptionAccountEntity {
   token_expires_at: number | null;
   /** Identity on the provider side. Unique inside the group. */
   provider_account_id: string;
+  /** Cloud project the provider bills requests to (AntiGravity). Null for providers without one. */
+  project_id: string | null;
   usage: SubscriptionAccountUsage;
   /**
    * Reset credits from the last usage check. Kept apart from `usage` so a quota report from the
@@ -954,6 +956,8 @@ export interface SubscriptionAccountProxyView {
   group_id: string;
   provider: SubscriptionProvider;
   provider_account_id: string;
+  /** Cloud project of the account (AntiGravity). Null for providers without one. */
+  project_id: string | null;
   /** Name that the admin gave the account. For display only. */
   display_name: string;
   /** E-mail and plan from the provider profile. The proxy finds an account by the e-mail in it. */
@@ -976,6 +980,8 @@ export interface UpsertSubscriptionAccountInput {
   group_id: string;
   provider: SubscriptionProvider;
   provider_account_id: string;
+  /** Replaces the stored project when set; null or absent keeps it. */
+  project_id?: string | null;
   /** Used when the account is created. Ignored when the account exists. */
   display_name: string;
   account_label?: string;

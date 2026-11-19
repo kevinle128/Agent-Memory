@@ -11,7 +11,7 @@ triggers:
 
 # Setup Proxy — Agent 接入配置向导
 
-你正在帮助用户将一个 AI Agent 客户端（Claude Code / CodeBuddy / Codex / WorkBuddy / dsh / Hermes / OpenClaw / omp / OpenCode）接入 Memory Proxy。
+你正在帮助用户将一个 AI Agent 客户端（Claude Code / CodeBuddy / Codex / WorkBuddy / dsh / Hermes / OpenClaw / omp / OpenCode / AntiGravity）接入 Memory Proxy。
 
 ## 背景知识
 
@@ -28,6 +28,7 @@ Memory Proxy 是一个 LLM 请求代理，在请求转发到上游 LLM 之前注
 | openclaw | `~/.openclaw/openclaw.json` | OpenAI Chat | 需 header 预选 |
 | omp | `~/.omp/agent/models.yml` | 三种格式各一个 provider | 读取 `/v1/models`；旧 `/pi/` baseUrl 备份后改为 `/omp/` |
 | opencode | `~/.config/opencode/opencode.json` | OpenAI Chat (openai-compatible) | 读取 `/v1/models`，provider `memory-chat` 列出全部 `<来源>/<模型>`；文件含注释时不修改 |
+| antigravity | shell profile (`~/.zshrc` 或 `~/.bashrc`) 里的 `AGY_LLM_GATEWAY_URL` + `~/.gemini/config/hooks.json` | Gemini API (agy CLI) | 不写模型；URL 含 user key：`<proxy>/antigravity/<instanceId>/<user key>`；远程 Proxy 必须 https；由 hook 安装器写入 |
 
 ## 脚本位置
 
@@ -72,7 +73,7 @@ cat ~/.codebuddy/models.json 2>/dev/null | jq -r '.models[]? | select(.url | con
 
 ### Step 3: 选择 Agent
 
-展示 7 个可选 agent 让用户选择**一个**：
+展示可选 agent 让用户选择**一个**：
 1. Claude Code
 2. CodeBuddy
 3. Codex
@@ -80,10 +81,15 @@ cat ~/.codebuddy/models.json 2>/dev/null | jq -r '.models[]? | select(.url | con
 5. dsh (DeepSeek Harness)
 6. Hermes
 7. OpenClaw
+8. omp (oh-my-pi)
+9. OpenCode
+10. AntiGravity (agy CLI)
 
 ### Step 4: 填写模型 ID
 
-告诉用户：
+AntiGravity 跳过这一步：agy 从 Proxy 读取订阅池的模型列表，配置里不写模型。
+
+其他 agent 告诉用户：
 - 这个模型 ID 必须是 Proxy 上游支持的模型
 - 给出常见例子：`claude-sonnet-4-20250514`、`claude-opus-4.7`、`gpt-5.5`、`deepseek-r1`
 
@@ -116,6 +122,10 @@ curl -s -w "\n%{http_code}" -X POST "${PROXY_HOST}/codex/${INSTANCE_ID}/v1/respo
   -H "Authorization: Bearer ${USER_KEY}" \
   -d '{"model":"'${MODEL_ID}'","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"ping"}]}],"stream":false}'
 
+# AntiGravity → Gemini 模型列表。agy 不发认证头，user key 在路径里，不要把这个 URL 原样展示给用户
+curl -s -w "\n%{http_code}" "${PROXY_HOST}/antigravity/${INSTANCE_ID}/${USER_KEY}/v1beta/models"
+# 期望 200 和 JSON 里的 models 数组；没有 models 说明订阅池没有 AntiGravity 账号，或该分组没有包含 antigravity agent
+
 # WorkBuddy → OpenAI Chat (更通用)
 curl -s -w "\n%{http_code}" -X POST "${PROXY_HOST}/workbuddy/${INSTANCE_ID}/v1/chat/completions" \
   -H "Content-Type: application/json" \
@@ -126,7 +136,7 @@ curl -s -w "\n%{http_code}" -X POST "${PROXY_HOST}/workbuddy/${INSTANCE_ID}/v1/c
 **判断结果**：
 - HTTP 连接失败 (000) → 告诉用户 proxy 不可达，让用户检查地址/端口/服务状态，**不要继续**
 - 2xx → 完全正常，继续
-- 4xx → proxy 可达（可能是 session-init 返回的 form 或 auth 问题），**展示响应体给用户参考**，继续
+- 4xx → proxy 可达（可能是 session-init 返回的 form 或 auth 问题），**展示响应体给用户参考**，继续（AntiGravity 例外：4xx 通常是 key 或实例 ID 错误，先修正再继续）
 - 5xx → proxy 有问题，**展示完整错误响应**，询问用户是否继续
 
 ### Step 6: Header 预选（仅 Hermes / OpenClaw）
@@ -195,6 +205,8 @@ bash agents/skills/setup-proxy/setup-proxy.sh --non-interactive \
 如果是 Codex，先询问用户：「订阅账号池用尽时，是否保留自己的 ChatGPT 登录作为回退？（需先执行 `codex login`，默认否）」。
 选是则追加 `--codex-own-login`：配置改为 `requires_openai_auth = true`，user key 通过 `x-tdai-user-key` 请求头发送。
 
+如果是 AntiGravity，不传 `--model` 和 `--config-path`（安装器自己选 shell profile）。脚本会下载并运行 `${PROXY_HOST}/setup/hooks.sh`，user key 通过环境变量 `AGENT_MEMORY_KEY` 传入，不会出现在进程列表里。
+
 如果是 Hermes/OpenClaw，追加：
 ```bash
   --team-id "${TEAM_ID}" \
@@ -226,10 +238,13 @@ cat <config_path>
 | WorkBuddy | 模型选择器中切换到自定义模型列表里的对应模型 |
 | dsh | 无需操作，`settings.yaml` 已指定模型 |
 | Hermes / OpenClaw | 确保客户端选择的 provider/模型指向 Proxy 配置 |
+| AntiGravity | 打开**新的终端**再运行 `agy`（profile 里的变量只在新 shell 生效）；`agy models` 应列出订阅池模型，agy 里输入 `/hooks` 应看到 `agent-memory` |
 
 **务必告知用户**：如果不切换模型，请求不会经过 Proxy，记忆/技能注入不会生效。
 
 ### Step 10: 资产导入（可选）
+
+AntiGravity 没有本地资产导入，跳过这一步。
 
 配置完成后询问用户：是否要导入该 Agent 的本地资产（skill + 对话历史）到团队记忆？
 
@@ -261,3 +276,4 @@ PANEL_URL="${PANEL_URL}" TDAI_SERVICE_ID="${INSTANCE_ID}" TDAI_USER_KEY="${USER_
 - Codex 首次对话前必须切 Plan 模式（Shift+Tab），这是客户端限制
 - dsh 的 URL 不带 `/v1`，这是客户端硬编码的
 - Hermes/OpenClaw 的 x-conversation-id 每次新对话需要手动更换
+- AntiGravity 只支持 agy CLI（不支持 IDE / App）；首次会话 Proxy 在对话里返回文本菜单让用户选 Team/Agent/Task（账号级默认或只有一个选项时不提问）；recall 还要求 git 项目；新对话的第一条消息可能还没有 recall；详见 `agents/antigravity/README.md`

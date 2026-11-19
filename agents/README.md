@@ -1,6 +1,6 @@
 # Agents
 
-Memory Proxy 目前适配了 7 类 AI Agent 客户端，各自协议、会话初始化方式、注入逻辑差异显著。
+Memory Proxy 目前适配了 8 类 AI Agent 客户端，各自协议、会话初始化方式、注入逻辑差异显著。
 
 > 🛠 **想接入一个新的 AI Agent 客户端（未在下表中）？**
 > 阅读 [**新客户端二开适配指南 →**](./adapter-agent-development.md)
@@ -23,7 +23,7 @@ bash agents/setup-proxy.sh
 5. 写入配置文件（自动备份原文件为 `.bak`）
 6. 可选：导入本地 skill/对话到团队记忆
 
-支持所有 7 个 Agent，每次配一个，多次运行配置不同 Agent。
+支持所有 8 个 Agent，每次配一个，多次运行配置不同 Agent。
 
 ### 方式二：通过 AI Agent 辅助配置（Skill）
 
@@ -87,6 +87,7 @@ cp -r agents ~/agents
 | [dsh (DeepSeek Harness)](./dsh/) | OpenAI Chat Completions | 交互式 Form + Headless Bypass | `ask_user_question` | ❌ (无上限) | ❌ | ✅ (无 tool 时) |
 | [Hermes](./hermes/) | OpenAI Chat Completions | Header 预选（无 Form） | N/A | N/A | N/A | ✅ (header 缺失时) |
 | [OpenClaw](./openclaw/) | OpenAI Chat Completions | Header 预选（无 Form） | N/A | N/A | N/A | ✅ (header 缺失时) |
+| [AntiGravity (agy CLI)](./antigravity/) | Gemini API（Cloud Code 信封） | 文本菜单（同 WorkBuddy 文本模式）+ 单选自动选择 | 对话内文本菜单 | ❌ | ❌ | ❌ |
 
 ---
 
@@ -126,6 +127,7 @@ tsx agents/asset-import.ts --source claude-code --agent-id <id> --team-id <tid> 
 | dsh | `x-deepseek-harness-session-id` | `x-session-id` |
 | Hermes | `x-conversation-id` | — (用户静态配置) |
 | OpenClaw | `x-conversation-id` | — (用户静态配置) |
+| AntiGravity | `body.labels.cascade_id` | — (agy 自动生成，等于 hook 的 `conversationId`) |
 
 ---
 
@@ -140,6 +142,7 @@ tsx agents/asset-import.ts --source claude-code --agent-id <id> --team-id <tid> 
 | dsh | 配置文件 | `~/.dsh/settings.yaml` + `.credentials.yaml` | YAML 环境变量引用 |
 | Hermes | 配置文件 | `~/.hermes/config.yaml` | YAML `api_key` + headers |
 | OpenClaw | 配置文件 | `~/.openclaw/openclaw.json` | JSON `apiKey` + headers |
+| AntiGravity | 环境变量 | shell profile 里的 `AGY_LLM_GATEWAY_URL`（`~/.zshrc` 或 `~/.bashrc`）+ `~/.gemini/config/hooks.json` | URL 路径 `/antigravity/<spaceId>/<user_key>`（agy 不发认证头） |
 
 ---
 
@@ -151,6 +154,7 @@ tsx agents/asset-import.ts --source claude-code --agent-id <id> --team-id <tid> 
 /:agent/:spaceId/chat/completions     → OpenAI Chat 无 v1 前缀 (dsh)
 /:agent/:spaceId/v1/responses         → Responses API (Codex, WB-desktop)
 /:agent/:spaceId/responses            → Responses API 无 v1 前缀 (Codex, WB-desktop)
+/antigravity/:spaceId/:key/v1beta/models/<model>:streamGenerateContent → Gemini API (AntiGravity，key 在路径里)
 ```
 
 ---
@@ -183,7 +187,7 @@ tsx agents/asset-import.ts --source claude-code --agent-id <id> --team-id <tid> 
 http://<proxy-host>:<port>/<agent-source>/<spaceId>
 ```
 
-- `<agent-source>`：必须从 Proxy 支持的值中选用：`claude-code`、`codebuddy`、`workbuddy`、`codex`、`hermes`、`openclaw`。其他平台可伪装成其中之一接入（如使用 `codebuddy`）
+- `<agent-source>`：必须从 Proxy 支持的值中选用：`claude-code`、`codebuddy`、`workbuddy`、`codex`、`hermes`、`openclaw`、`antigravity`（`antigravity` 只接受 agy 的 Gemini 格式，key 在 URL 路径里）。其他平台可伪装成其中之一接入（如使用 `codebuddy`）
 - `<spaceId>`：memory 实例 ID（本地部署固定为 `default`）
 
 ---

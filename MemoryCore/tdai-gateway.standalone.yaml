@@ -61,6 +61,9 @@ upstream:
     - agent_source: openclaw
       protocol: anthropic
       display_name: OpenClaw
+    - agent_source: antigravity
+      protocol: gemini
+      display_name: AntiGravity
 
 # ── Memory 引擎配置 ──
 memory:

@@ -477,7 +477,7 @@ const upstreamGroupType = z.enum(["default", "custom", "extraction"]);
 const upstreamGroupTypeConvOnly = z.enum(["default", "custom"]); // update/delete/toggle 用
 const upstreamMode = z.enum(["official", "custom_unified", "custom_passthrough", "subscription_pool"]);
 
-export const subscriptionPoolProviderSchema = z.enum(["claude", "codex"]);
+export const subscriptionPoolProviderSchema = z.enum(["claude", "codex", "antigravity"]);
 export const subscriptionPoolStatusSchema = z.object({ provider: subscriptionPoolProviderSchema.optional() });
 export const subscriptionPoolEnableSchema = z.object({ provider: subscriptionPoolProviderSchema });
 export const subscriptionPoolDisableSchema = z.object({ provider: subscriptionPoolProviderSchema });

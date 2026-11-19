@@ -213,7 +213,7 @@ export async function fetchPoolSourceModels(
     let current = account;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const readings = await adapter.fetchModels(current.access_token, current.provider_account_id, deps.options);
+        const readings = await adapter.fetchModels(current.access_token, current.provider_account_id, { ...deps.options, projectId: current.project_id });
         for (const reading of readings) if (!models.has(reading.id)) models.set(reading.id, reading);
         succeeded += 1;
         break;

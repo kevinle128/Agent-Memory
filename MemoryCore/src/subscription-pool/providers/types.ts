@@ -7,10 +7,13 @@ export interface ExchangedSubscriptionTokens {
   expiresAt: number | null;
   providerAccountId: string;
   accountLabel: string;
+  /** Cloud project of the account, for providers that bill requests to one. Absent otherwise. */
+  projectId?: string | null;
 }
 
 export interface SubscriptionCodeExchangeInput {
   code: string;
+  /** Empty for a provider that logs in without PKCE. */
   codeVerifier: string;
   redirectUri: string;
   state: string;
@@ -56,13 +59,20 @@ export interface SourceModelReading {
 export interface FetchModelsOptions {
   /** Version the ChatGPT model list asks for. Ignored by Claude. */
   codexClientVersion?: string;
+  /** Cloud project of the account whose models are read. Only AntiGravity uses it. */
+  projectId?: string | null;
+}
+
+/** Account data a usage call may need besides the token and the provider account id. */
+export interface FetchUsageOptions {
+  projectId?: string | null;
 }
 
 export interface SubscriptionProviderAdapter {
   readonly provider: SubscriptionProvider;
   exchangeCode(input: SubscriptionCodeExchangeInput): Promise<ExchangedSubscriptionTokens>;
   refresh(refreshToken: string): Promise<ExchangedSubscriptionTokens>;
-  fetchUsage(accessToken: string, providerAccountId: string): Promise<SubscriptionUsageReading>;
+  fetchUsage(accessToken: string, providerAccountId: string, options?: FetchUsageOptions): Promise<SubscriptionUsageReading>;
   redeemResetCredit(
     accessToken: string,
     providerAccountId: string,

@@ -6,7 +6,7 @@
  * Every time-dependent function takes `now` (epoch ms) so results are deterministic.
  */
 
-export type PoolProvider = 'claude' | 'codex';
+export type PoolProvider = 'claude' | 'codex' | 'antigravity';
 export type PoolAccountStatus = 'active' | 'exhausted' | 'auth_error' | 'disabled';
 
 /** One quota window as Core returns it. Times are epoch milliseconds. */
@@ -17,6 +17,27 @@ export interface PoolWindow {
   resets_at: number | null;
   observed_at: number;
   source: string;
+}
+
+/** AntiGravity accounts have no reset credits, so the credits column and the redeem action are hidden for them. */
+export function supportsResetCredits(provider: PoolProvider): boolean {
+  return provider !== 'antigravity';
+}
+
+/**
+ * i18n key prefix of the add-account dialog copy. Claude and AntiGravity each have their own
+ * wording; Codex keeps the unprefixed keys. Naming every provider here stops a new provider
+ * from silently showing Codex copy.
+ */
+export function addAccountKeyPrefix(provider: PoolProvider): string {
+  switch (provider) {
+    case 'claude':
+      return 'subscriptionPool.add.claude';
+    case 'antigravity':
+      return 'subscriptionPool.add.antigravity';
+    case 'codex':
+      return 'subscriptionPool.add';
+  }
 }
 
 /** The account fields the display rules read. */

@@ -5,7 +5,7 @@
 # events. It sends the working directory and git identity of the session to the
 # Agent-Memory proxy. The proxy uses them to find the project of the session.
 #
-# Usage: ~/.agent-memory/hook.sh [client]     (client: claude-code (default) or codex)
+# Usage: ~/.agent-memory/hook.sh [client]     (client: claude-code (default), codex or antigravity)
 #
 # Connection settings:
 #   claude-code: ANTHROPIC_BASE_URL and token, from the environment or
@@ -19,10 +19,24 @@
 #                env var named in env_http_headers, then experimental_bearer_token,
 #                then the env var named by env_key.
 #
-# Recall (Claude Code only): on UserPromptSubmit with a prompt, the hook also
-# posts the report fields and the prompt to <base>/v3/hook/recall. When the
-# proxy answers HTTP 200 with a hook JSON object, the hook prints that object.
-# Claude Code then adds the memories next to the prompt. Codex stays silent.
+#   antigravity: the gateway URL <proxy>/antigravity/<space>/<key> (an /analyse
+#                segment between the space and the key is allowed), from the
+#                AGY_LLM_GATEWAY_URL environment variable, else from the file
+#                ~/.agent-memory/antigravity.url that the installer wrote. agy sends
+#                no key to the hook. The key goes to the proxy in x-tdai-user-key.
+#
+# AntiGravity (agy CLI): the hook runs on SessionStart and PreInvocation. The stdin
+# JSON (camelCase) has conversationId, workspacePaths, hookEventName, lastUserInput
+# and, on PreInvocation, invocationNum. agy needs one JSON object on stdout for every
+# hook run, so for this client the hook always prints exactly one object: "{}", or
+# the recall answer when it holds an injectSteps array. This is also true when the
+# hook fails.
+#
+# Recall (Claude Code and AntiGravity): on UserPromptSubmit (Claude Code) or on
+# PreInvocation number 0 (AntiGravity) with a prompt, the hook also posts the report
+# fields and the prompt to <base>/v3/hook/recall. When the proxy answers HTTP 200
+# with a hook JSON object, the hook prints that object. The client then adds the
+# memories next to the prompt. Codex stays silent.
 # AGENT_MEMORY_RECALL=0 turns recall off on this machine.
 #
 # Self-update: on SessionStart, at most once per 6 hours, the hook reads
@@ -33,7 +47,8 @@
 # installed hook updates itself. AGENT_MEMORY_HOOK_UPDATE=0 turns this off.
 #
 # Rules for this script:
-#   - It MUST NOT write to stdout, except the recall JSON that the proxy sent.
+#   - It MUST NOT write to stdout, except the recall JSON that the proxy sent
+#     (and, for AntiGravity, the default "{}").
 #     Claude Code and Codex add hook stdout to the model context.
 #   - It always exits 0, so a failure here never blocks the session.
 #   - Exception: when AGENT_MEMORY_HOOK_STRICT=1, it writes one error line to
@@ -47,12 +62,28 @@ set -u
 exec 3>&2 4>&1 2>/dev/null 1>/dev/null
 
 CLIENT="${1:-claude-code}"
-HOOK_VERSION="2"
+HOOK_VERSION="3"
 HOME_DIR="${HOME:-}"
 AM_DIR="$HOME_DIR/.agent-memory"
 DEVICE_FILE="$AM_DIR/device.json"
 SETTINGS_FILE="$HOME_DIR/.claude/settings.json"
 CODEX_CONFIG="${CODEX_HOME:-$HOME_DIR/.codex}/config.toml"
+AGY_URL_FILE="$AM_DIR/antigravity.url"
+# Set to 1 once the hook has printed its JSON object on fd 4.
+EMITTED=0
+
+# AntiGravity needs one JSON object on stdout, also when the hook fails. The EXIT
+# trap runs only in the main shell, not in the background report subshell, so the
+# object is printed once. Strict mode (the installer) prints nothing.
+agy_default_output() {
+  if [ "$EMITTED" != "1" ]; then
+    printf '{}\n' >&4
+    EMITTED=1
+  fi
+}
+if [ "$CLIENT" = "antigravity" ] && [ "${AGENT_MEMORY_HOOK_STRICT:-}" != "1" ]; then
+  trap agy_default_output EXIT
+fi
 
 # Report an error. In strict mode this exits 1. Otherwise it exits 0 silently.
 die() {
@@ -127,11 +158,97 @@ process.stdin.on("data", (c) => { s += c; }).on("end", () => {
 });' "$path" || true
       ;;
     *)
+      case "$path" in
+        '["'*'",0]')
+          # First string of an array, for example workspacePaths.
+          key=$(printf '%s' "$path" | sed -E 's/^\["([^"]+)",0\]$/\1/')
+          tr '\n' ' ' \
+            | sed -nE 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*\[[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p' \
+            | head -n 1 \
+            | sed -E 's/\\(["\\/])/\1/g'
+          return
+          ;;
+      esac
       key=$(printf '%s' "$path" | sed -E 's/.*"([^"]+)"\]$/\1/')
       tr '\n' ' ' \
         | sed -nE 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"(([^"\\]|\\.)*)".*/\1/p' \
         | head -n 1 \
         | sed -E 's/\\(["\\/])/\1/g'
+      ;;
+  esac
+}
+
+# Read JSON on stdin. Print the whole-number value found at the key path $1
+# (same path form as json_get). Print nothing when the value is missing or is
+# not a number.
+json_num() {
+  local path="$1" key
+  case "$JSON_TOOL" in
+    jq)
+      jq -r --argjson p "$path" 'getpath($p) | select(type == "number")' || true
+      ;;
+    python3)
+      python3 -c 'import json, sys
+try:
+    v = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    for k in json.loads(sys.argv[1]):
+        v = v[k]
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        sys.stdout.write(str(int(v)))
+except Exception:
+    pass' "$path" || true
+      ;;
+    node)
+      node -e 'let s = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (c) => { s += c; }).on("end", () => {
+  try {
+    let v = JSON.parse(s);
+    for (const k of JSON.parse(process.argv[1])) v = v[k];
+    if (typeof v === "number") process.stdout.write(String(Math.trunc(v)));
+  } catch (e) { /* print nothing */ }
+});' "$path" || true
+      ;;
+    *)
+      key=$(printf '%s' "$path" | sed -E 's/.*"([^"]+)"\]$/\1/')
+      tr '\n' ' ' \
+        | sed -nE 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*(-?[0-9]+).*/\1/p' \
+        | head -n 1
+      ;;
+  esac
+}
+
+# Read JSON on stdin. Succeed when the value at the key path $1 is an array.
+json_is_array() {
+  local path="$1" key
+  case "$JSON_TOOL" in
+    jq)
+      jq -e --argjson p "$path" 'getpath($p) | type == "array"' >/dev/null 2>&1
+      ;;
+    python3)
+      python3 -c 'import json, sys
+try:
+    v = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    for k in json.loads(sys.argv[1]):
+        v = v[k]
+    sys.exit(0 if isinstance(v, list) else 1)
+except Exception:
+    sys.exit(1)' "$path" 2>/dev/null
+      ;;
+    node)
+      node -e 'let s = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (c) => { s += c; }).on("end", () => {
+  try {
+    let v = JSON.parse(s);
+    for (const k of JSON.parse(process.argv[1])) v = v[k];
+    process.exit(Array.isArray(v) ? 0 : 1);
+  } catch (e) { process.exit(1); }
+});' "$path" 2>/dev/null
+      ;;
+    *)
+      key=$(printf '%s' "$path" | sed -E 's/.*"([^"]+)"\]$/\1/')
+      tr '\n' ' ' | grep -Eq '"'"$key"'"[[:space:]]*:[[:space:]]*\['
       ;;
   esac
 }
@@ -294,6 +411,32 @@ codex_route() {
 }
 
 # ---------------------------------------------------------------------------
+# AntiGravity connection settings. Keep this block the same as the one in install.sh.
+# ---------------------------------------------------------------------------
+
+# Print "<origin>|<space>|<analyse or empty>|<key>" for a gateway URL
+# <origin>/antigravity/<space>[/analyse]/<key>. Print nothing for any other URL.
+agy_parse() {
+  printf '%s' "$1" | sed -nE 's#^(https?://[^/?]+)/antigravity/([A-Za-z0-9_.-]+)(/analyse)?/([A-Za-z0-9_.-]+)/?$#\1|\2|\3|\4#p'
+}
+
+# Print "<proxy>/antigravity/<space>" on line 1 and the key on line 2. The gateway URL
+# comes from AGY_LLM_GATEWAY_URL, else from the file the installer wrote.
+agy_connection() {
+  local u parsed origin space _analyse key
+  for u in "${AGY_LLM_GATEWAY_URL:-}" "$(cat "$AGY_URL_FILE" 2>/dev/null || true)"; do
+    [ -n "$u" ] || continue
+    parsed=$(agy_parse "$u")
+    [ -n "$parsed" ] || continue
+    IFS="|" read -r origin space _analyse key <<EOF2
+$parsed
+EOF2
+    printf '%s/antigravity/%s\n%s\n' "$origin" "$space" "$key"
+    return 0
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Device id. Keep this block the same as the one in install.sh.
 # ---------------------------------------------------------------------------
 
@@ -373,11 +516,18 @@ recall() {
   code=${resp##*$'\n'}
   out=${resp%$'\n'*}
   [ "$code" = "200" ] || return 0
-  case "$out" in
-    '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"'*'"}}') ;;
-    *) return 0 ;;
-  esac
+  if [ "$CLIENT" = "antigravity" ]; then
+    # One line, and a JSON object with an injectSteps array.
+    case "$out" in *$'\n'*) return 0 ;; esac
+    printf '%s' "$out" | json_is_array '["injectSteps"]' || return 0
+  else
+    case "$out" in
+      '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"'*'"}}') ;;
+      *) return 0 ;;
+    esac
+  fi
   printf '%s\n' "$out" >&4
+  EMITTED=1
 }
 
 # Print the sha256 of file $1 in lower-case hex, or nothing.
@@ -441,11 +591,29 @@ main() {
     input=$(cat)
   fi
 
-  session=$(printf '%s' "$input" | json_get '["session_id"]')
-  cwd=$(printf '%s' "$input" | json_get '["cwd"]')
-  event=$(printf '%s' "$input" | json_get '["hook_event_name"]')
+  if [ "$CLIENT" = "antigravity" ]; then
+    # agy stdin is camelCase. The snake_case names are the fallback the installer
+    # test report uses.
+    session=$(printf '%s' "$input" | json_get '["conversationId"]')
+    [ -n "$session" ] || session=$(printf '%s' "$input" | json_get '["session_id"]')
+    cwd=$(printf '%s' "$input" | json_get '["workspacePaths",0]')
+    [ -n "$cwd" ] || cwd=$(printf '%s' "$input" | json_get '["cwd"]')
+    [ -n "$cwd" ] || cwd="$PWD"
+    event=$(printf '%s' "$input" | json_get '["hookEventName"]')
+    [ -n "$event" ] || event=$(printf '%s' "$input" | json_get '["hook_event_name"]')
+  else
+    session=$(printf '%s' "$input" | json_get '["session_id"]')
+    cwd=$(printf '%s' "$input" | json_get '["cwd"]')
+    event=$(printf '%s' "$input" | json_get '["hook_event_name"]')
+  fi
 
-  if [ "$CLIENT" = "codex" ]; then
+  if [ "$CLIENT" = "antigravity" ]; then
+    conn=$(agy_connection)
+    base=$(printf '%s\n' "$conn" | sed -n 1p)
+    token=$(printf '%s\n' "$conn" | sed -n 2p)
+    auth_header="x-tdai-user-key"
+    [ -n "$base" ] && [ -n "$token" ] || die "no AntiGravity gateway URL found (AGY_LLM_GATEWAY_URL or $AGY_URL_FILE)"
+  elif [ "$CLIENT" = "codex" ]; then
     # Connection settings: the active model provider in the Codex config. The
     # token goes only to a Codex route of the proxy, never to another provider.
     conn=$(codex_connection)
@@ -512,6 +680,11 @@ main() {
   prompt=""
   if [ "$CLIENT" = "claude-code" ] && [ "$event" = "UserPromptSubmit" ] && [ "${AGENT_MEMORY_RECALL:-}" != "0" ]; then
     prompt=$(printf '%s' "$input" | json_get '["prompt"]' | head -c 8000)
+  fi
+
+  if [ "$CLIENT" = "antigravity" ] && [ "$event" = "PreInvocation" ] && [ "${AGENT_MEMORY_RECALL:-}" != "0" ] \
+    && [ "$(printf '%s' "$input" | json_num '["invocationNum"]')" = "0" ]; then
+    prompt=$(printf '%s' "$input" | json_get '["lastUserInput"]' | head -c 8000)
   fi
 
   if [ -n "$prompt" ]; then

@@ -2,7 +2,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # agents/setup-proxy.sh — One-shot interactive proxy configuration for AI agents
 #
-# Supports: Claude Code | CodeBuddy | Codex | WorkBuddy | dsh | Hermes | OpenClaw | omp | OpenCode
+# Supports: Claude Code | CodeBuddy | Codex | WorkBuddy | dsh | Hermes | OpenClaw | omp | OpenCode | AntiGravity
 #
 # Usage:
 #   bash agents/setup-proxy.sh            # interactive
@@ -148,7 +148,9 @@ pick_default_source_model() {
 }
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-AGENTS=("claude-code" "codebuddy" "codex" "workbuddy" "dsh" "hermes" "openclaw" "omp" "opencode")
+AGENTS=("claude-code" "codebuddy" "codex" "workbuddy" "dsh" "hermes" "openclaw" "omp" "opencode" "antigravity")
+# agy reads its gateway URL from the shell profile. The hook installer writes the block there.
+if [[ "${SHELL:-}" == */zsh ]]; then AGY_PROFILE_DISPLAY="~/.zshrc"; else AGY_PROFILE_DISPLAY="~/.bashrc"; fi
 AGENT_LABELS=(
   "Claude Code       — Anthropic Messages, ~/.claude/settings.json"
   "CodeBuddy         — OpenAI Chat, ~/.codebuddy/models.json"
@@ -159,6 +161,7 @@ AGENT_LABELS=(
   "OpenClaw          — OpenAI Chat + Header预选, ~/.openclaw/openclaw.json"
   "omp (oh-my-pi)    — 多来源 (Anthropic/Responses/Chat), ~/.omp/agent/models.yml"
   "OpenCode          — OpenAI Chat 多来源, ~/.config/opencode/opencode.json"
+  "AntiGravity (agy) — Gemini 网关 URL (AGY_LLM_GATEWAY_URL), shell profile + ~/.gemini/config/hooks.json"
 )
 
 DEFAULT_CONFIG_PATHS=(
@@ -171,6 +174,7 @@ DEFAULT_CONFIG_PATHS=(
   "~/.openclaw/openclaw.json"
   "~/.omp/agent/models.yml"
   "~/.config/opencode/opencode.json"
+  "$AGY_PROFILE_DISPLAY"
 )
 
 # Expand ~ to $HOME for actual file operations
@@ -222,7 +226,8 @@ while [[ $# -gt 0 ]]; do
       echo "  --task-id ID       Task ID (or 'no-task')"
       echo "  --conv-id ID       Conversation ID"
       echo ""
-      echo "Agents: claude-code|codebuddy|codex|workbuddy|dsh|hermes|openclaw|omp|opencode"
+      echo "Agents: claude-code|codebuddy|codex|workbuddy|dsh|hermes|openclaw|omp|opencode|antigravity"
+      echo "  (antigravity needs no --model: agy lists the pool models itself)"
       exit 0 ;;
     *) error "Unknown arg: $1"; exit 1 ;;
   esac
@@ -234,12 +239,12 @@ if $ARG_NONINTERACTIVE; then
   [[ -z "$ARG_PROXY" ]] && { error "--proxy-host is required in non-interactive mode"; exit 1; }
   [[ -z "$ARG_KEY" ]] && { error "--user-key is required in non-interactive mode"; exit 1; }
   [[ -z "$ARG_AGENT" ]] && { error "--agent is required in non-interactive mode"; exit 1; }
-  [[ -z "$ARG_MODEL" ]] && { error "--model is required in non-interactive mode"; exit 1; }
+  [[ -z "$ARG_MODEL" && "$ARG_AGENT" != "antigravity" ]] && { error "--model is required in non-interactive mode"; exit 1; }
 
   PROXY_HOST="${ARG_PROXY%/}"
   INSTANCE_ID="${ARG_INSTANCE:-default}"
   USER_KEY="$ARG_KEY"
-  MODEL_ID="$ARG_MODEL"
+  MODEL_ID="${ARG_MODEL:-agy models}"
 
   # Resolve agent index
   AGENT_FOUND=false
@@ -405,6 +410,21 @@ if ! $SCAN_FOUND; then
   fi
 fi
 
+# --- Scan AntiGravity (~/.agent-memory/antigravity.url, written by the hook installer) ---
+if ! $SCAN_FOUND; then
+  _agy_path="$(expand_path "~/.agent-memory/antigravity.url")"
+  if [[ -f "$_agy_path" && -s "$_agy_path" ]]; then
+    _agy_url=$(head -1 "$_agy_path" 2>/dev/null)
+    if [[ "$_agy_url" == *"/antigravity/"* ]]; then
+      SCAN_PROXY=$(echo "$_agy_url" | sed -E 's|(/antigravity/.*)$||')
+      SCAN_INSTANCE=$(echo "$_agy_url" | sed -E 's|.*/antigravity/([^/]+).*|\1|')
+      # -n ... p: a URL without the key segment gives an empty key, not the whole URL.
+      SCAN_KEY=$(echo "$_agy_url" | sed -nE 's|^https?://[^/?]+/antigravity/[^/]+(/analyse)?/([^/?]+)/?$|\2|p')
+      [[ -n "$SCAN_PROXY" && -n "$SCAN_KEY" ]] && SCAN_FOUND=true && SCAN_SOURCES+=("antigravity → $_agy_path")
+    fi
+  fi
+fi
+
 # --- Show scan results and let user confirm or override ---
 USE_SCANNED=false
 if $SCAN_FOUND; then
@@ -492,7 +512,11 @@ CHOSEN_CONFIG_PATH="${DEFAULT_CONFIG_PATHS[$SELECTED_IDX]}"
 success "选择: ${CHOSEN_AGENT}"
 
 # ━━━ Model ID ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-if $USE_SCANNED && [[ -n "$MODEL_ID" ]]; then
+if [[ "$CHOSEN_AGENT" == "antigravity" ]]; then
+  header "模型配置"
+  info "AntiGravity 不需要在配置里写模型：agy 从 Proxy 读取订阅池的模型列表 (运行 agy models 查看)"
+  MODEL_ID="agy models"
+elif $USE_SCANNED && [[ -n "$MODEL_ID" ]]; then
   header "模型配置"
   info "使用扫描到的模型: ${BOLD}${MODEL_ID}${RESET}"
   info "如需更换，输入新模型 ID；直接回车保持不变"
@@ -516,6 +540,8 @@ success "模型: ${MODEL_ID}"
 # ━━━ Health Probe (使用真实 agent + model) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 header "Proxy 健康探测"
 
+PROBE_METHOD="POST"
+PROBE_URL_DISPLAY=""
 # Build probe URL based on chosen agent's actual protocol path
 case "$CHOSEN_AGENT" in
   claude-code)
@@ -525,6 +551,13 @@ case "$CHOSEN_AGENT" in
   codex)
     PROBE_URL="${PROXY_HOST}/codex/${INSTANCE_ID}/v1/responses"
     PROBE_BODY="{\"model\":\"${MODEL_ID}\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"ping\"}]}],\"stream\":false}"
+    ;;
+  antigravity)
+    # agy sends no auth header: the user key is a path segment. The model list answers in Gemini format.
+    PROBE_METHOD="GET"
+    PROBE_URL="${PROXY_HOST}/antigravity/${INSTANCE_ID}/${USER_KEY}/v1beta/models"
+    PROBE_URL_DISPLAY="${PROXY_HOST}/antigravity/${INSTANCE_ID}/<user key>/v1beta/models"
+    PROBE_BODY=""
     ;;
   workbuddy)
     # WorkBuddy 双协议 (Desktop=Responses, Web=Chat)，探测用 Chat 更通用
@@ -543,16 +576,16 @@ case "$CHOSEN_AGENT" in
     ;;
 esac
 
-info "探测 URL: ${PROBE_URL}"
+info "探测 URL: ${PROBE_URL_DISPLAY:-$PROBE_URL}"
 info "探测 Model: ${MODEL_ID}"
 
 PROBE_RESPONSE_FILE=$(mktemp)
 HTTP_CODE=$(curl -s -w "%{http_code}" \
   --connect-timeout 5 -m 10 \
-  -X POST "$PROBE_URL" \
+  -X "$PROBE_METHOD" "$PROBE_URL" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${USER_KEY}" \
-  -d "$PROBE_BODY" \
+  ${PROBE_BODY:+-d "$PROBE_BODY"} \
   -o "$PROBE_RESPONSE_FILE" 2>/dev/null || echo "000")
 
 if [[ "$HTTP_CODE" == "000" ]]; then
@@ -562,7 +595,10 @@ if [[ "$HTTP_CODE" == "000" ]]; then
   exit 1
 elif [[ "$HTTP_CODE" =~ ^2 ]]; then
   success "Proxy 连通正常，请求成功 (HTTP ${HTTP_CODE})"
-elif [[ "$HTTP_CODE" =~ ^4 ]]; then
+  if [[ "$CHOSEN_AGENT" == "antigravity" ]] && ! jq -e 'type == "object" and (.models | type == "array" and length > 0)' "$PROBE_RESPONSE_FILE" >/dev/null 2>&1; then
+    warn "响应里没有可用模型：订阅池可能没有可用 AntiGravity 账号/模型，或该分组未包含 antigravity agent"
+  fi
+elif [[ "$HTTP_CODE" =~ ^4 && "$CHOSEN_AGENT" != "antigravity" ]]; then
   # 4xx = proxy alive, show response for transparency
   success "Proxy 连通正常 (HTTP ${HTTP_CODE})"
   PROBE_RESP=$(cat "$PROBE_RESPONSE_FILE" 2>/dev/null)
@@ -742,7 +778,11 @@ if needs_header_preselect "$CHOSEN_AGENT"; then
   success "Header 预选完成"
 else
   header "Header 预选配置"
-  info "${CHOSEN_AGENT} 支持交互式 Form，无需预填 header (跳过)"
+  if [[ "$CHOSEN_AGENT" == "antigravity" ]]; then
+    info "antigravity 不需要预填 header (跳过)；首次会话会在对话里用文本菜单选 Team/Agent/Task"
+  else
+    info "${CHOSEN_AGENT} 支持交互式 Form，无需预填 header (跳过)"
+  fi
 fi
 
 # ━━━ Config File Path & Write ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -764,6 +804,11 @@ if [[ "$CHOSEN_AGENT" == "dsh" ]]; then
   DSH_CREDENTIALS_PATH="$(expand_path "$DSH_DISPLAY_CREDENTIALS")"
   CONFIG_PATH="$DSH_SETTINGS_PATH"
   CONFIG_DISPLAY="$DSH_DISPLAY_SETTINGS"
+elif [[ "$CHOSEN_AGENT" == "antigravity" ]]; then
+  # The hook installer picks the profile (zsh: ~/.zshrc, else ~/.bashrc), so there is no path to choose.
+  info "安装器会把 AGY_LLM_GATEWAY_URL 写入 ${BOLD}${CHOSEN_CONFIG_PATH}${RESET}，hook 写入 ~/.gemini/config/hooks.json (写入前自动备份)"
+  CONFIG_DISPLAY="$CHOSEN_CONFIG_PATH"
+  CONFIG_PATH="$(expand_path "$CHOSEN_CONFIG_PATH")"
 else
   info "配置文件默认路径: ${BOLD}${CHOSEN_CONFIG_PATH}${RESET}"
   if confirm "使用此路径?" "y"; then
@@ -1394,6 +1439,34 @@ write_opencode() {
   info "启动方式: 运行 opencode，用 /models 选择 ${BOLD}memory-chat/<来源>/<模型>${RESET}"
 }
 
+# AntiGravity: the hook installer is the writer. It adds the agent-memory hook to
+# ~/.gemini/config/hooks.json, writes the marked AGY_LLM_GATEWAY_URL block to the shell profile
+# and ~/.agent-memory/antigravity.url, and backs up each file it changes. The user key goes in
+# AGENT_MEMORY_KEY, so it does not appear in the process list.
+write_antigravity() {
+  # The hook installer picks the shell profile itself, so a --config-path cannot change it.
+  if [[ -n "$ARG_CONFIG_PATH" && "$ARG_CONFIG_PATH" != "$CHOSEN_CONFIG_PATH" ]]; then
+    warn "antigravity 由 hook 安装器固定写入 ${CHOSEN_CONFIG_PATH}，已忽略 --config-path (${ARG_CONFIG_PATH})"
+  fi
+  CONFIG_DISPLAY="$CHOSEN_CONFIG_PATH"
+  local gateway_base="${PROXY_HOST}/antigravity/${INSTANCE_ID}"
+  case "$PROXY_HOST" in
+    http://localhost* | http://127.0.0.1* | "http://[::1]"* | https://*) ;;
+    *) warn "远程 Proxy 必须使用 https://，agy 只对 localhost 接受 http://" ;;
+  esac
+  if curl -fsSL "${PROXY_HOST}/setup/hooks.sh" \
+    | AGENT_MEMORY_KEY="$USER_KEY" bash -s -- --client antigravity --base-url "$gateway_base"; then
+    success "已安装 AntiGravity 网关配置和 hook (client=antigravity)"
+  else
+    error "AntiGravity 安装失败。检查 Proxy 地址、实例 ID 和 User Key 后重试："
+    error "  curl -fsSL ${PROXY_HOST}/setup/hooks.sh | AGENT_MEMORY_KEY=<user key> bash -s -- --client antigravity --base-url ${gateway_base}"
+    exit 1
+  fi
+  echo ""
+  info "启动方式: 打开一个新的终端，运行 ${GREEN}agy${RESET}"
+  info "检查: ${GREEN}agy models${RESET} 列出订阅池模型；在 agy 里输入 ${GREEN}/hooks${RESET} 应看到 agent-memory"
+}
+
 # ─── Execute Write ────────────────────────────────────────────────────────────
 case "$CHOSEN_AGENT" in
   claude-code) write_claude_code "$CONFIG_PATH" ;;
@@ -1405,6 +1478,7 @@ case "$CHOSEN_AGENT" in
   omp)         write_omp "$CONFIG_PATH" ;;
   opencode)    write_opencode "$CONFIG_PATH" ;;
   openclaw)    write_openclaw "$CONFIG_PATH" ;;
+  antigravity) write_antigravity ;;
 esac
 
 # ━━━ Summary ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1443,12 +1517,17 @@ case "$CHOSEN_AGENT" in
   dsh)
     warn "使用时直接运行 dsh 即可，settings.yaml 已指定模型"
     ;;
+  antigravity)
+    warn "使用时打开新的终端再运行 agy：AGY_LLM_GATEWAY_URL 已写入 ${CONFIG_DISPLAY}。首次会话会在对话里用文本菜单选 Team/Agent/Task，也可以在面板设置账号默认值；recall 需要 git 项目"
+    ;;
   hermes|openclaw|omp|opencode)
     warn "使用时确保客户端选择的模型/provider 指向 Proxy 配置（${MODEL_ID}）"
     ;;
 esac
 echo ""
-info "首次使用时会弹出 Team→Agent→Task 选择 (${CHOSEN_AGENT} 支持交互式 Form 的情况下)"
+if [[ "$CHOSEN_AGENT" != "antigravity" ]]; then
+  info "首次使用时会弹出 Team→Agent→Task 选择 (${CHOSEN_AGENT} 支持交互式 Form 的情况下)"
+fi
 info "再次运行此脚本可配置其他 Agent"
 
 # ━━━ Optional: Asset Import ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1456,7 +1535,7 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ASSET_IMPORT_SCRIPT="${SCRIPT_DIR}/asset-import.ts"
 
-if [[ -f "$ASSET_IMPORT_SCRIPT" ]] && ! $ARG_NONINTERACTIVE; then
+if [[ -f "$ASSET_IMPORT_SCRIPT" ]] && ! $ARG_NONINTERACTIVE && [[ "$CHOSEN_AGENT" != "antigravity" ]]; then
   header "资产导入 (可选)"
   info "检测到资产导入脚本，可以将该 Agent 的本地 skill/对话历史导入到团队记忆中"
   info "冷启动 skill 抽取固定使用 ${BOLD}严格模式${RESET}(v1 五分类 + 四维打分 gate),"

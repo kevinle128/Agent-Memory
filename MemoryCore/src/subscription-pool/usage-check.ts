@@ -49,7 +49,7 @@ export async function checkAccountUsage(
   let reading: SubscriptionQuotaWindow[] | null = null;
   let resetCredits: SubscriptionResetCredits | null = null;
   try {
-    const usage = await adapter.fetchUsage(before.access_token, before.provider_account_id);
+    const usage = await adapter.fetchUsage(before.access_token, before.provider_account_id, { projectId: before.project_id });
     reading = withNextCheck(usage.windows, thresholdPct, now);
     resetCredits = usage.resetCredits;
   } catch {

@@ -537,6 +537,17 @@ export async function completeRegistration(
  * 埋点装饰绝不改动状态机；失败/异常静默，业务链路零感知。
  * 详见 docs/design/2026-08-03-internal-usage-telemetry-plan.md §7.2。
  */
+/**
+ * Clients that get the two-step agent then task questions (`pending_agent_select`,
+ * `pending_task_select`) and the single-choice auto-select cascade, not the one-shot
+ * `pending_agent_task` question. Each of them renders one question at a time.
+ * AntiGravity answers in text (capability `askUserQuestion: false`), one question per turn.
+ */
+function usesSplitStages(agentSource: string): boolean {
+  return agentSource === "codex" || agentSource === "workbuddy" || agentSource === "dsh"
+    || agentSource === "opencode" || agentSource === "antigravity";
+}
+
 export async function handleSessionInit(
   sessionKey: string,
   userId: string | null,
@@ -990,8 +1001,8 @@ async function handleSessionInitInner(
         //
         // opencode 说明：opencode 客户端原生 `question` tool 每次只能弹一个题，
         // 无法承载"同时问 agent+task"的语义，必须拆 stage（同 codex/wb/dsh）。
-        const nextStatus = (isCodexClient || agentSource === "workbuddy" || agentSource === "dsh" || agentSource === "opencode") ? "pending_agent_select" : "pending_agent_task";
-        const nextStage: FormData["stage"] = (isCodexClient || agentSource === "workbuddy" || agentSource === "dsh" || agentSource === "opencode") ? "agent_select" : "agent_task";
+        const nextStatus = usesSplitStages(agentSource) ? "pending_agent_select" : "pending_agent_task";
+        const nextStage: FormData["stage"] = usesSplitStages(agentSource) ? "agent_select" : "agent_task";
         await store.set(compositeKey, {
           status: nextStatus,
           keyId: sessionKey,
@@ -1069,7 +1080,7 @@ async function handleSessionInitInner(
           return { intercepted: true, response: buildFormResponse(fd), formData: fd };
         }
         // ≥2 agents
-        const useSplitStage = isCodexClient || agentSource === "workbuddy" || agentSource === "dsh" || agentSource === "opencode";
+        const useSplitStage = usesSplitStages(agentSource);
         const nextStatus = useSplitStage ? "pending_agent_select" : "pending_agent_task";
         const nextStage: FormData["stage"] = useSplitStage ? "agent_select" : "agent_task";
         await store.set(compositeKey, {
@@ -1311,7 +1322,7 @@ async function handleSessionInitInner(
         // codex 分支，避免落到 legacy agent_task stage 后 form 里只问 agent
         // 却按老语义处理的语义歧义。opencode 原生 `question` tool 每次只能弹
         // 一个题，也必须走 split stage。
-        const useSplitStage = isCodexClient || agentSource === "workbuddy" || agentSource === "dsh" || agentSource === "opencode";
+        const useSplitStage = usesSplitStages(agentSource);
         const nextStatus = useSplitStage ? "pending_agent_select" : "pending_agent_task";
         const nextStage: FormData["stage"] = useSplitStage ? "agent_select" : "agent_task";
         await store.set(compositeKey, {
@@ -1445,10 +1456,7 @@ async function handleSessionInitInner(
     }
 
     if (teamId && teamId !== BYPASS_MARKER) {
-      const useSplitStage = isCodexClient
-        || agentSource === "workbuddy"
-        || agentSource === "dsh"
-        || agentSource === "opencode";
+      const useSplitStage = usesSplitStages(agentSource);
 
       // ── Single-agent auto-select 级联 (2026-09-21 fix, 只对拆 stage 客户端生效) ──
       //

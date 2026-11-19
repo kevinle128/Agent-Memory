@@ -112,6 +112,7 @@ cd TencentDB-Agent-Memory/deploy/global-images
 > | CodeBuddy | [`agents/codebuddy/`](./agents/codebuddy/) |
 > | WorkBuddy | [`agents/workbuddy/`](./agents/workbuddy/) |
 > | Codex | [`agents/codex/`](./agents/codex/) |
+> | AntiGravity（`agy` CLI） | [`agents/antigravity/`](./agents/antigravity/) |
 > | DeepSeek Harness | [`agents/dsh/`](./agents/dsh/) |
 > | OpenCode | [`agents/opencode/`](./agents/opencode/) |
 > | Hermes / OpenClaw / 其他 | [`agents/README.md`](./agents/README.md) |
@@ -334,7 +335,7 @@ docker run -d --name tdai-memory-hub \
 
 ## 通过 Proxy 接入各类 Agent
 
-Proxy 目前支持 8 类 AI Agent 客户端。每个 agent 的**完整接入配置、适配细节、常见问题**
+Proxy 目前支持 9 类 AI Agent 客户端。每个 agent 的**完整接入配置、适配细节、常见问题**
 已拆分到独立文档，按需查阅：
 
 | Agent | 配置方式 | 详细文档 |
@@ -343,6 +344,7 @@ Proxy 目前支持 8 类 AI Agent 客户端。每个 agent 的**完整接入配�
 | **CodeBuddy** | `~/.codebuddy/models.json` | [`agents/codebuddy/`](./agents/codebuddy/) |
 | **WorkBuddy** | `~/.workbuddy/models.json` | [`agents/workbuddy/`](./agents/workbuddy/) |
 | **Codex** | `~/.codex/config.toml`（⚠️ 首次需切 Plan 模式） | [`agents/codex/`](./agents/codex/) |
+| **AntiGravity（`agy` CLI）** | shell profile 里的 `AGY_LLM_GATEWAY_URL` + `~/.gemini/config/hooks.json` 里的 hook（客户端不登录 Google） | [`agents/antigravity/`](./agents/antigravity/) |
 | **DeepSeek Harness (dsh)** | `~/.dsh/settings.yaml` + `.credentials.yaml` | [`agents/dsh/`](./agents/dsh/) |
 | **OpenCode** | `~/.config/opencode/opencode.json` | [`agents/opencode/`](./agents/opencode/) |
 | **Hermes** | `~/.hermes/config.yaml` + Header 预选 | [`agents/hermes/`](./agents/hermes/) |
@@ -515,36 +517,52 @@ pipeline 时才有意义。
 >
 > 我们将在下一个版本中优化 conversation ID 的使用体验。
 
-## 可选能力：订阅账号池（仅 Codex，默认关闭）
+## 可选能力：订阅账号池（Claude Code、Codex、AntiGravity，默认关闭）
 
-团队可以让多个 ChatGPT Plus/Pro 订阅账号在 Codex 用户之间共用。Proxy 给每个新的 Codex 会话分配下一个账号，
-同一会话保持在同一账号上；账号用量到达上限时把会话切到其他账号，到重置时间后再重新使用该账号。
-没有开启账号池的分组行为不变。
+团队可以让多个订阅账号在用户之间共用：Claude 账号（Claude Code）、ChatGPT Plus/Pro 账号（Codex）和
+Google 账号（AntiGravity）。Proxy 给每个新会话分配下一个账号，同一会话保持在同一账号上；账号用量到达上限时
+把会话切到其他账号，到重置时间后再重新使用该账号。没有使用账号池的客户端行为不变。
 
-只支持 ChatGPT（Codex）账号。Claude 订阅不做账号池：Anthropic 的条款不允许服务端为他人保存或转发
-Claude.ai 订阅凭据。
-
-**开启前需要接受的风险**：共用个人订阅可能违反服务商条款，账号可能被封禁；登录、刷新和用量接口不是 OpenAI
-公开文档的接口，可能随时变化。用量接口失效时，账号池仍依靠响应头和 429 工作。
+**开启前需要接受的风险**：共用个人订阅可能违反服务商条款，账号可能被封禁；登录、刷新和用量接口不是服务商
+公开文档的接口，可能随时变化。AntiGravity 使用 AntiGravity CLI 的公开登录，Google 可能识别出同一个代理在
+使用多个账号。用量接口失效时，账号池仍依靠 Proxy 自己的观察（429 响应，以及服务商提供的响应头）工作。
 
 ### 开启方式
 
-1. 以 System Admin 登录 Memory Hub，打开 **组织与权限 → 订阅账号池**，切到 **Codex** 标签页。
-2. 打开账号池开关。`codex` agent 会从 `default` 上游分组移到账号池分组。如果 `codex` 在自定义上游分组中，
-   请先把它移回 `default`。
-3. 点击 **添加账号**，在新标签页登录 ChatGPT。浏览器随后打开 `http://localhost:1455/auth/callback?...`，
-   页面无法加载属于正常现象；复制地址栏中的完整地址，粘贴到对话框。每个账号重复一次。
-   同一个 ChatGPT 账号再次登录时只替换 token，名称保持不变。
-4. 可选：调整阈值（默认 95%）。达到阈值的账号不再接新会话，已有会话继续使用。
+1. 以 System Admin 登录 Memory Hub，打开 **组织与权限 → 订阅账号池**，切到 **Claude Code**、**Codex** 或
+   **AntiGravity** 标签页。
+2. 打开账号池开关。账号池会成为一个模型来源：`sub-claude`、`sub-openai` 或 `sub-antigravity`。
+3. 点击 **添加账号**，在新标签页登录服务商账号。最后一步因服务商而异：
+   - **Claude Code**：登录后回调页面会显示一个形如 `code#state` 的代码，复制完整代码，粘贴到对话框。
+   - **Codex**：浏览器随后打开 `http://localhost:1455/auth/callback?...`，页面无法加载属于正常现象；
+     复制地址栏中的完整地址，粘贴到对话框。
+   - **AntiGravity**：用 Google 账号登录。浏览器随后打开 `http://localhost:51121/oauth-callback?...`，
+     页面无法加载属于正常现象；复制地址栏中的完整地址，粘贴到对话框。
+
+   每个账号重复一次。同一个账号再次登录时只替换 token，名称保持不变。
+4. 在 **API Key** 页面为客户端选择账号池来源（Claude Code：`sub-claude`，Codex：`sub-openai`，
+   AntiGravity：`sub-antigravity`）。只有在这里选择之后，客户端才会使用账号池。
+5. 可选：调整阈值（默认 95%）。达到阈值的账号不再接新会话，已有会话继续使用。
+
+### AntiGravity 的特别之处
+
+- AntiGravity CLI（`agy`）通过网关 URL `https://<proxy-host>/antigravity/<instanceId>/<user key>` 连接，
+  客户端不登录 Google。`agy` 不发送认证头，所以 user key 是 URL 的一部分，Proxy 会在日志和 trace 里遮盖它。
+  远程 Proxy 必须使用 `https://`；`agy` 只对 localhost 接受 `http://`。客户端配置见
+  [`agents/antigravity/`](./agents/antigravity/)。
+- Proxy 把请求发到 daily 版 Cloud Code 主机（`https://daily-cloudcode-pa.googleapis.com`）。客户端能用哪些
+  模型取决于 Google 账号的套餐。
+- AntiGravity 没有重置额度（reset credits），也没有自带登录回退：所有账号都到达上限时，请求返回 429
+  并给出最早的重置时间。
 
 ### 运行方式
 
 - Memory Core 保存 token，在过期前 10 分钟刷新；每 30 分钟、每个重置时间点以及 Core 启动时读取所有账号的用量。
-- ChatGPT 返回 429 时，该账号标记为用尽直到重置时间；请求在发送任何内容给客户端之前换一个账号重试一次。
-- 所有账号都到达阈值时，Proxy 使用用量最低的账号；全部返回 429 时，如果客户端带了自己的 ChatGPT 登录（见下文）
-  就用它，否则返回 429 并给出最早的重置时间。
+- 服务商返回 429 时，该账号标记为用尽直到重置时间；请求在发送任何内容给客户端之前换一个账号重试一次。
+- 所有账号都到达阈值时，Proxy 使用用量最低的账号；全部返回 429 时，如果客户端带了自己的登录（Claude Code 和
+  Codex，见下文）就用它，否则返回 429 并给出最早的重置时间。
 
-**保留自己的 ChatGPT 登录作为回退（可选）**：在客户端先执行 `codex login`，再运行
+**保留自己的 ChatGPT 登录作为回退（可选，Codex）**：在客户端先执行 `codex login`，再运行
 `bash agents/setup-proxy.sh --agent codex`，回退问题选 yes（或传入 `--codex-own-login`）。
 Codex provider 将使用 `requires_openai_auth = true`，proxy key 通过 `x-tdai-user-key` 请求头发送。
 
@@ -554,14 +572,17 @@ Codex provider 将使用 `requires_openai_auth = true`，proxy key 通过 `x-tda
 - 每个实例只运行一个 Memory Core 进程；刷新 token 的定时任务不在多个副本之间共享。
 - 账号池请求不走 TokenHub，不计 credit，也不受 Proxy 的 TPM/QPM 限制。这些对话的记忆抽取仍调用 TokenHub
   （或实例的 extraction 分组），计费方式不变。
-- 先启动 Memory Core 再启动 Proxy。Core 不可用时启动的 Proxy 还不知道上游分组，会把 `codex` 发往 `default`
-  分组（TokenHub，按 token 计费），直到能读到分组为止（Core 恢复后约 30 秒）。所有自定义上游分组都有同样的现有行为。
+- 先启动 Memory Core 再启动 Proxy。Core 不可用时启动的 Proxy 还不知道上游分组，会把账号池 agent 发往 `default`
+  分组（Codex 是 TokenHub，按 token 计费），直到能读到分组为止（Core 恢复后约 30 秒）。所有自定义上游分组都有
+  同样的现有行为。
 - `deploy/global-images/.env.example` 中的变量：`SUBSCRIPTION_POOL_ENABLED=false` 关闭全部账号池定时任务；
   `SUBSCRIPTION_POOL_CHECK_INTERVAL_MIN` 修改 30 分钟的用量检查间隔。
+  `ANTIGRAVITY_OAUTH_CLIENT_ID` 和 `ANTIGRAVITY_OAUTH_CLIENT_SECRET` 是 AntiGravity CLI 登录所用的 Google OAuth
+  客户端；不设置时 AntiGravity 账号池无法添加账号和刷新 token，Claude 和 Codex 不受影响。
 
 ### 关闭方式
 
-在 **订阅账号池** 页面关闭开关。约 30 秒内 `codex` agent 回到 `default` 分组；账号会保留，直到手动删除。
+在 **订阅账号池** 页面关闭开关。账号池来源随之关闭，约 30 秒内 Proxy 不再使用它；账号会保留，直到手动删除。
 
 ## 可选能力：数据分析与可观测性（默认关闭）
 

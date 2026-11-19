@@ -251,6 +251,105 @@ describe("SqliteMetadataStore subscription pool migration", () => {
     }
   });
 
+  it("rebuilds an old account table so it accepts antigravity and keeps rows, indexes and the cascade", () => {
+    // The oldest account table: no session counter, no reset credits, no project column.
+    seedOldDatabase(dbPath, `
+      CREATE TABLE meta_upstream_subscription_account (
+        account_id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
+        provider TEXT NOT NULL CHECK (provider IN ('claude','codex')),
+        display_name TEXT NOT NULL,
+        account_label TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','exhausted','auth_error','disabled')),
+        access_token TEXT NOT NULL DEFAULT '',
+        refresh_token TEXT NOT NULL DEFAULT '',
+        token_expires_at INTEGER,
+        provider_account_id TEXT NOT NULL,
+        usage_json TEXT NOT NULL DEFAULT '{"windows":[]}',
+        usage_updated_at INTEGER,
+        exhausted_until INTEGER,
+        usage_fail_count INTEGER NOT NULL DEFAULT 0,
+        refresh_fail_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (group_id) REFERENCES meta_instance_upstream_config(group_id) ON DELETE CASCADE,
+        UNIQUE(group_id, provider_account_id),
+        UNIQUE(group_id, display_name)
+      );
+      INSERT INTO meta_upstream_subscription_account
+        (account_id, group_id, provider, display_name, account_label, enabled, status, access_token, refresh_token,
+         token_expires_at, provider_account_id, usage_json, exhausted_until, usage_fail_count, version, created_at, updated_at)
+      VALUES
+        ('sacc-claude', 'grp-old-unified', 'claude', 'Old claude', 'a@example.com', 0, 'exhausted', 'tok-a', 'ref-a',
+         1900000000000, 'p-1', '{"windows":[{"name":"five_hour","used_pct":100,"resets_at":1,"observed_at":1,"source":"usage_api"}]}',
+         1900000000001, 3, 7, '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z'),
+        ('sacc-codex', 'grp-old-unified', 'codex', 'Old codex', '', 1, 'active', 'tok-b', 'ref-b',
+         NULL, 'p-2', '{"windows":[]}', NULL, 0, 1, '2026-01-03T00:00:00.000Z', '2026-01-03T00:00:00.000Z');
+    `);
+
+    const store = new SqliteMetadataStore(dbPath);
+    store.init();
+    try {
+      expect(store.getSubscriptionAccount("sacc-claude")).toMatchObject({
+        provider: "claude", display_name: "Old claude", account_label: "a@example.com", enabled: false, status: "exhausted",
+        access_token: "tok-a", refresh_token: "ref-a", token_expires_at: 1_900_000_000_000, provider_account_id: "p-1",
+        project_id: null, exhausted_until: 1_900_000_000_001, usage_fail_count: 3, active_sessions: 0, version: 7,
+        usage: { windows: [expect.objectContaining({ name: "five_hour", used_pct: 100 })] },
+      });
+      expect(store.getSubscriptionAccount("sacc-codex")).toMatchObject({ provider: "codex", provider_account_id: "p-2", project_id: null });
+
+      const { account, created } = store.upsertSubscriptionAccountByProviderId({
+        group_id: "grp-old-unified",
+        provider: "antigravity",
+        provider_account_id: "pool@example.com",
+        display_name: "Pool 1",
+        access_token: "access",
+        refresh_token: "refresh",
+        token_expires_at: null,
+        project_id: "proj-1",
+      });
+      expect(created).toBe(true);
+      expect(account).toMatchObject({ provider: "antigravity", project_id: "proj-1" });
+
+      // The rebuilt table keeps its unique constraints and its group cascade.
+      expect(() => store.upsertSubscriptionAccountByProviderId({
+        group_id: "grp-old-unified", provider: "claude", provider_account_id: "p-9", display_name: "Old claude",
+        access_token: "x", refresh_token: "y", token_expires_at: null,
+      })).toThrow();
+      expect(store.deleteInstanceUpstreamGroup({ group_id: "grp-old-unified" })).toBe(true);
+      expect(store.getSubscriptionAccount("sacc-claude")).toBeNull();
+      expect(store.getSubscriptionAccount(account.account_id)).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("runs the account table migration only once and leaves no rebuild table behind", () => {
+    const first = new SqliteMetadataStore(dbPath);
+    first.init();
+    const group = first.createInstanceUpstreamGroup({ group_type: "custom", name: "antigravity pool", agents: [], mode: "subscription_pool" });
+    const { account } = first.upsertSubscriptionAccountByProviderId({
+      group_id: group.group_id, provider: "antigravity", provider_account_id: "p@example.com", display_name: "P",
+      access_token: "a", refresh_token: "r", token_expires_at: null, project_id: "proj-1",
+    });
+    first.close();
+
+    const second = new SqliteMetadataStore(dbPath);
+    second.init();
+    try {
+      expect(second.getSubscriptionAccount(account.account_id)).toEqual(account);
+      const raw = new DatabaseSync(dbPath);
+      const names = raw.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'meta_upstream_subscription_account%' AND type = 'table'").all();
+      raw.close();
+      expect(names).toEqual([{ name: "meta_upstream_subscription_account" }]);
+    } finally {
+      second.close();
+    }
+  });
+
   it("keeps groups and accounts after the store is closed and opened again", () => {
     const first = new SqliteMetadataStore(dbPath);
     first.init();

@@ -123,6 +123,7 @@ org structure in the panel and (b) pick them from within an agent session.
 > | CodeBuddy | [`agents/codebuddy/`](./agents/codebuddy/) |
 > | WorkBuddy | [`agents/workbuddy/`](./agents/workbuddy/) |
 > | Codex | [`agents/codex/`](./agents/codex/) |
+> | AntiGravity (`agy` CLI) | [`agents/antigravity/`](./agents/antigravity/) |
 > | DeepSeek Harness | [`agents/dsh/`](./agents/dsh/) |
 > | OpenCode | [`agents/opencode/`](./agents/opencode/) |
 > | Hermes / OpenClaw / Others | [`agents/README.md`](./agents/README.md) |
@@ -403,7 +404,7 @@ Open [http://localhost:8125](http://localhost:8125).
 
 ## Using Proxy with Agents
 
-The Proxy supports 9 agent clients. **Full setup instructions, adaptation details, and FAQs** for each agent are in the [`agents/`](./agents/) directory:
+The Proxy supports 10 agent clients. **Full setup instructions, adaptation details, and FAQs** for each agent are in the [`agents/`](./agents/) directory:
 
 | Agent | Config method | Docs |
 |-------|---------------|------|
@@ -411,6 +412,7 @@ The Proxy supports 9 agent clients. **Full setup instructions, adaptation detail
 | **CodeBuddy** | `~/.codebuddy/models.json` | [`agents/codebuddy/`](./agents/codebuddy/) |
 | **WorkBuddy** | `~/.workbuddy/models.json` | [`agents/workbuddy/`](./agents/workbuddy/) |
 | **Codex** | `~/.codex/config.toml` (⚠️ first turn requires Plan mode) | [`agents/codex/`](./agents/codex/) |
+| **AntiGravity (`agy` CLI)** | `AGY_LLM_GATEWAY_URL` in your shell profile + hooks in `~/.gemini/config/hooks.json` (no Google sign-in on the client) | [`agents/antigravity/`](./agents/antigravity/) |
 | **DeepSeek Harness (dsh)** | `~/.dsh/settings.yaml` + `.credentials.yaml` | [`agents/dsh/`](./agents/dsh/) |
 | **OpenCode** | `~/.config/opencode/opencode.json` | [`agents/opencode/`](./agents/opencode/) |
 | **Hermes** | `~/.hermes/config.yaml` + header preselect | [`agents/hermes/`](./agents/hermes/) |
@@ -643,45 +645,70 @@ when at least one asset injector is on the pipeline.
 >
 > In the next version, the Proxy will support automatic generation and management of conversation IDs, eliminating the need for clients to specify this field manually.
 
-## Optional: Subscription account pool (Codex, off by default)
+## Optional: Subscription account pool (Claude Code, Codex, AntiGravity; off by default)
 
-A team can share several ChatGPT Plus/Pro subscriptions between Codex users. The Proxy gives each
-new Codex session the next account, keeps the session on that account, moves it to another account
-when the account reaches its limit, and uses the account again after its reset time. Groups that do
-not use the pool keep their current behavior.
-
-Only ChatGPT (Codex) accounts are supported. Claude subscriptions are not pooled: Anthropic's terms
-do not allow a server to store or route Claude.ai subscription tokens for other people.
+A team can share several subscription accounts between users: Claude accounts (Claude Code),
+ChatGPT Plus/Pro accounts (Codex) and Google accounts (AntiGravity). The Proxy gives each new
+session the next account, keeps the session on that account, moves it to another account when the
+account reaches its limit, and uses the account again after its reset time. Clients that do not
+use a pool keep their current behavior.
 
 **Risks to accept first.** Pooling personal subscriptions can break the provider's terms, and the
-provider can block an account. The login, refresh and usage endpoints are not documented by OpenAI
-and can change without notice; when the usage endpoint fails, the pool still works from response
-headers and 429 replies.
+provider can block an account. The login, refresh and usage endpoints are not documented by the
+providers and can change without notice. AntiGravity uses the public login of the AntiGravity CLI,
+and Google can detect one proxy that uses several accounts. When a usage endpoint fails, the pool
+still works from the proxy's own observations (429 replies, and response headers where the
+provider sends them).
 
 ### Turning it on
 
-1. Log into Memory Hub as a System Admin and open **Organization → Subscription Pool**, tab **Codex**.
-2. Turn the pool on. The `codex` agent moves from the `default` upstream group to the pool group.
-   If `codex` is in a custom upstream group, move it back to `default` first.
-3. Click **Add account**. Log in to ChatGPT in the new tab. The browser then opens
-   `http://localhost:1455/auth/callback?...`, which does not load; copy the full address from the
-   address bar and paste it into the dialog. Repeat for each account. Logging in again with the
-   same ChatGPT account replaces its tokens and keeps its name.
-4. Optional: change the threshold (default 95 %). An account at or above it gets no new sessions;
+1. Log into Memory Hub as a System Admin and open **Organization → Subscription Pool**. Open the tab
+   **Claude Code**, **Codex** or **AntiGravity**.
+2. Turn the pool on. The pool becomes a model source: `sub-claude`, `sub-openai` or
+   `sub-antigravity`.
+3. Click **Add account** and log in to the provider in the new tab. The last step is different for
+   each provider:
+   - **Claude Code**: after the login, the callback page shows a code that looks like `code#state`.
+     Copy the whole code and paste it into the dialog.
+   - **Codex**: the browser opens `http://localhost:1455/auth/callback?...`, which does not load.
+     Copy the full address from the address bar and paste it into the dialog.
+   - **AntiGravity**: sign in with the Google account. The browser opens
+     `http://localhost:51121/oauth-callback?...`, which does not load. Copy the full address from
+     the address bar and paste it into the dialog.
+
+   Repeat for each account. Logging in again with the same account replaces its tokens and keeps
+   its name.
+4. On the **API Key** page, choose the pool source for the client (Claude Code: `sub-claude`,
+   Codex: `sub-openai`, AntiGravity: `sub-antigravity`). A client uses a pool only after you
+   choose it here.
+5. Optional: change the threshold (default 95 %). An account at or above it gets no new sessions;
    its current sessions continue.
+
+### AntiGravity specifics
+
+- The AntiGravity CLI (`agy`) connects through the gateway URL
+  `https://<proxy-host>/antigravity/<instanceId>/<user key>`. The client does not sign in to
+  Google. The user key is part of the URL because `agy` sends no auth header, and the Proxy hides
+  it in logs and traces. A remote Proxy must use `https://`; `agy` accepts plain `http://` only
+  for localhost. For the client setup, see [`agents/antigravity/`](./agents/antigravity/).
+- The Proxy sends the request to the daily Cloud Code host
+  (`https://daily-cloudcode-pa.googleapis.com`). The models that a client can use depend on the
+  tier of the Google account.
+- AntiGravity has no reset credits, and there is no own-login fallback. When every account is at
+  its limit, the request gets a 429 with the earliest reset time.
 
 ### How it behaves
 
 - Memory Core stores the tokens, refreshes each one 10 minutes before it expires, and reads usage
   for every account every 30 minutes, at each reset time, and when Core starts.
-- A 429 from ChatGPT marks the account exhausted until its reset time; the request is retried once
-  on another account before anything reaches the client.
+- A 429 from the provider marks the account exhausted until its reset time; the request is retried
+  once on another account before anything reaches the client.
 - When every account is at its limit, the Proxy uses the account with the lowest usage; when all of
-  them return 429, it uses the user's own ChatGPT login if the client sends one (see below), or
-  returns 429 with the earliest reset time.
+  them return 429, it uses the user's own login if the client sends one (Claude Code and Codex,
+  see below), or returns 429 with the earliest reset time.
 
-**Keep your own ChatGPT login as fallback (optional).** Run `codex login` on the client, then run
-`bash agents/setup-proxy.sh --agent codex` and answer yes to the fallback question (or pass
+**Keep your own ChatGPT login as fallback (optional, Codex).** Run `codex login` on the client, then
+run `bash agents/setup-proxy.sh --agent codex` and answer yes to the fallback question (or pass
 `--codex-own-login`). The Codex provider then uses `requires_openai_auth = true` and sends the proxy
 key in the `x-tdai-user-key` header.
 
@@ -695,16 +722,19 @@ key in the `x-tdai-user-key` header.
   those conversations still calls TokenHub (or the instance's extraction group) and is billed as
   before.
 - Start Memory Core before the Proxy. A Proxy that starts while Core is down does not know the
-  upstream groups yet and sends `codex` to the `default` group (TokenHub, billed per token) until
-  it can read them (about 30 seconds after Core is back). This is the existing behavior of every
-  custom upstream group.
+  upstream groups yet and sends the pool agents to the `default` group (for Codex: TokenHub,
+  billed per token) until it can read them (about 30 seconds after Core is back). This is the
+  existing behavior of every custom upstream group.
 - Variables in `deploy/global-images/.env.example`: `SUBSCRIPTION_POOL_ENABLED=false` stops all pool
   timers; `SUBSCRIPTION_POOL_CHECK_INTERVAL_MIN` changes the 30-minute usage check.
+  `ANTIGRAVITY_OAUTH_CLIENT_ID` and `ANTIGRAVITY_OAUTH_CLIENT_SECRET` hold the Google OAuth client of
+  the AntiGravity CLI login. Without them the AntiGravity pool cannot add accounts or refresh tokens;
+  Claude and Codex are not affected.
 
 ### Turning it off
 
-Turn the pool off in **Subscription Pool**. The `codex` agent returns to the `default` group within
-about 30 seconds; the accounts stay stored until you delete them.
+Turn the pool off in **Subscription Pool**. The pool source goes off and, within about 30 seconds,
+the Proxy stops using it; the accounts stay stored until you delete them.
 
 ## Optional: Analytics & observability (off by default)
 

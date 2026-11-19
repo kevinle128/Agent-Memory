@@ -42,7 +42,7 @@ const INSTALLED_CACHE_MAX = 10_000;
 export const DEFAULT_WAIT_MS = 3000;
 const POLL_MS = 250;
 
-export type GateClient = "claude-code" | "codex" | "omp";
+export type GateClient = "claude-code" | "codex" | "omp" | "antigravity";
 
 export interface GateConfig {
   hookGate?: Partial<NonNullable<ProxyConfig["hookGate"]>>;

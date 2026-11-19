@@ -145,3 +145,5 @@ z_config/
 
 # Server-only Langfuse keys for MemoryCore
 deploy/compose/core-langfuse.env
+# Server-only Google OAuth app of AntiGravity for MemoryCore
+deploy/compose/core-antigravity.env

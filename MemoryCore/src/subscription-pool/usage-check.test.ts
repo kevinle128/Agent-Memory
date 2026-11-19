@@ -192,7 +192,7 @@ describe("checkAccountUsage", () => {
     const account = await fx.addAccount();
     const adapter = fakeAdapter();
     await checkAccountUsage(fx.store, account.account_id, adapter, 95, NOW);
-    expect(adapter.fetchUsage).toHaveBeenCalledWith("access-1", "acct-1");
+    expect(adapter.fetchUsage).toHaveBeenCalledWith("access-1", "acct-1", { projectId: null });
   });
 
   it("drops a stale window the provider no longer returns, so the account is released", async () => {

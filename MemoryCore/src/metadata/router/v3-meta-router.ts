@@ -591,6 +591,7 @@ function mapErrorCode(code: string): number {
     case "POOL_NOT_ENABLED":
       return 409;
     case "PROVIDER_NOT_SUPPORTED":
+    case "PROVIDER_NOT_CONFIGURED":
       return 400;
     case "account_not_found":
       return 404;

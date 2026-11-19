@@ -226,8 +226,97 @@ describe("subscription pool provider calls", () => {
       state: started.state,
       redirectUri: "https://platform.claude.com/oauth/code/callback",
     }));
-    expect(adapter.fetchUsage).toHaveBeenCalledWith("access-new", "acct-9");
+    expect(adapter.fetchUsage).toHaveBeenCalledWith("access-new", "acct-9", { projectId: null });
     expect(account.usage).toMatchObject({ windows: [expect.objectContaining({ name: "five_hour", used_pct: 40 })] });
+  });
+
+  describe("antigravity login", () => {
+    const REDIRECT = "http://localhost:51121/callback";
+
+    beforeEach(() => {
+      vi.stubEnv("ANTIGRAVITY_OAUTH_CLIENT_ID", "test-client-id.apps.googleusercontent.com");
+      vi.stubEnv("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "test-secret");
+      adapter.exchangeCode.mockResolvedValue(tokens({
+        providerAccountId: "pool@example.com", accountLabel: "pool@example.com", projectId: "proj-1",
+      }));
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("uses the client id from the environment in the authorize URL", () => {
+      const url = new URL(svc.startSubscriptionOAuth("antigravity").authorize_url);
+      expect(url.searchParams.get("client_id")).toBe("test-client-id.apps.googleusercontent.com");
+    });
+
+    it("refuses to start or finish a login without the OAuth client, and leaves claude and codex alone", async () => {
+      const started = svc.startSubscriptionOAuth("antigravity");
+      vi.stubEnv("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "");
+      expect(() => svc.startSubscriptionOAuth("antigravity")).toThrow("AntiGravity OAuth is not configured: set ANTIGRAVITY_OAUTH_CLIENT_ID and ANTIGRAVITY_OAUTH_CLIENT_SECRET");
+      await expect(svc.completeSubscriptionOAuth({
+        provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=c&state=${started.state}`,
+      })).rejects.toMatchObject({ code: "PROVIDER_NOT_CONFIGURED" });
+      expect(adapter.exchangeCode).not.toHaveBeenCalled();
+      expect(() => svc.startSubscriptionOAuth("claude")).not.toThrow();
+      expect(() => svc.startSubscriptionOAuth("codex")).not.toThrow();
+    });
+
+    it("stores the project, shows it in the public view and passes it to the usage check", async () => {
+      const started = svc.startSubscriptionOAuth("antigravity");
+      const account = await svc.completeSubscriptionOAuth({
+        provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=code-1&state=${started.state}`,
+      });
+      expect(account).toMatchObject({ provider: "antigravity", provider_account_id: "pool@example.com", project_id: "proj-1", created: true });
+      expect(JSON.stringify(account)).not.toContain("access-new");
+      expect(adapter.exchangeCode).toHaveBeenCalledWith(expect.objectContaining({ code: "code-1", codeVerifier: "", redirectUri: REDIRECT }));
+      expect(adapter.fetchUsage).toHaveBeenCalledWith("access-new", "pool@example.com", { projectId: "proj-1" });
+    });
+
+    it("rejects a pasted code without the state, because nothing else binds it to this login", async () => {
+      const started = svc.startSubscriptionOAuth("antigravity");
+      await expect(svc.completeSubscriptionOAuth({ provider: "antigravity", state: started.state, code: "code-1" }))
+        .rejects.toMatchObject({ code: "INVALID_OAUTH_STATE" });
+      expect(adapter.exchangeCode).not.toHaveBeenCalled();
+    });
+
+    it("rejects a pasted state that belongs to another login", async () => {
+      const started = svc.startSubscriptionOAuth("antigravity");
+      await expect(svc.completeSubscriptionOAuth({
+        provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=code-1&state=other`,
+      })).rejects.toMatchObject({ code: "INVALID_OAUTH_STATE" });
+    });
+
+    it("keeps the stored project when a re-login finds none, and replaces it when one is found", async () => {
+      const login = async () => {
+        const started = svc.startSubscriptionOAuth("antigravity");
+        return svc.completeSubscriptionOAuth({
+          provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=c&state=${started.state}`,
+        });
+      };
+      const first = await login();
+      adapter.exchangeCode.mockResolvedValue(tokens({ providerAccountId: "pool@example.com", accountLabel: "pool@example.com", projectId: null }));
+      expect((await login()).project_id).toBe("proj-1");
+      adapter.exchangeCode.mockResolvedValue(tokens({ providerAccountId: "pool@example.com", accountLabel: "pool@example.com", projectId: "proj-2" }));
+      const third = await login();
+      expect(third).toMatchObject({ account_id: first.account_id, project_id: "proj-2", created: false });
+    });
+
+    it("gives the proxy the project of an account in an enabled pool", async () => {
+      await svc.enableSubscriptionPool("antigravity", AGENTS);
+      const started = svc.startSubscriptionOAuth("antigravity");
+      await svc.completeSubscriptionOAuth({
+        provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=c&state=${started.state}`,
+      });
+      expect((await svc.listSubscriptionAccountsInternal()).accounts).toMatchObject([{ provider: "antigravity", project_id: "proj-1" }]);
+    });
+  });
+
+  it("lists the antigravity pool as a gemini source next to the other two in the default status", async () => {
+    await svc.enableSubscriptionPool("antigravity", AGENTS);
+    const status = await svc.getSubscriptionPoolStatus() as { providers: Array<{ provider: string; source: Record<string, unknown> | null }> };
+    expect(status.providers.map((p) => p.provider)).toEqual(["claude", "codex", "antigravity"]);
+    expect(status.providers[2]!.source).toMatchObject({ source_name: "sub-antigravity", source_provider: "antigravity", source_formats: ["gemini"] });
   });
 
   it("adds an account while the pool is off and keeps it from the proxy until the pool is on", async () => {

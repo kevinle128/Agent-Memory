@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   USAGE_FAIL_LIMIT,
+  addAccountKeyPrefix,
+  supportsResetCredits,
   CREDIT_EXPIRING_SOON_MS,
   accountState,
   classifyRedeemOutcome,
@@ -328,5 +330,29 @@ describe('reset credits', () => {
     expect(view).toEqual({ at: '10/19, 15:10', remaining: '3h 40m', expired: false, soon: true });
     expect(describeCreditExpiry(NOW - MIN, NOW, fmt)).toMatchObject({ expired: true, remaining: null, soon: false });
     expect(describeCreditExpiry(null, NOW, fmt)).toEqual({ at: null, remaining: null, expired: false, soon: false });
+  });
+});
+
+describe('antigravity provider', () => {
+  it('has no reset credits, unlike claude and codex', () => {
+    expect(supportsResetCredits('antigravity')).toBe(false);
+    expect(supportsResetCredits('claude')).toBe(true);
+    expect(supportsResetCredits('codex')).toBe(true);
+  });
+
+  it('gives each provider its own add-account copy prefix', () => {
+    expect(addAccountKeyPrefix('claude')).toBe('subscriptionPool.add.claude');
+    expect(addAccountKeyPrefix('antigravity')).toBe('subscriptionPool.add.antigravity');
+    expect(addAccountKeyPrefix('codex')).toBe('subscriptionPool.add');
+  });
+
+  it('sends the pasted localhost:51121 callback URL as redirect_url', () => {
+    const url = 'http://localhost:51121/oauth-callback?code=abc&state=xyz';
+    expect(oauthCompleteInput(url)).toEqual({ redirect_url: url });
+  });
+
+  it('groups per-model windows into extra rows when no shared window exists', () => {
+    const window = { name: 'quota', model_scope: 'claude-opus-5-5', used_pct: 10, resets_at: null, observed_at: 0, source: 'usage_api' };
+    expect(groupWindows([window])).toEqual({ primary: null, secondary: null, extra: [window] });
   });
 });

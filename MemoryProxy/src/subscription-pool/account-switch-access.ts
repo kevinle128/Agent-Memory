@@ -103,8 +103,10 @@ export async function resolveSwitchPool(
   config: AccessConfig,
   spaceId: string,
   agentSource: string,
-): Promise<{ provider: "claude" | "codex"; row: InstanceUpstreamRow } | null> {
-  const provider = agentSource === "claude-code" ? "claude" : agentSource === "codex" ? "codex" : null;
+): Promise<{ provider: "claude" | "codex" | "antigravity"; row: InstanceUpstreamRow } | null> {
+  const provider = agentSource === "claude-code" ? "claude"
+    : agentSource === "codex" ? "codex"
+      : agentSource === "antigravity" ? "antigravity" : null;
   if (!provider) return null;
   const resolution = resolveForAgent(
     await getInstanceUpstreamConfigs(config.coreSkill, spaceId, config.instanceUpstream),

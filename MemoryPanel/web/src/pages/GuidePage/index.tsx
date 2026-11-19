@@ -26,7 +26,7 @@ import './style.css';
 type MainTab = 'quick' | 'practice' | 'commands';
 type QuickTab = 'download' | 'ide' | 'history';
 type PracticeId = 'team' | 'personal';
-type ManualIdeId = 'claude' | 'codebuddy' | 'codex' | 'workbuddy' | 'dsh' | 'hermes' | 'openclaw';
+type ManualIdeId = 'claude' | 'codebuddy' | 'codex' | 'workbuddy' | 'dsh' | 'hermes' | 'openclaw' | 'antigravity';
 type ProxyMode = 'default' | 'analyse';
 
 interface PracticeStep {
@@ -84,7 +84,7 @@ interface ManualIde {
   /** 配置是否用到 Model ID；不用时隐藏 Model ID 输入框 */
   usesModel?: boolean;
   /** Hook install command (same call as setup-proxy.sh install_project_hooks); run after the config is written. */
-  hookCommand?: (base: string, instanceId: string) => string;
+  hookCommand?: (base: string, instanceId: string, mode: ProxyMode, apiKey: string) => string;
   /** 启动/注意事项（可空） */
   notes?: string[];
 }
@@ -128,6 +128,26 @@ const MANUAL_IDES: ManualIde[] = [
     hookCommand: (base) =>
       `curl -fsSL ${base}/setup/hooks.sh | bash -s -- --client codex --base-url ${base}`,
     notes: ['guide.manual.note.codex'],
+  },
+  {
+    id: 'antigravity',
+    name: 'AntiGravity CLI (agy)',
+    file: '~/.zshrc or ~/.bashrc',
+    protocol: 'Gemini (gateway URL)',
+    // agy sends no auth header to its gateway, so the user key travels as the last path segment.
+    config: (base, instanceId, mode, _model, _own, apiKey) =>
+      `export AGY_LLM_GATEWAY_URL=${proxyEndpoint(base, 'antigravity', instanceId, mode)}/${apiKey}`,
+    usesModel: false,
+    // install.sh needs the full gateway URL <proxy>/antigravity/<space>[/analyse]/<key> in --base-url.
+    hookCommand: (base, instanceId, mode, apiKey) =>
+      `curl -fsSL ${base}/setup/hooks.sh | bash -s -- --client antigravity --base-url ${proxyEndpoint(base, 'antigravity', instanceId, mode)}/${apiKey}`,
+    notes: [
+      'guide.manual.note.antigravity.0',
+      'guide.manual.note.antigravity.1',
+      'guide.manual.note.antigravity.2',
+      'guide.manual.note.antigravity.3',
+      'guide.manual.note.antigravity.4',
+    ],
   },
   {
     id: 'workbuddy',
@@ -657,9 +677,9 @@ export function GuidePage() {
                       <b>{t('guide.manual.hookTitle')}</b>
                       <small>{t('guide.manual.hookHint')}</small>
                       <div className="guide-command secondary">
-                        <code>{manualIde.hookCommand(proxyBase || proxyFallback, instanceId)}</code>
+                        <code>{manualIde.hookCommand(proxyBase || proxyFallback, instanceId, proxyMode, shownKey)}</code>
                         <CopyButton
-                          value={manualIde.hookCommand(proxyBase || proxyFallback, instanceId)}
+                          value={manualIde.hookCommand(proxyBase || proxyFallback, instanceId, proxyMode, sessionKey || KEY_PLACEHOLDER)}
                           label={t('guide.copyCmd')}
                         />
                       </div>
