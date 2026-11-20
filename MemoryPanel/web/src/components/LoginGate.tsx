@@ -29,6 +29,7 @@ import {
   type PublicUser,
 } from '@/lib/teamApi';
 import { getPanelSession, setPanelSession, clearPanelSession } from '@/lib/panelSession';
+import { redirectLoginHref } from '@/lib/redirect-login';
 import ParticleWaveBackground from './ParticleWaveBackground';
 import './login-gate.css';
 
@@ -184,6 +185,10 @@ export default function LoginGate({
   const [copied, setCopied] = useState(false);
   const hasUserKeyMethod = authMethods.some((method) => method.type === 'user_key');
   const showWoaLogin = authMethodsLoaded && authMethods.some((method) => method.type === 'woa');
+  // Login methods that go through a server redirect (an extension's SSO): one button each.
+  const redirectMethods = authMethodsLoaded
+    ? authMethods.filter((method) => method.type === 'redirect' && method.login_url)
+    : [];
   /**
    * user_key 表单始终直接展示 —— 没有"登录方式选择页"这一层。
    *
@@ -611,6 +616,33 @@ export default function LoginGate({
               {submitting ? t('login.submitting') : t('login.submit')}
             </Button>
             </form>
+          )}
+
+          {!pendingWoa && instanceId && redirectMethods.length > 0 && (
+            <div className="_tdai-login-switch">
+              <div
+                aria-hidden="true"
+                style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#94a3b8', fontSize: 12, margin: '4px 0 12px' }}
+              >
+                <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.35 }} />
+                <span>{t('login.or')}</span>
+                <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.35 }} />
+              </div>
+              {redirectMethods.map((method) => (
+                <Button
+                  key={method.id}
+                  type="weak"
+                  style={{ width: '100%', marginBottom: 8 }}
+                  disabled={submitting}
+                  onClick={() => {
+                    const href = redirectLoginHref(method.login_url!, instanceId);
+                    if (href) window.location.assign(href);
+                  }}
+                >
+                  {t('login.redirect', { name: method.display_name })}
+                </Button>
+              ))}
+            </div>
           )}
 
           {/* user_key 表单下方的 iOA 跳转入口：开启 iOA 时直接跳过去，不经选择页 */}

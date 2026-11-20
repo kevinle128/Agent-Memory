@@ -86,6 +86,8 @@ export const zhCN = {
   // 站在 user_key 页 → 去 iOA 是"使用另一种方式"，用"使用 X 登录"。
   // 处在 iOA 流程里 → 去 user_key 是"离开当前流程"，用"切换到 X 登录"。
   'login.useWoa': '使用 iOA 登录',
+  'login.redirect': '使用 {{name}} 登录',
+  'login.or': '或',
   'login.switchUserKey': '切换到 user_key 登录',
   'login.woa.pendingTitle': '创建登录账号',
   'login.woa.pendingIdentity': '已通过 WOA 认证：{{name}}。首次登录将为你创建 Memory 账号。',

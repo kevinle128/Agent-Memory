@@ -21,6 +21,9 @@ export function main(): void {
     },
   );
 
+  // Start hooks run after the server listens; a failing hook degrades its extension only.
+  void deps.extensions?.start();
+
   // Best-effort: ensure per-instance knowledge-service LLM bindings (design 009 §4.2).
   // Non-blocking; failures are logged and left for manual recovery.
   if (config.knowledgeLlmBinding.sync) {
@@ -45,6 +48,7 @@ export function main(): void {
 
   const shutdown = async (): Promise<void> => {
     deps.logger.info('panel shutting down');
+    await deps.extensions?.stop();
     await deps.apiCallTelemetry.shutdown();
     process.exit(0);
   };

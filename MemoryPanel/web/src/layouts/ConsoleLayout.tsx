@@ -3,7 +3,7 @@
  *
  * 基于 tea-component 的 `Layout` + `Menu` 组件，包含 TabBar、路由、菜单过滤等业务逻辑。
  */
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { Suspense, useEffect, useMemo, useState, useCallback } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Layout, Menu } from 'tea-component';
 import { useTranslation } from 'react-i18next';
@@ -14,30 +14,10 @@ import { usePanelAnalyticsEnabled, useAnalyticsChConfigured } from '@/services/u
 import { GlobalHeader } from '@/layouts/GlobalHeader';
 import { TabBar } from '@/layouts/TabBar';
 import { OnboardingGuide, shouldShowOnboarding, resetOnboarding } from '@/layouts/OnboardingGuide';
-import { ITEM_ICON, usePageMeta, GROUP_ORDER_KEYS, type PageId } from '@/constants/menu';
+import { usePageCatalog, GROUP_ORDER_KEYS, type PageId } from '@/constants/menu';
+import { menuGroups as buildMenuGroups, pageForPath } from '@/extensions/catalog';
 
 const { Body, Sider, Content } = Layout;
-
-/** 路由 path → PageId */
-const PATH_TO_PAGE: Record<string, PageId> = {
-  '/': 'workbench_board',
-  '/wiki': 'wiki',
-  '/code': 'code',
-  '/skills': 'skills',
-  '/memory': 'chat_memory',
-  '/processing-history': 'processing_history',
-  '/analytics': 'analytics',
-  '/team/members': 'team_members',
-  '/team/agents': 'team_agents',
-  '/team/api-keys': 'api_keys',
-  '/team/subscription-pool': 'subscription_pool',
-  '/team/model-provider': 'model_provider',
-};
-
-/** PageId → 路由 path */
-const PAGE_TO_PATH: Record<PageId, string> = Object.fromEntries(
-  Object.entries(PATH_TO_PAGE).map(([path, id]) => [id, path]),
-) as Record<PageId, string>;
 
 function legacyHashToPath(): string | null {
   const raw = window.location.hash.replace(/^#\/?/, '');
@@ -63,14 +43,12 @@ export function ConsoleLayout() {
   // Processing History holds prompts and memory text: team admins and system admins only.
   const historyVisible =
     !!auth && (isGlobalAdmin(auth.user, auth.isAdmin) || isTeamAdmin(activeTeam, auth.user_id));
-  const PAGE_META = usePageMeta();
+  const catalog = usePageCatalog();
 
-  const activePage: PageId = useMemo(() => {
-    const match = Object.entries(PATH_TO_PAGE).find(
-      ([path]) => path !== '/' && location.pathname.startsWith(path),
-    );
-    return match ? match[1] : 'workbench_board';
-  }, [location.pathname]);
+  const activePage = useMemo(
+    () => pageForPath(catalog.map((item) => item.entry), location.pathname) as PageId,
+    [catalog, location.pathname],
+  );
 
   useEffect(() => {
     const legacyPath = legacyHashToPath();
@@ -124,10 +102,10 @@ export function ConsoleLayout() {
 
   const navigateTo = useCallback(
     (id: PageId) => {
-      const path = PAGE_TO_PATH[id];
+      const path = catalog.find((item) => item.id === id)?.path;
       if (path) navigate(path);
     },
-    [navigate],
+    [navigate, catalog],
   );
 
   const closePage = useCallback(
@@ -158,40 +136,42 @@ export function ConsoleLayout() {
   const analyticsVisible =
     analyticsSwitchOn === true && analyticsChConfigured !== false;
 
+  const isSystemAdmin = !!auth && isGlobalAdmin(auth.user, auth.isAdmin);
+
   const menuGroups = useMemo(() => {
-    const byGroup = new Map<string, (typeof PAGE_META)[PageId][]>();
-
-    for (const meta of Object.values(PAGE_META)) {
-      if (userRole === 'reviewer' && meta.id === 'team_members') continue;
-      if (meta.id === 'processing_history' && !historyVisible) continue;
-      // 「可观测」仅 system_admin 可见，且需面板开关开启 + 内核已配置 CH
-      if (meta.id === 'analytics') {
-        if (userRole !== 'admin' || !analyticsVisible) continue;
-      }
-      const list = byGroup.get(meta.group) ?? [];
-      list.push(meta);
-      byGroup.set(meta.group, list);
-    }
-
-    return GROUP_ORDER_KEYS.map((key) => t(`menu.group.${key}`))
-      .filter((g) => byGroup.has(g))
-      .map((g) => ({
-        title: g,
-        items: byGroup.get(g)!.sort((a, b) => a.order - b.order),
-      }));
-  }, [userRole, PAGE_META, t, analyticsVisible, historyVisible]);
+    const byId = new Map(catalog.map((item) => [item.id as string, item]));
+    return buildMenuGroups(
+      catalog.map((item) => item.entry),
+      { userRole, isSystemAdmin, historyVisible, analyticsVisible },
+      GROUP_ORDER_KEYS,
+    ).map(({ group, ids }) => ({
+      title: t(`menu.group.${group}`),
+      items: ids.map((id) => byId.get(id)!),
+    }));
+  }, [catalog, userRole, isSystemAdmin, t, analyticsVisible, historyVisible]);
 
   const workbenchGroupTitle = t('menu.group.workbench');
   const pinnedGroup = menuGroups.find((g) => g.title === workbenchGroupTitle);
   const restGroups = menuGroups.filter((g) => g.title !== workbenchGroupTitle);
 
-  const renderMenuItem = (item: (typeof PAGE_META)[PageId]) => {
+  const renderMenuItem = (item: (typeof catalog)[number]) => {
     const isActive = activePage === item.id;
     return (
       <Menu.Item
         key={item.id}
-        title={item.label}
-        icon={ITEM_ICON[item.id]}
+        title={
+          item.Badge ? (
+            <>
+              {item.label}
+              <Suspense fallback={null}>
+                <item.Badge />
+              </Suspense>
+            </>
+          ) : (
+            item.label
+          )
+        }
+        icon={item.icon}
         selected={isActive}
         onClick={() => navigateTo(item.id)}
       />

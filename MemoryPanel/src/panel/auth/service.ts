@@ -8,7 +8,12 @@ import { FileIdentityStore, decryptSecret, encryptSecret } from './identity-stor
 import { MemorySessionStore, type IdpSession, type SessionUser } from './session-store.js';
 import { AuthProviderRegistry } from './provider-registry.js';
 import { WoaProvider } from './woa-provider.js';
-import type { ExternalIdentity, HeaderInjectedProvider } from './types.js';
+import type {
+  AuthProvider,
+  ExternalIdentity,
+  HeaderInjectedProvider,
+  RedirectCallbackProvider,
+} from './types.js';
 
 export class PanelAuthError extends Error {
   constructor(readonly code: string, message: string, readonly status = 401) {
@@ -19,9 +24,13 @@ export class PanelAuthError extends Error {
 
 export interface AuthMethodView {
   id: string;
-  type: 'user_key' | 'woa';
+  type: 'user_key' | 'woa' | 'redirect';
   display_name: string;
   enabled: boolean;
+  /** Redirect methods only: same-origin path of the login button target. */
+  login_url?: string;
+  /** Redirect methods only: same-origin path the browser opens after logout. */
+  logout_url?: string;
 }
 
 export interface IdpLoginResult {
@@ -157,7 +166,32 @@ export class PanelAuthService {
     if (woa) {
       methods.push({ id: 'woa', type: 'woa', display_name: woa.displayName, enabled: true });
     }
+    for (const provider of this.providers.list()) {
+      if (provider.kind !== 'redirect-callback') continue;
+      const redirect = provider as RedirectCallbackProvider;
+      methods.push({
+        id: redirect.id,
+        type: 'redirect',
+        display_name: redirect.displayName,
+        enabled: true,
+        login_url: redirect.loginPath,
+        logout_url: redirect.logoutPath,
+      });
+    }
     return methods;
+  }
+
+  /** Adds an extension-owned provider. 'woa' and 'user_key' are reserved. */
+  registerProvider(provider: AuthProvider): void {
+    if (provider.id === 'woa' || provider.id === 'user_key') {
+      throw new Error(`reserved auth provider id: ${provider.id}`);
+    }
+    this.providers.register(provider);
+  }
+
+  /** Creates a Panel session for an identity that an extension already verified. */
+  createSession(input: Omit<IdpSession, 'token' | 'createdAt' | 'expiresAt'>): IdpSession {
+    return this.sessions.create(input);
   }
 
   /**

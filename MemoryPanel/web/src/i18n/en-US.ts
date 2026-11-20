@@ -89,6 +89,8 @@ export const enUS = {
   // straight to the other method. From the user_key page it's "Log in with X";
   // inside the iOA flow it's "Switch to ..." (leaving the current flow).
   'login.useWoa': 'Log in with iOA',
+  'login.redirect': 'Log in with {{name}}',
+  'login.or': 'or',
   'login.switchUserKey': 'Switch to user_key login',
   'login.woa.pendingTitle': 'Create login account',
   'login.woa.pendingIdentity': 'WOA authenticated: {{name}}. Your Memory account will be created on first login.',

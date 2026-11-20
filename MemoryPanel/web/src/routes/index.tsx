@@ -19,6 +19,7 @@ import { ModelProviderPage } from '@/pages/ModelProviderPage';
 import { GuidePage } from '@/pages/GuidePage';
 import { AnalyticsPage } from '@/pages/AnalyticsPage';
 import { ProcessingHistoryPage } from '@/pages/ProcessingHistoryPage';
+import { extensionRouteObjects } from '@/extensions/ExtensionRoute';
 
 export const routes: RouteObject[] = [
   {
@@ -38,6 +39,7 @@ export const routes: RouteObject[] = [
       { path: 'team/subscription-pool', element: <SubscriptionPoolPage /> },
       { path: 'team/model-provider', element: <ModelProviderPage /> },
       { path: 'guide', element: <GuidePage /> },
+      ...extensionRouteObjects(),
     ],
   },
 ];
