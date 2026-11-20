@@ -189,6 +189,8 @@ configs:
         host: "${LANGFUSE_HOST:-}"
         publicKey: "${LANGFUSE_PUBLIC_KEY:-}"
         secretKey: "${LANGFUSE_SECRET_KEY:-}"
+      hookGate:
+        exemptUserIds: "${PROXY_HOOK_GATE_EXEMPT_USER_IDS:-}"
       traceArchive:
         enabled: ${PROXY_TRACE_ARCHIVE_ENABLED:-false}
         dir: /data/tdai-memory-proxy/traces
