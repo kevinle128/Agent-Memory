@@ -965,8 +965,6 @@ ccRequestRouting:
 # 被拦截的请求不转发上游、不写 L0、不计费。门禁的合成对话每次请求都会先被去掉，包括 enabled: false。
 hookGate:
   enabled: true                    # 默认开启。false = 三个客户端都不拦截（回滚开关）。
-  exemptUserIds: []                # 默认空：所有用户都受门禁。列出的已验证 user id（如每次运行 home 都为空的 CI 评审机器人）
-                                   # 不被拦截，四个客户端（Claude Code / Codex / omp / agy）通用。也可写成逗号分隔的字符串。
   # publicOrigin: "https://proxy.example.com"   # 可选。安装命令里的 proxy 地址（scheme://host[:port]，无路径）；
   #                                             # 不设时取请求头 x-forwarded-proto/host，其次 Host。反向代理改写 Host 时请设置。
 

@@ -54,16 +54,6 @@ export function isGateEnabled(config: GateConfig): boolean {
   return config.hookGate?.enabled !== false;
 }
 
-/**
- * True when the verified user is on `hookGate.exemptUserIds`. The anonymous user is never exempt,
- * so an unverified request cannot skip the gate by any id list.
- */
-export function isGateExempt(config: GateConfig, userId: string | null | undefined): boolean {
-  const id = userId?.trim();
-  if (!id || id === "anonymous") return false;
-  return config.hookGate?.exemptUserIds?.includes(id) === true;
-}
-
 // ── Report lookup ──────────────────────────────────────────────────────────────
 
 const installedCache = new Map<string, number>();

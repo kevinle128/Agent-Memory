@@ -5,6 +5,7 @@
  *   GET  /antigravity/<space>[/analyse]/<key>/v1/models
  *   GET  /antigravity/<space>[/analyse]/<key>/v1beta/models
  *   POST /antigravity/<space>[/analyse]/<key>/v1beta/models/<model>:streamGenerateContent | :generateContent
+ *   Any of them also accepts `/memory-off` after the key: no hook gate, session init or L0 write.
  *
  * agy sends no auth header, so the user key is a path segment. It is read here, checked like the
  * key of every other agent, and never leaves this file: logs, traces and upstream calls only see
@@ -72,18 +73,25 @@ const NOISE_MODEL_RE = /^(?:chat_|tab_)|-(?:disabled|tiered|sonar)$|image/i;
 // ── Path ─────────────────────────────────────────────────────────────────────
 
 export type AntigravityRoute =
-  | { kind: "models-openai" | "models-gemini"; spaceId: string; accessKey: string }
-  | { kind: "stream" | "generate"; spaceId: string; accessKey: string; model: string };
+  | { kind: "models-openai" | "models-gemini"; spaceId: string; accessKey: string; memoryOff: boolean }
+  | { kind: "stream" | "generate"; spaceId: string; accessKey: string; memoryOff: boolean; model: string };
 
-const PATH_RE = /^\/antigravity\/([^/]+)(?:\/analyse)?\/([^/]+)\/(v1\/models|v1beta\/models(?:\/([^/]+))?)\/?$/;
+/**
+ * An optional `/memory-off` segment after the key (`<proxy>/antigravity/<space>[/analyse]/<key>/memory-off`)
+ * is the URL form of the `x-memory-mode: off` header, for agy, which cannot send headers. It is
+ * matched as a whole segment, so a key that only contains the text is not affected.
+ */
+const PATH_RE = /^\/antigravity\/([^/]+)(?:\/analyse)?\/([^/]+)(\/memory-off)?\/(v1\/models|v1beta\/models(?:\/([^/]+))?)\/?$/;
 
 /** Parse an agy request path. Null for any other path. */
 export function parseAntigravityPath(path: string): AntigravityRoute | null {
   const match = PATH_RE.exec(path.split("?", 1)[0] ?? "");
   if (!match) return null;
-  const [, spaceId, accessKey, tail, rawModel] = match as unknown as [string, string, string, string, string | undefined];
-  if (tail === "v1/models") return { kind: "models-openai", spaceId, accessKey };
-  if (!rawModel) return { kind: "models-gemini", spaceId, accessKey };
+  const [, spaceId, accessKey, memoryOffSegment, tail, rawModel] =
+    match as unknown as [string, string, string, string | undefined, string, string | undefined];
+  const memoryOff = memoryOffSegment !== undefined;
+  if (tail === "v1/models") return { kind: "models-openai", spaceId, accessKey, memoryOff };
+  if (!rawModel) return { kind: "models-gemini", spaceId, accessKey, memoryOff };
   let decoded: string;
   try {
     decoded = decodeURIComponent(rawModel);
@@ -92,7 +100,7 @@ export function parseAntigravityPath(path: string): AntigravityRoute | null {
   }
   const split = /^([^:]+):(streamGenerateContent|generateContent)$/.exec(decoded);
   if (!split) return null;
-  return { kind: split[2] === "streamGenerateContent" ? "stream" : "generate", spaceId, accessKey, model: split[1]! };
+  return { kind: split[2] === "streamGenerateContent" ? "stream" : "generate", spaceId, accessKey, memoryOff, model: split[1]! };
 }
 
 /** The path with the user key replaced. Use this, never the raw path, wherever a path is logged. */
@@ -441,7 +449,7 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
     const { route, userId, keyId } = auth;
     if (route.kind !== "stream" && route.kind !== "generate") return googleError(404, "Unknown AntiGravity endpoint.", "NOT_FOUND");
     const isStream = route.kind === "stream";
-    const { spaceId } = route;
+    const { spaceId, memoryOff } = route;
 
     const original = await readJsonBody(c);
     if (!original) return googleError(400, "Invalid JSON body.");
@@ -460,7 +468,7 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
     // ── Hook gate: no hook report, no model answer. The body is not changed. ──
     const gate = await runAntigravityHookGate({
       config, body: original, stream: isStream, sessionId, spaceId, userId: userId || "anonymous",
-      origin: resolveProxyOrigin(headers, c.req.url),
+      origin: resolveProxyOrigin(headers, c.req.url), memoryOff,
     });
     if (gate.action === "respond") {
       console.log(`[hook-gate] session=${sessionId} agent=${AGENT} answered locally: ${gate.reason}`);
@@ -471,8 +479,9 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
     let sessionInfo: Record<string, unknown> | null = null;
     let chatMemory = false;
     // Only the main stream request starts or continues session init: `:generateContent` calls are
-    // side requests (titles, summaries) and must not trigger a question.
-    if (config.sessionInit?.enabled && sessionId && isStream) {
+    // side requests (titles, summaries) and must not trigger a question. A memory-off URL never
+    // registers a session, so no L0 row is written for it either.
+    if (!memoryOff && config.sessionInit?.enabled && sessionId && isStream) {
       try {
         const messages = contentsToMessages(original);
         const orchestrated = await stageSessionInitOrchestrate({

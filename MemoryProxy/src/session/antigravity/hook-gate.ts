@@ -22,7 +22,6 @@ import {
   GATE_TEXT_MARKER,
   installNotDoneText,
   isGateEnabled,
-  isGateExempt,
   lookupReport,
   manualInstallText,
   MAX_FAILED_ATTEMPTS,
@@ -50,6 +49,8 @@ export interface AntigravityGateParams {
   origin: string | null;
   /** How long to wait for the report after an earlier answer. Default 3000. */
   waitMs?: number;
+  /** The request came on the `/memory-off` URL: the same switch as `x-memory-mode: off`. The gate passes. */
+  memoryOff?: boolean;
 }
 
 export type AntigravityGateResult =
@@ -88,8 +89,8 @@ export function countGateAnswers(body: Record<string, unknown>): number {
 
 /** Decide what to do with one antigravity request. Never throws: a failed report lookup lets the request through. */
 export async function runAntigravityHookGate(params: AntigravityGateParams): Promise<AntigravityGateResult> {
+  if (params.memoryOff) return { action: "pass", reason: "memory-off" };
   if (!isGateEnabled(params.config)) return { action: "pass", reason: "disabled" };
-  if (isGateExempt(params.config, params.userId)) return { action: "pass", reason: "exempt" };
   if (!params.stream) return { action: "pass", reason: "non-interactive" };
   const sessionId = params.sessionId;
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { action: "pass", reason: "no-session-id" };

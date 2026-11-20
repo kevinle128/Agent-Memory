@@ -218,7 +218,7 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   subscriptionPool: { promptCacheTtl: "default" },
   hookRecall: { ...DEFAULT_HOOK_RECALL },
   ccRequestRouting: { enabled: true },
-  hookGate: { enabled: true, exemptUserIds: [] },
+  hookGate: { enabled: true },
   workbuddyRequestRouting: { enabled: true },
   traceArchive: { enabled: false, dir: "logs/traces" },
 };
@@ -414,21 +414,10 @@ function parseProfileScopeMode(raw: unknown): import("./tdai/types.js").ProfileS
  * Build the final ProxyConfig.
  * Priority (high → low): CLI overrides > YAML config file > defaults.
  */
-/**
- * User ids from `hookGate.exemptUserIds`: a YAML list, or one comma-separated string
- * (the form that an environment variable gives). Entries are trimmed; blanks and
- * non-strings are dropped; duplicates are removed.
- */
-export function parseExemptUserIds(raw: unknown): string[] {
-  const items = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [];
-  const ids = items.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
-  return [...new Set(ids)];
-}
-
 export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
   const configPath = overrides.configFile || "config.yaml";
   const yaml = loadYamlConfig(configPath);
-  const hookGateYaml = (yaml as { hookGate?: { enabled?: boolean; publicOrigin?: unknown; exemptUserIds?: unknown } }).hookGate;
+  const hookGateYaml = (yaml as { hookGate?: { enabled?: boolean; publicOrigin?: unknown } }).hookGate;
   const defaultWecomIdentity = DEFAULT_CONFIG.wecomIdentity!;
 
   const selection = buildSelectionConfig(yaml.selection, configPath);
@@ -772,7 +761,6 @@ export function buildConfig(overrides: CliOverrides = {}): ProxyConfig {
       ...(typeof hookGateYaml?.publicOrigin === "string" && hookGateYaml.publicOrigin
         ? { publicOrigin: hookGateYaml.publicOrigin }
         : {}),
-      exemptUserIds: parseExemptUserIds(hookGateYaml?.exemptUserIds),
     },
     workbuddyRequestRouting: {
       enabled:

@@ -373,15 +373,3 @@ describe("runCodexHookGate: gate items are removed on every pass", () => {
     });
   }
 });
-
-describe("runCodexHookGate: exempt users", () => {
-  const exempt = { hookGate: { enabled: true, exemptUserIds: ["usr-1"] } };
-
-  it("passes an exempt user without a report", async () => {
-    expect(await runCodexHookGate(params({ config: exempt }))).toMatchObject({ action: "pass", reason: "exempt" });
-  });
-
-  it("still gates a user that is not on the list", async () => {
-    expect(await runCodexHookGate(params({ config: exempt, userId: "usr-2" }))).toMatchObject({ action: "respond" });
-  });
-});

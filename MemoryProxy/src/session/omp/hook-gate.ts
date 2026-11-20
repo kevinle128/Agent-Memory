@@ -62,7 +62,6 @@ import {
   GATE_TEXT_MARKER,
   installNotDoneText,
   isGateEnabled,
-  isGateExempt,
   looksRejected,
   lookupReport,
   manualInstallText,
@@ -116,7 +115,6 @@ export async function runOmpHookGate(params: OmpGateParams): Promise<OmpGateResu
   const pass = (reason: string): OmpGateResult => ({ action: "pass", body: stripOmpGateTurns(body, format ?? undefined), reason });
 
   if (!isGateEnabled(params.config)) return pass("disabled");
-  if (isGateExempt(params.config, params.userId)) return pass("exempt");
   if (!format) return pass("other-route");
   const rules = OMP_FORMATS[format];
   if (body.stream !== true || !(offersTool(body, rules.askTool) && offersTool(body, rules.shellTool))) return pass("non-interactive");

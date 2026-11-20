@@ -279,10 +279,13 @@ export function createApp(config: ProxyConfig): Hono {
 
   // ── AntiGravity (agy) endpoints (must precede generic /:agent/:spaceId routes) ──────────────
   // agy sends no auth header, so the user key is a path segment: `AGY_LLM_GATEWAY_URL` is
-  // `<proxy>/antigravity/<space>[/analyse]/<key>` and agy appends `/v1/models`, `/v1beta/models`
+  // `<proxy>/antigravity/<space>[/analyse]/<key>[/memory-off]` and agy appends `/v1/models`, `/v1beta/models`
   // and `/v1beta/models/<model>:streamGenerateContent`. The model segment holds a `:`, so the
   // generate routes use a wildcard. The runner reads the key from the path; nothing else may log it.
-  for (const prefix of ["/antigravity/:spaceId/analyse/:accessKey", "/antigravity/:spaceId/:accessKey"]) {
+  for (const prefix of [
+    "/antigravity/:spaceId/analyse/:accessKey/memory-off", "/antigravity/:spaceId/analyse/:accessKey",
+    "/antigravity/:spaceId/:accessKey/memory-off", "/antigravity/:spaceId/:accessKey",
+  ]) {
     app.get(`${prefix}/v1/models`, (c) => runAntigravityModels(c, config));
     app.get(`${prefix}/v1beta/models`, (c) => runAntigravityModels(c, config));
     app.post(`${prefix}/v1beta/models/*`, (c) => runAntigravityPipeline(c, config));

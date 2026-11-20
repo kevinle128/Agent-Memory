@@ -141,13 +141,28 @@ describe("antigravity wire helpers", () => {
   });
 
   it("parses the path shapes of the Panel guide and masks the key", () => {
-    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/v1/models`)).toEqual({ kind: "models-openai", spaceId: SPACE, accessKey: KEY });
-    expect(parseAntigravityPath(`/antigravity/${SPACE}/analyse/${KEY}/v1beta/models`)).toEqual({ kind: "models-gemini", spaceId: SPACE, accessKey: KEY });
-    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/v1beta/models/gemini-3:streamGenerateContent`)).toEqual({ kind: "stream", spaceId: SPACE, accessKey: KEY, model: "gemini-3" });
-    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/v1beta/models/gemini-3%3AgenerateContent`)).toEqual({ kind: "generate", spaceId: SPACE, accessKey: KEY, model: "gemini-3" });
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/v1/models`)).toEqual({ kind: "models-openai", spaceId: SPACE, accessKey: KEY, memoryOff: false });
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/analyse/${KEY}/v1beta/models`)).toEqual({ kind: "models-gemini", spaceId: SPACE, accessKey: KEY, memoryOff: false });
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/v1beta/models/gemini-3:streamGenerateContent`)).toEqual({ kind: "stream", spaceId: SPACE, accessKey: KEY, memoryOff: false, model: "gemini-3" });
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/v1beta/models/gemini-3%3AgenerateContent`)).toEqual({ kind: "generate", spaceId: SPACE, accessKey: KEY, memoryOff: false, model: "gemini-3" });
     expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/v1beta/models/gemini-3:countTokens`)).toBeNull();
     expect(parseAntigravityPath(`/codex/${SPACE}/${KEY}/v1/models`)).toBeNull();
     expect(maskKeyedPath(`/antigravity/${SPACE}/${KEY}/v1beta/models`)).toBe(`/antigravity/${SPACE}/***/v1beta/models`);
+  });
+
+  it("reads the memory-off segment after the key, as a whole segment only", () => {
+    const tail = "v1beta/models/gemini-3:streamGenerateContent";
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/memory-off/${tail}`))
+      .toEqual({ kind: "stream", spaceId: SPACE, accessKey: KEY, memoryOff: true, model: "gemini-3" });
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/analyse/${KEY}/memory-off/v1/models`))
+      .toEqual({ kind: "models-openai", spaceId: SPACE, accessKey: KEY, memoryOff: true });
+    // A key that contains the text, or is the text, is a key and not the switch.
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/sk-memory-off/${tail}`)?.memoryOff).toBe(false);
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/memory-off/${tail}`))
+      .toMatchObject({ accessKey: "memory-off", memoryOff: false });
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/memory-off-x/${tail}`)).toBeNull();
+    expect(parseAntigravityPath(`/antigravity/${SPACE}/${KEY}/memory-off/memory-off/${tail}`)).toBeNull();
+    expect(maskKeyedPath(`/antigravity/${SPACE}/${KEY}/memory-off/v1beta/models`)).toBe(`/antigravity/${SPACE}/***/memory-off/v1beta/models`);
     expect(maskKeyedPath(`/antigravity/${SPACE}/analyse/${KEY}/v1/models`)).toBe(`/antigravity/${SPACE}/analyse/***/v1/models`);
     expect(maskKeyedPath(`/antigravity/${SPACE}/${KEY}/v1/models`)).not.toContain(KEY);
   });
@@ -582,6 +597,66 @@ describe("antigravity hook gate and session", () => {
     const payload = JSON.parse(writes[0]!.body) as { messages: Array<{ role: string; content: string }> };
     expect(payload.messages).toEqual([{ role: "user", content: "say pong" }, { role: "assistant", content: "pong" }]);
     expect(JSON.stringify(calls.coreCalls.map((c) => [c.url, c.body]))).not.toContain(KEY);
+  });
+
+  describe("memory-off URL", () => {
+    const offPath = `/antigravity/${SPACE}/${KEY}/memory-off/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse`;
+
+    it("skips the hook gate and still returns the model answer", async () => {
+      prime([acct("a")]);
+      app = createApp(gateConfig());
+      const { upstreamCalls } = installFetch(() => sse());
+      const res = await post(offPath, agyBody(), { host: "proxy.example.test" });
+      const text = await res.text();
+      expect(res.status).toBe(200);
+      expect(text).toContain('"po"');
+      expect(text).not.toContain(GATE_TEXT_MARKER);
+      expect(upstreamCalls).toHaveLength(1);
+      expect(verifyUserKey).toHaveBeenCalledWith(KEY, SPACE);
+    });
+
+    it("rejects a wrong key on the memory-off URL like any other", async () => {
+      prime([acct("a")]);
+      verifyUserKey.mockImplementation(async () => ({ userId: "", rejected: true, rejectReason: "bad" }));
+      const { upstreamCalls } = installFetch(() => sse());
+      const res = await post(offPath, agyBody());
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(upstreamCalls).toHaveLength(0);
+    });
+
+    it("runs no session init and writes no L0 row, while the normal URL does both", async () => {
+      prime([acct("a")]);
+      const config = configured();
+      config.sessionInit = { ...(config.sessionInit ?? {}), enabled: true } as typeof config.sessionInit;
+      config.tdai = {
+        ...config.tdai, enabled: true, endpoint: CORE_URL,
+        memory: { ...config.tdai.memory, enabled: true, writeL0: true, recallL1: false, injectL2L3: false },
+      };
+      app = createApp(config);
+      sessionInit.mockResolvedValue({
+        proceed: true, response: null, wentThroughStateMachine: false,
+        initResult: {
+          intercepted: false, bypassed: false, justRegistered: true,
+          sessionInfo: { session_id: SESSION, team_id: "tm-1", agent_id: "agt-1", user_id: "usr-1", task_id: "tsk-1", space_id: SPACE },
+        },
+      });
+      const calls = installFetch(() => sse(), (call) => (call.url.includes("capab")
+        ? jsonResponse({ chat_memory: true })
+        : jsonResponse({ code: 0, data: {} })));
+      const l0Writes = () => calls.coreCalls.filter((c) => c.url.endsWith("/v3/conversation/add"));
+
+      const off = await post(offPath, agyBody());
+      expect(await off.text()).toContain('"po"');
+      await new Promise((r) => setTimeout(r, 150));
+      expect(sessionInit).not.toHaveBeenCalled();
+      expect(l0Writes()).toHaveLength(0);
+      expect(calls.upstreamCalls).toHaveLength(1);
+
+      await (await post(streamPath(), agyBody())).text();
+      await new Promise((r) => setTimeout(r, 150));
+      expect(sessionInit).toHaveBeenCalledTimes(1);
+      expect(l0Writes()).toHaveLength(1);
+    });
   });
 
   it("sends the session id of the pool binding from the cascade id", async () => {
