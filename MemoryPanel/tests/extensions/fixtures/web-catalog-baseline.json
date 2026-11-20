@@ -1,0 +1,62 @@
+{
+  "source": "web/src/constants/menu.tsx:50-66, web/src/layouts/ConsoleLayout.tsx:22-35 and :161-182, web/src/routes/index.tsx:28-40 at commit 465d045f",
+  "groupOrder": ["workbench", "observability", "organization", "assets"],
+  "pages": [
+    { "id": "workbench_board", "group": "workbench", "order": 0, "affix": true, "path": "/" },
+    { "id": "analytics", "group": "observability", "order": 0, "path": "/analytics" },
+    { "id": "wiki", "group": "assets", "order": 2, "path": "/wiki" },
+    { "id": "code", "group": "assets", "order": 3, "path": "/code" },
+    { "id": "skills", "group": "assets", "order": 4, "path": "/skills" },
+    { "id": "chat_memory", "group": "assets", "order": 5, "path": "/memory" },
+    { "id": "processing_history", "group": "assets", "order": 6, "path": "/processing-history" },
+    { "id": "team_members", "group": "organization", "order": 0, "path": "/team/members" },
+    { "id": "team_agents", "group": "organization", "order": 1, "path": "/team/agents" },
+    { "id": "api_keys", "group": "organization", "order": 2, "path": "/team/api-keys" },
+    { "id": "subscription_pool", "group": "organization", "order": 3, "path": "/team/subscription-pool" },
+    { "id": "model_provider", "group": "organization", "order": 4, "path": "/team/model-provider" }
+  ],
+  "menus": {
+    "systemAdmin": {
+      "ctx": { "userRole": "admin", "isSystemAdmin": true, "historyVisible": true, "analyticsVisible": false },
+      "groups": [
+        { "group": "workbench", "ids": ["workbench_board"] },
+        { "group": "organization", "ids": ["team_members", "team_agents", "api_keys", "subscription_pool", "model_provider"] },
+        { "group": "assets", "ids": ["wiki", "code", "skills", "chat_memory", "processing_history"] }
+      ]
+    },
+    "systemAdminAnalyticsOn": {
+      "ctx": { "userRole": "admin", "isSystemAdmin": true, "historyVisible": true, "analyticsVisible": true },
+      "groups": [
+        { "group": "workbench", "ids": ["workbench_board"] },
+        { "group": "observability", "ids": ["analytics"] },
+        { "group": "organization", "ids": ["team_members", "team_agents", "api_keys", "subscription_pool", "model_provider"] },
+        { "group": "assets", "ids": ["wiki", "code", "skills", "chat_memory", "processing_history"] }
+      ]
+    },
+    "teamAdmin": {
+      "ctx": { "userRole": "admin", "isSystemAdmin": false, "historyVisible": true, "analyticsVisible": false },
+      "groups": [
+        { "group": "workbench", "ids": ["workbench_board"] },
+        { "group": "organization", "ids": ["team_members", "team_agents", "api_keys", "subscription_pool", "model_provider"] },
+        { "group": "assets", "ids": ["wiki", "code", "skills", "chat_memory", "processing_history"] }
+      ]
+    },
+    "member": {
+      "ctx": { "userRole": "member", "isSystemAdmin": false, "historyVisible": false, "analyticsVisible": false },
+      "groups": [
+        { "group": "workbench", "ids": ["workbench_board"] },
+        { "group": "organization", "ids": ["team_members", "team_agents", "api_keys", "subscription_pool", "model_provider"] },
+        { "group": "assets", "ids": ["wiki", "code", "skills", "chat_memory"] }
+      ]
+    },
+    "reviewer": {
+      "ctx": { "userRole": "reviewer", "isSystemAdmin": false, "historyVisible": false, "analyticsVisible": false },
+      "groups": [
+        { "group": "workbench", "ids": ["workbench_board"] },
+        { "group": "organization", "ids": ["team_agents", "api_keys", "subscription_pool", "model_provider"] },
+        { "group": "assets", "ids": ["wiki", "code", "skills", "chat_memory"] }
+      ]
+    }
+  },
+  "routes": ["", "wiki", "code", "skills", "memory", "processing-history", "analytics", "team/members", "team/agents", "team/api-keys", "team/subscription-pool", "team/model-provider", "guide"]
+}

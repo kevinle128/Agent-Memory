@@ -21,6 +21,8 @@ import { createPanelApiCallTelemetry, type PanelApiCallTelemetry } from './infra
 import { PanelAuthService } from './auth/service.js';
 import { PanelUserIdResolver } from './infra/user-id-resolver.js';
 import { FileFeedbackStore } from './state/processing-feedback-store.js';
+import { CATALOG } from './extensions/catalog.js';
+import { createExtensionHost, type ExtensionHost } from './extensions/host.js';
 
 export interface PanelDeps {
   config: PanelConfig;
@@ -47,6 +49,8 @@ export interface PanelDeps {
   userIdResolver: PanelUserIdResolver;
   /** 👍/👎 ratings of the Processing History page. */
   feedbackStore: FileFeedbackStore;
+  /** Optional extension host; absent when PANEL_EXTENSIONS is empty. */
+  extensions?: ExtensionHost;
 }
 
 export function buildPanelDeps(config: PanelConfig): PanelDeps {
@@ -90,7 +94,7 @@ export function buildPanelDeps(config: PanelConfig): PanelDeps {
   );
   const userIdResolver = new PanelUserIdResolver(metaKernel, logger);
   const auth = new PanelAuthService({ config: config.auth, instances: instanceRegistry, metaKernel, logger });
-  return {
+  const deps: PanelDeps = {
     config,
     logger,
     instanceRegistry,
@@ -107,6 +111,9 @@ export function buildPanelDeps(config: PanelConfig): PanelDeps {
     userIdResolver,
     feedbackStore: new FileFeedbackStore(config.processingHistory.feedbackStorePath),
   };
+  const extensions = createExtensionHost({ deps, catalog: CATALOG });
+  if (extensions) deps.extensions = extensions;
+  return deps;
 }
 
 export type { InstanceEntry };

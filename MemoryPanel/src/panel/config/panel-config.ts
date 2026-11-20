@@ -116,6 +116,22 @@ export interface PanelConfig {
   clickhouse: PanelClickHouseConfig;
   auth: PanelAuthConfig;
   processingHistory: PanelProcessingHistoryConfig;
+  extensions: PanelExtensionsConfig;
+}
+
+/** Static extension host settings. Extensions are selected by environment only. */
+export interface PanelExtensionsConfig {
+  /** Ids from PANEL_EXTENSIONS; empty means the host is not created. */
+  enabled: string[];
+  /** Root folder of extension data files (one sub-folder per extension). */
+  dataDir: string;
+  /** Stop startup when a selected extension fails. */
+  strict: boolean;
+  /**
+   * Optional system_admin user key for extensions to act as in Core, for deployments where the instance
+   * api_key is a pure gateway key. Secret: never log it. Empty or absent: the instance api_key is used.
+   */
+  systemUserKey?: string;
 }
 
 /** Sources of the Processing History page (team admins only). */
@@ -289,6 +305,21 @@ export function loadPanelConfig(): PanelConfig {
     },
     auth: buildAuthConfig(),
     processingHistory: buildProcessingHistoryConfig(agentTemplateDir),
+    extensions: buildExtensionsConfig(agentTemplateDir),
+  };
+}
+
+function buildExtensionsConfig(agentTemplateDir: string): PanelExtensionsConfig {
+  const enabled = env('PANEL_EXTENSIONS', '')
+    .split(',')
+    .map((id) => id.trim().toLowerCase())
+    .filter(Boolean);
+  return {
+    enabled: [...new Set(enabled)],
+    // Next to the agent templates: in the Hub image that is the knowledge data volume.
+    dataDir: env('PANEL_EXTENSIONS_DATA_DIR', join(dirname(agentTemplateDir), 'extensions')),
+    strict: envBool('PANEL_EXTENSIONS_STRICT', false),
+    systemUserKey: env('PANEL_EXTENSIONS_SYSTEM_USER_KEY', ''),
   };
 }
 

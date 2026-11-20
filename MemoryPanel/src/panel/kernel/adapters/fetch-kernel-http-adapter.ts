@@ -4,7 +4,7 @@ import {
   KernelFetchError,
 } from '../transport-fetch.js';
 import type { MetaEnvelope } from '../envelope.js';
-import type { KernelHttpPort } from '../ports/kernel-http-port.js';
+import type { KernelCallOptions, KernelHttpPort } from '../ports/kernel-http-port.js';
 import type { KernelCredentials } from '../types.js';
 
 function toErrorEnvelope<T>(err: KernelFetchError, cred: KernelCredentials): MetaEnvelope<T> {
@@ -18,6 +18,19 @@ function toErrorEnvelope<T>(err: KernelFetchError, cred: KernelCredentials): Met
   } as MetaEnvelope<T>;
 }
 
+/** Only failures get through: the transport logs bodies at info level and failures at warn level. */
+function failuresOnly(logger: Logger | undefined): Logger | undefined {
+  if (!logger) return undefined;
+  const quiet: Logger = {
+    debug: () => undefined,
+    info: () => undefined,
+    warn: (msg, fields) => logger.warn(msg, fields),
+    error: (msg, fields) => logger.error(msg, fields),
+    child: (bindings) => failuresOnly(logger.child(bindings))!,
+  };
+  return quiet;
+}
+
 export class FetchKernelHttpAdapter implements KernelHttpPort {
   constructor(private readonly logger?: Logger) {}
 
@@ -25,6 +38,7 @@ export class FetchKernelHttpAdapter implements KernelHttpPort {
     path: string,
     body: unknown,
     cred: KernelCredentials,
+    opts?: KernelCallOptions,
   ): Promise<MetaEnvelope<T>> {
     try {
       return await executeMetaFetch<MetaEnvelope<T>>(
@@ -35,7 +49,7 @@ export class FetchKernelHttpAdapter implements KernelHttpPort {
           userKey: cred.userKey,
           timeoutMs: cred.timeoutMs,
           requestId: cred.requestId,
-          logger: this.logger,
+          logger: opts?.logBodies === false ? failuresOnly(this.logger) : this.logger,
           extraHeaders: cred.extraHeaders,
         },
         path,

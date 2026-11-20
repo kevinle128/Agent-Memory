@@ -4,6 +4,8 @@
  * 包含页面 ID 类型、页面元信息、分组排序、分组图标。
  * Sidebar / TabBar / 路由等模块共用。
  */
+import { useMemo, type ComponentType, type ReactNode } from 'react';
+import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import {
   DashboardIcon,
@@ -15,8 +17,14 @@ import {
   ToolsIcon,
   ChatIcon,
 } from 'tea-icons-react';
+// Relative on purpose: the Panel test suite loads this file and has no '@' alias.
+import { buildCatalog, type CatalogEntry } from '../extensions/catalog';
+import { WEB_EXTENSIONS, useEnabledExtensions } from '../extensions/registry';
+import type { ExtPageId, MenuGroupKey } from '../extensions/types';
 
-export type PageId =
+export type { ExtPageId } from '../extensions/types';
+
+export type CorePageId =
   | 'workbench_board'
   | 'wiki'
   | 'code'
@@ -30,6 +38,9 @@ export type PageId =
   | 'model_provider'
   | 'analytics';
 
+/** Core pages and the pages that extensions add. */
+export type PageId = CorePageId | ExtPageId;
+
 /** 页面元数据 */
 export interface PageMeta {
   id: PageId;
@@ -37,36 +48,67 @@ export interface PageMeta {
   desc?: string;
   /** 所属分组，用于侧边栏菜单分组标题 */
   group: string;
+  /** Group key, the stable name behind the translated `group`. */
+  groupKey: MenuGroupKey;
   /** 分组内排序，越小越靠前 */
   order: number;
   /** 固定标签页不可关闭（工作台看板） */
   affix?: boolean;
 }
 
-// 使用 useTranslation 的 hook 版本
-export function usePageMeta(): Record<PageId, PageMeta> {
-  const { t } = useTranslation();
+function corePageMeta(t: TFunction): Record<CorePageId, PageMeta> {
+  const entry = (id: CorePageId, groupKey: MenuGroupKey, order: number, affix?: boolean): PageMeta => ({
+    id,
+    label: t(`menu.${id}`),
+    desc: t(`menu.desc.${id}`),
+    group: t(`menu.group.${groupKey}`),
+    groupKey,
+    order,
+    ...(affix ? { affix } : {}),
+  });
   return {
-    workbench_board: { id: 'workbench_board', label: t('menu.workbench_board'), desc: t('menu.desc.workbench_board'), group: t('menu.group.workbench'), order: 0, affix: true },
-    analytics:      { id: 'analytics',      label: t('menu.analytics'), desc: t('menu.desc.analytics'), group: t('menu.group.observability'), order: 0 },
-    wiki:            { id: 'wiki',            label: t('menu.wiki'), desc: t('menu.desc.wiki'), group: t('menu.group.assets'), order: 2 },
-    code:            { id: 'code',            label: t('menu.code'), desc: t('menu.desc.code'), group: t('menu.group.assets'), order: 3 },
-    skills:          { id: 'skills',          label: t('menu.skills'), desc: t('menu.desc.skills'), group: t('menu.group.assets'), order: 4 },
-    chat_memory:     { id: 'chat_memory',     label: t('menu.chat_memory'), desc: t('menu.desc.chat_memory'), group: t('menu.group.assets'), order: 5 },
-    processing_history: { id: 'processing_history', label: t('menu.processing_history'), desc: t('menu.desc.processing_history'), group: t('menu.group.assets'), order: 6 },
-    team_members:    { id: 'team_members',    label: t('menu.team_members'), desc: t('menu.desc.team_members'), group: t('menu.group.organization'), order: 0 },
-    team_agents:     { id: 'team_agents',     label: t('menu.team_agents'), desc: t('menu.desc.team_agents'), group: t('menu.group.organization'), order: 1 },
-    api_keys:        { id: 'api_keys',        label: t('menu.api_keys'), desc: t('menu.desc.api_keys'), group: t('menu.group.organization'), order: 2 },
-    subscription_pool: { id: 'subscription_pool', label: t('menu.subscription_pool'), desc: t('menu.desc.subscription_pool'), group: t('menu.group.organization'), order: 3 },
-    model_provider: { id: 'model_provider', label: t('menu.model_provider'), desc: t('menu.desc.model_provider'), group: t('menu.group.organization'), order: 4 },
+    workbench_board: entry('workbench_board', 'workbench', 0, true),
+    analytics: entry('analytics', 'observability', 0),
+    wiki: entry('wiki', 'assets', 2),
+    code: entry('code', 'assets', 3),
+    skills: entry('skills', 'assets', 4),
+    chat_memory: entry('chat_memory', 'assets', 5),
+    processing_history: entry('processing_history', 'assets', 6),
+    team_members: entry('team_members', 'organization', 0),
+    team_agents: entry('team_agents', 'organization', 1),
+    api_keys: entry('api_keys', 'organization', 2),
+    subscription_pool: entry('subscription_pool', 'organization', 3),
+    model_provider: entry('model_provider', 'organization', 4),
   };
 }
+
+// 使用 useTranslation 的 hook 版本
+export function usePageMeta(): Record<CorePageId, PageMeta> {
+  const { t } = useTranslation();
+  return corePageMeta(t);
+}
+
+/** 路由 path（核心页面） */
+export const CORE_PAGE_PATHS: Record<CorePageId, string> = {
+  workbench_board: '/',
+  wiki: '/wiki',
+  code: '/code',
+  skills: '/skills',
+  chat_memory: '/memory',
+  processing_history: '/processing-history',
+  analytics: '/analytics',
+  team_members: '/team/members',
+  team_agents: '/team/agents',
+  api_keys: '/team/api-keys',
+  subscription_pool: '/team/subscription-pool',
+  model_provider: '/team/model-provider',
+};
 
 /** 分组排序顺序 */
 export const GROUP_ORDER_KEYS = ['workbench', 'observability', 'organization', 'assets'] as const;
 
 /** 每个页面在侧边栏菜单中的图标（Tea 官方图标，size 16） */
-export const ITEM_ICON: Record<PageId, JSX.Element> = {
+export const ITEM_ICON: Record<CorePageId, JSX.Element> = {
   workbench_board: <DashboardIcon size={16} />,
   analytics: (
     <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -107,6 +149,75 @@ export const ITEM_ICON: Record<PageId, JSX.Element> = {
     </svg>
   ),
 };
+
+export interface PageCatalogItem {
+  id: PageId;
+  label: string;
+  desc?: string;
+  groupKey: MenuGroupKey;
+  order: number;
+  affix?: boolean;
+  icon: ReactNode;
+  path: string;
+  Badge?: ComponentType;
+  entry: CatalogEntry;
+}
+
+/**
+ * Every page the shell can show: the core pages and the pages of the extensions the server turned on.
+ * Menu, tabs and routes read this one list.
+ */
+export function usePageCatalog(): PageCatalogItem[] {
+  const { t } = useTranslation();
+  const enabled = useEnabledExtensions();
+  return useMemo(() => {
+    const meta = corePageMeta(t);
+    const coreItems: PageCatalogItem[] = (Object.keys(meta) as CorePageId[]).map((id) => {
+      const entry: CatalogEntry = {
+        id,
+        group: meta[id].groupKey,
+        order: meta[id].order,
+        path: CORE_PAGE_PATHS[id],
+        ...(meta[id].affix ? { affix: true } : {}),
+      };
+      return {
+        id,
+        label: meta[id].label,
+        desc: meta[id].desc,
+        groupKey: meta[id].groupKey,
+        order: meta[id].order,
+        ...(meta[id].affix ? { affix: true } : {}),
+        icon: ITEM_ICON[id],
+        path: CORE_PAGE_PATHS[id],
+        entry,
+      };
+    });
+    const entries = buildCatalog(
+      coreItems.map((item) => item.entry),
+      WEB_EXTENSIONS,
+      enabled ?? [],
+    );
+    const items = [...coreItems];
+    for (const entry of entries) {
+      if (!entry.extensionId) continue;
+      const extension = WEB_EXTENSIONS.find((candidate) => candidate.id === entry.extensionId);
+      const page = extension?.pages.find((candidate) => candidate.id === entry.id);
+      if (!extension || !page) continue;
+      items.push({
+        id: page.id,
+        label: t(page.labelKey, { ns: extension.namespace }),
+        ...(page.descKey ? { desc: t(page.descKey, { ns: extension.namespace }) } : {}),
+        groupKey: page.group,
+        order: page.order,
+        icon: page.icon,
+        path: page.path,
+        ...(page.Badge ? { Badge: page.Badge } : {}),
+        entry,
+      });
+    }
+    return items;
+  }, [t, enabled]);
+}
 
 /** 分组图标（工作台 / 可观测 / 组织与权限 / 资产管理） */
 export const GROUP_ICON: Record<string, JSX.Element> = {

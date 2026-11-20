@@ -49,6 +49,8 @@ export function buildPanelApp(deps: PanelDeps): Hono {
   registerKnowledgeRoutes(api, deps);
   // Processing History (injections, extractions, ratings): team admins only.
   registerProcessingHistoryRoutes(api, deps);
+  // Hono copies routes at route() time, so extension routes must be added first.
+  deps.extensions?.mountApi(api);
   app.route(API_PREFIX, api);
   // 仅当至少一个 header-injected Provider 已注册时才挂 ingress 中间件：
   // 该中间件会拦截"根路径 GET + 命中任一 Provider 的 ingressHeaderName"的请求
@@ -71,6 +73,9 @@ export function buildPanelApp(deps: PanelDeps): Hono {
       500,
     );
   });
+
+  // Extension pages go before the static and SPA fallbacks.
+  deps.extensions?.mountPages(app);
 
   const distDir = deps.config.ui.distDir;
   app.use('/*', serveStatic({ root: distDir }));

@@ -23,9 +23,13 @@ export const authVerifyApi = {
 
 export interface AuthMethod {
   id: string;
-  type: 'user_key' | 'woa';
+  type: 'user_key' | 'woa' | 'redirect';
   display_name: string;
   enabled: boolean;
+  /** Only for `redirect`: a same-origin path that starts the login. */
+  login_url?: string;
+  /** Only for `redirect`: a same-origin path that ends the login at the provider. */
+  logout_url?: string;
 }
 
 /**

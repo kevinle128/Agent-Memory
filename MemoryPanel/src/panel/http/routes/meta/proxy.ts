@@ -234,7 +234,7 @@ const DEFAULT_AGENT_METADATA_JSON = JSON.stringify({
  * 有模板 → 建同名 Agent（owner=新用户）→ 复制模板资产（skill fork / code_graph·wiki allocate）；
  * 无模板 → 建 default-agent-{username} → 导入预置 Skill。
  */
-async function cloneDefaultAgentForNewMember(
+export async function cloneDefaultAgentForNewMember(
   body: Record<string, unknown>,
   ctx: MetaCallContext,
   deps: PanelDeps,

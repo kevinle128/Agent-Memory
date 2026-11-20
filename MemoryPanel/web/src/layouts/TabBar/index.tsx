@@ -4,7 +4,7 @@
  * 使用 Tea Design Token 统一样式。
  */
 import { useTranslation } from 'react-i18next';
-import { ITEM_ICON, usePageMeta, type PageId } from '@/constants/menu';
+import { usePageCatalog, type PageId } from '@/constants/menu';
 import './style.css';
 
 export function TabBar({
@@ -19,11 +19,13 @@ export function TabBar({
   onClose: (id: PageId) => void;
 }) {
   const { t } = useTranslation();
-  const PAGE_META = usePageMeta();
+  const catalog = usePageCatalog();
   return (
     <div className="_memory-tabbar">
       {pages.map((id) => {
-        const meta = PAGE_META[id];
+        const meta = catalog.find((item) => item.id === id);
+        // A page that is gone from the catalog (an extension turned off) has no tab.
+        if (!meta) return null;
         const isActive = id === activePage;
         return (
           <div
@@ -42,7 +44,7 @@ export function TabBar({
             }}
             className={`_memory-tabbar-item${isActive ? ' _memory-tabbar-item--active' : ''}`}
           >
-            <span className="_memory-tabbar-icon" aria-hidden="true">{ITEM_ICON[id]}</span>
+            <span className="_memory-tabbar-icon" aria-hidden="true">{meta.icon}</span>
             <span className="_memory-tabbar-label">{meta.label}</span>
             {!meta.affix && (
               <button

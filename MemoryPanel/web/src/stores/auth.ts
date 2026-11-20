@@ -4,6 +4,8 @@
  * 对接新面板 Control（无 Cookie、无状态代理，见 09 设计文档 §3.3）。
  * 登录凭证（instance_id + user_key）缓存在 localStorage（lib/panelSession.ts），
  * "退出登录"/"会话失效"都只是清本地缓存，Control 无登出 API、无服务端会话表。
+ * 例外：由扩展的 redirect 登录方式建立的 IdP 会话，退出时直接跳转到该方式的 logout_url
+ * （由它结束服务端会话，不先调用面板的登出接口）；WOA 与 user_key 登录的退出行为不变。
  *
  * 多 tab 同步：通过 storage 事件监听 localStorage 变化。
  *   - 其他 tab 登录 → 本 tab 自动恢复登录态（checkSession）
@@ -16,6 +18,9 @@
  */
 import { create } from 'zustand';
 import { readAuth, clearAuth, resumeSession, type AuthState } from '@/components/LoginGate';
+import { authMethodsApi } from '@/lib/api/auth';
+import { getPanelSession } from '@/lib/panelSession';
+import { redirectLogoutTarget } from '@/lib/redirect-login';
 import { onUnauthorized } from '@/lib/teamApi';
 import { clearBackendCache, writeActiveTeamId } from '@/services';
 
@@ -25,7 +30,7 @@ interface AuthStore {
   auth: AuthState | null | undefined;
   /** 登录成功后写入（LoginGate 的 onLoggedIn 回调） */
   setAuth: (auth: AuthState) => void;
-  /** 退出登录：清本地 localStorage 会话，回到 LoginGate（无后端调用） */
+  /** 退出登录：清本地 localStorage 会话，回到 LoginGate（仅 redirect 登录方式会额外跳转到其 logout_url） */
   logout: () => Promise<void>;
   /** App 启动时读取 localStorage 缓存；不管结果如何都会把 auth 从 null 推进到确定态 */
   checkSession: () => Promise<void>;
@@ -39,6 +44,20 @@ export const useAuthStore = create<AuthStore>((set) => ({
   },
 
   logout: async () => {
+    // Only a session opened by a redirect login method also ends at the provider. The browser goes straight to
+    // its logout_url, which also destroys the Panel session; calling the Panel logout first would expire the
+    // cookie that route needs. WOA and user_key sessions end exactly as before.
+    const idp = getPanelSession()?.authMethod === 'idp';
+    const next = idp ? await redirectLogoutTarget({ session: authMethodsApi.session, methods: authMethodsApi.list }) : null;
+    // No provider logout to go to (lookup failed or no logout_url): end the Panel session here, or the HttpOnly
+    // cookie would sign the person back in on reload. A WOA session still ends as before.
+    if (idp && !next) {
+      const woa = await authMethodsApi
+        .session()
+        .then((session) => session.provider_id === 'woa')
+        .catch(() => false);
+      if (!woa) await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => undefined);
+    }
     // 新面板无服务端会话，登出即清本地缓存，无需（也没有）后端登出接口。
     // 清模块级后端缓存（teams/agents/tasks），避免新用户登录后短暂看到上一个用户的列表。
     // 用 clearBackendCache 而非 invalidateBackendCache：后者会广播事件触发已挂载页面的
@@ -49,6 +68,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
     writeActiveTeamId(null);
     clearAuth();
     set({ auth: undefined });
+    if (next) window.location.assign(next);
   },
 
   checkSession: async () => {

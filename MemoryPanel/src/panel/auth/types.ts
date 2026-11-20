@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 
 export type AuthMethod = 'user_key' | 'idp';
-export type ProviderType = 'woa' | 'oidc' | 'oauth2';
+export type ProviderType = 'woa' | 'oidc' | 'oauth2' | 'ticket';
 
 /**
  * Provider 与 Panel 的交互形态。
@@ -11,11 +11,13 @@ export type ProviderType = 'woa' | 'oidc' | 'oauth2';
  * - `redirect-oauth2`：我方生成 authorize URL、用户浏览器回调带 code，
  *   我方拿 code 换 token、再拉 userinfo。典型：GitHub / 自建 OIDC。
  *   Provider 需实现 `prepareAuthorize` + `authenticateFromCallback`（本 PR 未落地）。
+ * - `redirect-callback`: the IdP sends the browser back with an opaque ticket (CAS-like).
+ *   The extension that owns the provider serves the login and callback routes.
  *
  * 用一个字段收敛能力形态，Service 侧按 `kind` 类型收敛决定走哪一路，
  * 避免在 Service 里按 provider id 硬分支。
  */
-export type ProviderKind = 'header-injected' | 'redirect-oauth2';
+export type ProviderKind = 'header-injected' | 'redirect-oauth2' | 'redirect-callback';
 
 export interface ExternalIdentity {
   providerId: string;
@@ -103,6 +105,19 @@ export interface RedirectOAuth2Provider extends AuthProvider {
     codeVerifier?: string;
     expectedNonce?: string;
   }): Promise<ExternalIdentity | null>;
+}
+
+/** IdPs that redirect the browser back with an opaque signed or encrypted ticket (CAS-like). */
+export interface RedirectCallbackProvider extends AuthProvider {
+  readonly kind: 'redirect-callback';
+  /** Same-origin path the login button navigates to; served by the provider's owner. */
+  readonly loginPath: string;
+  /**
+   * Same-origin path the browser navigates to, without calling the Panel logout first. The route ends the
+   * Panel session itself and needs the session cookie to do it.
+   */
+  readonly logoutPath: string;
+  authenticateFromCallback(query: Record<string, string>): Promise<ExternalIdentity | null>;
 }
 
 export interface AuthRouteContext {

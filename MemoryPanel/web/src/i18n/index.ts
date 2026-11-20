@@ -9,6 +9,7 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import { zhCN } from './zh-CN';
 import { enUS } from './en-US';
+import { WEB_EXTENSIONS } from '@/extensions/registry';
 
 const STORAGE_KEY = 'tdai-memory.lang';
 
@@ -42,5 +43,12 @@ i18n.use(initReactI18next).init({
     useSuspense: false,
   },
 });
+
+// Each web extension brings its own namespace, so its keys never collide with the core ones.
+for (const extension of WEB_EXTENSIONS) {
+  for (const [lang, bundle] of Object.entries(extension.i18n)) {
+    if (bundle) i18n.addResourceBundle(lang, extension.namespace, bundle, true, true);
+  }
+}
 
 export default i18n;
