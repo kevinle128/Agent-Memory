@@ -126,13 +126,14 @@ export function parseOpenAiModels(body: unknown): SourceModelReading[] {
 /**
  * Merges a fresh model list into the stored one. Models seen before keep their `enabled` choice;
  * new models start as `newModelsEnabled`; models the provider no longer lists stay with
- * `available: false`.
+ * `available: false`, or leave the catalog when `dropMissing` is set.
  */
 export function mergeSourceModels(
   existing: readonly SourceModelEntry[],
   readings: readonly SourceModelReading[],
   newModelsEnabled: boolean,
   now: string,
+  dropMissing = false,
 ): SourceModelEntry[] {
   const known = new Map(existing.map((model) => [model.id, model]));
   const seen = new Set<string>();
@@ -152,8 +153,10 @@ export function mergeSourceModels(
         last_seen_at: now,
       });
   }
-  for (const model of existing) {
-    if (!seen.has(model.id)) merged.push({ ...model, available: false });
+  if (!dropMissing) {
+    for (const model of existing) {
+      if (!seen.has(model.id)) merged.push({ ...model, available: false });
+    }
   }
   return merged;
 }

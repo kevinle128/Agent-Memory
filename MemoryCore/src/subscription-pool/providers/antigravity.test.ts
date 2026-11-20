@@ -41,6 +41,40 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+describe("antigravity Cloud Code host", () => {
+  it("uses the daily host for every Cloud Code call by default", async () => {
+    const calls: Captured[] = [];
+    const adapter = createAntigravityAdapter(scripted([
+      TOKEN_REPLY, USERINFO_REPLY, { body: {} }, { body: { done: true, response: { cloudaicompanionProject: "p" } } },
+      { body: MODELS_FIXTURE }, { body: MODELS_FIXTURE },
+    ], calls));
+    await adapter.exchangeCode({ code: "c", codeVerifier: "", redirectUri: "", state: "s" });
+    await adapter.fetchUsage("a", "x", { projectId: "p" });
+    await adapter.fetchModels("a", "x", { projectId: "p" });
+    expect(calls.slice(2).map((call) => call.url)).toEqual([
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+    ]);
+  });
+
+  it("takes the host from ANTIGRAVITY_CLOUD_CODE_URL and ignores a trailing slash", async () => {
+    vi.stubEnv("ANTIGRAVITY_CLOUD_CODE_URL", "https://cloudcode-pa.googleapis.com/");
+    const calls: Captured[] = [];
+    const adapter = createAntigravityAdapter(scripted([{ body: MODELS_FIXTURE }], calls));
+    await adapter.fetchModels("a", "x", { projectId: "p" });
+    expect(calls[0]!.url).toBe("https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
+  });
+
+  it("reports the current CLI version in the user agent", async () => {
+    const calls: Captured[] = [];
+    await createAntigravityAdapter(scripted([{ body: MODELS_FIXTURE }], calls)).fetchModels("a", "x");
+    expect((calls[0]!.init!.headers as Record<string, string>)["user-agent"]).toContain("antigravity/cli/1.5.13 (aidev_client;");
+    expect((calls[0]!.init!.headers as Record<string, string>)["user-agent"]).toContain("cl=1025641825;");
+  });
+});
+
 describe("antigravity OAuth client from the environment", () => {
   it("reads the client id at call time", () => {
     expect(ANTIGRAVITY_OAUTH.CLIENT_ID).toBe(TEST_CLIENT_ID);
@@ -107,7 +141,7 @@ describe("antigravity exchangeCode", () => {
     expect((calls[1]!.init!.headers as Record<string, string>).authorization).toBe("Bearer access-1");
 
     const load = calls[2]!;
-    expect(load.url).toBe("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist");
+    expect(load.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist");
     expect(JSON.parse(String(load.init!.body))).toEqual({ metadata: { ideType: "ANTIGRAVITY" } });
     expect((load.init!.headers as Record<string, string>)["user-agent"]).toMatch(/^antigravity\/cli\/[\d.]+ \(aidev_client; os_type=\w+; arch=\w+; cl=\d+; auth_method=consumer\)$/);
   });
@@ -128,7 +162,7 @@ describe("antigravity exchangeCode", () => {
     ], calls), { onboardDelayMs: 0, sleep: noSleep });
     const result = await adapter.exchangeCode({ code: "c", codeVerifier: "", redirectUri: "", state: "s" });
     expect(result.projectId).toBe("proj-new");
-    expect(calls[3]!.url).toBe("https://cloudcode-pa.googleapis.com/v1internal:onboardUser");
+    expect(calls[3]!.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser");
     expect(JSON.parse(String(calls[3]!.init!.body))).toEqual({ tierId: "free-tier", metadata: { ideType: "ANTIGRAVITY" } });
   });
 
@@ -239,7 +273,7 @@ describe("antigravity fetchUsage and fetchModels", () => {
     const usage = await adapter.fetchUsage("access-1", "pool-1@example.com", { projectId: "proj-1" });
     expect(usage.resetCredits).toBeNull();
     expect(usage.windows).toHaveLength(3);
-    expect(calls[0]!.url).toBe("https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
+    expect(calls[0]!.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
     expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({ project: "proj-1" });
     expect((calls[0]!.init!.headers as Record<string, string>).authorization).toBe("Bearer access-1");
 

@@ -191,10 +191,38 @@ describe.each(INSTALL_TOOLS)("install.sh --client antigravity with the %s JSON t
     expect(fs.readFileSync(urlFile(), "utf8").trim()).toBe(gatewayUrl());
   });
 
+  it("installs from the short gate command: base route plus AGENT_MEMORY_KEY, no session", async () => {
+    const r = await runInstaller(["--client", "antigravity", "--base-url", `${origin}/antigravity/default`], env({ AGENT_MEMORY_KEY: KEY }));
+    expect(r.code, r.stderr).toBe(0);
+    expect(fs.readFileSync(urlFile(), "utf8").trim()).toBe(gatewayUrl());
+    expect(readHooks()["agent-memory"]).toBeDefined();
+    expect(r.stdout + r.stderr).not.toContain(KEY);
+  });
+
+  it("asks for the key on the terminal when none is given, and never prints it", async () => {
+    const tty = path.join(mkTmp("am-tty-"), "tty");
+    fs.writeFileSync(tty, `${KEY}\n`);
+    const r = await runInstaller(["--client", "antigravity", "--base-url", `${origin}/antigravity/default`], env({ AGENT_MEMORY_TTY: tty }));
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stderr).toContain("user key");
+    expect(fs.readFileSync(urlFile(), "utf8").trim()).toBe(gatewayUrl());
+    expect(r.stdout + r.stderr).not.toContain(KEY);
+  });
+
+  it("reuses the key of an earlier install of the same proxy and space, but not of another space", async () => {
+    expect((await runInstaller(["--client", "antigravity", "--base-url", gatewayUrl()], env())).code).toBe(0);
+    const same = await runInstaller(["--client", "antigravity", "--base-url", `${origin}/antigravity/default`], env({ AGENT_MEMORY_TTY: "/nonexistent" }));
+    expect(same.code, same.stderr).toBe(0);
+    const other = await runInstaller(["--client", "antigravity", "--base-url", `${origin}/antigravity/other`], env({ AGENT_MEMORY_TTY: "/nonexistent" }));
+    expect(other.code).toBe(1);
+    expect(other.stderr).toContain("no key");
+  });
+
   it("fails with a clear message and changes nothing when there is no key or URL", async () => {
-    const noKey = await runInstaller(["--client", "antigravity", "--base-url", `${origin}/antigravity/default`], env());
+    const noKey = await runInstaller(["--client", "antigravity", "--base-url", `${origin}/antigravity/default`], env({ AGENT_MEMORY_TTY: "/nonexistent" }));
     expect(noKey.code).toBe(1);
     expect(noKey.stderr).toContain("no key");
+    expect(noKey.stderr).toContain("--key");
     const noUrl = await runInstaller(["--client", "antigravity"], env());
     expect(noUrl.code).toBe(1);
     expect(noUrl.stderr).toContain("no gateway URL");

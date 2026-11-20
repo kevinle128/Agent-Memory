@@ -18,7 +18,7 @@
 
 import type { SessionWorkspaceKey } from "../../project-scope/session-workspace.js";
 import {
-  buildInstallCommand,
+  buildAntigravityInstallCommand,
   GATE_TEXT_MARKER,
   installNotDoneText,
   isGateEnabled,
@@ -109,9 +109,7 @@ export async function runAntigravityHookGate(params: AntigravityGateParams): Pro
     return { action: "pass", reason: "installed-in-session" };
   }
 
-  // No `--base-url`: install.sh needs the full gateway URL with the key there, and a bare origin
-  // makes it fail. Without it the installer reads AGY_LLM_GATEWAY_URL or the URL file of agy.
-  const command = buildInstallCommand(resolveOrigin(params.config, params.origin), sessionId, "antigravity");
+  const command = buildAntigravityInstallCommand(resolveOrigin(params.config, params.origin), params.spaceId);
   const text = attempts === 0 ? manualInstallText(command) : installNotDoneText(command, false);
   return {
     action: "respond",

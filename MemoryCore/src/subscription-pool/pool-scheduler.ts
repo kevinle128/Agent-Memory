@@ -10,7 +10,9 @@ import { planAccountTimers, REFRESH_LEAD_MS } from "./timer-plan.js";
 export interface SubscriptionPoolSchedulerTarget {
   listSubscriptionAccountEntities(): Promise<SubscriptionAccountEntity[]>;
   subscriptionThreshold(): Promise<number>;
-  runSubscriptionUsageCheck(accountId: string): Promise<unknown>;
+  runSubscriptionUsageCheck(accountId: string, options?: { refreshModels?: boolean }): Promise<unknown>;
+  /** Reads the model list of each given pool group once. Called after a pass that checked its accounts. */
+  refreshPoolModelsOfGroups?(groupIds: Iterable<string>): Promise<void>;
   runSubscriptionTokenRefresh(accountId: string, options?: RefreshOptions): Promise<unknown>;
   /** Reads the model list of every enabled source of the instance. */
   refreshAllSourceModels(): Promise<unknown>;
@@ -150,8 +152,12 @@ export class SubscriptionPoolScheduler {
       // A refresh that failed before a restart lost its retry timer, so it runs again now.
       const refreshOptions = armFromSnapshot && account.refresh_fail_count > 0 ? {} : { ifExpiresWithinMs: refreshWithinMs };
       await this.guard(instanceId, account.account_id, "refresh", () => svc.runSubscriptionTokenRefresh(account.account_id, refreshOptions));
-      await this.guard(instanceId, account.account_id, "usage", () => svc.runSubscriptionUsageCheck(account.account_id));
+      await this.guard(instanceId, account.account_id, "usage", () => svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false }));
     }
+    // One model read per pool for the whole pass, not one per account.
+    if (this.stopped || !svc.refreshPoolModelsOfGroups) return;
+    const refresh = svc.refreshPoolModelsOfGroups.bind(svc);
+    await this.guard(instanceId, "", "source-models", () => refresh(active.map((account) => account.group_id)));
   }
 
   private async run(entry: PoolTimerEntry): Promise<void> {

@@ -137,7 +137,7 @@ describe("antigravity wire helpers", () => {
   });
 
   it("uses the agy user agent string", () => {
-    expect(ANTIGRAVITY_USER_AGENT).toMatch(/^antigravity\/cli\/1\.5\.9 \(aidev_client; os_type=(darwin|linux|windows); arch=(arm64|amd64); cl=1021519450; auth_method=consumer\)$/);
+    expect(ANTIGRAVITY_USER_AGENT).toMatch(/^antigravity\/cli\/1\.5\.13 \(aidev_client; os_type=(darwin|linux|windows); arch=(arm64|amd64); cl=1025641825; auth_method=consumer\)$/);
   });
 
   it("parses the path shapes of the Panel guide and masks the key", () => {
@@ -503,8 +503,13 @@ describe("antigravity hook gate and session", () => {
     expect(event.candidates[0].finishReason).toBe("STOP");
     const shown: string = event.candidates[0].content.parts[0].text;
     expect(shown.startsWith(GATE_TEXT_MARKER)).toBe(true);
-    expect(shown).toContain(`curl -fsSL https://proxy.example.test/setup/hooks.sh | bash -s -- --client antigravity --session ${SESSION}`);
-    expect(shown).not.toContain("--base-url");
+    expect(shown).toContain(
+      `curl -fsSL https://proxy.example.test/setup/hooks.sh | bash -s -- --client antigravity --base-url https://proxy.example.test/antigravity/${SPACE}`,
+    );
+    // The conversation history keeps the answer: no key and no session id in the command.
+    expect(shown).not.toContain("--session");
+    expect(shown).not.toContain(SESSION);
+    expect(shown).not.toContain(KEY);
     expect(upstreamCalls).toHaveLength(0);
     expect(sessionInit).not.toHaveBeenCalled();
   });
