@@ -22,6 +22,7 @@ import {
   GATE_TEXT_MARKER,
   installNotDoneText,
   isGateEnabled,
+  isGateExempt,
   lookupReport,
   manualInstallText,
   MAX_FAILED_ATTEMPTS,
@@ -88,6 +89,7 @@ export function countGateAnswers(body: Record<string, unknown>): number {
 /** Decide what to do with one antigravity request. Never throws: a failed report lookup lets the request through. */
 export async function runAntigravityHookGate(params: AntigravityGateParams): Promise<AntigravityGateResult> {
   if (!isGateEnabled(params.config)) return { action: "pass", reason: "disabled" };
+  if (isGateExempt(params.config, params.userId)) return { action: "pass", reason: "exempt" };
   if (!params.stream) return { action: "pass", reason: "non-interactive" };
   const sessionId = params.sessionId;
   if (!sessionId || !SESSION_ID_RE.test(sessionId)) return { action: "pass", reason: "no-session-id" };

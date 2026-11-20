@@ -55,6 +55,7 @@ import {
   buildInstallCommand,
   installNotDoneText,
   isGateEnabled,
+  isGateExempt,
   looksRejected,
   lookupReport,
   manualInstallText,
@@ -114,6 +115,7 @@ export async function runCodexHookGate(params: CodexGateParams): Promise<CodexGa
   const pass = (reason: string): CodexGateResult => ({ action: "pass", body: stripCodexGateTurns(body), reason });
 
   if (!isGateEnabled(params.config)) return pass("disabled");
+  if (isGateExempt(params.config, params.userId)) return pass("exempt");
   // Cost-guard and analyse routes have no hook report route beside them, so they are not gated.
   if (!GATED_PATH_RE.test(params.path)) return pass("other-route");
   if (params.headers["originator"] !== TUI_ORIGINATOR) return pass("not-tui");

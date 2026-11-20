@@ -293,6 +293,12 @@ answers with a Gemini SSE message that holds the install command while the sessi
 (it gives up after two answers). Hook recall answers `{"injectSteps":[{"ephemeralMessage":"..."}]}` for
 the `antigravity` client. The L0 row is written from the request and the answer; no skill extraction.
 
+Hook gate exemption: an automated caller whose home is empty on every run (for example a CI reviewer)
+can never keep the project hook installed. List its verified user id in `hookGate.exemptUserIds` (or set
+`PROXY_HOOK_GATE_EXEMPT_USER_IDS`, comma-separated, in the compose environment file) and the gate passes
+that user's requests for every client it covers (Claude Code, Codex, omp, agy). The default is an empty
+list, so every other user keeps the gate; `hookGate.enabled: false` still turns the gate off for everyone.
+
 ## FAQ
 
 ### Is an API key mandatory?
