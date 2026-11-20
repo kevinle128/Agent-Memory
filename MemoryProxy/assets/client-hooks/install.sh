@@ -92,6 +92,7 @@ AM_DIR="$HOME/.agent-memory"
 HOOK_FILE="$AM_DIR/hook.sh"
 DEVICE_FILE="$AM_DIR/device.json"
 AGY_URL_FILE="$AM_DIR/antigravity.url"
+AGY_LAUNCHER="$AM_DIR/hook.cmd"
 TMP_FILE=""
 BACKED_UP_FILE=""
 LAST_BACKUP=""
@@ -449,6 +450,8 @@ remove_hook_file_if_unused() {
   if [ -f "$SETTINGS_FILE" ] && grep -qF "$HOOK_FILE" "$SETTINGS_FILE"; then return; fi
   if [ -f "$CODEX_CONFIG" ] && grep -qF "$HOOK_FILE" "$CODEX_CONFIG"; then return; fi
   if [ -f "$AGY_HOOKS_FILE" ] && grep -qF "$HOOK_FILE" "$AGY_HOOKS_FILE"; then return; fi
+  # On Windows the agy entry points at hook.cmd, which runs hook.sh.
+  if [ -f "$AGY_HOOKS_FILE" ] && grep -qF "hook.cmd" "$AGY_HOOKS_FILE"; then return; fi
   rm -f "$HOOK_FILE"
 }
 
@@ -1332,6 +1335,42 @@ prompt_agy_key() {
   printf '%s' "$k" | tr -d '\r\n[:space:]'
 }
 
+# True on Windows under Git Bash, MSYS2 or Cygwin. AGENT_MEMORY_FAKE_WINDOWS=1 forces it:
+# it exists only so the tests can exercise the Windows path on another OS (with a fake
+# cygpath on PATH). Nothing sets it in normal use.
+is_windows() {
+  [ "${AGENT_MEMORY_FAKE_WINDOWS:-}" = "1" ] && return 0
+  case "$(uname -s 2>/dev/null)" in MINGW* | MSYS* | CYGWIN*) return 0 ;; esac
+  return 1
+}
+
+# Write the Windows launcher hook.cmd and set AGY_WIN_CMD to the hooks.json command.
+# agy on Windows hands the command to cmd.exe as written, and cmd.exe cannot run a .sh
+# file. The launcher starts Git's bin\bash.exe (not usr\bin\bash.exe): that wrapper sets up
+# the MSYS PATH, so curl, jq and python3 are found even when only node is on the Windows
+# PATH. Arguments and stdin pass straight through, so agy's JSON reaches hook.sh and
+# its stdout and exit code come back unchanged.
+write_agy_launcher() {
+  local root bash_win launcher_win
+  command -v cygpath >/dev/null 2>&1 || fail "cygpath not found. Run this installer from Git Bash on Windows."
+  root=$(cygpath -w /) || fail "cannot resolve the Git root with cygpath"
+  bash_win="$root\\bin\\bash.exe"
+  if [ ! -f "$(cygpath -u "$bash_win" 2>/dev/null)" ]; then
+    bash_win=$(cygpath -w "$(command -v bash)") || bash_win=""
+    [ -n "$bash_win" ] || fail "cannot find Git's bash.exe"
+  fi
+  case "$bash_win" in *'"'* | *'%'*) fail "the bash path has a character the launcher cannot hold: $bash_win" ;; esac
+  # CRLF only here: cmd.exe needs it, hook.sh must keep LF.
+  printf '@echo off\r\n"%s" "%%~dp0hook.sh" %%*\r\nexit /b %%ERRORLEVEL%%\r\n' "$bash_win" > "$AGY_LAUNCHER"
+  launcher_win=$(cygpath -w "$AGY_LAUNCHER") || fail "cannot convert $AGY_LAUNCHER with cygpath"
+  # Quote only the path, and only when it needs it: a command that starts with a quote
+  # and does not end with one keeps its quotes under cmd /c.
+  case "$launcher_win" in
+    *[!A-Za-z0-9_.\\/+@:-]*) AGY_WIN_CMD="\"$launcher_win\" antigravity" ;;
+    *) AGY_WIN_CMD="$launcher_win antigravity" ;;
+  esac
+}
+
 # Install for agy. $1 is --base-url, $2 --key, $3 --session.
 antigravity_install() {
   local base="$1" key="$2" session="$3" parsed origin space analyse url profile device
@@ -1360,6 +1399,10 @@ AGYEOF
   fetch_file "$origin" "/setup/hook.sh" "$HOOK_FILE" "#!"
   device=$(ensure_device_id)
 
+  if is_windows; then
+    write_agy_launcher
+    HOOK_CMD="$AGY_WIN_CMD"
+  fi
   update_agy_hooks add
   (umask 077; printf '%s\n' "$url" > "$AGY_URL_FILE")
   profile=$(agy_profile)
@@ -1371,7 +1414,12 @@ AGYEOF
       || exit 1
   fi
   echo "Agent-Memory hooks installed for antigravity (device $device)."
-  echo "The gateway URL is in $profile. Open a new shell, run agy, and type /hooks to check that the agent-memory hooks are active."
+  if is_windows; then
+    echo "The gateway URL is in $profile. The hooks run through the launcher $AGY_LAUNCHER (it starts Git's bash.exe)."
+    echo "Restart agy (and open a new Git Bash), then type /hooks to check that the agent-memory hooks are active."
+  else
+    echo "The gateway URL is in $profile. Open a new shell, run agy, and type /hooks to check that the agent-memory hooks are active."
+  fi
 }
 
 # Remove the entry, the profile blocks and the URL file.
@@ -1379,7 +1427,7 @@ antigravity_uninstall() {
   update_agy_hooks remove
   agy_profile_remove "$HOME/.zshrc"
   agy_profile_remove "$HOME/.bashrc"
-  rm -f "$AGY_URL_FILE"
+  rm -f "$AGY_URL_FILE" "$AGY_LAUNCHER"
 }
 
 # ---------------------------------------------------------------------------
