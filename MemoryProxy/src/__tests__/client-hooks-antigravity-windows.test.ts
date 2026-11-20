@@ -154,7 +154,7 @@ describe.each(TOOLS)("install.sh --client antigravity on Windows with the %s JSO
     const r = await install(winEnv({ tool }));
     expect(r.code, r.stderr).toBe(0);
     const launcher = fs.readFileSync(launcherPath(), "utf8");
-    expect(launcher.split("\r\n")[1]).toMatch(/^".*bash" "[^"]*/\.agent-memory/hook\.sh" %\*$/);
+    expect(launcher.split("\r\n")[1]).toMatch(/^".*bash" "[^"]*\/\.agent-memory\/hook\.sh" %\*$/);
   });
 
   it("replaces an old bare .sh entry and keeps the other hooks", async () => {
