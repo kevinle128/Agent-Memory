@@ -132,7 +132,9 @@ describe.each(TOOLS)("install.sh --client antigravity on Windows with the %s JSO
     expect(entry.PreInvocation[0].command).toBe(cmd);
 
     const launcher = fs.readFileSync(launcherPath(), "utf8");
-    expect(launcher).toBe('@echo off\r\n"C:\\Git\\bin\\bash.exe" "%~dp0hook.sh" %*\r\nexit /b %ERRORLEVEL%\r\n');
+    // hook.sh goes by its POSIX path, so its $0 matches "$AM_DIR/hook.sh" and self_update runs.
+    const hookPosix = path.join(home, ".agent-memory", "hook.sh");
+    expect(launcher).toBe(`@echo off\r\n"C:\\Git\\bin\\bash.exe" "${hookPosix}" %*\r\nexit /b %ERRORLEVEL%\r\n`);
     // hook.sh keeps LF endings.
     expect(fs.readFileSync(path.join(home, ".agent-memory", "hook.sh"), "utf8")).not.toContain("\r");
     expect(r.stdout).toContain("Restart agy");
@@ -144,7 +146,7 @@ describe.each(TOOLS)("install.sh --client antigravity on Windows with the %s JSO
     const r = await install(winEnv({ tool, homeWin: "C:\\Users\\Test User", gitWin: "C:\\Program Files\\Git" }));
     expect(r.code, r.stderr).toBe(0);
     expect(readEntry().SessionStart[0].command).toBe('"C:\\Users\\Test User\\.agent-memory\\hook.cmd" antigravity');
-    expect(fs.readFileSync(launcherPath(), "utf8")).toContain('"C:\\Program Files\\Git\\bin\\bash.exe" "%~dp0hook.sh" %*\r\n');
+    expect(fs.readFileSync(launcherPath(), "utf8")).toContain(`"C:\\Program Files\\Git\\bin\\bash.exe" "${path.join(home, ".agent-memory", "hook.sh")}" %*\r\n`);
   });
 
   it("falls back to the bash on PATH when Git's bin\\bash.exe is missing", async () => {
@@ -152,7 +154,7 @@ describe.each(TOOLS)("install.sh --client antigravity on Windows with the %s JSO
     const r = await install(winEnv({ tool }));
     expect(r.code, r.stderr).toBe(0);
     const launcher = fs.readFileSync(launcherPath(), "utf8");
-    expect(launcher.split("\r\n")[1]).toMatch(/^".*bash" "%~dp0hook\.sh" %\*$/);
+    expect(launcher.split("\r\n")[1]).toMatch(/^".*bash" "[^"]*/\.agent-memory/hook\.sh" %\*$/);
   });
 
   it("replaces an old bare .sh entry and keeps the other hooks", async () => {

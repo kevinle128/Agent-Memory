@@ -1349,7 +1349,8 @@ is_windows() {
 # file. The launcher starts Git's bin\bash.exe (not usr\bin\bash.exe): that wrapper sets up
 # the MSYS PATH, so curl, jq and python3 are found even when only node is on the Windows
 # PATH. Arguments and stdin pass straight through, so agy's JSON reaches hook.sh and
-# its stdout and exit code come back unchanged.
+# its stdout and exit code come back unchanged. hook.sh is passed by its POSIX path, so
+# its $0 equals "$AM_DIR/hook.sh" and self_update still runs (a Windows path would not).
 write_agy_launcher() {
   local root bash_win launcher_win
   command -v cygpath >/dev/null 2>&1 || fail "cygpath not found. Run this installer from Git Bash on Windows."
@@ -1360,8 +1361,9 @@ write_agy_launcher() {
     [ -n "$bash_win" ] || fail "cannot find Git's bash.exe"
   fi
   case "$bash_win" in *'"'* | *'%'*) fail "the bash path has a character the launcher cannot hold: $bash_win" ;; esac
+  case "$HOOK_FILE" in *'"'* | *'%'*) fail "the hook path has a character the launcher cannot hold: $HOOK_FILE" ;; esac
   # CRLF only here: cmd.exe needs it, hook.sh must keep LF.
-  printf '@echo off\r\n"%s" "%%~dp0hook.sh" %%*\r\nexit /b %%ERRORLEVEL%%\r\n' "$bash_win" > "$AGY_LAUNCHER"
+  printf '@echo off\r\n"%s" "%s" %%*\r\nexit /b %%ERRORLEVEL%%\r\n' "$bash_win" "$HOOK_FILE" > "$AGY_LAUNCHER"
   launcher_win=$(cygpath -w "$AGY_LAUNCHER") || fail "cannot convert $AGY_LAUNCHER with cygpath"
   # Quote only the path, and only when it needs it: a command that starts with a quote
   # and does not end with one keeps its quotes under cmd /c.
