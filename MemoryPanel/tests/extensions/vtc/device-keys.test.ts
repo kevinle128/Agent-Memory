@@ -135,7 +135,8 @@ describe('device keys', () => {
     const { core, issuer, devices, user } = await setup();
     const first = await issuer.issueDeviceKey('default', user.user_id, MAC);
     if (first.renewed) throw new Error('expected a new key');
-    core.addKeys(user.user_id, 19);
+    // The seeded default key and the device key are active too: 1 + 1 + 18 reaches the cap of 20.
+    core.addKeys(user.user_id, 18);
     expect(await issuer.expireDeviceKey('default', first.key_value, MAC.installId)).toBe('ok');
 
     // Logged out, the device logs in again: its dead key still counts in Core until it is revoked.

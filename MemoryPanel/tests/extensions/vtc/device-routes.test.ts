@@ -81,6 +81,9 @@ async function browserLogin(app: App['app'], userCode: string, person = MEMBER) 
 }
 
 const page = (kind: Parameters<typeof renderPage>[0]['kind']) => renderPage({ lang: 'en', kind });
+// The SSO session stays open after a waiting or refused device login, so these pages carry the SSO logout link.
+const SSO_LOGOUT = 'https://sso.test.invalid/sso/Logout/?url=https%3A%2F%2Fpanel.test.invalid%2F';
+const pageWithLogout = (kind: 'device_waiting' | 'device_refused') => renderPage({ lang: 'en', kind, logoutHref: SSO_LOGOUT });
 
 /** A full successful login of a team member; returns the token answer. */
 async function connect(app: App['app'], body: Record<string, unknown> = START) {
@@ -188,7 +191,7 @@ describe('device routes', () => {
     const started = await start(app);
     const browser = await browserLogin(app, started.user_code, NEWCOMER);
     expect(browser.status).toBe(200);
-    expect(browser.html).toBe(page('device_waiting'));
+    expect(browser.html).toBe(pageWithLogout('device_waiting'));
 
     advance(6);
     const token = await post(app, 'token', { device_code: started.device_code });
@@ -276,7 +279,7 @@ describe('device routes', () => {
     const second = await start(app, { ...START, install_id: 'install-mac-0002' });
     const browser = await browserLogin(app, second.user_code, NEWCOMER);
     expect(browser.status).toBe(403);
-    expect(browser.html).toBe(page('device_refused'));
+    expect(browser.html).toBe(pageWithLogout('device_refused'));
     advance(6);
     expect(await post(app, 'token', { device_code: second.device_code })).toMatchObject({ status: 400, body: { error: 'access_denied' } });
   });
