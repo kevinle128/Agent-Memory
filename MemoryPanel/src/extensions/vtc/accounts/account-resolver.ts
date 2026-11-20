@@ -81,17 +81,16 @@ export class AccountResolver {
         source: opts.source,
         touch: opts.touch,
       });
-      return { kind: 'pending', record };
+      return this.undecided(record);
     }
 
     const teams = await meta.teams.listForUser(instanceId, coreUserId);
     if (teams.total > 0) {
-      if (known) {
-        // An administrator may have refused the request while Core was being read: the refusal wins.
-        const current = pending.get(known.id);
-        if (current?.status === 'rejected') return this.rejected(instanceId, person, current, opts);
-        if (current) await pending.remove(current.id);
-      }
+      // An administrator may have refused the request while Core was being read, or a concurrent login may
+      // have created one that was refused since: the refusal wins.
+      const current = pending.findByVtcUser(instanceId, vtcUserId);
+      if (current?.status === 'rejected') return this.rejected(instanceId, person, current, opts);
+      if (current) await pending.remove(current.id);
       return { kind: 'approved', coreUserId };
     }
     const record = await pending.recordLogin({
@@ -103,7 +102,12 @@ export class AccountResolver {
       source: opts.source,
       touch: opts.touch,
     });
-    return { kind: 'pending', record };
+    return this.undecided(record);
+  }
+
+  /** recordLogin keeps a refusal made while Core was being read, so the stored status decides. */
+  private undecided(record: PendingRecord): AccountDecision {
+    return record.status === 'rejected' ? { kind: 'rejected', record } : { kind: 'pending', record };
   }
 
   private async rejected(

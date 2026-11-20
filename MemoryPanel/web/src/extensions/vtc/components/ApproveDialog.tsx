@@ -140,7 +140,10 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
       }));
       const merged = [...candidates, ...extra.filter((c) => !candidates.some((known) => known.user_id === c.user_id))];
       setCandidates(merged);
-      const pick = extra.find((c) => unselectableReason(c) === null);
+      // A user already in the list keeps its own details (such as an existing VTC link) when picked.
+      const pick = extra
+        .map((c) => merged.find((known) => known.user_id === c.user_id) ?? c)
+        .find((c) => unselectableReason(c) === null);
       if (pick) setChoice({ mode: 'link', userId: pick.user_id });
       setSearchName('');
       setSearching(false);

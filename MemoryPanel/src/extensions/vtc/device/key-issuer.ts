@@ -239,7 +239,12 @@ export class KeyIssuer {
         await meta.keys.revoke(instanceId, row.keyId);
       } catch (err) {
         if (!(err instanceof MetaError)) throw err;
-        if (!IGNORED_REVOKE_CODES.has(err.code)) {
+        if (err.code === 'last_key_cannot_revoke') {
+          // Core keeps its last active key even when it ran out. Keep tracking it so it is revoked once the
+          // replacement exists (same install) or at the next prune (another install).
+          const existing = await meta.keys.get(instanceId, row.keyId);
+          if (existing?.status === 'active') continue;
+        } else if (!IGNORED_REVOKE_CODES.has(err.code)) {
           // Keep the row so the next login tries again.
           logger.warn('vtc key prune skipped', { code: err.code });
           continue;

@@ -125,6 +125,21 @@ describe('key issuer', () => {
     expect(order.indexOf('user-key/revoke')).toBeLessThan(order.indexOf('user-key/create'));
   });
 
+  it('keeps tracking an expired last active key so it is revoked once its replacement exists', async () => {
+    const { core, issuer, devices, user, clock } = await setup();
+    const req = { installId: 'laptop', deviceName: 'Laptop', hasKey: false };
+    const first = await issuer().issueDeviceKey('default', user.user_id, req);
+    for (const k of core.keysOf(user.user_id)) if (k.key_id !== first.key_id) k.status = 'revoked';
+    clock.now = new Date(clock.now.getTime() + 8 * DAY);
+
+    const second = await issuer().issueDeviceKey('default', user.user_id, { ...req, hasKey: true });
+    expect(second.renewed).toBe(false);
+    const keys = core.keysOf(user.user_id);
+    expect(keys.find((k) => k.key_id === first.key_id)!.status).toBe('revoked');
+    expect(keys.filter((k) => k.status === 'active').map((k) => k.key_id)).toEqual([second.key_id]);
+    expect(devices.find('default', user.user_id, 'laptop')).toMatchObject({ keyId: second.key_id });
+  });
+
   it('reads the active key cap from the environment the way Core does', async () => {
     vi.stubEnv('TDAI_USER_KEY_MAX_ACTIVE', '3');
     const { core, meta, user } = await setup();
