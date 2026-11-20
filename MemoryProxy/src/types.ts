@@ -774,12 +774,6 @@ export interface HookGateConfig {
    * derived from the request headers. Set it when a reverse proxy rewrites Host.
    */
   publicOrigin?: string;
-  /**
-   * Verified user ids that the gate never blocks, for automated clients such as a CI reviewer
-   * whose home is empty on every run and so can never keep the project hook installed.
-   * Default empty: every user is gated.
-   */
-  exemptUserIds?: string[];
 }
 
 export interface CcRequestRoutingConfig {

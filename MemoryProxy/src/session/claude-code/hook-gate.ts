@@ -70,7 +70,6 @@ import type { SessionWorkspaceKey } from "../../project-scope/session-workspace.
 import {
   buildInstallCommand,
   GATE_TEXT_MARKER,
-  isGateExempt,
   lookupReport,
   manualInstallText,
   MAX_FAILED_ATTEMPTS,
@@ -144,7 +143,6 @@ export async function runHookGate(params: HookGateParams): Promise<HookGateResul
   const pass = (reason: string): HookGateResult => ({ action: "pass", body: stripGateTurns(body), reason });
 
   if (params.config.hookGate?.enabled === false) return pass("disabled");
-  if (isGateExempt(params.config, params.userId)) return pass("exempt");
   if (!params.memoryTurn) return pass("not-main-line");
   if (!GATED_PATH_RE.test(params.path)) return pass("other-route");
   if (isSubagentRequest("claude-code", params.headers, body)) return pass("subagent");

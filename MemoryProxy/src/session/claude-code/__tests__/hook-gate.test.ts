@@ -465,15 +465,3 @@ describe("runHookGate: public origin and cache", () => {
     expect(await runHookGate(params())).toMatchObject({ action: "pass", reason: "installed" }); // served from the cache
   });
 });
-
-describe("runHookGate: exempt users", () => {
-  const exempt = { hookGate: { enabled: true, exemptUserIds: ["usr-1"] } } as unknown as HookGateParams["config"];
-
-  it("passes an exempt user without a report", async () => {
-    expect(await runHookGate(params({ config: exempt }))).toMatchObject({ action: "pass", reason: "exempt" });
-  });
-
-  it("still gates a user that is not on the list", async () => {
-    expect(await runHookGate(params({ config: exempt, userId: "usr-2" }))).toMatchObject({ action: "respond" });
-  });
-});

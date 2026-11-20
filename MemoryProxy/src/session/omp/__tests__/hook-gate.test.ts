@@ -272,15 +272,3 @@ describe("runOmpHookGate: gate turns are removed on every pass", () => {
     });
   }
 });
-
-describe("runOmpHookGate: exempt users", () => {
-  const exempt = { hookGate: { enabled: true, exemptUserIds: ["usr-1"] } };
-
-  it("passes an exempt user without a report", async () => {
-    expect(await runOmpHookGate(params({ config: exempt }))).toMatchObject({ action: "pass", reason: "exempt" });
-  });
-
-  it("still gates a user that is not on the list", async () => {
-    expect(await runOmpHookGate(params({ config: exempt, userId: "usr-2" }))).toMatchObject({ action: "respond" });
-  });
-});

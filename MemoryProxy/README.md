@@ -27,7 +27,7 @@ Coding agent (Claude Code / CodeBuddy / ...)
 - **Session initialization**: intercepts the first request and guides the user through an interactive form to pick team → agent → task, then injects the agent/task context into the system prompt. Supports auto pre-selection from request headers (`x-team-id` / `x-agent-id` / `x-task-id`).
 - **Context injection**: injects Skills, Knowledge and Memory L2/L3 into the system prompt on demand; L0/L1 are exposed as read-only tools for the model to query proactively, avoiding upstream KV-cache invalidation.
 - **Conversation write-back (extraction)**: at the end of each human turn, sends the conversation slice to MemoryCore `/v3/skill/conversation/add` (Skill archival) and writes L0 short-term memory for background extraction on the core side.
-- **Per-request memory switch**: a request with the header `x-memory-mode: off` runs without any memory feature: no session init, no mem commands, no context injection, and no L0 or skill write-back. Routing, the account pool, billing and tracing stay on. Use it for eval and batch runs that must see only the request and leave no memory behind. Claude Code sends it with `ANTHROPIC_CUSTOM_HEADERS="x-memory-mode: off"`.
+- **Per-request memory switch**: a request with the header `x-memory-mode: off` runs without any memory feature: no session init, no mem commands, no context injection, and no L0 or skill write-back. Routing, the account pool, billing and tracing stay on. Use it for eval and batch runs that must see only the request and leave no memory behind. Claude Code sends it with `ANTHROPIC_CUSTOM_HEADERS="x-memory-mode: off"`. AntiGravity (agy) cannot send headers, so it uses the `/memory-off` URL segment (see the AntiGravity section).
 - **Auth & identity**: calls MemoryCore `POST /v3/meta/auth/verify` to validate `x-tdai-user-key` and resolve `user_id` as the end-to-end user identity; `spaceId` (memory instance id) is auto-extracted from the `/proxy/<spaceId>/...` path.
 - **System-user passthrough**: internal service accounts (e.g. memory / wiki internal calls) short-circuit session init and injection on match, doing pure passthrough + billing only.
 - **Skill Bridge / Memory Bridge**: reverse-proxies MemoryCore's skill / memory HTTP tools, injecting `serviceToken` on forward so credentials never appear in an LLM-visible prompt.
@@ -293,11 +293,11 @@ answers with a Gemini SSE message that holds the install command while the sessi
 (it gives up after two answers). Hook recall answers `{"injectSteps":[{"ephemeralMessage":"..."}]}` for
 the `antigravity` client. The L0 row is written from the request and the answer; no skill extraction.
 
-Hook gate exemption: an automated caller whose home is empty on every run (for example a CI reviewer)
-can never keep the project hook installed. List its verified user id in `hookGate.exemptUserIds` (or set
-`PROXY_HOOK_GATE_EXEMPT_USER_IDS`, comma-separated, in the compose environment file) and the gate passes
-that user's requests for every client it covers (Claude Code, Codex, omp, agy). The default is an empty
-list, so every other user keeps the gate; `hookGate.enabled: false` still turns the gate off for everyone.
+Memory-off URL: agy cannot send the `x-memory-mode: off` header, so an automated run that must not touch
+memory (for example a code review) adds `/memory-off` after the key in its gateway URL:
+`<proxy>/antigravity/<space>/<key>/memory-off`. The key is verified as usual. The hook gate passes, and no
+session init and no L0 row run, while the request still goes to the pool and the model answer returns. The
+URL without the segment is unchanged.
 
 ## FAQ
 
