@@ -47,10 +47,17 @@ export const useAuthStore = create<AuthStore>((set) => ({
     // Only a session opened by a redirect login method also ends at the provider. The browser goes straight to
     // its logout_url, which also destroys the Panel session; calling the Panel logout first would expire the
     // cookie that route needs. WOA and user_key sessions end exactly as before.
-    const next =
-      getPanelSession()?.authMethod === 'idp'
-        ? await redirectLogoutTarget({ session: authMethodsApi.session, methods: authMethodsApi.list })
-        : null;
+    const idp = getPanelSession()?.authMethod === 'idp';
+    const next = idp ? await redirectLogoutTarget({ session: authMethodsApi.session, methods: authMethodsApi.list }) : null;
+    // No provider logout to go to (lookup failed or no logout_url): end the Panel session here, or the HttpOnly
+    // cookie would sign the person back in on reload. A WOA session still ends as before.
+    if (idp && !next) {
+      const woa = await authMethodsApi
+        .session()
+        .then((session) => session.provider_id === 'woa')
+        .catch(() => false);
+      if (!woa) await fetch('/api/v1/auth/logout', { method: 'POST', credentials: 'include' }).catch(() => undefined);
+    }
     // 新面板无服务端会话，登出即清本地缓存，无需（也没有）后端登出接口。
     // 清模块级后端缓存（teams/agents/tasks），避免新用户登录后短暂看到上一个用户的列表。
     // 用 clearBackendCache 而非 invalidateBackendCache：后者会广播事件触发已挂载页面的

@@ -190,9 +190,10 @@ export function registerSsoRoutes(pages: Hono, deps: SsoRouteDeps): void {
             : { kind: 'rejected' };
       if (!nonce.userCode || !deps.flow.decide(nonce.userCode, outcome)) return answer(400, { kind: 'device_expired' });
       if (decision.kind === 'approved') return answer(200, { kind: 'device_done' });
-      if (decision.kind === 'pending') return answer(200, { kind: 'device_waiting' });
+      // The SSO session stays open; without this link a wrong account would land here again at the next try.
+      if (decision.kind === 'pending') return answer(200, { kind: 'device_waiting', logoutHref: logoutHref() });
       deps.audit('vtc.login.rejected', { vtc_user_id: identity.subject });
-      return answer(403, { kind: 'device_refused' });
+      return answer(403, { kind: 'device_refused', logoutHref: logoutHref() });
     }
 
     if (decision.kind === 'pending') {

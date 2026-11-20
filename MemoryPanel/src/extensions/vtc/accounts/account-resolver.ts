@@ -38,6 +38,13 @@ export class AccountResolver {
     // is written during approval, so one left by an approval that failed or was refused must not count.
     const awaitingFirstApproval = known?.kind === 'new';
 
+    // The first stored email wins. Only the fact of a difference is logged, never the addresses.
+    if (known && known.email !== email) {
+      audit('vtc.identity.email_mismatch', { vtc_user_id: vtcUserId, email_changed: true });
+    }
+    // A refused person gets no access, so Core is not read and the links are not touched.
+    if (known?.status === 'rejected') return this.rejected(instanceId, person, known, opts);
+
     let coreUserId: string | null = null;
     const link = awaitingFirstApproval ? null : links.find(instanceId, vtcUserId);
     if (link) {
@@ -65,23 +72,6 @@ export class AccountResolver {
       }
     }
 
-    // The first stored email wins. Only the fact of a difference is logged, never the addresses.
-    if (known && known.email !== email) {
-      audit('vtc.identity.email_mismatch', { vtc_user_id: vtcUserId, email_changed: true });
-    }
-    if (known?.status === 'rejected') {
-      const record = await pending.recordLogin({
-        instanceId,
-        vtcUserId,
-        email,
-        kind: known.kind,
-        ...(known.coreUserId ? { coreUserId: known.coreUserId } : {}),
-        source: opts.source,
-        touch: opts.touch,
-      });
-      return { kind: 'rejected', record };
-    }
-
     if (!coreUserId) {
       const record = await pending.recordLogin({
         instanceId,
@@ -96,7 +86,12 @@ export class AccountResolver {
 
     const teams = await meta.teams.listForUser(instanceId, coreUserId);
     if (teams.total > 0) {
-      if (known) await pending.remove(known.id);
+      if (known) {
+        // An administrator may have refused the request while Core was being read: the refusal wins.
+        const current = pending.get(known.id);
+        if (current?.status === 'rejected') return this.rejected(instanceId, person, current, opts);
+        if (current) await pending.remove(current.id);
+      }
       return { kind: 'approved', coreUserId };
     }
     const record = await pending.recordLogin({
@@ -109,5 +104,23 @@ export class AccountResolver {
       touch: opts.touch,
     });
     return { kind: 'pending', record };
+  }
+
+  private async rejected(
+    instanceId: string,
+    person: SsoPerson,
+    known: PendingRecord,
+    opts: { source: 'web' | 'device'; touch: boolean },
+  ): Promise<AccountDecision> {
+    const record = await this.deps.pending.recordLogin({
+      instanceId,
+      vtcUserId: person.vtcUserId,
+      email: person.email,
+      kind: known.kind,
+      ...(known.coreUserId ? { coreUserId: known.coreUserId } : {}),
+      source: opts.source,
+      touch: opts.touch,
+    });
+    return { kind: 'rejected', record };
   }
 }

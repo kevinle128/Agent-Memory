@@ -149,7 +149,13 @@ export function createExtensionHost(input: {
       deps.auth.resolveSession(entry.instance_id, readCookie(c.req.header('cookie'), deps.config.auth.sessionCookieName))
         ?.userKey;
     if (!userKey) return respondControlError(c, 401, 'MISSING_USER_KEY');
-    const user = await meta.auth.verify(entry.instance_id, userKey);
+    let user;
+    try {
+      user = await meta.auth.verify(entry.instance_id, userKey);
+    } catch {
+      // Core down is not a bad key: a 401 would sign the administrator out of the Panel.
+      return respondControlError(c, 503, 'CORE_UNAVAILABLE');
+    }
     if (!user) return respondControlError(c, 401, 'INVALID_USER_KEY');
     if (user.user_type !== 'system_admin') return respondControlError(c, 403, 'NOT_SYSTEM_ADMIN');
     return { userId: user.user_id, instanceId: entry.instance_id };

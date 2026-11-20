@@ -67,7 +67,7 @@ export const vtcExtension: PanelExtension<VtcConfig> = {
       keys,
       flow,
     });
-    registerDevicePageRoutes(ctx.http.pages, { flow, auth: ctx.auth });
+    registerDevicePageRoutes(ctx.http.pages, { flow, auth: ctx.auth, limiter: ctx.rateLimit('device-page', { perMinute: 30 }) });
     registerDeviceApiRoutes(ctx.http.api, {
       config,
       instanceId,

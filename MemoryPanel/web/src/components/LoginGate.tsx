@@ -618,16 +618,26 @@ export default function LoginGate({
             </form>
           )}
 
+          {/* Without the user_key form its error alert is hidden, so a failed instance load would leave a blank card. */}
+          {!pendingWoa && !showUserKeyLogin && redirectMethods.length > 0 && error && (
+            <div className="_tdai-login-alert">
+              <Alert type="error">{error}</Alert>
+            </div>
+          )}
+
           {!pendingWoa && instanceId && redirectMethods.length > 0 && (
             <div className="_tdai-login-switch">
-              <div
-                aria-hidden="true"
-                style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#94a3b8', fontSize: 12, margin: '4px 0 12px' }}
-              >
-                <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.35 }} />
-                <span>{t('login.or')}</span>
-                <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.35 }} />
-              </div>
+              {/* The divider only separates the redirect buttons from a user_key form above them. */}
+              {showUserKeyLogin && (
+                <div
+                  aria-hidden="true"
+                  style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#94a3b8', fontSize: 12, margin: '4px 0 12px' }}
+                >
+                  <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.35 }} />
+                  <span>{t('login.or')}</span>
+                  <span style={{ flex: 1, height: 1, background: 'currentColor', opacity: 0.35 }} />
+                </div>
+              )}
               {redirectMethods.map((method) => (
                 <Button
                   key={method.id}
@@ -635,7 +645,9 @@ export default function LoginGate({
                   style={{ width: '100%', marginBottom: 8 }}
                   disabled={submitting}
                   onClick={() => {
-                    const href = redirectLoginHref(method.login_url!, instanceId);
+                    // The app uses a hash router, so keep the hash: a deep link survives the SSO round trip.
+                    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+                    const href = redirectLoginHref(method.login_url!, instanceId, returnTo);
                     if (href) window.location.assign(href);
                   }}
                 >

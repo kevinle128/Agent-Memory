@@ -123,11 +123,11 @@ ${href ? `<a class="btn" href="${e(href)}">${e(t.deviceLogin)}</a>` : ''}
       break;
     case 'device_waiting':
       title = t.deviceWaitingTitle;
-      body = `<p>${e(t.deviceWaiting)}</p>`;
+      body = `<p>${e(t.deviceWaiting)}</p>${input.logoutHref ? logout : ''}`;
       break;
     case 'device_refused':
       title = t.deviceRefusedTitle;
-      body = `<p>${e(t.deviceRefused)}</p>`;
+      body = `<p>${e(t.deviceRefused)}</p>${input.logoutHref ? logout : ''}`;
       break;
     case 'device_expired':
       title = t.deviceExpiredTitle;

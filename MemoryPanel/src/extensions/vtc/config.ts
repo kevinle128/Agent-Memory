@@ -27,7 +27,10 @@ export const vtcConfigSchema = z
         continue; // The url() check above already reported it.
       }
       const schemeOk = url.protocol === 'https:' || (url.protocol === 'http:' && localHosts.has(url.hostname));
-      const shapeOk = !originOnly || ((url.pathname === '/' || url.pathname === '') && !url.search && !url.hash);
+      // Both URLs get paths appended, so a query, a fragment or credentials would break every built link.
+      const cleanUrl = !url.search && !url.hash && !url.username && !url.password;
+      const pathOk = !originOnly || url.pathname === '/' || url.pathname === '';
+      const shapeOk = cleanUrl && pathOk;
       if (!schemeOk || !shapeOk) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field] });
     }
   })

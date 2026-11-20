@@ -121,6 +121,32 @@ describe('account resolver', () => {
     expect(meta.users.findByExternal).not.toHaveBeenCalled();
   });
 
+  it('refuses a rejected no_team person without reading Core or touching the links', async () => {
+    const { resolver, meta, pending, links } = setup();
+    await links.upsert({ instanceId: 'default', vtcUserId: '10482', coreUserId: 'usr-1', mode: 'linked', linkedAt: 'x' });
+    const record = await pending.recordLogin({ instanceId: 'default', vtcUserId: '10482', email: 'a.b@vtc.vn', kind: 'no_team', coreUserId: 'usr-1', source: 'web', touch: true });
+    await pending.reject(record.id, 'usr-admin');
+
+    expect(await resolver.resolve('default', person, opts)).toMatchObject({ kind: 'rejected', record: { kind: 'no_team', coreUserId: 'usr-1' } });
+    expect(meta.users.get).not.toHaveBeenCalled();
+    expect(meta.users.findByExternal).not.toHaveBeenCalled();
+    expect(links.find('default', '10482')).toMatchObject({ coreUserId: 'usr-1', mode: 'linked' });
+  });
+
+  it('keeps a refusal made while Core was being read', async () => {
+    const { resolver, meta, pending, links } = setup();
+    await links.upsert({ instanceId: 'default', vtcUserId: '10482', coreUserId: 'usr-1', mode: 'linked', linkedAt: 'x' });
+    meta.users.get.mockResolvedValue({ user_id: 'usr-1', username: 'one' });
+    const record = await pending.recordLogin({ instanceId: 'default', vtcUserId: '10482', email: 'a.b@vtc.vn', kind: 'no_team', coreUserId: 'usr-1', source: 'web', touch: true });
+    meta.teams.listForUser.mockImplementation(async () => {
+      await pending.reject(record.id, 'usr-admin');
+      return { total: 1, items: [{ team_id: 't1', name: 'Team' }] };
+    });
+
+    expect(await resolver.resolve('default', person, opts)).toMatchObject({ kind: 'rejected' });
+    expect(pending.get(record.id)).toMatchObject({ status: 'rejected' });
+  });
+
   it('drops a link to a deleted user', async () => {
     const { resolver, meta, links, audit } = setup();
     await links.upsert({ instanceId: 'default', vtcUserId: '10482', coreUserId: 'usr-gone', mode: 'linked', linkedAt: 'x' });

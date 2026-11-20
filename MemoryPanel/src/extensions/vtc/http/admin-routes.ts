@@ -70,6 +70,14 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
   const { auth, meta, pending, links, audit, logger } = deps;
   // One Panel process serves the instance, so this keeps two clicks on the same person from making two accounts.
   const approving = new Set<string>();
+  // Approvals of different people run one after another: two at once could both pass the "already linked"
+  // and "candidates exist" checks before either writes, and link two people to one account.
+  let approveQueue: Promise<unknown> = Promise.resolve();
+  function serializedApproval<T>(task: () => Promise<T>): Promise<T> {
+    const run = approveQueue.then(task);
+    approveQueue = run.catch(() => undefined);
+    return run;
+  }
 
   /** Parses the body, checks the caller is a system admin and runs the handler with the admin's user ID. */
   function route<S extends z.ZodTypeAny>(
@@ -181,11 +189,13 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
     if (approving.has(record.id)) throw new ApiError(409, 'APPROVAL_IN_PROGRESS');
     approving.add(record.id);
     try {
-      // Another request may have decided the record while the team lookup was awaited.
-      const current = pending.get(record.id);
-      if (!current) throw new ApiError(404, 'PENDING_NOT_FOUND');
-      if (current.status !== 'pending') throw new ApiError(409, 'PENDING_NOT_PENDING');
-      return await approve(current, input, admin.userId);
+      return await serializedApproval(async () => {
+        // Another request may have decided the record while the team lookup or an earlier approval was awaited.
+        const current = pending.get(record.id);
+        if (!current) throw new ApiError(404, 'PENDING_NOT_FOUND');
+        if (current.status !== 'pending') throw new ApiError(409, 'PENDING_NOT_PENDING');
+        return approve(current, input, admin.userId);
+      });
     } finally {
       approving.delete(record.id);
     }

@@ -273,8 +273,11 @@ export function createMetaFacade(deps: PanelDeps): MetaFacade {
     agents: { listOwned: ownedAgents },
     auth: {
       async verify(instanceId, userKey) {
+        if (!userKey.trim()) return null;
         const envelope = await invokeQuiet(instanceId, 'auth/verify', { user_key: userKey }, true);
-        if (envelope.code !== 0) return null;
+        // Core answers an unknown key with code 0 and valid false; any other code is Core or the transport
+        // failing, which must not read as "this key is invalid".
+        if (envelope.code !== 0) throw new MetaError(errorCode(envelope), envelope.message);
         const data = envelope.data as { valid?: boolean; user?: Row } | null;
         if (data?.valid !== true || !data.user) return null;
         const user = data.user;

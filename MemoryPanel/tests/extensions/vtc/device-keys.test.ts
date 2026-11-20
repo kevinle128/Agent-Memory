@@ -131,6 +131,20 @@ describe('device keys', () => {
     expect(devices.find('default', user.user_id, MAC.installId)!.keyId).toBe(current.key_id);
   });
 
+  it('prunes the dead key of the same device before a create at the key cap', async () => {
+    const { core, issuer, devices, user } = await setup();
+    const first = await issuer.issueDeviceKey('default', user.user_id, MAC);
+    if (first.renewed) throw new Error('expected a new key');
+    core.addKeys(user.user_id, 19);
+    expect(await issuer.expireDeviceKey('default', first.key_value, MAC.installId)).toBe('ok');
+
+    // Logged out, the device logs in again: its dead key still counts in Core until it is revoked.
+    const again = await issuer.issueDeviceKey('default', user.user_id, MAC);
+    expect(again.renewed).toBe(false);
+    expect(core.keysOf(user.user_id).find((k) => k.key_id === first.key_id)!.status).toBe('revoked');
+    expect(devices.find('default', user.user_id, MAC.installId)!.keyId).toBe(again.key_id);
+  });
+
   it('reports the key limit', async () => {
     const { core, issuer, audit, user } = await setup();
     core.addKeys(user.user_id, 19);

@@ -266,9 +266,14 @@ export function registerDeviceApiRoutes(api: Hono, deps: DeviceApiDeps): void {
   });
 }
 
-export function registerDevicePageRoutes(pages: Hono, deps: { flow: DeviceFlow; auth: ExtensionAuthPort }): void {
+export function registerDevicePageRoutes(
+  pages: Hono,
+  deps: { flow: DeviceFlow; auth: ExtensionAuthPort; limiter: RateLimiter },
+): void {
   pages.get('/device', (c) => {
     const lang = pickLang(c.req.header('accept-language'));
+    // The page looks up live user codes and replaces their confirm value, so guessing is limited like the API.
+    if (!deps.limiter.allow(c)) return htmlResponse(c, 429, renderPage({ lang, kind: 'error', error: 'busy' }));
     const code = normalizeUserCode(c.req.query('code'));
     const found = code ? deps.flow.findByUserCode(code) : null;
     if (!code || !found) return htmlResponse(c, 404, renderPage({ lang, kind: 'device_expired' }));

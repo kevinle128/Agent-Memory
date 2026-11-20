@@ -16,7 +16,8 @@ const EXTENSIONS_URL = '/api/v1/extensions';
 let cache: string[] | null = null;
 let inflight: Promise<string[]> | null = null;
 
-async function fetchEnabled(): Promise<string[]> {
+/** `definitive` is false for a network error, a 5xx or a broken body: that answer must not be cached. */
+async function fetchEnabled(): Promise<{ ids: string[]; definitive: boolean }> {
   const headers: Record<string, string> = {};
   // A system admin also gets the failure details of an extension; the list itself is open.
   const session = getPanelSession();
@@ -25,13 +26,14 @@ async function fetchEnabled(): Promise<string[]> {
   try {
     const res = await fetch(EXTENSIONS_URL, { credentials: 'include', headers });
     const body: unknown = res.ok ? await res.json().catch(() => null) : null;
-    return enabledIdsFrom(
+    const ids = enabledIdsFrom(
       res.status,
       body,
       WEB_EXTENSIONS.map((extension) => extension.id),
     );
+    return { ids, definitive: res.status === 404 || (res.ok && body !== null) };
   } catch {
-    return [];
+    return { ids: [], definitive: false };
   }
 }
 
@@ -42,8 +44,9 @@ export function useEnabledExtensions(): string[] | null {
   useEffect(() => {
     if (WEB_EXTENSIONS.length === 0 || cache !== null) return undefined;
     let alive = true;
-    inflight ??= fetchEnabled().then((ids) => {
-      cache = ids;
+    inflight ??= fetchEnabled().then(({ ids, definitive }) => {
+      // A failed request is retried by the next mount instead of hiding the extensions for the page lifetime.
+      if (definitive) cache = ids;
       inflight = null;
       return ids;
     });

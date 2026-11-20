@@ -98,7 +98,9 @@ export class KeyIssuer {
       }
     }
 
-    const created = await this.createKey(instanceId, coreUserId, WEB_INSTALL_ID, 'panel-web', expiresAt);
+    const created = await this.createKey(instanceId, coreUserId, 'panel-web', expiresAt);
+    // Prune may already have revoked and dropped the old row (it had run out); do not revoke it twice.
+    const replaced = row !== null && devices.find(instanceId, coreUserId, WEB_INSTALL_ID)?.keyId === row.keyId;
     try {
       await devices.upsert({
         instanceId,
@@ -116,14 +118,14 @@ export class KeyIssuer {
       throw err;
     }
     // Create first, revoke second: the person never has a moment without a working key.
-    if (row && row.keyId !== created.key_id) await this.revokeQuietly(instanceId, row.keyId);
+    if (row && replaced && row.keyId !== created.key_id) await this.revokeQuietly(instanceId, row.keyId);
     audit('vtc.key.issued', { kind: 'web', key_id: created.key_id });
     return { userKey: created.key_value, keyId: created.key_id, expiresAt: expiresIso };
   }
 
   /** Prunes ran-out keys first (Core counts them toward its cap), then creates; a full cap is a KeyLimitError. */
-  private async createKey(instanceId: string, coreUserId: string, keepInstallId: string, name: string, expiresAt: Date) {
-    await this.prune(instanceId, coreUserId, keepInstallId);
+  private async createKey(instanceId: string, coreUserId: string, name: string, expiresAt: Date) {
+    await this.prune(instanceId, coreUserId);
     try {
       return await this.deps.meta.keys.create(instanceId, coreUserId, { name, expiresAt });
     } catch (err) {
@@ -171,7 +173,9 @@ export class KeyIssuer {
       }
     }
 
-    const created = await this.createKey(instanceId, coreUserId, req.installId, `paseo:${req.deviceName}`, expiresAt);
+    const created = await this.createKey(instanceId, coreUserId, `paseo:${req.deviceName}`, expiresAt);
+    // Prune may already have revoked and dropped the old row (it had run out); do not revoke it twice.
+    const replaced = row !== null && devices.find(instanceId, coreUserId, req.installId)?.keyId === row.keyId;
     try {
       // The value of a device key is never stored: only its owner holds it after this response.
       await devices.upsert({
@@ -189,7 +193,7 @@ export class KeyIssuer {
       await this.revokeQuietly(instanceId, created.key_id);
       throw err;
     }
-    if (row && row.keyId !== created.key_id) await this.revokeQuietly(instanceId, row.keyId);
+    if (row && replaced && row.keyId !== created.key_id) await this.revokeQuietly(instanceId, row.keyId);
     audit('vtc.key.issued', { kind: 'device', key_id: created.key_id, replaced: Boolean(row) });
     return { renewed: false as const, key_id: created.key_id, key_value: created.key_value, expires_at: expiresIso };
   }
@@ -224,12 +228,13 @@ export class KeyIssuer {
    * Revokes the user's tracked keys that ran out and drops their rows. Core counts expired keys that are
    * still active toward its cap, so this runs before every create.
    */
-  protected async prune(instanceId: string, coreUserId: string, keepInstallId: string): Promise<void> {
+  protected async prune(instanceId: string, coreUserId: string): Promise<void> {
     const { meta, devices, logger, audit } = this.deps;
     const time = this.now().getTime();
     let count = 0;
     for (const row of devices.listForUser(instanceId, coreUserId)) {
-      if (row.installId === keepInstallId || Date.parse(row.expiresAt) > time) continue;
+      // A live key of the current install is kept (create first, revoke second); a dead one frees its slot now.
+      if (Date.parse(row.expiresAt) > time) continue;
       try {
         await meta.keys.revoke(instanceId, row.keyId);
       } catch (err) {

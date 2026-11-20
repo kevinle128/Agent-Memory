@@ -2,7 +2,7 @@ import type { MetaFacade, MetaUserDetail } from '../../../panel/extensions/types
 import { VTC_AUTH_PROVIDER } from './account-resolver.js';
 import type { LinkStore } from './link-store.js';
 import type { PendingRecord } from './pending-store.js';
-import { safeUsername } from './username.js';
+import { HIDDEN_SERVICE_USER, safeUsername } from './username.js';
 
 export interface Candidate {
   user_id: string;
@@ -16,9 +16,6 @@ export interface Candidate {
   /** Already linked to another VTC account, so the UI disables it. */
   linked_vtc_user_id?: string;
 }
-
-// The hidden service user of the Panel; repeated here because an extension may not import the startup code.
-const HIDDEN_SERVICE_USER = 'knowledge-service';
 
 /**
  * Whether an account may be shown or linked for this VTC person. An account that the VTC login created for

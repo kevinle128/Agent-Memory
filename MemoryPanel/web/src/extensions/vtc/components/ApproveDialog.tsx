@@ -135,12 +135,14 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
         email: user.email ?? null,
         auth_provider: user.auth_provider,
         user_type: user.user_type ?? 'normal',
-        match: ['username'],
+        // Found by the administrator's search, not by matching the person's email.
+        match: [],
       }));
       const merged = [...candidates, ...extra.filter((c) => !candidates.some((known) => known.user_id === c.user_id))];
       setCandidates(merged);
       const pick = extra.find((c) => unselectableReason(c) === null);
       if (pick) setChoice({ mode: 'link', userId: pick.user_id });
+      setSearchName('');
       setSearching(false);
     } catch (err) {
       tea.notify.error(err);
@@ -256,31 +258,30 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
                 ) : (
                   <div>{t('approve.newUser')}</div>
                 )}
-                {!hasCandidates && (
-                  <div style={{ marginTop: 8 }}>
-                    {searching ? (
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <Input
-                          autoFocus
-                          value={searchName}
-                          onChange={setSearchName}
-                          onPressEnter={() => void findByUsername()}
-                          placeholder={t('approve.search.placeholder')}
-                        />
-                        <Button type="primary" onClick={() => void findByUsername()} disabled={!searchName.trim() || searchBusy} loading={searchBusy}>
-                          {t('approve.search.button')}
-                        </Button>
-                        <Button onClick={() => setSearching(false)} disabled={searchBusy}>
-                          {t('approve.search.cancel')}
-                        </Button>
-                      </div>
-                    ) : (
-                      <Button type="link" onClick={() => setSearching(true)}>
-                        {t('approve.linkInstead')}
+                {/* Shown even with candidates: the person's real account may have another name. */}
+                <div style={{ marginTop: 8 }}>
+                  {searching ? (
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <Input
+                        autoFocus
+                        value={searchName}
+                        onChange={setSearchName}
+                        onPressEnter={() => void findByUsername()}
+                        placeholder={t('approve.search.placeholder')}
+                      />
+                      <Button type="primary" onClick={() => void findByUsername()} disabled={!searchName.trim() || searchBusy} loading={searchBusy}>
+                        {t('approve.search.button')}
                       </Button>
-                    )}
-                  </div>
-                )}
+                      <Button onClick={() => setSearching(false)} disabled={searchBusy}>
+                        {t('approve.search.cancel')}
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button type="link" onClick={() => setSearching(true)}>
+                      {t('approve.linkInstead')}
+                    </Button>
+                  )}
+                </div>
               </div>
             )}
           </Form.Item>
