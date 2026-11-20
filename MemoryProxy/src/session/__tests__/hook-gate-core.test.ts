@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildAntigravityInstallCommand,
   buildInstallCommand,
   installNotDoneText,
   isGateEnabled,
@@ -60,6 +61,18 @@ describe("install command", () => {
     expect(buildInstallCommand("http://p", SID)).toBe(`curl -fsSL http://p/setup/hooks.sh | bash -s -- --client claude-code --session ${SID}`);
     expect(buildInstallCommand("http://p", SID, "codex")).toContain("--client codex --session");
     expect(buildInstallCommand("http://p", SID, "omp")).toContain("--client omp --session");
+  });
+
+  it("builds the short self-contained agy command without a session id or key", () => {
+    expect(buildAntigravityInstallCommand("https://p.example", "team-a")).toBe(
+      "curl -fsSL https://p.example/setup/hooks.sh | bash -s -- --client antigravity --base-url https://p.example/antigravity/team-a",
+    );
+  });
+
+  it("refuses an unsafe space id or a missing origin for agy", () => {
+    expect(buildAntigravityInstallCommand("https://p", "a; rm -rf ~")).toBeNull();
+    expect(buildAntigravityInstallCommand("https://p", "")).toBeNull();
+    expect(buildAntigravityInstallCommand(null, "default")).toBeNull();
   });
 
   it("refuses an unsafe session id or a missing origin", () => {

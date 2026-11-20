@@ -16,10 +16,18 @@ import {
 const AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json";
-const CLOUD_CODE_URL = "https://cloudcode-pa.googleapis.com/v1internal";
-const LOAD_CODE_ASSIST_URL = `${CLOUD_CODE_URL}:loadCodeAssist`;
-const ONBOARD_USER_URL = `${CLOUD_CODE_URL}:onboardUser`;
-const FETCH_AVAILABLE_MODELS_URL = `${CLOUD_CODE_URL}:fetchAvailableModels`;
+/**
+ * Host of the Cloud Code API. The `daily` host is the one the AntiGravity app and the CLI use, and
+ * its model list is newer than the production host's (it carries the newest Gemini models), so the
+ * model catalog and the usage check read from it. `ANTIGRAVITY_CLOUD_CODE_URL` overrides the host.
+ */
+export const DEFAULT_CLOUD_CODE_HOST = "https://daily-cloudcode-pa.googleapis.com";
+
+/** `https://host/v1internal:<method>`, with the host read from the environment on every call. */
+export function cloudCodeUrl(method: string, env: NodeJS.ProcessEnv = process.env): string {
+  const host = (env.ANTIGRAVITY_CLOUD_CODE_URL?.trim() || DEFAULT_CLOUD_CODE_HOST).replace(/\/+$/, "");
+  return `${host}/v1internal:${method}`;
+}
 /** Fixed port: the admin pastes the URL of the failed redirect, so nothing listens on it. */
 const CALLBACK_PORT = 51121;
 const REDIRECT_URI = `http://localhost:${CALLBACK_PORT}/callback`;
@@ -32,8 +40,8 @@ const SCOPE = [
 ].join(" ");
 
 /** Version the AntiGravity CLI reports. Google reads it to decide whether the client is supported. */
-const CLI_VERSION = "1.5.9";
-const CLI_BUILD = "1021519450";
+const CLI_VERSION = "1.5.13";
+const CLI_BUILD = "1025641825";
 const DEFAULT_TIER_ID = "legacy-tier";
 
 function osType(): string {
@@ -197,7 +205,7 @@ export function createAntigravityAdapter(
   /** Project of the account: `loadCodeAssist` first, then `onboardUser` for a new user. */
   async function projectOf(accessToken: string): Promise<string> {
     const headers = cloudCodeHeaders(accessToken);
-    const loadResponse = await fetchImpl(LOAD_CODE_ASSIST_URL, {
+    const loadResponse = await fetchImpl(cloudCodeUrl("loadCodeAssist"), {
       method: "POST",
       headers,
       body: JSON.stringify({ metadata: CLIENT_METADATA }),
@@ -219,7 +227,7 @@ export function createAntigravityAdapter(
       }
     }
     for (let attempt = 1; attempt <= onboardAttempts; attempt++) {
-      const response = await fetchImpl(ONBOARD_USER_URL, {
+      const response = await fetchImpl(cloudCodeUrl("onboardUser"), {
         method: "POST",
         headers,
         body: JSON.stringify({ tierId, metadata: CLIENT_METADATA }),
@@ -239,7 +247,7 @@ export function createAntigravityAdapter(
   }
 
   async function availableModels(accessToken: string, projectId: string | null | undefined): Promise<unknown> {
-    const response = await fetchImpl(FETCH_AVAILABLE_MODELS_URL, {
+    const response = await fetchImpl(cloudCodeUrl("fetchAvailableModels"), {
       method: "POST",
       headers: cloudCodeHeaders(accessToken),
       body: JSON.stringify(projectId ? { project: projectId } : {}),

@@ -53,7 +53,9 @@
 #   else ~/.bashrc) inside a marked block that a second run replaces. The URL comes
 #   from --base-url (the full gateway URL, or <proxy>/antigravity/<space> with the key
 #   in --key or in AGENT_MEMORY_KEY), else from AGY_LLM_GATEWAY_URL, else from the file
-#   of an earlier install. A run without a key stops with exit 1.
+#   of an earlier install. When the base is <proxy>/antigravity/<space> and no key is given,
+#   the key of an earlier install of the same proxy and space is reused; else the installer
+#   asks for it on /dev/tty without echo. A run without a key and without a terminal stops with exit 1.
 #   Uninstall removes the entry, the profile block (in ~/.zshrc and ~/.bashrc) and the URL file.
 # pi is no longer a supported client: --client pi exits with an error. Only
 #   --uninstall --client pi still works, and removes the extension of an earlier pi install.
@@ -1294,6 +1296,42 @@ agy_profile_remove() {
   strip_block "$AGY_BEGIN" "$AGY_END" < "$profile" | write_if_changed "$profile" || true
 }
 
+# Print the key of the gateway URL in AGY_LLM_GATEWAY_URL or in the file of an earlier install,
+# when that URL has the same proxy origin and space as $1 (<proxy>/antigravity/<space>).
+# A key of another proxy or space is never reused.
+agy_known_key() {
+  local want u parsed o s _a k wo ws _wa _wk
+  want=$(agy_parse "${1%/}/x")
+  [ -n "$want" ] || return 0
+  IFS='|' read -r wo ws _wa _wk <<AGYEOF
+$want
+AGYEOF
+  for u in "${AGY_LLM_GATEWAY_URL:-}" "$(cat "$AGY_URL_FILE" 2>/dev/null || true)"; do
+    [ -n "$u" ] || continue
+    parsed=$(agy_parse "$u")
+    [ -n "$parsed" ] || continue
+    IFS='|' read -r o s _a k <<AGYEOF
+$parsed
+AGYEOF
+    if [ "$o" = "$wo" ] && [ "$s" = "$ws" ]; then
+      printf '%s' "$k"
+      return 0
+    fi
+  done
+}
+
+# Ask for the key on the terminal without echo and print it. Read from the terminal device, not
+# from stdin: under `curl ... | bash` stdin is the script. Print nothing when no terminal can be
+# opened. The key is never written to the output. AGENT_MEMORY_TTY replaces /dev/tty (tests).
+prompt_agy_key() {
+  local tty="${AGENT_MEMORY_TTY:-/dev/tty}" k=""
+  { : < "$tty"; } 2>/dev/null || return 0
+  printf 'Agent-Memory user key (input is hidden): ' >&2
+  IFS= read -rs k < "$tty" || true
+  printf '\n' >&2
+  printf '%s' "$k" | tr -d '\r\n[:space:]'
+}
+
 # Install for agy. $1 is --base-url, $2 --key, $3 --session.
 antigravity_install() {
   local base="$1" key="$2" session="$3" parsed origin space analyse url profile device
@@ -1303,9 +1341,12 @@ antigravity_install() {
     if [ -z "$parsed" ] && [ -f "$AGY_URL_FILE" ]; then parsed=$(agy_parse "$(cat "$AGY_URL_FILE")"); fi
     [ -n "$parsed" ] || fail "no gateway URL. Use --base-url <proxy>/antigravity/<space>/<key> (or <proxy>/antigravity/<space> with --key), or set AGY_LLM_GATEWAY_URL."
   elif [ -z "$parsed" ]; then
-    # <proxy>/antigravity/<space> without a key.
+    # <proxy>/antigravity/<space> without a key: --key, AGENT_MEMORY_KEY, the key of an earlier
+    # install of the same proxy and space, then a hidden prompt on the terminal.
     [ -n "$key" ] || key="${AGENT_MEMORY_KEY:-}"
-    [ -n "$key" ] || fail "no key. Use the full gateway URL <proxy>/antigravity/<space>/<key> in --base-url, or give the key with --key or AGENT_MEMORY_KEY."
+    [ -n "$key" ] || key=$(agy_known_key "$base")
+    [ -n "$key" ] || key=$(prompt_agy_key)
+    [ -n "$key" ] || fail "no key. Give it with --key or AGENT_MEMORY_KEY, or use the full gateway URL <proxy>/antigravity/<space>/<key> in --base-url. The installer asks for it only when a terminal is available."
     parsed=$(agy_parse "${base%/}/${key}")
     [ -n "$parsed" ] || fail "the base URL must look like http(s)://<proxy>/antigravity/<space> (got: $base), and the key may hold only letters, digits, . _ -"
   fi

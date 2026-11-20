@@ -63,8 +63,8 @@ function osType(): string {
  * answered with UNSUPPORTED_CLIENT, so keep this in step with the agy version that was tested.
  */
 export const ANTIGRAVITY_USER_AGENT =
-  `antigravity/cli/1.5.9 (aidev_client; os_type=${osType()}; arch=${process.arch === "arm64" ? "arm64" : "amd64"}; ` +
-  "cl=1021519450; auth_method=consumer)";
+  `antigravity/cli/1.5.13 (aidev_client; os_type=${osType()}; arch=${process.arch === "arm64" ? "arm64" : "amd64"}; ` +
+  "cl=1025641825; auth_method=consumer)";
 
 /** Model ids that Cloud Code lists but a coding client cannot use. */
 const NOISE_MODEL_RE = /^(?:chat_|tab_)|-(?:disabled|tiered|sonar)$|image/i;

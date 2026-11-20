@@ -42,7 +42,7 @@ const INSTALLED_CACHE_MAX = 10_000;
 export const DEFAULT_WAIT_MS = 3000;
 const POLL_MS = 250;
 
-export type GateClient = "claude-code" | "codex" | "omp" | "antigravity";
+export type GateClient = "claude-code" | "codex" | "omp";
 
 export interface GateConfig {
   hookGate?: Partial<NonNullable<ProxyConfig["hookGate"]>>;
@@ -142,6 +142,22 @@ export function resolveProxyOrigin(headers: Record<string, string>, requestUrl: 
 export function buildInstallCommand(origin: string | null, sessionId: string, client: GateClient = "claude-code"): string | null {
   if (!origin || !SESSION_ID_RE.test(sessionId)) return null;
   return `curl -fsSL ${origin}/setup/hooks.sh | bash -s -- --client ${client} --session ${sessionId}`;
+}
+
+/** Space ids that the installer accepts in `<proxy>/antigravity/<space>`. */
+const AGY_SPACE_RE = /^[A-Za-z0-9_.-]+$/;
+
+/**
+ * The installer command for agy, or null when the origin or the space id is not safe to put in a shell command.
+ *
+ * It has no `--session`: after the install, the PreInvocation hook of agy reports the conversation
+ * before every model call, so the gate opens on the next prompt. It has no key either: the key would
+ * land in the agy conversation history, and the installer asks for it on the terminal. The line stays
+ * short because the agy terminal wraps long lines and a wrapped command breaks when it is copied.
+ */
+export function buildAntigravityInstallCommand(origin: string | null, spaceId: string): string | null {
+  if (!origin || !AGY_SPACE_RE.test(spaceId)) return null;
+  return `curl -fsSL ${origin}/setup/hooks.sh | bash -s -- --client antigravity --base-url ${origin}/antigravity/${spaceId}`;
 }
 
 // ── Conversation state ─────────────────────────────────────────────────────────

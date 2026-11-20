@@ -70,7 +70,8 @@ curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client antigravity --bas
 - `--base-url` — 完整网关 URL（含 key），或 `<proxy-origin>/antigravity/<instanceId>`（此时 key 用 `--key <KEY>` 或环境变量 `AGENT_MEMORY_KEY` 提供）
 - `--key KEY` — user key
 - 都不传时：用环境变量 `AGY_LLM_GATEWAY_URL`，再用上次安装写下的 `~/.agent-memory/antigravity.url`
-- 没有 key 时安装器以 exit 1 退出
+- `<proxy-origin>/antigravity/<instanceId>` 且没有 key 时：先复用上次安装里同一 Proxy、同一 instanceId 的 key，再在终端（`/dev/tty`，不回显）提示输入；没有终端时以 exit 1 退出，并提示用 `--key`
+- 没有 hook 时 Proxy 在 agy 对话里给出的安装命令是 `curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client antigravity --base-url <proxy-origin>/antigravity/<instanceId>`：不含 key（key 会留在对话历史里）也不含 `--session`；安装后 agy 在每次模型调用前由 PreInvocation hook 上报 conversationId，下一条消息即可通过
 
 不想让 key 出现在进程列表里时，用环境变量传 key：
 

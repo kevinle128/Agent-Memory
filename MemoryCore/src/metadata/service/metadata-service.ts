@@ -2680,7 +2680,7 @@ export class MetadataService {
   }
 
   /** Usage check used by the route and the scheduler. Tells the scheduler the result. */
-  async runSubscriptionUsageCheck(accountId: string): Promise<UsageCheckResult> {
+  async runSubscriptionUsageCheck(accountId: string, options: { refreshModels?: boolean } = {}): Promise<UsageCheckResult> {
     const current = await this.requireSubscriptionAccount(accountId);
     const adapter = this.subscriptionAdapter(current.provider);
     const result = await checkAccountUsage(this.store, accountId, adapter, await this.subscriptionThreshold());
@@ -2690,7 +2690,28 @@ export class MetadataService {
       account: result.account,
       retryUsageAt: result.failed && failCount <= USAGE_FAST_RETRIES ? Date.now() + nextRetryDelayMs(failCount) : undefined,
     });
+    // Every check of an account also reads the model list of its pool, so new models of the
+    // provider reach the catalog without an admin step. A caller that checks many accounts passes
+    // `refreshModels: false` and refreshes each pool once afterwards.
+    if (options.refreshModels !== false) await this.refreshPoolModelsOfGroups([result.account.group_id]);
     return result;
+  }
+
+  /**
+   * Reads the model list of each given pool group once and merges it into the catalog. A failed
+   * read keeps the old catalog and never fails the caller. A group that is off or has no source
+   * yet is skipped; it reads its models when it is turned on.
+   */
+  async refreshPoolModelsOfGroups(groupIds: Iterable<string>): Promise<void> {
+    for (const groupId of new Set(groupIds)) {
+      try {
+        const group = await this.store.getInstanceUpstreamGroup(groupId);
+        if (!group || group.mode !== "subscription_pool" || !group.enabled || !group.source_name) continue;
+        await this.fetchGroupSourceModels(group);
+      } catch (e) {
+        this.logger.debug?.(`[model-source] refresh after check failed group=${groupId}: ${e instanceof Error ? e.name : "error"}`);
+      }
+    }
   }
 
   /** Token refresh used by the route and the scheduler. Tells the scheduler the result. */
@@ -2717,7 +2738,7 @@ export class MetadataService {
     }
     let check = this.subscriptionRetryChecks.get(accountId);
     if (!check) {
-      check = { expiresAt: Infinity, promise: this.runSubscriptionUsageCheck(accountId) };
+      check = { expiresAt: Infinity, promise: this.runSubscriptionUsageCheck(accountId, { refreshModels: false }) };
       this.subscriptionRetryChecks.set(accountId, check);
       const entry = check;
       void entry.promise.then(() => { entry.expiresAt = Date.now() + 10_000; }, () => {
@@ -2777,7 +2798,7 @@ export class MetadataService {
 
     let checked: UsageCheckResult;
     try {
-      checked = await this.runSubscriptionUsageCheck(accountId);
+      checked = await this.runSubscriptionUsageCheck(accountId, { refreshModels: false });
     } catch (e) {
       throw this.translateSubscriptionConflict(e);
     }
@@ -2792,13 +2813,16 @@ export class MetadataService {
   async checkAllSubscriptionAccountUsage(): Promise<{ checked: number; failed: number }> {
     let checked = 0;
     let failed = 0;
+    const groups = new Set<string>();
     for (const account of await this.store.listSubscriptionAccounts()) {
       if (!account.enabled || account.status === "disabled" || account.status === "auth_error"
         || !SUPPORTED_SUBSCRIPTION_PROVIDERS.includes(account.provider)) continue;
-      const result = await this.runSubscriptionUsageCheck(account.account_id);
+      const result = await this.runSubscriptionUsageCheck(account.account_id, { refreshModels: false });
+      groups.add(account.group_id);
       checked += 1;
       if (result.failed) failed += 1;
     }
+    await this.refreshPoolModelsOfGroups(groups);
     return { checked, failed };
   }
 
@@ -3510,7 +3534,8 @@ export class MetadataService {
     // Subscription models start on; models of an API-key source start off, also when they appear later.
     return this.store.updateGroupSourceModels(group.group_id, (current) => readings
       ? {
-        source_models: mergeSourceModels(current.source_models, readings, isPool, now),
+        // A pool lists exactly what its accounts can use now, so a model they lost leaves the catalog.
+        source_models: mergeSourceModels(current.source_models, readings, isPool, now, isPool),
         source_models_fetched_at: now,
         source_models_error: null,
       }
