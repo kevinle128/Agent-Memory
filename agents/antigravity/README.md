@@ -111,6 +111,15 @@ recall 在 session 已经存在之后、每一轮的第一次模型调用时发�
 
 会话还没有 hook 上报时，Proxy 不转发上游，而是返回一条 Gemini SSE 消息，内容是上面的安装命令。同一会话回答 2 次后放行（fail open）。已有上报即视为已安装。
 
+### 4.4 Windows
+
+- 需要 **Git for Windows**，并在 Git Bash（例如 Claude Code 的 Bash）里运行安装命令。hook 脚本需要 bash、curl，以及 jq 或 python3 或 node 之一，这些都在 Git Bash 里
+- agy 在 Windows 上把 hook 命令**原样交给 cmd.exe** 执行，而 cmd.exe 不能直接运行 `.sh` 文件。所以安装器在 Windows 上多写一个启动器 `~/.agent-memory/hook.cmd`（CRLF 换行），它用 Git 的 `bin\bash.exe` 运行同目录的 `hook.sh`，并原样转发参数、stdin、stdout 和退出码。`bin\bash.exe` 会设置好 MSYS 的 PATH，所以即使 Windows PATH 里没有 bash、jq、python3 也能工作
+- `hooks.json` 里的命令是反斜杠形式，例如 `C:\Users\<用户>\.agent-memory\hook.cmd antigravity`；路径含空格时只给路径加双引号。每次安装都会重写 `hook.cmd` 并替换旧的 `.sh` 形式条目；`--uninstall` 一并删除 `hook.cmd`
+- 安装后**重启 agy**，输入 `/hooks`，应看到 `agent-memory` 处于启用状态
+- 手工检查：在 cmd 里运行 `cmd /c "C:\Users\<用户>\.agent-memory\hook.cmd antigravity" < sample.json`，应输出 `{}`（`sample.json` 可以是 `{"conversationId":"c1","hookEventName":"SessionStart"}`）
+- agy 日志里出现 `hook ... failed: exit status 1` 且 stderr 为空：通常是旧版安装器写下的 `.sh` 命令，重新运行安装命令即可
+
 ---
 
 ## 5. 模型
@@ -174,7 +183,7 @@ agy -p "say pong"     # 应返回回答
 curl -fsSL <proxy-origin>/setup/hooks.sh | bash -s -- --client antigravity --uninstall
 ```
 
-只删除安装器写入的内容：`hooks.json` 里的 `agent-memory` 条目、`~/.zshrc` 和 `~/.bashrc` 里带标记的块、`~/.agent-memory/antigravity.url`。其他 hook 和 `device.json` 保留；没有其他客户端使用时 `hook.sh` 也一并删除。
+只删除安装器写入的内容：`hooks.json` 里的 `agent-memory` 条目、Windows 上的 `~/.agent-memory/hook.cmd`、`~/.zshrc` 和 `~/.bashrc` 里带标记的块、`~/.agent-memory/antigravity.url`。其他 hook 和 `device.json` 保留；没有其他客户端使用时 `hook.sh` 也一并删除。
 
 ---
 
