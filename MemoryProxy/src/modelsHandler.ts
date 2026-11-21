@@ -4,10 +4,11 @@ import type { Context, Next } from "hono";
 import { verifyUserKey } from "./auth.js";
 import { extractSpaceIdFromPath } from "./credit-reporter.js";
 import { poolServiceFor } from "./guard-adapter.js";
-import { getInstanceUpstreamConfigs, type InstanceUpstreamRow } from "./instance-upstream-cache.js";
+import { getInstanceUpstreamConfigs, isPoolRow, type InstanceUpstreamRow } from "./instance-upstream-cache.js";
 import { extractBearerToken } from "./opik.js";
 import { isSourceRow } from "./pipeline/stages/model-source.js";
 import { normalizePublicModelName } from "./pricing.js";
+import { listMemberTeamIds } from "./subscription-pool/pool-team.js";
 import { isMultiSourceAgent } from "./supported-agents.js";
 import type { CreditPricingConfig, ProxyConfig } from "./types.js";
 
@@ -58,10 +59,12 @@ export function buildModelsResponse(pricing: CreditPricingConfig, extraIds: stri
 /**
  * Source models an agent may use: enabled models of enabled sources whose `source_agents` include
  * the agent. A subscription source follows the switch of its pool; an API source follows
- * `source_enabled`. Ordered by source name, then model id.
+ * `source_enabled`. Ordered by source name, then model id. A model id that two rows give (the
+ * pools of two teams use the same source name) is listed once.
  */
 export function listSourceModels(rows: InstanceUpstreamRow[], agent: string): SourceModelListing[] {
   const out: SourceModelListing[] = [];
+  const listed = new Set<string>();
   const sources = rows
     .filter((row) => isSourceRow(row) && (row.source_agents ?? []).includes(agent))
     .sort((a, b) => (a.source_name! < b.source_name! ? -1 : a.source_name! > b.source_name! ? 1 : 0));
@@ -76,6 +79,8 @@ export function listSourceModels(rows: InstanceUpstreamRow[], agent: string): So
       .filter((m) => m.enabled === true && m.available !== false && m.id)
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     for (const m of models) {
+      if (listed.has(`${source}/${m.id}`)) continue;
+      listed.add(`${source}/${m.id}`);
       out.push({
         id: `${source}/${m.id}`,
         object: "model",
@@ -106,8 +111,14 @@ function usesSourceListing(config: ProxyConfig, agent: string): boolean {
   return !allowed || allowed.includes(agent);
 }
 
-/** Verifies the user key for the request space. Returns the space id or an error response. */
-async function authenticate(c: Context): Promise<{ spaceId: string } | { response: Response }> {
+interface ModelsAuth {
+  spaceId: string;
+  userId: string;
+  apiKey: string;
+}
+
+/** Verifies the user key for the request space. Returns the caller or an error response. */
+async function authenticate(c: Context): Promise<ModelsAuth | { response: Response }> {
   const spaceId = extractSpaceIdFromPath(c.req.path);
   if (!spaceId) {
     return { response: c.json({ error: "spaceId is required in the request path" }, 400) };
@@ -116,12 +127,26 @@ async function authenticate(c: Context): Promise<{ spaceId: string } | { respons
   const apiKey = c.req.header("x-api-key")
     ?? extractBearerToken(c.req.header("authorization") ?? c.req.header("Authorization") ?? "")
     ?? "";
-  const { rejected, rejectReason } = await verifyUserKey(apiKey, spaceId);
+  const { rejected, rejectReason, userId } = await verifyUserKey(apiKey, spaceId);
 
   if (rejected) {
     return { response: c.json({ error: `Authentication failed: ${rejectReason ?? "unknown"}` }, 401) };
   }
-  return { spaceId };
+  return { spaceId, userId, apiKey };
+}
+
+/**
+ * Rows the caller may list: every row that is not a pool, and the pool rows of the teams of the
+ * caller. The source name of a pool repeats in every team, so a pool of another team must stay
+ * out of the list. When the team list is not available the list holds the instance sources only;
+ * it is read-only, so it does not fail.
+ */
+async function rowsOfCaller(config: ProxyConfig, auth: ModelsAuth): Promise<InstanceUpstreamRow[]> {
+  const rows = await getInstanceUpstreamConfigs(config.coreSkill, auth.spaceId, config.instanceUpstream);
+  if (!rows.some(isPoolRow)) return rows;
+  const teamIds = await listMemberTeamIds(config, auth.spaceId, auth.userId, auth.apiKey);
+  const mine = new Set(teamIds ?? []);
+  return rows.filter((row) => !isPoolRow(row) || (typeof row.team_id === "string" && row.team_id !== "" && mine.has(row.team_id)));
 }
 
 /** Handles the tenant-scoped OpenAI-compatible `GET /v1/models` endpoint locally. */
@@ -136,7 +161,7 @@ export async function handleModels(c: Context, config: ProxyConfig): Promise<Res
   const agent = agentFromPath(c.req.path);
   if (!usesSourceListing(config, agent)) return c.json(legacy);
 
-  const rows = await getInstanceUpstreamConfigs(config.coreSkill, auth.spaceId, config.instanceUpstream);
+  const rows = await rowsOfCaller(config, auth);
   const sourceModels = listSourceModels(rows, agent);
   const seen = new Set(sourceModels.map((m) => m.id));
   return c.json({
@@ -158,7 +183,7 @@ export async function handleSourceModel(c: Context, config: ProxyConfig, next: N
 
   c.header("cache-control", "no-store");
   const id = c.req.param("model") ?? "";
-  const rows = await getInstanceUpstreamConfigs(config.coreSkill, auth.spaceId, config.instanceUpstream);
+  const rows = await rowsOfCaller(config, auth);
   const found = listSourceModels(rows, agent).find((m) => m.id === id);
   if (found) return c.json(found);
   return c.json({

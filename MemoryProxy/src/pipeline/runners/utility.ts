@@ -17,12 +17,16 @@ import {
   tryReportCreditFromPath,
   extractSpaceIdFromPath,
 } from "../../credit-reporter.js";
-import { matchWhitelistEndpoint, type WhitelistEndpoint } from "../../routes/whitelist.js";
+import { isLegacyProxyPath, matchWhitelistEndpoint, type WhitelistEndpoint } from "../../routes/whitelist.js";
 import { joinUrl } from "../../guard-adapter.js";
 import { log } from "../../report/log.js";
 import { verifyUserKey } from "../../auth.js";
 import { stageAuth } from "../stages/auth.js";
 import { openPoolRequest, applyPoolAuth, type PoolRequest } from "../../subscription-pool/pool-request.js";
+import {
+  immediateTeamError, resolveRequestTeam, sessionStateAgent, teamErrorResponse, teamIdOf,
+} from "../../subscription-pool/pool-team.js";
+import { resolveConversationId } from "../../session/session-key.js";
 import { stageSystemUser } from "../stages/system-user.js";
 import { matchSystemUserByUserId, hasSystemUsers } from "../../systemUser.js";
 import { handleSystemUserPassthrough } from "../../systemUserPassthrough.js";
@@ -138,7 +142,20 @@ export async function runUtilityPipeline(c: Context, config: ProxyConfig): Promi
   {
     const instanceConfigs = await getInstanceUpstreamConfigs(config.coreSkill, spaceId, config.instanceUpstream);
     const agentFromPath = c.req.path.split("/").filter(Boolean)[0] ?? undefined;
-    const resolution = resolveForAgent(instanceConfigs, agentFromPath ?? "");
+    // An auxiliary call has no session init. Its team is the team of the session it names, else
+    // the ordered fallback. A team error answers before any upstream call.
+    const conversationId = resolveConversationId(c);
+    const stateAgent = sessionStateAgent(agentFromPath ?? "");
+    const requestTeam = isLegacyProxyPath(c.req.path) ? null : await resolveRequestTeam({
+      config, spaceId, userId, userKey: c.req.header("x-tdai-user-key") || apiKey,
+      agentSource: agentFromPath ?? "",
+      session: conversationId ? { keyId: `${stateAgent}:${conversationId}`, agentSource: stateAgent, sessionId: conversationId } : null,
+      lcHeaders: Object.fromEntries([...c.req.raw.headers.entries()].map(([k, v]) => [k.toLowerCase(), v])),
+      model: undefined, sessionInitMayRun: false,
+    });
+    const requestTeamError = immediateTeamError(requestTeam);
+    if (requestTeamError) return teamErrorResponse(c, entry.protocol === "anthropic" ? "anthropic" : "openai", requestTeamError);
+    const resolution = resolveForAgent(instanceConfigs, agentFromPath ?? "", teamIdOf(requestTeam));
     if (resolution.kind === "override") {
       const row = resolution.row;
       upstreamUrl = joinUrl(row.base_url, c.req.path);

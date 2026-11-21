@@ -60,6 +60,11 @@ export interface PoolAccount {
   usage: { windows: PoolQuotaWindow[] };
   /** Epoch milliseconds. The account counts as exhausted while `now < exhausted_until`. */
   exhausted_until: number | null;
+  /**
+   * Usage percentage at which this account stops getting new Session Bindings. Absent when Core
+   * is older than this field; the snapshot threshold applies then.
+   */
+  threshold_pct?: number;
 }
 
 export interface PoolSnapshot {

@@ -415,7 +415,8 @@ export async function runOpenaiChatPipeline(
   const sourceAgent = c.req.path.split("/").filter(Boolean)[0];
   const modelSource = await stageModelSource({
     config, agent: sourceAgent, spaceId: earlySpaceId,
-    format: "openai-chat", model: body.model, servesPool: false,
+    // This runner has no pool branch, so no team is needed: a pool source answers the format error.
+    format: "openai-chat", model: body.model, servesPool: false, teamId: null,
   });
   if (modelSource.kind === "error") return modelSourceErrorResponse(c, "openai", modelSource);
   const modelSourceMetadata = modelSource.kind === "matched"
@@ -541,6 +542,8 @@ export async function runOpenaiChatPipeline(
   const earlyResult = await stageInstanceUpstreamEarly({
     c, config, spaceId: earlySpaceId, earlyUserId: earlyVerify.userId,
     errorEnvelope: "openai",
+    // No pool branch here, so the instance layer alone decides. A pool row never gives a pool.
+    teamId: null,
     ...(modelSource.kind === "matched" ? { presetResolution: modelSource.resolution } : {}),
   });
   if (earlyResult.blockedResp) return earlyResult.blockedResp;

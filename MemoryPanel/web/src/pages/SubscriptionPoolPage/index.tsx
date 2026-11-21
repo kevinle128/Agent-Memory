@@ -1,5 +1,5 @@
 /**
- * SubscriptionPoolPage — subscription account pool status, with System Admin management actions.
+ * SubscriptionPoolPage — subscription account pool of the active team, with management actions for a team admin and a System Admin.
  *
  * Claude Code and Codex each have a pool tab. The page only calls Core's public pool actions.
  * Core keeps the login tokens and never returns them.
@@ -8,19 +8,19 @@ import { Component, useCallback, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, Button, Card, StatusTip } from 'tea-component';
 import { useAuthStore } from '@/stores/auth';
-import { isGlobalAdmin } from '@/services';
+import { isGlobalAdmin, roleInTeam, useTeams, type Team } from '@/services';
 import { tea } from '@/lib/tea-bridge';
 import { subscriptionPoolApi, type PoolProvider, type SubscriptionAccount } from '@/lib/api/subscription-pool';
-import { accountState, classifyRedeemOutcome } from '@/lib/subscription-pool-display';
+import { accountState, classifyRedeemOutcome, poolPermissions } from '@/lib/subscription-pool-display';
 import { countAvailable, countEnabled } from '@/lib/model-source';
 import { sourceInUseOf } from '@/lib/source-error';
-import { clientSourcesApi } from '@/lib/api/client-sources';
-import { clientsUsing, type SourceInUse } from '@/lib/client-sources';
+import type { SourceInUse } from '@/lib/client-sources';
 import { SelectedModelsModal } from '@/components/model-source/SelectedModelsModal';
 import { SourceInUseModal } from '@/components/model-source/SourceInUseModal';
 import { usePoolStatus } from './use-pool-status';
 import { poolErrorCode, poolErrorMessage } from './pool-errors';
 import { PoolHeader } from './components/PoolHeader';
+import { PoolClients } from './components/PoolClients';
 import { PoolSummary } from './components/PoolSummary';
 import { PoolSettings } from './components/PoolSettings';
 import { AccountTable } from './components/AccountTable';
@@ -34,11 +34,25 @@ import './style.css';
 const STALE_CODES = new Set(['account_not_found', 'version_mismatch']);
 
 export function SubscriptionPoolPage() {
+  const { t } = useTranslation();
   const { auth } = useAuthStore();
+  const { activeTeam } = useTeams();
   if (!auth) return null;
+  if (!activeTeam) {
+    return (
+      <div className="_memory-pool-body">
+        <Card>
+          <Card.Body>
+            <StatusTip status="empty" emptyText={t('subscriptionPool.noTeam')} />
+          </Card.Body>
+        </Card>
+      </div>
+    );
+  }
+  // The key remounts the content on a team change, so no state of one team shows under another team.
   return (
     <SubscriptionPoolBoundary>
-      <SubscriptionPoolContent />
+      <SubscriptionPoolContent key={activeTeam.team_id} team={activeTeam} />
     </SubscriptionPoolBoundary>
   );
 }
@@ -68,16 +82,22 @@ class SubscriptionPoolBoundary extends Component<{ children: ReactNode }, { fail
   }
 }
 
-function SubscriptionPoolContent() {
+function SubscriptionPoolContent({ team }: { team: Team }) {
   const { t } = useTranslation();
   const { auth } = useAuthStore();
-  const readOnly = !auth || !isGlobalAdmin(auth.user, auth.isAdmin);
+  const teamId = team.team_id;
+  const { canManage, canSetStartThreshold } = poolPermissions({
+    isGlobalAdmin: !!auth && isGlobalAdmin(auth.user, auth.isAdmin),
+    teamRole: auth ? roleInTeam(team, auth.user_id) : null,
+  });
+  const readOnly = !canManage;
   const [provider, setProvider] = useState<PoolProvider>('claude');
-  const { provider: pool, thresholdPct, loading, error, refresh } = usePoolStatus(provider);
+  const { provider: pool, defaultThresholdPct, loading, error, refresh } = usePoolStatus(teamId, provider);
 
   const [switchTarget, setSwitchTarget] = useState<boolean | null>(null);
   const [switching, setSwitching] = useState(false);
   const [savingThreshold, setSavingThreshold] = useState(false);
+  const [savingClients, setSavingClients] = useState(false);
   const [checkingAll, setCheckingAll] = useState(false);
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [adding, setAdding] = useState<{ reloginName?: string } | null>(null);
@@ -124,8 +144,8 @@ function SubscriptionPoolContent() {
     if (switchTarget === null) return;
     setSwitching(true);
     try {
-      if (switchTarget) await subscriptionPoolApi.enable(provider);
-      else await subscriptionPoolApi.disable(provider);
+      if (switchTarget) await subscriptionPoolApi.enable(teamId, provider);
+      else await subscriptionPoolApi.disable(teamId, provider);
       tea.notify.success(t(switchTarget ? 'subscriptionPool.toast.poolOn' : 'subscriptionPool.toast.poolOff'));
       setSwitchTarget(null);
       await refresh();
@@ -143,23 +163,42 @@ function SubscriptionPoolContent() {
   }
 
   /**
-   * Turning the pool off asks Core's client list first, so a pool that clients still use shows the
-   * blocking dialog at once. Core refuses the write as well, which covers a stale list.
+   * Turning the pool off checks the clients of the pool first, so a pool that clients still use
+   * shows the blocking dialog at once. Core refuses the write as well, which covers a stale list.
    */
-  async function requestSwitch(next: boolean) {
+  function requestSwitch(next: boolean) {
     const name = pool?.source?.source_name;
-    if (!next && name) {
-      try {
-        const clients = clientsUsing((await clientSourcesApi.list()).agents, name);
-        if (clients.length > 0) {
-          setInUse({ sourceName: name, clients: clients.map((c) => c.agent) });
-          return;
-        }
-      } catch {
-        /* Core still checks when the switch is sent. */
-      }
+    const clients = pool?.clients ?? [];
+    if (!next && name && clients.length > 0) {
+      setInUse({ sourceName: name, clients });
+      return;
     }
     setSwitchTarget(next);
+  }
+
+  async function saveClients(agents: string[]) {
+    setSavingClients(true);
+    try {
+      await subscriptionPoolApi.updateClients(teamId, provider, agents);
+      tea.notify.success(t('subscriptionPool.toast.clientsSaved'));
+      await refresh();
+    } catch (e) {
+      reportError(e);
+    } finally {
+      setSavingClients(false);
+    }
+  }
+
+  async function saveAccountThreshold(account: SubscriptionAccount, value: number) {
+    await withBusy(account.account_id, async () => {
+      await subscriptionPoolApi.updateAccount({
+        account_id: account.account_id,
+        threshold_pct: value,
+        expected_version: account.version,
+      });
+      tea.notify.success(t('subscriptionPool.toast.accountThresholdSaved', { name: account.display_name }));
+      await refresh();
+    });
   }
 
   async function saveThreshold(value: number) {
@@ -178,7 +217,7 @@ function SubscriptionPoolContent() {
   async function checkAll() {
     setCheckingAll(true);
     try {
-      const result = await subscriptionPoolApi.checkAll();
+      const result = await subscriptionPoolApi.checkAll(teamId);
       tea.notify.success(t('subscriptionPool.toast.checkedAll', result));
       await refresh();
     } catch (e) {
@@ -263,7 +302,7 @@ function SubscriptionPoolContent() {
   );
   const availableCount = pool?.summary.available ?? 0;
   const disabledCount = accounts.filter(
-    (a) => accountState(a, { now, threshold: thresholdPct, poolEnabled: poolEnabled === true }) === 'disabled',
+    (a) => accountState(a, { now, threshold: a.threshold_pct, poolEnabled: poolEnabled === true }) === 'disabled',
   ).length;
 
   return (
@@ -279,9 +318,20 @@ function SubscriptionPoolContent() {
         onProviderChange={setProvider}
         poolEnabled={poolEnabled}
         switchDisabled={switching}
-        onToggle={(next) => void requestSwitch(next)}
+        onToggle={requestSwitch}
         instanceName={auth?.instance_name || auth?.instance_id || ''}
+        teamName={team.name}
       />
+      {pool && (
+        <PoolClients
+          readOnly={readOnly}
+          provider={provider}
+          poolEnabled={pool.enabled}
+          clients={pool.clients}
+          saving={savingClients}
+          onSave={(agents) => void saveClients(agents)}
+        />
+      )}
 
       {error && !pool ? (
         <Card>
@@ -303,11 +353,12 @@ function SubscriptionPoolContent() {
           )}
           <Alert type="warning">{t(`subscriptionPool.fallbackWarn.${provider}`)}</Alert>
 
-          {pool && <PoolSummary status={pool} thresholdPct={thresholdPct} now={now} />}
+          {pool && <PoolSummary status={pool} now={now} />}
 
           <PoolSettings
             readOnly={readOnly}
-            thresholdPct={thresholdPct}
+            canSetStartThreshold={canSetStartThreshold}
+            startThresholdPct={defaultThresholdPct}
             lastUpdate={lastUpdate}
             saving={savingThreshold}
             checking={checkingAll}
@@ -339,12 +390,12 @@ function SubscriptionPoolContent() {
                 readOnly={readOnly}
                 accounts={accounts}
                 poolEnabled={poolEnabled === true}
-                thresholdPct={thresholdPct}
                 now={now}
                 loading={loading}
                 busyIds={busyIds}
                 onCheck={(a) => void checkAccount(a)}
                 onToggleEnabled={(a) => void toggleEnabled(a)}
+                onSaveThreshold={(a, value) => void saveAccountThreshold(a, value)}
                 onDelete={setDeleting}
                 onRelogin={(a) => setAdding({ reloginName: a.display_name })}
                 onShowCredits={(a) => setCreditsAccountId(a.account_id)}
@@ -392,7 +443,9 @@ function SubscriptionPoolContent() {
       {inUse && <SourceInUseModal inUse={inUse} action="pool" onClose={() => setInUse(null)} />}
       {!readOnly && adding && (
         <AddAccountDialog
+          teamId={teamId}
           provider={provider}
+          startThresholdPct={defaultThresholdPct}
           reloginName={adding.reloginName}
           onClose={() => setAdding(null)}
           onDone={({ name, created }) => {

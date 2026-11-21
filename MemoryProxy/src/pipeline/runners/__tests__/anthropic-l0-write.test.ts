@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryStorage } from "../../../storage/memory-storage.js";
 import { SessionWorkspaceStore, setSessionWorkspaceStore } from "../../../project-scope/session-workspace.js";
-import { CORE_URL, installFetch, jsonResponse, makeApp, makeConfig, resetPoolState } from "../../../subscription-pool/__tests__/test-harness.js";
+import { CORE_URL, installFetch, jsonResponse, makeApp, makeConfig, POOL_TEST_USER, resetPoolState } from "../../../subscription-pool/__tests__/test-harness.js";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 
@@ -85,7 +85,7 @@ beforeEach(async () => {
   skillTrigger.mockClear();
   const store = new SessionWorkspaceStore(new MemoryStorage());
   await store.put(
-    { spaceId: "default", userId: "anonymous", agentSource: "claude-code", sessionId: SESSION },
+    { spaceId: "default", userId: POOL_TEST_USER, agentSource: "claude-code", sessionId: SESSION },
     {
       sessionId: SESSION, deviceId: "d1", client: "claude-code", cwd: "/w", gitToplevel: "/w",
       gitRemote: "git@h:x/demo.git", projectKey: "git:h/x/demo", projectHash: "0123456789abcdef",

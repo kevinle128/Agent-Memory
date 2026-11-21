@@ -244,7 +244,7 @@ describe("Claude Code request & header preservation", () => {
     const space = "sp-agy-preserve";
     const poolRow: InstanceUpstreamRow = {
       group_id: "pool-agy", group_type: "custom", name: "AGY pool", agents: ["antigravity"], enabled: true,
-      mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+      mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
     };
     const account: PoolAccount = {
       account_id: "a1", group_id: "pool-agy", provider: "antigravity", provider_account_id: "g-a1",
@@ -259,6 +259,11 @@ describe("Claude Code request & header preservation", () => {
 
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/v3/meta/auth/verify")) {
+        return new Response(JSON.stringify({ code: 0, data: { valid: true, user: { user_id: "usr-pool" } } }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
       if (url.startsWith("https://daily-cloudcode-pa.googleapis.com")) {
         capturedUrl = url;
         capturedHeaders = Object.fromEntries(new Headers(init?.headers).entries());

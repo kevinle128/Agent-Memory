@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { __primeCacheForTests, clearCache, type InstanceUpstreamRow } from "../../../instance-upstream-cache.js";
 import { resetAccountSwitchAccessForTests } from "../../../subscription-pool/account-switch-access.js";
+import { __primeMembershipForTests, clearTeamCaches } from "../../../subscription-pool/pool-team.js";
 import type { AgentContext, PrewarmInput } from "../../types.js";
 import { SubscriptionToolsInjector, renderSubscriptionToolsBlock } from "../subscription-tools-injector.js";
 
@@ -21,7 +22,7 @@ const defaultRow: InstanceUpstreamRow = {
 };
 const poolRow: InstanceUpstreamRow = {
   group_id: "pool", group_type: "custom", name: "pool", agents: ["claude-code", "codex"], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
 };
 
 function listResponse(items: unknown[]): Response {
@@ -35,7 +36,7 @@ function ctxFor(agentSource: string, userId = ADMIN): AgentContext {
       userId,
       custom: {
         userKey: "sk-user-secret",
-        session: { session_id: SESSION, team_id: "t1", user_id: userId, agent_id: "a1", space_id: SPACE },
+        session: { session_id: SESSION, team_id: "team-a", user_id: userId, user_key: "sk-user-secret", agent_id: "a1", space_id: SPACE },
       },
     },
   } as unknown as AgentContext;
@@ -47,7 +48,7 @@ function prewarmFor(agentSource: string, userId = ADMIN): PrewarmInput {
     userId,
     agentSource,
     spaceId: SPACE,
-    sessionInfo: { session_id: SESSION, space_id: SPACE },
+    sessionInfo: { session_id: SESSION, space_id: SPACE, team_id: "team-a", user_key: "sk-user-secret" },
     agentDetail: null,
     taskDetail: null,
     callerUserKey: "sk-user-secret",
@@ -75,6 +76,9 @@ describe("SubscriptionToolsInjector", () => {
   beforeEach(() => {
     resetAccountSwitchAccessForTests();
     clearCache();
+    clearTeamCaches();
+    __primeMembershipForTests(SPACE, ADMIN, ["team-a", "team-b"]);
+    __primeMembershipForTests(SPACE, "u-normal", ["team-a"]);
     __primeCacheForTests(SPACE, [defaultRow, poolRow]);
     // Only the role lookup reaches Core; the instance upstream config comes from the primed cache.
     fetchMock = vi.fn(async (url: string) => {
@@ -87,6 +91,7 @@ describe("SubscriptionToolsInjector", () => {
 
   afterEach(() => {
     clearCache();
+    clearTeamCaches();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -125,6 +130,18 @@ describe("SubscriptionToolsInjector", () => {
   it("returns nothing for other clients", async () => {
     __primeCacheForTests(SPACE, [defaultRow, { ...poolRow, agents: ["codebuddy"] }]);
     expect(await injector.execute(ctxFor("codebuddy"))).toEqual([]);
+  });
+
+  it("returns nothing when the team of the session has no pool, even if another team of the user has one", async () => {
+    __primeCacheForTests(SPACE, [defaultRow, { ...poolRow, team_id: "team-b" }]);
+    expect(await injector.execute(ctxFor("claude-code"))).toEqual([]);
+    expect(await injector.prewarm(prewarmFor("claude-code"))).toEqual([]);
+  });
+
+  it("returns nothing when the session carries no team", async () => {
+    const ctx = ctxFor("claude-code");
+    (ctx.metadata.custom as { session: Record<string, unknown> }).session.team_id = "";
+    expect(await injector.execute(ctx)).toEqual([]);
   });
 
   it("returns nothing when the role lookup fails", async () => {

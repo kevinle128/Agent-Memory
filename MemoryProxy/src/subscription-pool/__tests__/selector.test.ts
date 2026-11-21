@@ -242,6 +242,43 @@ describe("hasAccountBelowQuota", () => {
   });
 });
 
+describe("threshold of each account", () => {
+  it("skips an account at its own threshold and keeps one below its own threshold", () => {
+    const accounts = [
+      acct("a", { threshold_pct: 60 }, [win("primary_window", 70, HOUR)]),
+      acct("b", { threshold_pct: 90 }, [win("primary_window", 70, HOUR)]),
+    ];
+    const sel = selectAccount(accounts, null, NOW, 95, "m", 0)!;
+    expect(sel.account.account_id).toBe("b");
+    expect(sel.kind).toBe("round_robin");
+    // The same usage on an account with the stricter threshold leaves no round-robin account.
+    expect(selectAccount([accounts[0]!], null, NOW, 95, "m", 0)?.kind).toBe("lowest_usage");
+  });
+
+  it("uses the pool fallback for an account without a threshold", () => {
+    const account = acct("a", {}, [win("primary_window", 80, HOUR)]);
+    expect(selectAccount([account], null, NOW, 95, "m", 0)?.kind).toBe("round_robin");
+    expect(selectAccount([account], null, NOW, 70, "m", 0)?.kind).toBe("lowest_usage");
+  });
+
+  it("uses each account's threshold for the earliest reset", () => {
+    const accounts = [
+      acct("a", { threshold_pct: 50 }, [win("primary_window", 60, 2 * HOUR)]),
+      acct("b", { threshold_pct: 99 }, [win("primary_window", 97, HOUR)]),
+    ];
+    // Account b is under its own threshold, so only account a gives a reset time.
+    expect(earliestReset(accounts, NOW, 95, "m")).toBe(NOW + 2 * HOUR);
+  });
+
+  it("rejects a switch above the own threshold of the account and names that threshold", () => {
+    const account = acct("a", { threshold_pct: 60 }, [win("primary_window", 70, HOUR)]);
+    expect(accountSwitchRejection(account, NOW, 95)).toEqual({
+      reason: "account_above_threshold", usage_pct: 70, threshold_pct: 60, resets_at: NOW + HOUR,
+    });
+    expect(accountSwitchRejection(acct("b", { threshold_pct: 90 }, [win("primary_window", 70, HOUR)]), NOW, 50)).toBeNull();
+  });
+});
+
 describe("quota group windows", () => {
   const group = (name: string, used: number, models: string[]): PoolQuotaWindow => ({
     ...win(name, used, HOUR, "gemini"), shared_models: models,

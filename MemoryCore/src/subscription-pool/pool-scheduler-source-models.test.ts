@@ -16,7 +16,6 @@ describe("model list refresh timer", () => {
     refreshAllSourceModels = vi.fn(async () => ({ refreshed: 1, failed: 0 }));
     const target: SubscriptionPoolSchedulerTarget = {
       listSubscriptionAccountEntities: async () => [],
-      subscriptionThreshold: async () => 95,
       runSubscriptionUsageCheck: async () => undefined,
       runSubscriptionTokenRefresh: async () => undefined,
       refreshAllSourceModels,

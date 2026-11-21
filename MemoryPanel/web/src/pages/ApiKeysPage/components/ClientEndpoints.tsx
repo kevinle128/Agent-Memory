@@ -89,6 +89,7 @@ export function ClientEndpoints({ baseUrl, instanceId, canEdit }: Props) {
 
   return (
     <div className="_memory-apikey-endpoints">
+      <Text theme="weak" parent="div" style={{ fontSize: 11 }}>{t('clientSources.poolNote')}</Text>
       {view.agents.map((agent) => {
         const url = `${baseUrl}/${agent.agent}/${instanceId}`;
         return (

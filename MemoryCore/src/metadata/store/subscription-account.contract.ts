@@ -20,6 +20,8 @@ async function createPoolGroup(store: IMetadataStore, agents: string[]): Promise
     name: `pool-${groupSeq}`,
     agents,
     mode: "subscription_pool",
+    // A pool group needs a team. The store does not check that the team exists.
+    team_id: "team-pool-test",
   });
   return group.group_id;
 }
@@ -325,6 +327,32 @@ export function runSubscriptionAccountContract(
 
       expect(await store.listSubscriptionAccounts(groupId)).toEqual([]);
       expect(await store.listSubscriptionAccounts()).toEqual([kept]);
+    });
+
+    it("uses 95 as the threshold of a new account when the input gives none", async () => {
+      const { account } = await store.upsertSubscriptionAccountByProviderId(accountInput(groupId));
+      expect(account.threshold_pct).toBe(95);
+      expect((await store.getSubscriptionAccount(account.account_id))!.threshold_pct).toBe(95);
+    });
+
+    it("keeps the threshold of an account through a re-login and changes it through an update", async () => {
+      const created = (await store.upsertSubscriptionAccountByProviderId(
+        accountInput(groupId, { threshold_pct: 80 }),
+      )).account;
+      expect(created.threshold_pct).toBe(80);
+
+      const relogin = await store.upsertSubscriptionAccountByProviderId(
+        accountInput(groupId, { access_token: "access-token-2", threshold_pct: 60 }),
+      );
+      expect(relogin.created).toBe(false);
+      expect(relogin.account).toMatchObject({ access_token: "access-token-2", threshold_pct: 80 });
+
+      const updated = await store.updateSubscriptionAccount(created.account_id, { threshold_pct: 70 });
+      expect(updated.threshold_pct).toBe(70);
+      // A patch without the field keeps the value.
+      const other = await store.updateSubscriptionAccount(created.account_id, { display_name: "Renamed" });
+      expect(other.threshold_pct).toBe(70);
+      expect((await store.listSubscriptionAccounts(groupId))[0]!.threshold_pct).toBe(70);
     });
   });
 }

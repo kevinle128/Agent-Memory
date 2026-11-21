@@ -17,7 +17,7 @@ import { BINDING_TTL_MS, getBinding, rebindSession, sessionBindingKey } from "..
 import { isSessionOnClientLogin, poolSessionKey, resetClientLoginMarkersForTests } from "../pool-request.js";
 import { createSubscriptionBridgeHandler } from "../subscription-bridge.js";
 import type { PoolAccount, PoolQuotaWindow } from "../types.js";
-import { installFetch, jsonResponse, makeApp, makeConfig, resetPoolState, type RecordedCall } from "./test-harness.js";
+import { installFetch, jsonResponse, makeApp, makeConfig, POOL_TEST_TEAM, resetPoolState, type RecordedCall } from "./test-harness.js";
 
 const SPACE = "sp-pool";
 const NOW = Date.now();
@@ -29,11 +29,11 @@ const defaultRow: InstanceUpstreamRow = {
 };
 const codexPoolRow: InstanceUpstreamRow = {
   group_id: "pool-codex", group_type: "custom", name: "Codex pool", agents: ["codex"], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
 };
 const claudePoolRow: InstanceUpstreamRow = {
   group_id: "pool-claude", group_type: "custom", name: "Claude pool", agents: ["claude-code"], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
 };
 
 function win(name: string, used: number, resetsIn: number, scope: string | null = null): PoolQuotaWindow {
@@ -78,7 +78,7 @@ const sse = (): Response =>
 async function seedSession(agentSource: string, sessionId: string, userId = "u-admin", spaceId: string | undefined = SPACE): Promise<void> {
   const state: SessionInitState = {
     status: "initialized", keyId: `${agentSource}:${sessionId}`, startedAt: Date.now(), attemptCount: 1,
-    sessionInfo: { session_id: sessionId, team_id: "t1", agent_id: "ag1", user_id: userId, space_id: spaceId },
+    sessionInfo: { session_id: sessionId, team_id: POOL_TEST_TEAM, agent_id: "ag1", user_id: userId, user_key: "sk-mem-admin", space_id: spaceId },
   };
   await getSessionStore().set(`${agentSource}:${sessionId}`, state);
 }
@@ -217,7 +217,7 @@ describe("subscription bridge", () => {
       await codexTurn("s1");
       expect(upstreamCalls.at(-1)?.headers["chatgpt-account-id"]).toBe("chatgpt-b");
       expect(upstreamCalls.at(-1)?.headers["authorization"]).toBe("Bearer secret-token-b");
-      expect(logs.some((line) => line.includes("[subscription-bridge] account switch space=sp-pool provider=codex from=a to=b"))).toBe(true);
+      expect(logs.some((line) => line.includes("[subscription-bridge] account switch space=sp-pool team=team-a provider=codex from=a to=b"))).toBe(true);
     });
 
     it("still lets the pool move the session off the switched account when it runs out of quota", async () => {
@@ -359,6 +359,39 @@ describe("subscription bridge", () => {
       });
     });
 
+    it("rejects a switch to an account above its own threshold and names that threshold", async () => {
+      // 70 % is below the pool-wide 95 %, but above the 60 % of this account.
+      poolAccounts = [ALICE, acct("f", "frank@example.test", { threshold_pct: 60, usage: { windows: [win("primary_window", 70, HOUR)] } })];
+      await seedSession("codex", "s1");
+      const { status, json } = await callBridge("switch", { email: "frank@example.test" });
+      expect(status).toBe(409);
+      expect(json).toMatchObject({ reason: "account_above_threshold", data: { usage_pct: 70, threshold_pct: 60 } });
+      expect(json.message).toContain("60%");
+    });
+
+    it("accepts a switch to an account below its own higher threshold although the pool-wide value is lower", async () => {
+      poolAccounts = [ALICE, acct("f", "frank@example.test", { threshold_pct: 99, usage: { windows: [win("primary_window", 96, HOUR)] } })];
+      await seedSession("codex", "s1");
+      const { status } = await callBridge("switch", { email: "frank@example.test" });
+      expect(status).toBe(200);
+    });
+
+    it("lists accounts of the session team only: an account of another team is not in the pool of the session", async () => {
+      const teamBRow: InstanceUpstreamRow = { ...codexPoolRow, group_id: "pool-codex-b", team_id: "team-b" };
+      const bobOfTeamB = acct("tb", "bob.b@example.test", { group_id: "pool-codex-b" });
+      __primeCacheForTests(SPACE, [defaultRow, codexPoolRow, teamBRow, claudePoolRow]);
+      poolAccounts = [ALICE, bobOfTeamB];
+      await seedSession("codex", "s1");
+      expect((await callBridge("switch", { email: "bob.b@example.test" })).json.reason).toBe("account_not_in_pool");
+      expect((await callBridge("switch", { email: "alice@example.test" })).status).toBe(200);
+    });
+
+    it("answers not_pool_session when the team of the session has no pool, although another team of the user has one", async () => {
+      __primeCacheForTests(SPACE, [defaultRow, { ...codexPoolRow, team_id: "team-b" }]);
+      await seedSession("codex", "s1");
+      expect((await callBridge("current")).json.reason).toBe("not_pool_session");
+    });
+
     it.each([
       [{ enabled: false }, "account_disabled"],
       [{ status: "auth_error" as const }, "account_needs_login"],
@@ -394,7 +427,7 @@ describe("subscription bridge", () => {
 
     it("refuses a session of another client", async () => {
       const repo: BindingRepo = {
-        getBinding: async (): Promise<IdentityBinding> => ({ outcome: "initialized", userId: "u-admin", agentSource: "codebuddy" }),
+        getBinding: async (): Promise<IdentityBinding> => ({ outcome: "initialized", userId: "u-admin", agentSource: "codebuddy", teamId: POOL_TEST_TEAM, userKey: "sk-mem-admin" }),
         putBinding: async () => {}, deleteBinding: async () => {}, touchLastSeen: async () => {},
       };
       getSessionStore().setBindingRepo(repo);
@@ -405,7 +438,7 @@ describe("subscription bridge", () => {
 
     it("refuses a stored session without an agent instead of guessing one", async () => {
       const repo: BindingRepo = {
-        getBinding: async (): Promise<IdentityBinding> => ({ outcome: "initialized", userId: "u-admin" }),
+        getBinding: async (): Promise<IdentityBinding> => ({ outcome: "initialized", userId: "u-admin", teamId: POOL_TEST_TEAM, userKey: "sk-mem-admin" }),
         putBinding: async () => {}, deleteBinding: async () => {}, touchLastSeen: async () => {},
       };
       getSessionStore().setBindingRepo(repo);
@@ -413,7 +446,7 @@ describe("subscription bridge", () => {
     });
 
     it("finds a stored Codex session by the space in the header", async () => {
-      const getStored = vi.fn(async (): Promise<IdentityBinding> => ({ outcome: "initialized", userId: "u-admin", agentSource: "codex" }));
+      const getStored = vi.fn(async (): Promise<IdentityBinding> => ({ outcome: "initialized", userId: "u-admin", agentSource: "codex", teamId: POOL_TEST_TEAM, userKey: "sk-mem-admin" }));
       getSessionStore().setBindingRepo({ getBinding: getStored, putBinding: async () => {}, deleteBinding: async () => {}, touchLastSeen: async () => {} });
       const { status, json } = await callBridge("current");
       expect(status).toBe(200);

@@ -4,7 +4,8 @@
  * sessions, last update and actions.
  */
 import { useTranslation } from 'react-i18next';
-import { Button, StatusTip, Table, Tag, Text, Bubble } from 'tea-component';
+import { useEffect, useState } from 'react';
+import { Button, InputNumber, StatusTip, Table, Tag, Text, Bubble } from 'tea-component';
 
 const { scrollable } = Table.addons;
 import i18n from '@/i18n';
@@ -17,6 +18,9 @@ import {
   formatResetAt,
   groupBuckets,
   groupWindows,
+  isValidThreshold,
+  MAX_THRESHOLD_PCT,
+  MIN_THRESHOLD_PCT,
   windowColumns,
   latestObservation,
   nearestExpiringCredit,
@@ -33,13 +37,14 @@ interface Props {
   readOnly: boolean;
   accounts: SubscriptionAccount[];
   poolEnabled: boolean;
-  thresholdPct: number;
   now: number;
   loading: boolean;
   /** Account ids with a running action (check, enable/disable). */
   busyIds: ReadonlySet<string>;
   onCheck: (account: SubscriptionAccount) => void;
   onToggleEnabled: (account: SubscriptionAccount) => void;
+  /** Save the threshold of one account. Only called with a value from 50 to 100. */
+  onSaveThreshold: (account: SubscriptionAccount, thresholdPct: number) => void;
   onDelete: (account: SubscriptionAccount) => void;
   onRelogin: (account: SubscriptionAccount) => void;
   onShowCredits: (account: SubscriptionAccount) => void;
@@ -54,6 +59,45 @@ const STATE_TAG: Record<AccountState, { theme: 'default' | 'primary' | 'success'
   auth_error: { theme: 'error', mark: '✕' },
   disabled: { theme: 'default', mark: '○' },
 };
+
+/** Threshold of one account: an editable number for a manager, plain text for a viewer. */
+function ThresholdCell({
+  account,
+  editable,
+  busy,
+  onSave,
+}: {
+  account: SubscriptionAccount;
+  editable: boolean;
+  busy: boolean;
+  onSave: (thresholdPct: number) => void;
+}) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState<number>(account.threshold_pct);
+  useEffect(() => setDraft(account.threshold_pct), [account.threshold_pct, account.version]);
+  if (!editable) return <Text>{account.threshold_pct}%</Text>;
+  const valid = isValidThreshold(draft);
+  return (
+    <div>
+      <div className="_memory-pool-row">
+        <InputNumber
+          min={MIN_THRESHOLD_PCT}
+          max={MAX_THRESHOLD_PCT}
+          step={1}
+          hideButton
+          disabled={busy}
+          value={draft}
+          onChange={(v) => setDraft(v)}
+        />
+        <Text theme="weak">%</Text>
+        <Button type="link" disabled={busy || !valid || draft === account.threshold_pct} onClick={() => onSave(draft)}>
+          {t('subscriptionPool.settings.save')}
+        </Button>
+      </div>
+      {!valid && <Text theme="danger" parent="div" className="_memory-pool-small">{t('subscriptionPool.settings.invalid')}</Text>}
+    </div>
+  );
+}
 
 function Meter({
   window,
@@ -119,13 +163,11 @@ function QuotaGroupCell({
   account,
   groupKey,
   now,
-  thresholdPct,
   showMark,
 }: {
   account: SubscriptionAccount;
   groupKey: string;
   now: number;
-  thresholdPct: number;
   showMark: boolean;
 }) {
   const { t } = useTranslation();
@@ -140,7 +182,7 @@ function QuotaGroupCell({
             key={window.name}
             window={window}
             now={now}
-            thresholdPct={thresholdPct}
+            thresholdPct={account.threshold_pct}
             showMark={showMark}
             showRemaining
             label={windowLabel(window, t)}
@@ -166,12 +208,12 @@ export function AccountTable({
   readOnly,
   accounts,
   poolEnabled,
-  thresholdPct,
   now,
   loading,
   busyIds,
   onCheck,
   onToggleEnabled,
+  onSaveThreshold,
   onDelete,
   onRelogin,
   onShowCredits,
@@ -180,7 +222,7 @@ export function AccountTable({
   const { t } = useTranslation();
 
   const stateOf = (account: SubscriptionAccount) =>
-    accountState(account, { now, threshold: thresholdPct, poolEnabled });
+    accountState(account, { now, threshold: account.threshold_pct, poolEnabled });
 
   // Empty and loading stay outside the table. Tea Table's autotip row is a SlideTransition
   // inside <tbody>. Turning that row off in the same commit that inserts the first account
@@ -205,7 +247,7 @@ export function AccountTable({
   const showCredits = accounts.some((account) => supportsResetCredits(account.provider));
   // Every column has a fixed width. When their sum is wider than the page, the table scrolls
   // sideways instead of squeezing the account name into one letter per line.
-  const minWidth = 220 + 150 + (visible.primary ? 220 : 0) + (showWeekly ? 220 : 0) + (showModels ? 220 : 0) + groupColumns.length * 240 + (showCredits ? 170 : 0) + 120 + 150 + 260;
+  const minWidth = 220 + 150 + (visible.primary ? 220 : 0) + (showWeekly ? 220 : 0) + (showModels ? 220 : 0) + groupColumns.length * 240 + (showCredits ? 170 : 0) + 140 + 120 + 150 + 260;
 
   return (
     <Table
@@ -257,6 +299,19 @@ export function AccountTable({
             );
           },
         },
+        {
+          key: 'threshold',
+          header: t('subscriptionPool.col.threshold'),
+          width: 140,
+          render: (account: SubscriptionAccount) => (
+            <ThresholdCell
+              account={account}
+              editable={!readOnly}
+              busy={busyIds.has(account.account_id)}
+              onSave={(value) => onSaveThreshold(account, value)}
+            />
+          ),
+        },
         ...(visible.primary ? [{
           key: 'primary',
           header: t('subscriptionPool.col.primary'),
@@ -267,7 +322,7 @@ export function AccountTable({
               <Meter
                 window={groupWindows(account.usage.windows).primary}
                 now={now}
-                thresholdPct={thresholdPct}
+                thresholdPct={account.threshold_pct}
                 showMark={state !== 'disabled' && state !== 'auth_error'}
               />
             );
@@ -283,7 +338,7 @@ export function AccountTable({
               <Meter
                 window={groupWindows(account.usage.windows).secondary}
                 now={now}
-                thresholdPct={thresholdPct}
+                thresholdPct={account.threshold_pct}
                 showMark={state !== 'disabled' && state !== 'auth_error'}
               />
             );
@@ -303,7 +358,7 @@ export function AccountTable({
                     key={`${window.name}:${window.model_scope ?? ''}`}
                     window={window}
                     now={now}
-                    thresholdPct={thresholdPct}
+                    thresholdPct={account.threshold_pct}
                     showMark={false}
                     label={windowLabel(window, t)}
                   />
@@ -323,7 +378,6 @@ export function AccountTable({
                 account={account}
                 groupKey={group.key}
                 now={now}
-                thresholdPct={thresholdPct}
                 showMark={state !== 'disabled' && state !== 'auth_error'}
               />
             );

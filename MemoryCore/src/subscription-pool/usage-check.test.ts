@@ -250,4 +250,17 @@ describe("checkAccountUsage", () => {
 
     expect(result.account.exhausted_until).toBe(NOW + 30 * MIN);
   });
+
+  it("marks a window that is stuck at the limit at the threshold of the account", async () => {
+    const low = await fx.addAccount({ threshold_pct: 70 });
+    const high = await fx.addAccount({ threshold_pct: 95 });
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => fakeAdapter({ fetchUsage: async () => usageReading([win(80, null)]) }) });
+
+    const lowResult = await fx.svc.runSubscriptionUsageCheck(low.account_id, { refreshModels: false });
+    const highResult = await fx.svc.runSubscriptionUsageCheck(high.account_id, { refreshModels: false });
+
+    // A window at or above the threshold with no known reset gets a next check; a window below it is stored as read.
+    expect(lowResult.account.usage.windows[0]!.resets_at).not.toBeNull();
+    expect(highResult.account.usage.windows[0]!.resets_at).toBeNull();
+  });
 });

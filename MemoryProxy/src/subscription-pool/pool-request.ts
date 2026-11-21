@@ -338,7 +338,7 @@ class PoolRequestImpl implements PoolRequest {
         if (this.provider === "antigravity" && resp.status === 503) {
           const text = await bounded(() => resp.text());
           if (isAntigravityCapacityError(resp.status, text)) {
-            console.warn(`${TAG} account_id=${account.account_id} got a transient capacity 503; trying another account`);
+            console.warn(`${TAG} account_id=${account.account_id} team=${this.input.row.team_id ?? ""} got a transient capacity 503; trying another account`);
             excluded.add(account.account_id);
             lastCapacity503 = new Response(text, { status: resp.status, headers: resp.headers });
             continue;
@@ -390,12 +390,12 @@ class PoolRequestImpl implements PoolRequest {
         const blocked = poolRetryBlockedUntil(key, deadline);
         if (!checked && (retries >= 4 || blocked)) {
           checked = true;
-          console.info(`${TAG} Check now ${blocked ? "because Retry-After exceeds the request budget" : "after retries"} account_id=${account.account_id}`);
+          console.info(`${TAG} Check now ${blocked ? "because Retry-After exceeds the request budget" : "after retries"} account_id=${account.account_id} team=${this.input.row.team_id ?? ""}`);
           if (await this.checkNow(account, key, deadline)) return { response: originalError(), quotaConfirmed: true };
         }
         const delay = Math.min(1000 * 2 ** retries, POOL_RETRY_MAX_WAIT_MS);
         await waitForPoolRetry(key, delay, deadline, this.input.signal);
-        console.info(`${TAG} retry account_id=${account.account_id} attempt=${retries + 1} remaining_ms=${Math.max(0, deadline - Date.now())}`);
+        console.info(`${TAG} retry account_id=${account.account_id} team=${this.input.row.team_id ?? ""} attempt=${retries + 1} remaining_ms=${Math.max(0, deadline - Date.now())}`);
         response = await withinRetryDeadline((signal) => doFetch(auth, signal), deadline, this.input.signal);
         if (response.status !== 429) return { response, quotaConfirmed: false };
         body = await readPoolErrorBody(response, deadline, this.input.signal);
@@ -426,13 +426,13 @@ class PoolRequestImpl implements PoolRequest {
         && window.used_pct >= 100 && (window.resets_at === null || window.resets_at > this.now())
       ));
       if (!full) return false;
-      console.info(`${TAG} Check now confirmed full quota account_id=${account.account_id}; switching allowed`);
+      console.info(`${TAG} Check now confirmed full quota account_id=${account.account_id} team=${this.input.row.team_id ?? ""}; switching allowed`);
       // Fetch the checked state before selecting another account; never fabricate 100%.
       await withinRetryDeadline(() => this.snapshot(true), deadline, this.input.signal);
       return true;
     } catch (error) {
       if (error instanceof PoolRetryDeadline || this.input.signal?.aborted) throw error;
-      console.warn(`${TAG} Check now unavailable account_id=${account.account_id}; retaining session account`);
+      console.warn(`${TAG} Check now unavailable account_id=${account.account_id} team=${this.input.row.team_id ?? ""}; retaining session account`);
       return false;
     }
   }
@@ -466,7 +466,7 @@ class PoolRequestImpl implements PoolRequest {
     if (storage) {
       try {
         if (key) binding = await getBinding(storage, key, now);
-        cursor = await getCursor(storage, this.input.spaceId, this.provider);
+        cursor = await getCursor(storage, this.input.spaceId, this.provider, this.input.row.group_id);
       } catch (err) {
         console.warn(`${TAG} binding read failed: ${err instanceof Error ? err.message : "unknown"}`);
       }
@@ -497,7 +497,7 @@ class PoolRequestImpl implements PoolRequest {
         if (binding && now - binding.last_used_at > BINDING_TOUCH_MS) await rebindSession(storage, key, accountId, now);
         return;
       }
-      if (selection.kind === "round_robin") await setCursor(storage, this.input.spaceId, this.provider, selection.nextCursor);
+      if (selection.kind === "round_robin") await setCursor(storage, this.input.spaceId, this.provider, this.input.row.group_id, selection.nextCursor);
 
       let changed = false;
       if (binding) {
@@ -551,7 +551,7 @@ class PoolRequestImpl implements PoolRequest {
       secrets: [account.access_token, this.input.userKey, coreConfig(this.input.config).serviceToken,
         this.input.clientHeaders.get("authorization") ?? "", this.input.clientHeaders.get("x-api-key") ?? ""],
     }).catch(() => { /* Diagnostics must never interrupt forwarding. */ });
-    console.warn(`${TAG} account_id=${account.account_id} received 429; quota not yet confirmed`);
+    console.warn(`${TAG} account_id=${account.account_id} team=${this.input.row.team_id ?? ""} received 429; quota not yet confirmed`);
   }
 
   /** Returns the account with a fresh token, or null when Core could not refresh it. */
@@ -571,7 +571,7 @@ class PoolRequestImpl implements PoolRequest {
       };
     } catch (err) {
       const reason = err instanceof PoolCoreError ? `${err.httpStatus} ${err.errorCode ?? ""}`.trim() : "unreachable";
-      console.warn(`${TAG} token refresh failed for account_id=${account.account_id} (${reason})`);
+      console.warn(`${TAG} token refresh failed for account_id=${account.account_id} team=${this.input.row.team_id ?? ""} (${reason})`);
       markAccountUnavailable(this.input.spaceId, account.account_id, this.now() + REFRESH_FAILURE_COOLDOWN_MS);
       return null;
     }

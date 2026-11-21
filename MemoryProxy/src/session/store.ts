@@ -65,6 +65,28 @@ export interface RecoveryContext {
   presetIdentity?: PresetIdentity;
 }
 
+/**
+ * What the session store knows about the team of a session, for routing only.
+ *   - `none`: no state of this user for this session.
+ *   - `pending`: a registration form is open; `teamId` is the team the user chose so far.
+ *   - `registered`: init is final. `teamId` is the registered team, or the team the user chose
+ *     before a bypass. Null when the session was bypassed without a chosen team.
+ */
+export type SessionTeamPeek =
+  | { state: "none" }
+  | { state: "pending"; teamId: string | null }
+  | { state: "registered"; teamId: string | null };
+
+function peekOfState(state: SessionInitState): SessionTeamPeek {
+  if (state.status === "initialized") {
+    const teamId = state.bypassed
+      ? state.selectedTeamId ?? state.sessionInfo?.team_id
+      : state.sessionInfo?.team_id;
+    return { state: "registered", teamId: teamId || null };
+  }
+  return { state: "pending", teamId: state.selectedTeamId || null };
+}
+
 export class SessionStore {
   private states = new Map<string, SessionInitState>();
   /** keyId → identity map — populated via {@link bind} to keep repo/binding writes user-namespaced. */
@@ -225,7 +247,8 @@ export class SessionStore {
         ? {
             outcome: "bypassed",
             userId: state.userId,
-            teamId: state.sessionInfo?.team_id,
+            // A bypassed session keeps the team it chose (no sessionInfo), so peekForTeam can find it.
+            teamId: state.selectedTeamId ?? state.sessionInfo?.team_id,
             agentId: state.sessionInfo?.agent_id,
             taskId: state.sessionInfo?.task_id,
             agentSource: id.agentSource,
@@ -309,6 +332,50 @@ export class SessionStore {
       );
       return 0;
     }
+  }
+
+  /**
+   * Read-only look at the team of a session. It reads L1, then L2a, then the L2b binding row, and
+   * compares the user on every layer (L1 `get` does not). It never rebuilds a state from the
+   * binding, never scans the history, never calls Core and never writes, so a routing decision
+   * can use it before session init has run.
+   *
+   * An initialized L1 state answers at once. A pending L1 state is not authoritative on a
+   * multi-node setup, so L2a is read first and the L1 state is the fallback when L2a has none.
+   */
+  async peekForTeam(keyId: string, identity: SessionIdentity): Promise<SessionTeamPeek> {
+    const userMatches = (state: SessionInitState): boolean => {
+      const stored = state.userId ?? state.sessionInfo?.user_id;
+      return !stored || !identity.userId || stored === identity.userId;
+    };
+    const live = (state: SessionInitState): boolean =>
+      state.status === "initialized" || Date.now() - state.startedAt <= this.ttlMs;
+
+    const l1 = this.states.get(keyId);
+    const l1Usable = l1 !== undefined && userMatches(l1) && live(l1);
+    if (l1Usable && l1.status === "initialized") return peekOfState(l1);
+
+    if (this.repo) {
+      try {
+        const row = await this.repo.getBySessionId(spaceOf(identity), identity.userId, identity.agentSource, identity.sessionId);
+        if (row && userMatches(row) && live(row)) return peekOfState(row);
+      } catch {
+        // A failed read counts as a miss, the same as in getOrRecover.
+      }
+    }
+    if (l1Usable) return peekOfState(l1);
+
+    if (this.bindingRepo) {
+      try {
+        const binding = await this.bindingRepo.getBinding(spaceOf(identity), identity.sessionId);
+        if (binding && (!binding.userId || !identity.userId || binding.userId === identity.userId)) {
+          return { state: "registered", teamId: binding.teamId || null };
+        }
+      } catch {
+        // A failed read counts as a miss.
+      }
+    }
+    return { state: "none" };
   }
 
   // ── Recovery layer ──────────────────────────────────────────────────────────
@@ -414,6 +481,14 @@ export class SessionStore {
 
     // Step 3.1: bypassed outcome → construct bypass state
     if (binding.outcome === "bypassed") {
+      // A bypass binding of another user does not apply to this caller (same policy as doRebuild):
+      // drop it so session init runs for this user and the old owner's team is not overwritten.
+      if (binding.userId && identity.userId && binding.userId !== identity.userId) {
+        console.log(`[session-recover] ${keyId} bypass user mismatch (bound=${binding.userId}, current=${identity.userId}), invalidating`);
+        await this.bindingRepo.deleteBinding(spaceOf(identity), identity.sessionId);
+        return undefined;
+      }
+      const userId = binding.userId || identity.userId;
       const state: SessionInitState = {
         status: "initialized",
         keyId,
@@ -423,6 +498,8 @@ export class SessionStore {
         sessionInfo: null,
         agentDetail: null,
         taskDetail: null,
+        ...(userId ? { userId } : {}),
+        ...(binding.teamId ? { selectedTeamId: binding.teamId } : {}),
       };
       await this.set(keyId, state);
       return this.tagRecoverySource(state, "l2b");

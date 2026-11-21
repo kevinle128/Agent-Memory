@@ -29,7 +29,7 @@ const defaultRow: InstanceUpstreamRow = {
 };
 const claudePoolForCode: InstanceUpstreamRow = {
   group_id: "pool-code", group_type: "custom", name: "claude code pool", agents: ["claude-code"], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
 };
 const apiForBuddy: InstanceUpstreamRow = {
   group_id: "grp-buddy", group_type: "custom", name: "buddy upstream", agents: ["codebuddy"], enabled: true,
@@ -44,7 +44,7 @@ const apiSource: InstanceUpstreamRow = {
 };
 const poolSource: InstanceUpstreamRow = {
   group_id: "pool-src", group_type: "custom", name: "claude source pool", agents: [], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
   source_name: "sub-claude", source_provider: "claude", source_formats: ["anthropic-messages"],
   source_agents: ["hermes"],
   source_models: [{ id: "claude-sonnet", enabled: true, available: true }],

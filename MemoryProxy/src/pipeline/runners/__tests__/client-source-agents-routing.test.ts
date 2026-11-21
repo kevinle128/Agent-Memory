@@ -33,7 +33,7 @@ const messagesSource = apiRow("anthropic-messages", "api-msg", "http://msg-src.t
 const responsesSource = apiRow("openai-responses", "api-resp", "http://resp-src.test/v1", "resp-key");
 const poolSource: InstanceUpstreamRow = {
   group_id: "pool-src", group_type: "custom", name: "codex pool", agents: [], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
   source_name: "sub-openai", source_provider: "codex", source_formats: ["openai-responses"],
   source_agents: AGENTS,
   source_models: [{ id: "x-model", enabled: true, available: true }],

@@ -335,6 +335,45 @@ the binding store and the round-robin cursor are not shared between replicas.
 Auxiliary requests (`responses/compact`, `memories/trace_summarize`, `realtime/calls`, utility routes)
 read the binding or take any eligible account. They never create or move a binding.
 
+**Team of a request.** A pool belongs to one team (see `docs/adr/0003-team-scoped-subscription-pool.md`).
+The proxy finds the team of a request before it picks a pool, and it uses a pool row only when the
+`team_id` of the row is the same as that team. A pool row without a `team_id` (sent by an older Core)
+is never used.
+
+1. The team is the first of these that is a team where the user is an active member: the team of the
+   registered session, the team that a bypassed session chose, the team of an open session form. A
+   request that can still run session init (it has a session id, it is not `x-memory-mode: off`, and
+   its session has no final state) also tries the default team of the user and then the team of the
+   header preset (`x-team-id`). A request that runs no session init ignores both. A known team without
+   a pool for the client runs on the shared normal upstream of the client. It never uses a pool of
+   another team.
+2. When the session gives no team (for example `x-memory-mode: off`, a request with no session id,
+   or a session that skipped the team question), the proxy takes the first active team of the user, in
+   the order of Core (newest first), that has an enabled pool for the client and one account that can
+   take a new session.
+3. The team list of the user is read from Core. It is fresh for 60 seconds. When Core cannot be
+   reached, the last good list is used for up to 10 minutes.
+
+The check runs only for a client that an enabled pool row serves. Other clients behave as before.
+When no team can serve the request, the proxy answers before any upstream call:
+
+| Status | Code | When | Body and headers |
+|---|---|---|---|
+| `403` | `no_team_pool` | The user has active teams, and none of them has an enabled pool for the client. | Claude Code and other Anthropic clients: `{"type":"error","error":{"type":"no_team_pool","message":"..."}}`. OpenAI clients: `{"code":403,"error_code":"NO_TEAM_POOL","message":"..."}`. |
+| `403` | `no_active_team` | The user is an active member of no team. | Same shapes, with `no_active_team` / `NO_ACTIVE_TEAM`. |
+| `429` | `usage_limit_reached` | Some team has a pool, and no account of any pool can take a new session. | The `429` answer of step 5 above. It has `retry-after`, `x-tdai-pool-status: exhausted` and `x-tdai-pool-earliest-reset` (epoch seconds) with the earliest reset time of all the pools of the user. |
+| `503` | `team_list_unavailable` | Core cannot give the team list and the proxy has no earlier list. | Same shapes as `403`, with `retry-after: 5`. |
+
+A session that can still register a team in the same request (the first turn, with session init on)
+gets its team error only after init has run. A request with no session init to wait for gets it at
+once. Each answer writes the line `[subscription-pool] no usable team pool code=<code>` to the console.
+
+`GET /<agent>/<spaceId>/v1/models` lists the pool models of the teams of the caller only, and lists a
+model id once when two teams give it. Account Switch (`/subscription-bridge/v1/*`) works on
+the pool of the team of the session, so it lists and switches only accounts of that team.
+The Threshold used by the selector, by the `429` answer and by Account Switch is the Threshold of each
+account.
+
 **Forwarding.** Requests go to `https://chatgpt.com/backend-api/codex/<endpoint>` (or to the `base_url`
 of the pool group when it is set) with `authorization: Bearer <access token>` and
 `chatgpt-account-id: <account>`. The model name is forwarded unchanged: there is no pricing-table check

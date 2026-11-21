@@ -17,7 +17,7 @@
  * ## v1 → v2 API 迁移
  *
  * 老接口 `resolveUpstreamConfig(items, agentSource, type)` 拆成两个:
- *   - `resolveForAgent(items, agentSource)` → 对话请求 4 态解析(override/official/blocked/unmanaged)
+ *   - `resolveForAgent(items, agentSource, teamId)` → 对话请求 4 态解析(override/official/blocked/unmanaged)
  *   - `resolveExtraction(items)` → 抽取请求(返 null 表示"用全局",不产生 blocked)
  *
  * `shouldOverride` 保留,只对 kind=override 或 extraction 非 null 返 true;alias-skip 门统一走它。
@@ -81,6 +81,11 @@ export interface InstanceUpstreamRow {
   /** Switch of an API-key source. A subscription source follows `enabled` of its pool. */
   source_enabled?: boolean;
   source_models?: SourceModelEntry[];
+  /**
+   * Team that owns the row. Set on every pool row; `""` or absent on every other row. Absent
+   * also on rows from a Core that does not know teams, and the Proxy never uses such a pool row.
+   */
+  team_id?: string;
 }
 
 /** One model of a model source. `id` is the provider id and may contain `/`. */
@@ -210,9 +215,33 @@ export async function getInstanceUpstreamConfigs(
 }
 
 /**
- * 对话请求解析:输入 items 数组 + agent,输出 4 态 Resolution。
+ * True for a row that is a team's subscription pool. Such a row belongs to one team and is never
+ * part of the instance layer of `resolveForAgent`.
+ */
+export function isPoolRow(row: InstanceUpstreamRow): boolean {
+  return row.mode === "subscription_pool";
+}
+
+/**
+ * True when the row is a pool row that the team `teamId` owns. A row without a team id never
+ * matches, so an answer from a Core that does not know teams cannot give a pool to anyone.
+ */
+export function isTeamPoolRow(row: InstanceUpstreamRow, teamId: string | null): boolean {
+  return teamId !== null && teamId !== "" && isPoolRow(row) && row.team_id === teamId;
+}
+
+/**
+ * 对话请求解析:输入 items 数组 + agent + 请求所属 team,输出 4 态 Resolution。
  *
- * 详见 §7.3。**关键**:items 为空数组时返回 `{kind:"official", row:null}`,
+ * Two layers:
+ *   1. Team layer. When `teamId` is set, an enabled pool row of that team that holds the agent
+ *      gives `{ kind: "pool" }`. A switched-off team pool is skipped: its clients use the
+ *      instance layer. The pool row of another team, or one without a team, never matches.
+ *   2. Instance layer. The old algorithm over the rows that are not pool rows. A pool row never
+ *      gives `blocked` here. With `teamId` null (no pool serves the request) a pool row is never
+ *      returned at all.
+ *
+ * 关键:instance layer 的 items 为空数组时返回 `{kind:"official", row:null}`,
  * handler 见到 row=null 一律按"走全局 upstream + alias"处理 —— 这是"向后兼容"
  * 红线的直接体现([[default-no-config-backward-compat]]):Core 挂 / seed 失败 /
  * stale 缓存首次没命中时,业务侧行为等同 v1,不会因为本功能返 500。
@@ -220,10 +249,19 @@ export async function getInstanceUpstreamConfigs(
 export function resolveForAgent(
   items: InstanceUpstreamRow[],
   agentSource: string,
+  teamId: string | null,
 ): Resolution {
-  // 只关心 conversation 用的组行(default + custom),忽略 extraction 行
+  // 1. Team layer.
+  if (teamId) {
+    const teamPool = items.find(
+      (r) => r.group_type === "custom" && isTeamPoolRow(r, teamId) && r.enabled && r.agents.includes(agentSource),
+    );
+    if (teamPool) return { kind: "pool", row: teamPool };
+  }
+
+  // 只关心 conversation 用的组行(default + custom),忽略 extraction 行和 pool 行
   const convRows = items.filter(
-    (r) => r.group_type === "default" || r.group_type === "custom",
+    (r) => (r.group_type === "default" || r.group_type === "custom") && !isPoolRow(r),
   );
 
   // 0. 零行 fallback:向后兼容红线保护
@@ -238,9 +276,6 @@ export function resolveForAgent(
   if (custom) {
     if (!custom.enabled) {
       return { kind: "blocked", reason: "custom_disabled", group_id: custom.group_id };
-    }
-    if (custom.mode === "subscription_pool") {
-      return { kind: "pool", row: custom };
     }
     return { kind: "override", row: custom };
   }
@@ -258,6 +293,23 @@ export function resolveForAgent(
 
   // 3. agent 不在任何组的 agents 列表里 → unmanaged(管理员主动不给 upstream)
   return { kind: "unmanaged", agent: agentSource };
+}
+
+/**
+ * True when a pool row of the instance serves the client: an enabled row that holds the agent, or
+ * a row (enabled or not) whose source name is the model prefix, because a source request must
+ * still get the "source is disabled" answer of its own team. Rows without a team are not
+ * counted, because no team uses them. The request team helper runs only when this is true.
+ */
+export function poolServesClient(
+  items: readonly InstanceUpstreamRow[],
+  agentSource: string,
+  modelPrefix: string | null,
+): boolean {
+  return items.some((r) => r.group_type === "custom" && isPoolRow(r)
+    && typeof r.team_id === "string" && r.team_id !== ""
+    && ((r.enabled && r.agents.includes(agentSource))
+      || (modelPrefix !== null && modelPrefix !== "" && r.source_name === modelPrefix)));
 }
 
 /**

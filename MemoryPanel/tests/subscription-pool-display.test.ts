@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   USAGE_FAIL_LIMIT,
+  describeThresholds,
+  isValidThreshold,
+  poolPermissions,
+  POOL_SOURCE_NAMES,
   addAccountKeyPrefix,
   supportsResetCredits,
   CREDIT_EXPIRING_SOON_MS,
@@ -357,6 +361,46 @@ describe('antigravity provider', () => {
   it('groups per-model windows into extra rows when no shared window exists', () => {
     const window = { name: 'quota', model_scope: 'claude-opus-5-5', used_pct: 10, resets_at: null, observed_at: 0, source: 'usage_api' };
     expect(groupWindows([window])).toEqual({ primary: null, secondary: null, extra: [window] });
+  });
+});
+
+describe('team pool permissions', () => {
+  it('a team admin can edit, a member only views, a global admin can edit any team', () => {
+    expect(poolPermissions({ isGlobalAdmin: false, teamRole: 'admin' }).canManage).toBe(true);
+    expect(poolPermissions({ isGlobalAdmin: false, teamRole: 'member' }).canManage).toBe(false);
+    expect(poolPermissions({ isGlobalAdmin: false, teamRole: 'reviewer' }).canManage).toBe(false);
+    expect(poolPermissions({ isGlobalAdmin: false, teamRole: null }).canManage).toBe(false);
+    expect(poolPermissions({ isGlobalAdmin: true, teamRole: null }).canManage).toBe(true);
+    expect(poolPermissions({ isGlobalAdmin: true, teamRole: 'member' }).canManage).toBe(true);
+  });
+
+  it('a team admin edits an account threshold; the start threshold control is for a global admin only', () => {
+    expect(poolPermissions({ isGlobalAdmin: false, teamRole: 'admin' })).toEqual({ canManage: true, canSetStartThreshold: false });
+    expect(poolPermissions({ isGlobalAdmin: false, teamRole: 'member' })).toEqual({ canManage: false, canSetStartThreshold: false });
+    expect(poolPermissions({ isGlobalAdmin: true, teamRole: null })).toEqual({ canManage: true, canSetStartThreshold: true });
+  });
+});
+
+describe('account thresholds', () => {
+  it('shows the threshold of each account', () => {
+    expect(describeThresholds([])).toBeNull();
+    expect(describeThresholds([{ threshold_pct: 95 }])).toBe('95%');
+    expect(describeThresholds([{ threshold_pct: 95 }, { threshold_pct: 95 }])).toBe('95%');
+    expect(describeThresholds([{ threshold_pct: 80 }, { threshold_pct: 95 }, { threshold_pct: 60 }])).toBe('60-95%');
+  });
+
+  it('judges each account by its own threshold', () => {
+    const row = account({ usage: { windows: [win({ used_pct: 85 })] } });
+    expect(accountState(row, { now: NOW, threshold: 80, poolEnabled: true })).toBe('near_limit');
+    expect(accountState(row, { now: NOW, threshold: 95, poolEnabled: true })).toBe('active');
+  });
+
+  it('accepts whole numbers from 50 to 100 only', () => {
+    expect([49, 50, 75, 100, 101, 80.5, Number.NaN].map(isValidThreshold)).toEqual([false, true, true, true, false, false, false]);
+  });
+
+  it('keeps the three fixed pool source names', () => {
+    expect([...POOL_SOURCE_NAMES]).toEqual(['sub-claude', 'sub-openai', 'sub-antigravity']);
   });
 });
 

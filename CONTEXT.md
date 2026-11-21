@@ -1,7 +1,7 @@
 # Agent Memory
 
 Shared memory and knowledge for coding agents, served through a proxy that every agent client
-points at. This glossary covers the terms of the subscription account pool.
+points at. This glossary covers the terms of the subscription account pool and the teams that own pools.
 
 ## Language
 
@@ -19,6 +19,14 @@ _Avoid_: agent (in pool context), agent source
 A team-defined worker in Memory Hub (for example Builder or Reviewer) that has its own memory and asset loadout.
 _Avoid_: client, client type
 
+**Team**:
+The group of Members that owns Agents, assets and Subscription Pools. A Member can be in more than one Team.
+_Avoid_: workspace, tenant
+
+**Request Team**:
+The Team whose Subscription Pool serves one request. It is the Team of the session of the request. When the session has no Team, it is the first Team of the Member, in the order that Memory Core lists them, that has a Subscription Pool for the Client Type with an account that can take a new session.
+_Avoid_: active team, current team
+
 ### Subscription pool
 
 **Subscription Account**:
@@ -26,7 +34,7 @@ One paid Claude or ChatGPT subscription login that the proxy uses on behalf of M
 _Avoid_: account (alone), provider key, API key
 
 **Subscription Pool**:
-The set of Subscription Accounts that serves one Client Type in one Memory instance.
+The set of Subscription Accounts of one Team that serves one Client Type in one Memory instance. A Team sees and uses only its own pools. A Team without a pool uses the normal upstream of the Client Type.
 _Avoid_: account pool, key pool
 
 **Session Binding**:
@@ -46,7 +54,7 @@ One grant from the provider that lets a Subscription Account clear its Quota Win
 _Avoid_: reset (as a verb on the account), free reset, token
 
 **Threshold**:
-The used percentage of a Quota Window at which a Subscription Account stops getting new Session Bindings.
+The used percentage of a Quota Window at which a Subscription Account stops getting new Session Bindings. Each Subscription Account has its own Threshold, set by an admin of its Team. A System Admin sets only the start value that a new Subscription Account gets when its login gives none.
 _Avoid_: limit, cap
 
 **Exhausted**:

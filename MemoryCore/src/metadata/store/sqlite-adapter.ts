@@ -54,6 +54,7 @@ import type {
   TaskFilter,
   AssetFilter,
   BatchDeleteResult,
+  DeleteTeamsResult,
   ListPage,
   PaginationParams,
   InstanceUserListFilter,
@@ -91,6 +92,19 @@ import { DEFAULT_PAGINATION } from "../pagination.js";
 import { buildChatMemoryAssetId } from "../utils/chat-memory-asset.js";
 import { DuplicateUserKeyError } from "./interface.js";
 import { parseStoredResetCredits } from "./reset-credits-codec.js";
+import {
+  DEFAULT_ACCOUNT_THRESHOLD_PCT,
+  INSTANCE_UPSTREAM_SCOPE,
+  defaultTeamSearchNames,
+  logSubscriptionPoolTeamBackfill,
+  parseStoredThresholdPct,
+  pickDefaultTeam,
+  pickDefaultTeamById,
+  sameUpstreamScope,
+  upstreamGroupScope,
+  type PoolTeamBackfillOutcome,
+  type UpstreamGroupScope,
+} from "./pool-team-scope.js";
 
 const require = createRequire(import.meta.url);
 function requireNodeSqlite(): typeof import("node:sqlite") {
@@ -135,12 +149,19 @@ const INSTANCE_UPSTREAM_SOURCE_COLUMNS: ReadonlyArray<readonly [string, string]>
   ["source_models_error", "TEXT"],
 ];
 
-/** A source name is unique among the groups that have one. */
+/**
+ * A source name is unique among the groups of one team_id that have one. Pool groups of two teams
+ * use the same fixed source names, so the old index on the source name alone is dropped.
+ */
 const INSTANCE_UPSTREAM_SOURCE_NAME_INDEX_DDL = `
-  CREATE UNIQUE INDEX IF NOT EXISTS ux_iuc_source_name
-    ON meta_instance_upstream_config(source_name)
+  DROP INDEX IF EXISTS ux_iuc_source_name;
+  CREATE UNIQUE INDEX IF NOT EXISTS ux_iuc_team_source_name
+    ON meta_instance_upstream_config(team_id, source_name)
     WHERE source_name != '';
 `;
+
+/** Team column of an upstream group. `''` = instance scope (see InstanceUpstreamConfigEntity.team_id). */
+const INSTANCE_UPSTREAM_TEAM_COLUMN_DEF = "TEXT NOT NULL DEFAULT ''";
 
 /** Parse a JSON array column; a missing or malformed value reads as an empty array. */
 function parseJsonArray<T>(raw: unknown): T[] {
@@ -161,6 +182,7 @@ function instanceUpstreamTableDdl(tableName: string): string {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       group_id TEXT NOT NULL,
       group_type TEXT NOT NULL CHECK (group_type IN ('default','custom','extraction')),
+      team_id ${INSTANCE_UPSTREAM_TEAM_COLUMN_DEF},
       name TEXT NOT NULL DEFAULT '',
       agents TEXT NOT NULL DEFAULT '[]',
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -209,6 +231,7 @@ function subscriptionAccountTableDdl(table: string): string {
     refresh_fail_count INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
     active_sessions INTEGER NOT NULL DEFAULT 0,
+    threshold_pct INTEGER NOT NULL DEFAULT ${DEFAULT_ACCOUNT_THRESHOLD_PCT} CHECK (threshold_pct BETWEEN 50 AND 100),
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -221,14 +244,28 @@ function subscriptionAccountTableDdl(table: string): string {
 
 type Row = Record<string, SQLInputValue>;
 
+export interface SqliteMetadataStoreOptions {
+  /**
+   * Name of the team that gets the pool groups without a team at start
+   * (env TDAI_METADATA_DEFAULT_TEAM_NAME). Unset: the team named `default`, else `default-team`.
+   */
+  defaultTeamName?: string;
+  /** Team id that gets the pool groups without a team (env TDAI_METADATA_DEFAULT_TEAM_ID). Wins over the name. */
+  defaultTeamId?: string;
+}
+
 export class SqliteMetadataStore implements IMetadataStore {
   private db!: DatabaseSync;
   private readonly dbPath: string;
+  private readonly defaultTeamName: string | undefined;
+  private readonly defaultTeamId: string | undefined;
   private initialized = false;
 
   /** @param dbPath 文件路径或 ":memory:"。 */
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: SqliteMetadataStoreOptions = {}) {
     this.dbPath = dbPath;
+    this.defaultTeamName = options.defaultTeamName;
+    this.defaultTeamId = options.defaultTeamId?.trim() || undefined;
   }
 
   init(): void {
@@ -489,7 +526,118 @@ export class SqliteMetadataStore implements IMetadataStore {
     this.migrateUserTypeColumn();
     this.migrateLegacyUserKeys();
     this.migrateSubscriptionPool();
+    this.migrateInstanceUpstreamTeamColumn();
     this.migrateInstanceUpstreamSourceColumns();
+    this.backfillSubscriptionPoolTeam();
+  }
+
+  /** Add the team column to an upstream group table of an earlier build. Existing rows get `''`. */
+  private migrateInstanceUpstreamTeamColumn(): void {
+    const hasTeamColumn = this.all<{ name: string }>(
+      "SELECT name FROM pragma_table_info('meta_instance_upstream_config') WHERE name = 'team_id'",
+    );
+    if (hasTeamColumn.length === 0) {
+      this.db.exec(`ALTER TABLE meta_instance_upstream_config ADD COLUMN team_id ${INSTANCE_UPSTREAM_TEAM_COLUMN_DEF}`);
+    }
+  }
+
+  /**
+   * Give the pool groups without a team to the default team. Runs on each start and changes
+   * nothing when every pool group has a team, so a restart is quiet.
+   *
+   * First, each agent of a pool group that is in no instance group goes back to the default group.
+   * This step always runs: an agent in no instance group gets AGENT_NOT_CONFIGURED for every team
+   * that has no pool. Then the default team is found by the configured id or else by name (see pickDefaultTeam). When there is
+   * not exactly one, the pool groups stay without a team, no team uses them, and an error line
+   * gives the candidate team ids. The operator fixes the name or sets
+   * TDAI_METADATA_DEFAULT_TEAM_ID (or _NAME) and starts again.
+   */
+  private backfillSubscriptionPoolTeam(): void {
+    const outcome = this.withImmediateTx((): PoolTeamBackfillOutcome => {
+      const now = nowIso();
+      const restored = this.restorePooledAgentsToDefaultGroup(now);
+      const unassigned = Number(this.get<{ c: number }>(
+        "SELECT COUNT(*) AS c FROM meta_instance_upstream_config WHERE mode = 'subscription_pool' AND team_id = ''",
+      )?.c ?? 0);
+      if (unassigned === 0) return { restored, unassigned, pick: null, assigned: 0, sourceClash: false };
+
+      const pick = this.defaultTeamId
+        ? pickDefaultTeamById(this.defaultTeamId, this.all<{ team_id: string }>(
+          "SELECT team_id FROM meta_teams WHERE team_id = ? AND status = 'active'",
+          this.defaultTeamId,
+        ).map((r) => String(r.team_id)))
+        : pickDefaultTeam(defaultTeamSearchNames(this.defaultTeamName).map((name) => ({
+          name,
+          team_ids: this.all<{ team_id: string }>(
+            "SELECT team_id FROM meta_teams WHERE name = ? AND status = 'active' ORDER BY team_id",
+            name,
+          ).map((r) => String(r.team_id)),
+        })));
+      if (pick.status !== "found") return { restored, unassigned, pick, assigned: 0, sourceClash: false };
+
+      // A clash on the team source name index would fail the start; leave the groups instead.
+      const clash = this.get(
+        `SELECT 1 AS ok FROM meta_instance_upstream_config u
+         JOIN meta_instance_upstream_config t ON t.source_name = u.source_name AND t.team_id = ?
+         WHERE u.mode = 'subscription_pool' AND u.team_id = '' AND u.source_name != '' LIMIT 1`,
+        pick.team_id,
+      );
+      if (clash) return { restored, unassigned, pick, assigned: 0, sourceClash: true };
+
+      this.run(
+        `UPDATE meta_instance_upstream_config SET team_id = ?, version = version + 1, updated_at = ?
+         WHERE mode = 'subscription_pool' AND team_id = ''`,
+        pick.team_id,
+        now,
+      );
+      return { restored, unassigned, pick, assigned: unassigned, sourceClash: false };
+    });
+    logSubscriptionPoolTeamBackfill(outcome);
+  }
+
+  /**
+   * Add to the default group each agent of a pool group that no instance group (default or a
+   * custom group that is not a pool) holds. Returns the added agents. No default group: nothing
+   * to do, because the seed adds every supported agent later.
+   */
+  private restorePooledAgentsToDefaultGroup(now: string): string[] {
+    const defaultRow = this.get(
+      "SELECT id, agents FROM meta_instance_upstream_config WHERE group_type = 'default' LIMIT 1",
+    );
+    if (!defaultRow) return [];
+    const homed = new Set<string>();
+    for (const r of this.all<Row>(
+      `SELECT agents FROM meta_instance_upstream_config
+       WHERE group_type IN ('default','custom') AND mode != 'subscription_pool'`,
+    )) {
+      for (const a of parseJsonArray<string>(r.agents)) homed.add(a);
+    }
+    const missing: string[] = [];
+    for (const r of this.all<Row>(
+      "SELECT agents FROM meta_instance_upstream_config WHERE mode = 'subscription_pool' ORDER BY id",
+    )) {
+      for (const a of parseJsonArray<string>(r.agents)) {
+        if (!homed.has(a) && !missing.includes(a)) missing.push(a);
+      }
+    }
+    if (missing.length === 0) return [];
+    this.run(
+      `UPDATE meta_instance_upstream_config SET agents = ?, version = version + 1, updated_at = ?
+       WHERE id = ?`,
+      JSON.stringify([...parseJsonArray<string>(defaultRow.agents), ...missing]),
+      now,
+      Number(defaultRow.id),
+    );
+    return missing;
+  }
+
+  /** Global start value of the account threshold, or 95 when none is stored or it is not valid. */
+  private storedGlobalThresholdPct(): number {
+    const row = this.get<{ param_value: string }>(
+      `SELECT param_value FROM meta_config_params
+       WHERE module = 'subscription_pool' AND param_name = 'threshold_pct' AND scope = 'global'`,
+    );
+    return parseStoredThresholdPct(row?.param_value);
   }
 
   /**
@@ -581,6 +729,22 @@ export class SqliteMetadataStore implements IMetadataStore {
     );
     if (hasResetCreditsColumn.length === 0) {
       this.db.exec("ALTER TABLE meta_upstream_subscription_account ADD COLUMN reset_credits_json TEXT");
+    }
+
+    // An account table from an earlier build has no threshold column. Each existing account gets
+    // the global value of that time. The copy runs only when the column is added, so a later
+    // change of the global value never overwrites the value of an account. This runs before the
+    // provider rebuild below, which copies the column by name.
+    const hasThresholdColumn = this.all<{ name: string }>(
+      "SELECT name FROM pragma_table_info('meta_upstream_subscription_account') WHERE name = 'threshold_pct'",
+    );
+    if (hasThresholdColumn.length === 0) {
+      this.withImmediateTx(() => {
+        this.db.exec(
+          `ALTER TABLE meta_upstream_subscription_account ADD COLUMN threshold_pct INTEGER NOT NULL DEFAULT ${DEFAULT_ACCOUNT_THRESHOLD_PCT}`,
+        );
+        this.run("UPDATE meta_upstream_subscription_account SET threshold_pct = ?", this.storedGlobalThresholdPct());
+      });
     }
 
     this.migrateSubscriptionAccountProviders();
@@ -1119,16 +1283,36 @@ export class SqliteMetadataStore implements IMetadataStore {
     return this.getTeamById(teamId);
   }
 
-  deleteTeams(teamIds: string[]): BatchDeleteResult {
-    const result = this.batchDelete("meta_teams", "team_id", teamIds);
-    if (result.deleted_ids.length > 0) {
-      const ph = result.deleted_ids.map(() => "?").join(",");
-      this.run(`DELETE FROM meta_team_members WHERE team_id IN (${ph})`, ...result.deleted_ids);
-      this.run(`DELETE FROM meta_agents WHERE team_id IN (${ph})`, ...result.deleted_ids);
-      this.run(`DELETE FROM meta_tasks WHERE team_id IN (${ph})`, ...result.deleted_ids);
-      this.run(`DELETE FROM meta_assets WHERE team_id IN (${ph})`, ...result.deleted_ids);
-    }
-    return result;
+  /**
+   * Delete teams with their members, agents, tasks, assets, pool groups and pool accounts in one
+   * transaction. A failure at any step leaves every row, so no pool account stays with a team
+   * that no longer exists (Core would keep refreshing its tokens).
+   */
+  deleteTeams(teamIds: string[]): DeleteTeamsResult {
+    return this.withImmediateTx(() => {
+      const result = this.batchDelete("meta_teams", "team_id", teamIds);
+      let deletedPoolAccountIds: string[] = [];
+      if (result.deleted_ids.length > 0) {
+        const ph = result.deleted_ids.map(() => "?").join(",");
+        this.run(`DELETE FROM meta_team_members WHERE team_id IN (${ph})`, ...result.deleted_ids);
+        this.run(`DELETE FROM meta_agents WHERE team_id IN (${ph})`, ...result.deleted_ids);
+        this.run(`DELETE FROM meta_tasks WHERE team_id IN (${ph})`, ...result.deleted_ids);
+        this.run(`DELETE FROM meta_assets WHERE team_id IN (${ph})`, ...result.deleted_ids);
+        // Read the account ids first: the foreign key cascade deletes the accounts with the groups.
+        deletedPoolAccountIds = this.all<{ account_id: string }>(
+          `SELECT a.account_id FROM meta_upstream_subscription_account a
+           JOIN meta_instance_upstream_config g ON g.group_id = a.group_id
+           WHERE g.mode = 'subscription_pool' AND g.team_id IN (${ph})
+           ORDER BY a.account_id`,
+          ...result.deleted_ids,
+        ).map((r) => String(r.account_id));
+        this.run(
+          `DELETE FROM meta_instance_upstream_config WHERE mode = 'subscription_pool' AND team_id IN (${ph})`,
+          ...result.deleted_ids,
+        );
+      }
+      return { ...result, deleted_pool_account_ids: deletedPoolAccountIds };
+    });
   }
 
   listTeamsByUser(userId: string, pagination?: PaginationParams | null, filter?: { name?: string }): ListPage<TeamEntity> {
@@ -2337,6 +2521,14 @@ export class SqliteMetadataStore implements IMetadataStore {
       conditions.push("group_type = ?");
       params.push(filter.group_type);
     }
+    if (filter?.team_id !== undefined) {
+      conditions.push("team_id = ?");
+      params.push(filter.team_id);
+    }
+    if (filter?.mode) {
+      conditions.push("mode = ?");
+      params.push(filter.mode);
+    }
     const where = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     // 排序:group_type default → custom → extraction, 同类 updated_at DESC
     const sql = `SELECT * FROM meta_instance_upstream_config${where}
@@ -2443,9 +2635,10 @@ export class SqliteMetadataStore implements IMetadataStore {
     // 计算新 agents:union(current, newAgents),但要保持 全域唯一(不能跟 custom 组的 agents 重叠)
     const nextAgents = [...currentAgents];
     if (newAgents.length > 0) {
-      // 检查这些新 agent 有没有被 custom 组占用
+      // 检查这些新 agent 有没有被 custom 组占用. Pool groups are a team layer over the instance
+      // groups: an agent in a pool still needs its instance home, so pool agents do not count.
       const customRows = this.all<Row>(
-        "SELECT agents FROM meta_instance_upstream_config WHERE group_type='custom'",
+        "SELECT agents FROM meta_instance_upstream_config WHERE group_type='custom' AND mode != 'subscription_pool'",
       );
       const customUsed = new Set<string>();
       for (const cr of customRows) {
@@ -2478,6 +2671,11 @@ export class SqliteMetadataStore implements IMetadataStore {
     const groupId = this.newGroupId(input.group_type);
     const now = nowIso();
     const agents = input.agents ?? [];
+    const teamId = input.mode === "subscription_pool" ? (input.team_id ?? "").trim() : "";
+    if (input.mode === "subscription_pool" && !teamId) {
+      throw new InstanceUpstreamWriteConflictError("team_required", "a subscription pool group needs a team");
+    }
+    const scope = upstreamGroupScope({ mode: input.mode, team_id: teamId });
 
     return this.withImmediateTx(() => {
       // 1. 单例约束(default / extraction 只能一行)
@@ -2496,25 +2694,26 @@ export class SqliteMetadataStore implements IMetadataStore {
 
       // 2. agents 全域唯一校验(仅 default/custom 参与)
       if (input.group_type !== "extraction") {
-        this.assertAgentsNotOverlap(agents, null);
+        this.assertAgentsNotOverlap(agents, null, scope);
       }
 
       // 2b. 组名全域唯一(仅 custom 参与写入方,校验目标含 default/extraction 保留名)
       //     default/extraction 走 seed 的固定名不触发此路径。历史脏数据不清理,
       //     只拦新写入 —— 参考设计文档 §5.3(v2.8)。
       if (input.group_type === "custom") {
-        this.assertGroupNameUnique(input.name ?? "", null);
+        this.assertGroupNameUnique(input.name ?? "", null, scope);
       }
 
       // 3. INSERT(custom/extraction 的 snapshot 恒 [];default 由 seed 路径独立处理,不走此 create 分支)
       this.runSourceNameChecked(() => this.run(
         `INSERT INTO meta_instance_upstream_config
-          (group_id, group_type, name, agents, enabled, mode, base_url, api_key, model_id, description, version, supported_agents_snapshot,
+          (group_id, group_type, team_id, name, agents, enabled, mode, base_url, api_key, model_id, description, version, supported_agents_snapshot,
            source_name, source_provider, source_formats, source_agents, source_enabled, source_models, source_models_fetched_at, source_models_error,
            created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, '[]', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         groupId,
         input.group_type,
+        teamId,
         input.name ?? "",
         JSON.stringify(agents),
         input.enabled === false ? 0 : 1,
@@ -2569,10 +2768,21 @@ export class SqliteMetadataStore implements IMetadataStore {
         );
       }
 
+      // A group never gets a team through an update, so it cannot become a pool group here.
+      // A group that leaves the pool mode loses its team and joins the instance scope.
+      const nextMode = input.mode ?? current.mode;
+      if (nextMode === "subscription_pool" && current.mode !== "subscription_pool") {
+        throw new InstanceUpstreamWriteConflictError("team_required", "a group without a team cannot become a subscription pool group");
+      }
+      const nextTeamId = nextMode === "subscription_pool" ? current.team_id : "";
+      const scope = upstreamGroupScope({ mode: nextMode, team_id: nextTeamId });
+
       // agents 变更 → 校验全域唯一(排除自身)
       const nextAgents = input.agents ?? current.agents;
-      if (input.agents !== undefined && current.group_type !== "extraction") {
-        this.assertAgentsNotOverlap(nextAgents, current.group_id);
+      // A group that changes scope must also fit the agent rule of its new scope.
+      const scopeChanged = !sameUpstreamScope(upstreamGroupScope(current), scope);
+      if ((input.agents !== undefined || scopeChanged) && current.group_type !== "extraction") {
+        this.assertAgentsNotOverlap(nextAgents, current.group_id, scope);
       }
 
       // name 变更 → 校验全域唯一(仅 custom;default/extraction 的 name 由 service 层
@@ -2586,7 +2796,7 @@ export class SqliteMetadataStore implements IMetadataStore {
         && current.group_type === "custom"
         && (input.name ?? "").trim() !== (current.name ?? "").trim()
       ) {
-        this.assertGroupNameUnique(input.name, current.group_id);
+        this.assertGroupNameUnique(input.name, current.group_id, scope);
       }
 
       // PATCH 合并
@@ -2614,11 +2824,12 @@ export class SqliteMetadataStore implements IMetadataStore {
       const now = nowIso();
       this.runSourceNameChecked(() => this.run(
         `UPDATE meta_instance_upstream_config
-         SET name = ?, agents = ?, enabled = ?, mode = ?, base_url = ?, api_key = ?, model_id = ?, description = ?,
+         SET team_id = ?, name = ?, agents = ?, enabled = ?, mode = ?, base_url = ?, api_key = ?, model_id = ?, description = ?,
              source_name = ?, source_provider = ?, source_formats = ?, source_agents = ?, source_enabled = ?,
              source_models = ?, source_models_fetched_at = ?, source_models_error = ?,
              version = version + 1, updated_at = ?
          WHERE group_id = ?`,
+        nextTeamId,
         merged.name,
         JSON.stringify(merged.agents),
         merged.enabled ? 1 : 0,
@@ -2719,9 +2930,11 @@ export class SqliteMetadataStore implements IMetadataStore {
           throw new InstanceUpstreamWriteConflictError("group_not_found", `group not found: ${id}`);
         }
       }
+      const scope = this.assertMoveInOneScope(input, [...fromIds, ...(toId ? [toId] : [])].map((id) => byId.get(id)!));
 
       // The agent may stay only in the groups of this move.
       const conflicts = groups
+        .filter((g) => sameUpstreamScope(upstreamGroupScope(g), scope))
         .filter((g) => g.agents.includes(input.agent) && !fromIds.has(g.group_id) && g.group_id !== toId)
         .map((g) => ({
           group_id: g.group_id,
@@ -2766,7 +2979,7 @@ export class SqliteMetadataStore implements IMetadataStore {
         targetId = group.group_id;
       } else {
         const create = input.to.create;
-        this.assertGroupNameUnique(create.name ?? "", null);
+        this.assertGroupNameUnique(create.name ?? "", null, INSTANCE_UPSTREAM_SCOPE);
         targetId = this.newGroupId("custom");
         this.run(
           `INSERT INTO meta_instance_upstream_config
@@ -2811,12 +3024,14 @@ export class SqliteMetadataStore implements IMetadataStore {
    * `selfGroupId` 传入时排除自己(update 场景);create 时传 null。
    * 冲突 → InstanceUpstreamWriteConflictError("agents_overlap", detail.conflict_groups)。
    */
-  private assertAgentsNotOverlap(candidate: string[], selfGroupId: string | null): void {
+  private assertAgentsNotOverlap(candidate: string[], selfGroupId: string | null, scope: UpstreamGroupScope): void {
     if (candidate.length === 0) return;
     const candidateSet = new Set(candidate);
+    const where = this.scopeCondition(scope);
     const rows = this.all<Row>(
       `SELECT group_id, group_type, name, agents FROM meta_instance_upstream_config
-       WHERE group_type IN ('default','custom')`,
+       WHERE group_type IN ('default','custom') AND ${where.sql}`,
+      ...where.params,
     );
     const conflicts: Array<{ group_id: string; group_type: string; name: string; overlapping_agents: string[] }> = [];
     for (const r of rows) {
@@ -2856,11 +3071,13 @@ export class SqliteMetadataStore implements IMetadataStore {
    * 历史脏数据不清理:表内已存在的重名行 list 出来照常,只在新写入时拦。
    * 参考设计文档 §5.3(v2.8)。
    */
-  private assertGroupNameUnique(candidateName: string, selfGroupId: string | null): void {
+  private assertGroupNameUnique(candidateName: string, selfGroupId: string | null, scope: UpstreamGroupScope): void {
     const candidate = (candidateName ?? "").trim();
     if (!candidate) return;
+    const where = this.scopeCondition(scope);
     const rows = this.all<Row>(
-      "SELECT group_id, group_type, name FROM meta_instance_upstream_config",
+      `SELECT group_id, group_type, name FROM meta_instance_upstream_config WHERE ${where.sql}`,
+      ...where.params,
     );
     for (const r of rows) {
       const gid = String(r.group_id);
@@ -2881,6 +3098,38 @@ export class SqliteMetadataStore implements IMetadataStore {
     }
   }
 
+  /** SQL condition that selects the groups of one scope (see upstreamGroupScope). */
+  private scopeCondition(scope: UpstreamGroupScope): { sql: string; params: SQLInputValue[] } {
+    return scope.pool
+      ? { sql: "mode = 'subscription_pool' AND team_id = ?", params: [scope.team_id] }
+      : { sql: "mode != 'subscription_pool'", params: [] };
+  }
+
+  /**
+   * The groups of one move must be in one scope, so an agent never moves between the instance
+   * groups and the pools of a team, or between the pools of two teams. A created target is in the
+   * instance scope. Returns the scope of the move.
+   */
+  private assertMoveInOneScope(
+    input: MoveAgentBetweenUpstreamGroupsInput,
+    groups: InstanceUpstreamConfigEntity[],
+  ): UpstreamGroupScope {
+    const creates = "create" in input.to;
+    if ("create" in input.to && input.to.create.mode === "subscription_pool") {
+      throw new InstanceUpstreamWriteConflictError("team_required", "an agent move cannot create a subscription pool group");
+    }
+    const scope = creates || groups.length === 0 ? INSTANCE_UPSTREAM_SCOPE : upstreamGroupScope(groups[0]!);
+    for (const g of groups) {
+      if (!sameUpstreamScope(upstreamGroupScope(g), scope)) {
+        throw new InstanceUpstreamWriteConflictError(
+          "group_not_found",
+          `group ${g.group_id} is not in the scope of this move`,
+        );
+      }
+    }
+    return scope;
+  }
+
   /** 生成 group_id:default→dflt-<r> / custom→grp-<r> / extraction→ext-<r>。 */
   private newGroupId(gt: GroupType): string {
     const prefix = gt === "default" ? "dflt" : gt === "extraction" ? "ext" : "grp";
@@ -2892,10 +3141,10 @@ export class SqliteMetadataStore implements IMetadataStore {
     try {
       write();
     } catch (err) {
-      if (err instanceof Error && /UNIQUE constraint failed: meta_instance_upstream_config\.source_name/.test(err.message)) {
+      if (err instanceof Error && /UNIQUE constraint failed: meta_instance_upstream_config\.team_id, meta_instance_upstream_config\.source_name/.test(err.message)) {
         throw new InstanceUpstreamWriteConflictError(
           "source_name_duplicate",
-          "source name is already used by another group",
+          "source name is already used by another group of this team",
         );
       }
       throw err;
@@ -2921,6 +3170,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       id: Number(r.id),
       group_id: String(r.group_id),
       group_type: String(r.group_type) as GroupType,
+      team_id: String(r.team_id ?? ""),
       name: String(r.name ?? ""),
       source_name: String(r.source_name ?? ""),
       source_provider: String(r.source_provider ?? ""),
@@ -3018,8 +3268,8 @@ export class SqliteMetadataStore implements IMetadataStore {
         `INSERT INTO meta_upstream_subscription_account
           (account_id, group_id, provider, display_name, account_label, enabled, status,
            access_token, refresh_token, token_expires_at, provider_account_id, project_id,
-           usage_json, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+           usage_json, threshold_pct, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         accountId,
         input.group_id,
         input.provider,
@@ -3031,6 +3281,7 @@ export class SqliteMetadataStore implements IMetadataStore {
         input.provider_account_id,
         input.project_id ?? null,
         JSON.stringify({ windows: [] }),
+        input.threshold_pct ?? DEFAULT_ACCOUNT_THRESHOLD_PCT,
         now,
         now,
       );
@@ -3088,6 +3339,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       setColumn("refresh_fail_count", patch.refresh_fail_count);
       setColumn("last_error", patch.last_error);
       setColumn("active_sessions", patch.active_sessions);
+      setColumn("threshold_pct", patch.threshold_pct);
 
       this.run(
         `UPDATE meta_upstream_subscription_account
@@ -3181,6 +3433,7 @@ export class SqliteMetadataStore implements IMetadataStore {
       refresh_fail_count: Number(r.refresh_fail_count ?? 0),
       last_error: r.last_error == null ? null : String(r.last_error),
       active_sessions: Number(r.active_sessions ?? 0),
+      threshold_pct: r.threshold_pct == null ? DEFAULT_ACCOUNT_THRESHOLD_PCT : Number(r.threshold_pct),
       version: Number(r.version ?? 1),
       created_at: String(r.created_at),
       updated_at: String(r.updated_at),

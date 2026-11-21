@@ -150,6 +150,9 @@ import { formatListResult, paginateArray, resolvePagination, wrapPaginated, DEFA
 import { generateId, ID_PREFIX } from "../utils/id-generator.js";
 import { buildChatMemoryAssetId, resolveChatMemoryAgentId } from "../utils/chat-memory-asset.js";
 
+/** `team_id` of every group that is not a team pool. */
+const INSTANCE_SCOPE = "";
+
 // ── 默认 Agent / Team 常量 ──
 
 const DEFAULT_TEAM_NAME = "default-team";
@@ -207,7 +210,6 @@ export type ChatMemoryContentCleaner = (params: {
 export interface SubscriptionAccountChange {
   accountId: string;
   account: SubscriptionAccountEntity | null;
-  thresholdPct: number;
   /** Set after a transient refresh failure. */
   retryRefreshAt?: number;
   /** Set after one of the first three usage check failures in a row. */
@@ -321,6 +323,11 @@ export const DEFAULT_METADATA_QUOTA_LIMITS: MetadataQuotaLimits = {
   maxTeamsPerInstance: 100,
 };
 
+/** Lock key that serializes the lookup-or-create of the pool group of one team and provider. */
+function poolGroupLockKey(teamId: string, provider: SubscriptionProvider): string {
+  return `pool-group:${teamId}:${provider}`;
+}
+
 export class MetadataService {
   private readonly quota: MetadataQuotaLimits;
   private readonly memorySystemUser?: MemorySystemUserConfig;
@@ -353,7 +360,7 @@ export class MetadataService {
   /** 由 gateway 注入的 chat_memory 内容清理器；未注入时归档只删资产不清内容。 */
   private _chatMemoryContentCleaner?: ChatMemoryContentCleaner;
   /** In-flight Panel logins. A Core restart drops them. The verifier never leaves this process. */
-  private readonly subscriptionOAuthPending = new Map<string, PendingSubscriptionOAuth>();
+  private readonly subscriptionOAuthPending = new Map<string, PendingSubscriptionOAuth & { teamId: string; userId: string }>();
   private subscriptionPoolHooks: SubscriptionPoolHooks = { adapterFor: subscriptionAdapterFor };
 
   constructor(
@@ -1003,7 +1010,15 @@ export class MetadataService {
   }
 
   async deleteTeams(teamIds: string[]): Promise<BatchDeleteResult> {
-    return this.store.deleteTeams(teamIds);
+    const { deleted_pool_account_ids, ...result } = await this.store.deleteTeams(teamIds);
+    // The store removed the pool accounts of the teams. Their timers and their open logins must go too.
+    for (const [state, pending] of this.subscriptionOAuthPending) {
+      if (teamIds.includes(pending.teamId)) this.subscriptionOAuthPending.delete(state);
+    }
+    for (const accountId of deleted_pool_account_ids) {
+      await this.notifySubscriptionAccount({ accountId, account: null });
+    }
+    return result;
   }
 
   async listTeamsByUser(userId: string, pagination: PaginationParams = DEFAULT_PAGINATION, filter?: { name?: string }): Promise<PaginatedResult<TeamEntity>> {
@@ -2356,6 +2371,7 @@ export class MetadataService {
       refresh_fail_count: account.refresh_fail_count,
       last_error: account.last_error,
       active_sessions: account.active_sessions,
+      threshold_pct: account.threshold_pct,
       version: account.version,
       created_at: account.created_at,
       updated_at: account.updated_at,
@@ -2399,94 +2415,208 @@ export class MetadataService {
       token_expires_at: account.token_expires_at,
       usage: account.usage,
       exhausted_until: account.exhausted_until,
+      threshold_pct: account.threshold_pct,
     };
   }
 
-  async subscriptionThreshold(): Promise<number> {
+  /** Start value of the threshold of a new account. The System Admin sets it; no existing account follows it. */
+  async defaultSubscriptionThreshold(): Promise<number> {
+    // The settings route writes the store directly, and the config parameter service keeps a read
+    // for up to a minute. A new account must get the value that the admin just saved, so the stored
+    // row is read first. The service only gives the registry default when no row exists.
+    const row = await this.store.getConfigParam("global", null, "subscription_pool", "threshold_pct");
+    const stored = row ? Number(row.param_value) : Number.NaN;
+    if (Number.isInteger(stored) && stored >= 50 && stored <= 100) return stored;
     if (!this._configParams) return 95;
     return this._configParams.getEffectiveInt("subscription_pool", "threshold_pct");
   }
 
-  async getSubscriptionPoolStatus(provider?: SubscriptionProvider): Promise<Record<string, unknown>> {
-    const groups = await this.store.listInstanceUpstreamGroups(undefined, []);
-    const accounts = await this.store.listSubscriptionAccounts();
-    const threshold_pct = await this.subscriptionThreshold();
-    const providers = provider ? [provider] : ["claude", "codex", "antigravity"] as const;
-    return {
-      threshold_pct,
-      providers: providers.map((p) => {
-        const group = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.name === this.subscriptionPoolName(p));
-        const rows = accounts.filter((a) => a.provider === p && (!group || a.group_id === group.group_id));
-        const on = Boolean(group?.enabled);
-        const earliest_reset = rows.map((a) => a.exhausted_until).filter((v): v is number => v !== null).sort((a, b) => a - b)[0] ?? null;
-        return {
-          provider: p,
-          enabled: on,
-          group_id: group?.group_id ?? null,
-          accounts: rows.map((a) => this.toPublicSubscriptionAccount(a)),
-          summary: {
-            total: rows.length,
-            available: rows.filter((a) => a.enabled && a.status === "active" && (a.exhausted_until === null || a.exhausted_until <= Date.now())).length,
-            active_sessions: rows.reduce((n, a) => n + a.active_sessions, 0),
-            earliest_reset,
-          },
-          source: group ? this.toPoolSourceView(group) : null,
-        };
-      }),
-    };
+  private assertThresholdPct(value: unknown): number {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 50 || value > 100) {
+      throw new MetadataError("INVALID_THRESHOLD", "threshold_pct must be an integer from 50 to 100");
+    }
+    return value;
+  }
+
+  // ── Team scope of the pools ──────────────────────────────────────────
+  // A pool belongs to one team. Every pool read and write names its team, so a blank id must never
+  // reach the store: `''` is the marker of a pool row that no team owns.
+
+  private requirePoolTeamId(teamId: unknown): string {
+    const id = typeof teamId === "string" ? teamId.trim() : "";
+    if (!id) throw new MetadataError("team_required", "team_id is required");
+    return id;
+  }
+
+  /** The caller may see the pools of the team: an active member, or the System Admin. */
+  async assertCanViewTeamPool(ctx: V3AuthContext, teamId: string): Promise<void> {
+    const id = this.requirePoolTeamId(teamId);
+    if (ctx.isSystemAdmin) {
+      await this.requireTeamExists(id);
+      return;
+    }
+    await this.requireActiveTeamMember(ctx, id);
+  }
+
+  /** The caller may change the pools of the team: an admin of the team, or the System Admin. */
+  async assertCanManageTeamPool(ctx: V3AuthContext, teamId: string): Promise<void> {
+    const id = this.requirePoolTeamId(teamId);
+    if (ctx.isSystemAdmin) {
+      await this.requireTeamExists(id);
+      return;
+    }
+    await this.assertCallerIsTeamAdmin(ctx, id);
+  }
+
+  /** A pool row without a team is not owned by any team, so only the System Admin reaches it. */
+  private async teamPoolRole(ctx: V3AuthContext, teamId: string): Promise<"manage" | "view" | null> {
+    if (ctx.isSystemAdmin) return "manage";
+    if (!ctx.userId || !teamId) return null;
+    const member = await this.store.getTeamMember(teamId, ctx.userId);
+    if (!member || member.status !== "active") return null;
+    return member.role === "admin" ? "manage" : "view";
+  }
+
+  private static roleAllows(role: "manage" | "view" | null, need: "view" | "manage"): boolean {
+    return role === "manage" || (role === "view" && need === "view");
   }
 
   /**
-   * Turn the pool on as a model source: create the group when missing, give it its fixed source
-   * name and set it on. Which client uses the pool is chosen through the client sources.
+   * Loads a pool row for the caller. A missing id, an id that is no pool row and a pool row of a
+   * team the caller cannot use all give the same answer, so an id of another team tells nothing.
    */
-  async enableSubscriptionPool(provider: SubscriptionProvider, supportedAgents: SupportedAgent[]): Promise<Record<string, unknown>> {
-    this.subscriptionAdapter(provider);
-    await this.store.ensureDefaultSeeded(supportedAgents);
-    const groups = await this.store.listInstanceUpstreamGroups(undefined, supportedAgents);
-    const pool = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.name === this.subscriptionPoolName(provider));
-    const fixed = poolSourceFields(provider);
-    if (!pool?.source_name && (await this.takenSourceNames(pool?.group_id)).has(fixed.source_name)) {
-      throw new MetadataError("SOURCE_NAME_TAKEN", `source name is already used by another group: ${fixed.source_name}`);
+  async requireTeamPoolGroup(ctx: V3AuthContext, groupId: string, need: "view" | "manage"): Promise<InstanceUpstreamConfigEntity> {
+    const group = await this.store.getInstanceUpstreamGroup(groupId);
+    if (group && group.mode === "subscription_pool" && MetadataService.roleAllows(await this.teamPoolRole(ctx, group.team_id), need)) {
+      return group;
     }
-    try {
-      if (!pool) {
-        const row = await this.store.createInstanceUpstreamGroup({
-          group_type: "custom",
-          name: this.subscriptionPoolName(provider),
-          agents: [],
-          enabled: true,
-          mode: "subscription_pool",
-          base_url: "",
-          api_key: "",
-          model_id: "",
-          description: `${provider} subscription accounts`,
-          ...fixed,
-        });
-        this.notifySourceAttached(null, row);
-        return this.toPublicGroup(row);
-      }
-      if (pool.enabled && pool.source_name) return this.toPublicGroup(pool);
-      const row = await this.store.updateInstanceUpstreamGroup({
-        group_id: pool.group_id,
-        expected_group_type: "custom",
-        enabled: true,
-        ...(pool.source_name ? {} : fixed),
-      });
-      this.notifySourceAttached(pool, row);
-      return this.toPublicGroup(row);
-    } catch (e) {
-      throw this.translateUpstreamConflict(e);
-    }
+    throw new MetadataError("POOL_NOT_FOUND", `subscription pool not found: ${groupId}`);
   }
 
-  async disableSubscriptionPool(provider: SubscriptionProvider, supportedAgents: SupportedAgent[]): Promise<Record<string, unknown>> {
+  /** Loads an account through its pool row, with the same answer for "missing" and "not yours". */
+  async requireTeamPoolAccount(ctx: V3AuthContext, accountId: string, need: "view" | "manage"): Promise<SubscriptionAccountEntity> {
+    const account = await this.store.getSubscriptionAccount(accountId);
+    const group = account ? await this.store.getInstanceUpstreamGroup(account.group_id) : null;
+    if (account && group && group.mode === "subscription_pool" && MetadataService.roleAllows(await this.teamPoolRole(ctx, group.team_id), need)) {
+      return account;
+    }
+    throw new MetadataError("account_not_found", `subscription account not found: ${accountId}`);
+  }
+
+  /**
+   * Model list calls of a group: the System Admin for any group, an admin of the team for a pool
+   * row of the team. A missing id, an instance group and the pool of another team all get the
+   * same answer, so the caller learns nothing from the id.
+   */
+  async assertCanManageSourceGroup(ctx: V3AuthContext, groupId: string): Promise<void> {
+    if (ctx.isSystemAdmin) return;
+    const group = await this.store.getInstanceUpstreamGroup(groupId);
+    if (group && group.mode === "subscription_pool" && (await this.teamPoolRole(ctx, group.team_id)) === "manage") return;
+    throw new MetadataError("permission_denied", "managing this source requires system admin or the admin of its team");
+  }
+
+  private async requireTeamExists(teamId: string): Promise<void> {
+    if (!(await this.store.getTeamById(teamId))) throw new MetadataError("team_not_found", `team not found: ${teamId}`);
+  }
+
+  /** The pool row of one provider in one team, or undefined. */
+  private async teamPoolGroup(teamId: string, provider: SubscriptionProvider, supportedAgents: SupportedAgent[] = []): Promise<InstanceUpstreamConfigEntity | undefined> {
+    const rows = await this.store.listInstanceUpstreamGroups(
+      { mode: "subscription_pool", team_id: this.requirePoolTeamId(teamId) },
+      supportedAgents,
+    );
+    return rows.find((g) => g.group_type === "custom" && g.name === this.subscriptionPoolName(provider));
+  }
+
+  private static poolClients(group: InstanceUpstreamConfigEntity): string[] {
+    return Array.from(new Set([...group.agents, ...group.source_agents]));
+  }
+
+  async getSubscriptionPoolStatus(teamId: string, provider?: SubscriptionProvider): Promise<Record<string, unknown>> {
+    const id = this.requirePoolTeamId(teamId);
+    const groups = await this.store.listInstanceUpstreamGroups({ mode: "subscription_pool", team_id: id }, []);
+    const default_threshold_pct = await this.defaultSubscriptionThreshold();
+    const providers = provider ? [provider] : ["claude", "codex", "antigravity"] as const;
+    const result = [];
+    for (const p of providers) {
+      const group = groups.find((g) => g.group_type === "custom" && g.name === this.subscriptionPoolName(p));
+      // No pool row of this team means no account: an account of another team must never show here.
+      const rows = group ? (await this.store.listSubscriptionAccounts(group.group_id)).filter((a) => a.provider === p) : [];
+      const earliest_reset = rows.map((a) => a.exhausted_until).filter((v): v is number => v !== null).sort((a, b) => a - b)[0] ?? null;
+      result.push({
+        provider: p,
+        enabled: Boolean(group?.enabled),
+        group_id: group?.group_id ?? null,
+        clients: group ? MetadataService.poolClients(group) : [],
+        accounts: rows.map((a) => this.toPublicSubscriptionAccount(a)),
+        summary: {
+          total: rows.length,
+          available: rows.filter((a) => a.enabled && a.status === "active" && (a.exhausted_until === null || a.exhausted_until <= Date.now())).length,
+          active_sessions: rows.reduce((n, a) => n + a.active_sessions, 0),
+          earliest_reset,
+        },
+        source: group ? this.toPoolSourceView(group) : null,
+      });
+    }
+    return { team_id: id, default_threshold_pct, providers: result };
+  }
+
+  /**
+   * Turn the pool of a team on as a model source: create the group when missing, give it its fixed
+   * source name and set it on. Which clients use the pool is set with `updateSubscriptionPoolClients`.
+   */
+  async enableSubscriptionPool(teamId: string, provider: SubscriptionProvider, supportedAgents: SupportedAgent[]): Promise<Record<string, unknown>> {
+    const id = this.requirePoolTeamId(teamId);
+    this.subscriptionAdapter(provider);
     await this.store.ensureDefaultSeeded(supportedAgents);
-    const groups = await this.store.listInstanceUpstreamGroups(undefined, supportedAgents);
-    const pool = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.name === this.subscriptionPoolName(provider));
-    const target = groups.find((g) => g.group_type === "default");
+    // Same lock as the pool group creation of `completeSubscriptionOAuth`: the MongoDB store has no
+    // unique index on the group name, so the lookup and the insert must not interleave.
+    return withAccountLock(poolGroupLockKey(id, provider), async () => {
+      const pool = await this.teamPoolGroup(id, provider, supportedAgents);
+      const fixed = poolSourceFields(provider);
+      if (!pool?.source_name && (await this.takenSourceNames(id, pool?.group_id)).has(fixed.source_name)) {
+        throw new MetadataError("SOURCE_NAME_TAKEN", `source name is already used by another group: ${fixed.source_name}`);
+      }
+      try {
+        if (!pool) {
+          const row = await this.store.createInstanceUpstreamGroup({
+            group_type: "custom",
+            team_id: id,
+            name: this.subscriptionPoolName(provider),
+            agents: [],
+            enabled: true,
+            mode: "subscription_pool",
+            base_url: "",
+            api_key: "",
+            model_id: "",
+            description: `${provider} subscription accounts`,
+            ...fixed,
+          });
+          this.notifySourceAttached(null, row);
+          return this.toPublicGroup(row);
+        }
+        if (pool.enabled && pool.source_name) return this.toPublicGroup(pool);
+        const row = await this.store.updateInstanceUpstreamGroup({
+          group_id: pool.group_id,
+          expected_group_type: "custom",
+          enabled: true,
+          ...(pool.source_name ? {} : fixed),
+        });
+        this.notifySourceAttached(pool, row);
+        return this.toPublicGroup(row);
+      } catch (e) {
+        throw this.translateUpstreamConflict(e);
+      }
+    });
+  }
+
+  async disableSubscriptionPool(teamId: string, provider: SubscriptionProvider, supportedAgents: SupportedAgent[]): Promise<Record<string, unknown>> {
+    const id = this.requirePoolTeamId(teamId);
+    await this.store.ensureDefaultSeeded(supportedAgents);
+    const pool = await this.teamPoolGroup(id, provider, supportedAgents);
+    const target = (await this.store.listInstanceUpstreamGroups({ group_type: "default" }, supportedAgents))[0];
     if (!pool?.enabled || !target) throw new MetadataError("POOL_NOT_ENABLED", `subscription pool is not enabled for ${provider}`);
-    // A client that still uses the pool must pick another source first.
+    // A client that still uses the pool must be taken off it first.
     this.assertSourceNotInUse(pool);
     try {
       await this.store.toggleInstanceUpstreamGroup({ group_id: pool.group_id, enabled: false });
@@ -2496,11 +2626,61 @@ export class MetadataService {
     }
   }
 
-  async updateSubscriptionPoolSettings(threshold_pct: number): Promise<Record<string, unknown>> {
-    if (!Number.isInteger(threshold_pct) || threshold_pct < 50 || threshold_pct > 100) {
-      throw new MetadataError("INVALID_THRESHOLD", "threshold_pct must be an integer from 50 to 100");
+  /**
+   * Sets which clients use the pool of the team. The choice is stored on the pool row: a
+   * single-source client goes to `agents`, a multi-source client to `source_agents`. A client
+   * keeps its place in its instance group, so a team without a pool is not affected.
+   */
+  async updateSubscriptionPoolClients(
+    teamId: string,
+    provider: SubscriptionProvider,
+    agents: string[],
+    supportedAgents: SupportedAgent[],
+  ): Promise<Record<string, unknown>> {
+    const id = this.requirePoolTeamId(teamId);
+    const wanted = Array.from(new Set(agents));
+    const unknown = wanted.filter((name) => !supportedAgents.some((a) => a.agent_source === name));
+    if (unknown.length > 0) {
+      throw new MetadataError("INVALID_AGENTS", `unknown agents: ${unknown.join(",")}`, { unknown_agents: unknown });
     }
-    const row = await this.store.upsertConfigParam({ scope: "global", user_id: null, module: "subscription_pool", param_name: "threshold_pct", param_value: String(threshold_pct), description: "Usage threshold for new subscription pool sessions" });
+    await this.store.ensureDefaultSeeded(supportedAgents);
+    const pool = await this.teamPoolGroup(id, provider, supportedAgents);
+    // A pool that is off may still be cleared of clients, never given new ones.
+    if (wanted.length > 0 && !pool?.enabled) {
+      throw new MetadataError("SOURCE_DISABLED", `the ${provider} subscription pool is off`, { disabled_sources: [poolSourceFields(provider).source_name] });
+    }
+    if (!pool) return { provider, team_id: id, group_id: null, clients: [] };
+    const format = poolSourceFields(provider).source_formats[0]!;
+    const single: string[] = [];
+    const multi: string[] = [];
+    for (const name of wanted) {
+      const agent = supportedAgents.find((a) => a.agent_source === name)!;
+      const formats = agent.multi_source === true ? MetadataService.clientFormats(agent) : [MetadataService.PROTOCOL_FORMAT[agent.protocol]];
+      if (!formats.includes(format)) {
+        throw new MetadataError(
+          "SOURCE_FORMAT_MISMATCH",
+          `source ${pool.source_name} does not serve ${name}`,
+          { source_name: pool.source_name, required_format: format, client_formats: formats },
+        );
+      }
+      (agent.multi_source === true ? multi : single).push(name);
+    }
+    try {
+      const row = await this.store.updateInstanceUpstreamGroup({
+        group_id: pool.group_id,
+        expected_group_type: "custom",
+        agents: single,
+        source_agents: multi,
+      });
+      return { provider, team_id: id, group_id: row.group_id, clients: MetadataService.poolClients(row) };
+    } catch (e) {
+      throw this.translateUpstreamConflict(e);
+    }
+  }
+
+  async updateSubscriptionPoolSettings(threshold_pct: number): Promise<Record<string, unknown>> {
+    this.assertThresholdPct(threshold_pct);
+    const row = await this.store.upsertConfigParam({ scope: "global", user_id: null, module: "subscription_pool", param_name: "threshold_pct", param_value: String(threshold_pct), description: "Start value of the usage threshold of a new subscription account" });
     return { threshold_pct: Number(row.param_value) };
   }
 
@@ -2510,12 +2690,12 @@ export class MetadataService {
     return adapter;
   }
 
-  private async notifySubscriptionAccount(change: Omit<SubscriptionAccountChange, "thresholdPct">): Promise<void> {
+  private async notifySubscriptionAccount(change: SubscriptionAccountChange): Promise<void> {
     const listener = this.subscriptionPoolHooks.onAccountChanged;
     if (!listener) return;
     // The write is committed already; a failing hook must not fail the caller.
     try {
-      listener(this.instanceId, { ...change, thresholdPct: await this.subscriptionThreshold() });
+      listener(this.instanceId, change);
     } catch (e) {
       this.logger.debug?.(`[subscription-pool] timer update failed account=${change.accountId}: ${e instanceof Error ? e.name : "error"}`);
     }
@@ -2531,7 +2711,8 @@ export class MetadataService {
     return account;
   }
 
-  async updateSubscriptionAccount(accountId: string, patch: { display_name?: string; enabled?: boolean; status?: SubscriptionAccountStatus }, expectedVersion?: number): Promise<Record<string, unknown>> {
+  async updateSubscriptionAccount(accountId: string, patch: { display_name?: string; enabled?: boolean; status?: SubscriptionAccountStatus; threshold_pct?: number }, expectedVersion?: number): Promise<Record<string, unknown>> {
+    if (patch.threshold_pct !== undefined) this.assertThresholdPct(patch.threshold_pct);
     try {
       const account = await withAccountLock(accountId, async () => this.store.updateSubscriptionAccount(accountId, patch, expectedVersion));
       await this.notifySubscriptionAccount({ accountId, account });
@@ -2561,7 +2742,8 @@ export class MetadataService {
     );
     const accounts = (await this.store.listSubscriptionAccounts()).filter((account) => openGroupIds.has(account.group_id));
     return {
-      threshold_pct: await this.subscriptionThreshold(),
+      // The start value of a new account. Each account carries its own threshold; an older Proxy reads this one.
+      threshold_pct: await this.defaultSubscriptionThreshold(),
       accounts: accounts.map((account) => this.toProxySubscriptionAccount(account)),
     };
   }
@@ -2587,14 +2769,16 @@ export class MetadataService {
     }
   }
 
-  startSubscriptionOAuth(provider: SubscriptionProvider): { provider: SubscriptionProvider; state: string; authorize_url: string; expires_at: number } {
+  /** The login belongs to one team and one caller; only that caller can finish it in that team. */
+  startSubscriptionOAuth(teamId: string, provider: SubscriptionProvider, userId: string): { provider: SubscriptionProvider; state: string; authorize_url: string; expires_at: number } {
+    const id = this.requirePoolTeamId(teamId);
     this.subscriptionAdapter(provider);
     this.assertSubscriptionLoginConfigured(provider);
     const now = Date.now();
     for (const [state, pending] of this.subscriptionOAuthPending) {
       if (pending.expiresAt <= now) this.subscriptionOAuthPending.delete(state);
     }
-    const pending = createPendingSubscriptionOAuth(provider, now);
+    const pending = { ...createPendingSubscriptionOAuth(provider, now), teamId: id, userId };
     this.subscriptionOAuthPending.set(pending.state, pending);
     return {
       provider,
@@ -2610,11 +2794,21 @@ export class MetadataService {
    * A usage check runs before the response, so the new row already has the current windows.
    * A failed usage check does not undo the saved account.
    */
-  async completeSubscriptionOAuth(input: { provider: SubscriptionProvider; state: string; code?: string; redirect_url?: string; display_name?: string }): Promise<Record<string, unknown>> {
+  async completeSubscriptionOAuth(
+    input: { team_id: string; provider: SubscriptionProvider; state: string; code?: string; redirect_url?: string; display_name?: string; threshold_pct?: number },
+    userId: string,
+  ): Promise<Record<string, unknown>> {
+    const teamId = this.requirePoolTeamId(input.team_id);
     const adapter = this.subscriptionAdapter(input.provider);
     this.assertSubscriptionLoginConfigured(input.provider);
+    // A code works once, so a wrong threshold must fail before the login is used up.
+    if (input.threshold_pct !== undefined) this.assertThresholdPct(input.threshold_pct);
     const pending = this.subscriptionOAuthPending.get(input.state);
     if (!pending || pending.expiresAt <= Date.now() || pending.provider !== input.provider) {
+      throw new MetadataError("INVALID_OAUTH_STATE", "subscription login state is missing or expired");
+    }
+    // A login started for one team or by one caller cannot finish for another. The login stays open for its owner.
+    if (pending.teamId !== teamId || pending.userId !== userId) {
       throw new MetadataError("INVALID_OAUTH_STATE", "subscription login state is missing or expired");
     }
     const parsed = parseSubscriptionOAuthCode(input.code, input.redirect_url);
@@ -2625,21 +2819,37 @@ export class MetadataService {
     if (parsed.pastedState && parsed.pastedState !== pending.state) {
       throw new MetadataError("INVALID_OAUTH_STATE", "pasted state does not match the login that was started");
     }
-    const groups = await this.store.listInstanceUpstreamGroups(undefined, []);
     // Accounts can be added before the pool is turned on: the pool group then starts switched off
-    // and without agents, so the proxy does not see its accounts until `enable` moves the agent in.
-    const group = groups.find((g) => g.group_type === "custom" && g.mode === "subscription_pool" && g.name === this.subscriptionPoolName(input.provider))
-      ?? await this.store.createInstanceUpstreamGroup({
-        group_type: "custom",
-        name: this.subscriptionPoolName(input.provider),
-        agents: [],
-        enabled: false,
-        mode: "subscription_pool",
-        base_url: "",
-        api_key: "",
-        model_id: "",
-        description: `${input.provider} subscription accounts`,
-      });
+    // and without clients, so the proxy does not see its accounts until `enable` switches it on.
+    // The lookup and the insert run under one lock per team and provider (shared with `enable`),
+    // because the MongoDB store does not reject a second group of the same name on its own.
+    const group = await withAccountLock(poolGroupLockKey(teamId, input.provider), async () => {
+      let found = await this.teamPoolGroup(teamId, input.provider);
+      if (!found) {
+        try {
+          found = await this.store.createInstanceUpstreamGroup({
+            group_type: "custom",
+            team_id: teamId,
+            name: this.subscriptionPoolName(input.provider),
+            agents: [],
+            enabled: false,
+            mode: "subscription_pool",
+            base_url: "",
+            api_key: "",
+            model_id: "",
+            description: `${input.provider} subscription accounts`,
+          });
+        } catch (e) {
+          // Another login or `enable` of the same team created the pool group first: use that group.
+          const raced = e instanceof InstanceUpstreamWriteConflictError && e.reason === "name_duplicate"
+            ? await this.teamPoolGroup(teamId, input.provider)
+            : undefined;
+          if (!raced) throw this.translateUpstreamConflict(e);
+          found = raced;
+        }
+      }
+      return found;
+    });
 
     // A code works once, so the login is used up whatever the exchange result is.
     this.subscriptionOAuthPending.delete(pending.state);
@@ -2661,6 +2871,8 @@ export class MetadataService {
         refresh_token: exchanged.refreshToken,
         token_expires_at: exchanged.expiresAt,
         project_id: exchanged.projectId ?? null,
+        // A new account starts with the requested threshold, else the start value. A re-login keeps the stored one.
+        threshold_pct: input.threshold_pct ?? await this.defaultSubscriptionThreshold(),
       });
       // A re-login replaces tokens, so it waits for a running refresh of the same account.
       const existing = (await this.store.listSubscriptionAccounts(group.group_id))
@@ -2683,7 +2895,7 @@ export class MetadataService {
   async runSubscriptionUsageCheck(accountId: string, options: { refreshModels?: boolean } = {}): Promise<UsageCheckResult> {
     const current = await this.requireSubscriptionAccount(accountId);
     const adapter = this.subscriptionAdapter(current.provider);
-    const result = await checkAccountUsage(this.store, accountId, adapter, await this.subscriptionThreshold());
+    const result = await checkAccountUsage(this.store, accountId, adapter, current.threshold_pct);
     const failCount = result.account.usage_fail_count;
     await this.notifySubscriptionAccount({
       accountId,
@@ -2810,11 +3022,19 @@ export class MetadataService {
     };
   }
 
-  async checkAllSubscriptionAccountUsage(): Promise<{ checked: number; failed: number }> {
+  /** Checks the accounts of one team, or every account of the instance when no team is given (System Admin only). */
+  async checkAllSubscriptionAccountUsage(teamId?: string): Promise<{ checked: number; failed: number }> {
     let checked = 0;
     let failed = 0;
     const groups = new Set<string>();
-    for (const account of await this.store.listSubscriptionAccounts()) {
+    let accounts: SubscriptionAccountEntity[];
+    if (teamId === undefined) {
+      accounts = await this.store.listSubscriptionAccounts();
+    } else {
+      const pools = await this.store.listInstanceUpstreamGroups({ mode: "subscription_pool", team_id: this.requirePoolTeamId(teamId) }, []);
+      accounts = (await Promise.all(pools.map((pool) => this.store.listSubscriptionAccounts(pool.group_id)))).flat();
+    }
+    for (const account of accounts) {
       if (!account.enabled || account.status === "disabled" || account.status === "auth_error"
         || !SUPPORTED_SUBSCRIPTION_PROVIDERS.includes(account.provider)) continue;
       const result = await this.runSubscriptionUsageCheck(account.account_id, { refreshModels: false });
@@ -2862,6 +3082,7 @@ export class MetadataService {
   ): Promise<Record<string, unknown>> {
     this.assertGroupName(input.name);
     this.assertModeForGroupType("custom", input.mode);
+    this.assertNotPoolGroup(input.mode);
     const source = await this.resolveGroupSource({
       groupType: "custom",
       mode: input.mode,
@@ -2872,11 +3093,7 @@ export class MetadataService {
       supportedAgents,
     });
     this.assertAgents(input.agents, supportedAgents, "custom", source.isSource);
-    if (input.mode === "subscription_pool") {
-      if (input.base_url?.trim() || input.api_key?.trim()) {
-        throw new MetadataError("POOL_REJECTS_UPSTREAM_CREDENTIALS", "a subscription pool group has no base_url or api_key");
-      }
-    } else if (!input.base_url?.trim()) {
+    if (!input.base_url?.trim()) {
       throw new MetadataError("MISSING_BASE_URL", "base_url is required for custom group");
     } else if (input.mode === "custom_unified" && !input.api_key?.trim()) {
       throw new MetadataError("MISSING_API_KEY", "api_key is required for custom_unified mode");
@@ -2958,8 +3175,12 @@ export class MetadataService {
     // custom 组字段校验(仅在传入时才校验)
     if (input.group_type === "custom") {
       if (input.name !== undefined) this.assertGroupName(input.name);
-      if (input.mode !== undefined) this.assertModeForGroupType("custom", input.mode);
+      if (input.mode !== undefined) {
+        this.assertModeForGroupType("custom", input.mode);
+        this.assertNotPoolGroup(input.mode);
+      }
       const existing = await this.store.getInstanceUpstreamGroup(input.group_id);
+      if (existing) this.assertNotPoolGroup(existing.mode);
       before = existing;
       if (existing && ((input.enabled === false && existing.enabled) || (input.source_enabled === false && existing.source_enabled))) {
         this.assertSourceNotInUse(existing);
@@ -2978,20 +3199,13 @@ export class MetadataService {
           supportedAgents,
         });
         sourcePatch = source.patch;
-        // A pool legitimately has no agents while it is off, so only an agents change is checked there.
-        if (input.agents !== undefined || (mode !== "subscription_pool" && sentSourceKeys(input).length > 0)) {
+        if (input.agents !== undefined || sentSourceKeys(input).length > 0) {
           this.assertAgents(agents, supportedAgents, "custom", source.isSource);
         }
       } else if (input.agents !== undefined) {
         this.assertAgents(input.agents, supportedAgents, "custom");
       }
-      if (mode === "subscription_pool") {
-        const baseUrl = input.base_url !== undefined ? input.base_url : existing?.base_url ?? "";
-        const apiKey = input.api_key !== undefined ? input.api_key : existing?.api_key ?? "";
-        if (baseUrl.trim() || apiKey.trim()) {
-          throw new MetadataError("POOL_REJECTS_UPSTREAM_CREDENTIALS", "a subscription pool group has no base_url or api_key");
-        }
-      } else if (input.base_url !== undefined && !input.base_url.trim()) {
+      if (input.base_url !== undefined && !input.base_url.trim()) {
         throw new MetadataError("MISSING_BASE_URL", "base_url must be non-empty");
       }
     }
@@ -3031,10 +3245,9 @@ export class MetadataService {
   ): Promise<Record<string, unknown>> {
     // 存量兜底 seed (同 create 分支说明)
     await this.store.ensureDefaultSeeded(supportedAgents);
-    if (!input.enabled) {
-      const current = await this.store.getInstanceUpstreamGroup(input.group_id);
-      if (current?.enabled) this.assertSourceNotInUse(current);
-    }
+    const current = await this.store.getInstanceUpstreamGroup(input.group_id);
+    if (current) this.assertNotPoolGroup(current.mode);
+    if (!input.enabled && current?.enabled) this.assertSourceNotInUse(current);
     try {
       const row = await this.store.toggleInstanceUpstreamGroup(input);
       return { group_id: row.group_id, enabled: row.enabled, updated_at: row.updated_at };
@@ -3069,6 +3282,7 @@ export class MetadataService {
         "use /extraction/delete for extraction row",
       );
     }
+    this.assertNotPoolGroup(existing.mode);
     this.assertSourceNotInUse(existing);
     const ok = await this.store.deleteInstanceUpstreamGroup(input);
     return { deleted: ok, released_agents: existing.agents };
@@ -3245,7 +3459,7 @@ export class MetadataService {
   }): Promise<{ patch: SourceInput; isSource: boolean }> {
     const needsNames = Boolean(params.input.source_name) && !params.existing?.source_name;
     const takenNames = needsNames
-      ? await this.takenSourceNames(params.existing?.group_id)
+      ? await this.takenSourceNames(INSTANCE_SCOPE, params.existing?.group_id)
       : new Set<string>();
     try {
       return resolveSourceWrite({ ...params, takenNames });
@@ -3254,16 +3468,20 @@ export class MetadataService {
     }
   }
 
-  private async takenSourceNames(exceptGroupId?: string): Promise<Set<string>> {
+  /** Source names held in one scope: the instance (`''`) or one team. The same name may repeat across scopes. */
+  private async takenSourceNames(scopeTeamId: string, exceptGroupId?: string): Promise<Set<string>> {
     const groups = await this.store.listInstanceUpstreamGroups(undefined, []);
     return new Set(
-      groups.filter((g) => g.source_name && g.group_id !== exceptGroupId).map((g) => g.source_name),
+      groups
+        .filter((g) => g.source_name && g.group_id !== exceptGroupId && g.team_id === scopeTeamId)
+        .map((g) => g.source_name),
     );
   }
 
   /** Propose a free source name for a new source: `sub-claude`, `sub-openai`, `api-<provider>`, then `-2`, `-3`. */
   async suggestSourceName(input: { kind: "subscription" | "api"; provider: string }): Promise<{ source_name: string }> {
-    const taken = await this.takenSourceNames();
+    // A subscription source is a pool row. Its name is fixed and repeats in every team, so no name is taken.
+    const taken = input.kind === "subscription" ? new Set<string>() : await this.takenSourceNames(INSTANCE_SCOPE);
     try {
       return { source_name: suggestSourceName(input.kind, input.provider, taken) };
     } catch (e) {
@@ -3311,14 +3529,15 @@ export class MetadataService {
     gemini: "gemini",
   };
 
+  /** Sources a client may choose on the instance level. Pool rows belong to a team and are set with the pool clients. */
   private clientSourceGroups(groups: InstanceUpstreamConfigEntity[]): InstanceUpstreamConfigEntity[] {
     return groups
-      .filter((g) => g.group_type === "custom" && g.source_name && g.mode !== "custom_passthrough")
+      .filter((g) => g.group_type === "custom" && g.source_name && g.mode !== "custom_passthrough" && g.mode !== "subscription_pool")
       .sort((a, b) => (a.source_name < b.source_name ? -1 : a.source_name > b.source_name ? 1 : 0));
   }
 
   private static sourceIsOn(group: InstanceUpstreamConfigEntity): boolean {
-    return group.mode === "subscription_pool" ? group.enabled : group.enabled && group.source_enabled;
+    return group.enabled && group.source_enabled;
   }
 
   private buildClientSources(
@@ -3341,7 +3560,7 @@ export class MetadataService {
       }),
       sources: sources.map((g) => ({
         source_name: g.source_name,
-        source_type: g.mode === "subscription_pool" ? "subscription" : "api",
+        source_type: "api",
         provider: g.source_provider,
         formats: g.source_formats,
         enabled: MetadataService.sourceIsOn(g),
@@ -3432,7 +3651,8 @@ export class MetadataService {
         { source_name: target.source_name, required_format: format, client_formats: [format] },
       );
     }
-    const holders = groups.filter((g) => g.agents.includes(agent.agent_source));
+    // Pool rows keep their clients in a separate team layer; they never hold an instance-level client.
+    const holders = groups.filter((g) => g.mode !== "subscription_pool" && g.agents.includes(agent.agent_source));
     if (holders.length === 1 && holders[0]!.group_id === target.group_id) return;
     try {
       await this.store.moveAgentBetweenUpstreamGroups({
@@ -3600,6 +3820,13 @@ export class MetadataService {
 
   // ── 内部工具 ─────────────────────────────────────────────
 
+  /** A subscription pool belongs to a team. The generic group calls never create, change or delete one. */
+  private assertNotPoolGroup(mode: UpstreamMode): void {
+    if (mode === "subscription_pool") {
+      throw new MetadataError("POOL_GROUP_TEAM_SCOPED", "a subscription pool belongs to a team; change it with the subscription-pool calls");
+    }
+  }
+
   private assertGroupName(name: string): void {
     const trimmed = (name ?? "").trim();
     if (!trimmed) {
@@ -3676,6 +3903,7 @@ export class MetadataService {
       source_models: row.source_models,
       source_models_fetched_at: row.source_models_fetched_at,
       source_models_error: row.source_models_error,
+      team_id: row.team_id,
       version: row.version,
       updated_at: row.updated_at,
     };
