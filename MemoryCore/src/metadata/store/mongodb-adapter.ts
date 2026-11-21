@@ -1020,14 +1020,14 @@ export class MongoMetadataStore implements IMetadataStore {
   }
 
   async deleteTeams(teamIds: string[]): Promise<DeleteTeamsResult> {
-    // MongoDB has no foreign keys and the deletes below may run without a transaction. The pools,
-    // their accounts and the child rows go first and the team row last, so a failure part way
-    // leaves the team in place and a retry through the team delete route (which looks the team
-    // up first) can still finish the cleanup.
+    // MongoDB has no foreign keys. With transactions the whole delete is atomic; without them the
+    // pools, their accounts and the child rows go first, then the members and the team row last,
+    // so a failure part way leaves the team and its admins in place and a retry through the team
+    // delete route (which looks the team and the caller's membership up first) can finish the cleanup.
     const ids = teamIds.filter((id) => id !== "");
-    let deletedPoolAccountIds: string[] = [];
-    if (ids.length > 0) {
-      deletedPoolAccountIds = await this.withTx(async (session) => {
+    return this.withTx(async (session) => {
+      let deletedPoolAccountIds: string[] = [];
+      if (ids.length > 0) {
         const cfg = this.col("meta_instance_upstream_config");
         const groupIds = (await cfg
           .find({ mode: "subscription_pool", team_id: { $in: ids } } as Document, {
@@ -1035,24 +1035,26 @@ export class MongoMetadataStore implements IMetadataStore {
             session,
           })
           .toArray()).map((d) => String((d as Document).group_id));
-        if (groupIds.length === 0) return [];
-        const accounts = this.col(SUBSCRIPTION_ACCOUNT_COLLECTION);
-        const accountIds = (await accounts
-          .find({ group_id: { $in: groupIds } } as Document, { projection: { _id: 0, account_id: 1 }, session })
-          .toArray()).map((d) => String((d as Document).account_id)).sort();
-        // Delete the accounts first, so a failure between the two deletes leaves an empty group
-        // and never an account without a group.
-        await accounts.deleteMany({ group_id: { $in: groupIds } } as Document, { session });
-        await cfg.deleteMany({ group_id: { $in: groupIds } } as Document, { session });
-        return accountIds;
-      });
-      await this.col("meta_team_members").deleteMany({ team_id: { $in: ids } } as Document);
-      await this.col("meta_agents").deleteMany({ team_id: { $in: ids } } as Document);
-      await this.col("meta_tasks").deleteMany({ team_id: { $in: ids } } as Document);
-      await this.col("meta_assets").deleteMany({ team_id: { $in: ids } } as Document);
-    }
-    const result = await this.batchDelete("meta_teams", "team_id", teamIds);
-    return { ...result, deleted_pool_account_ids: deletedPoolAccountIds };
+        if (groupIds.length > 0) {
+          const accounts = this.col(SUBSCRIPTION_ACCOUNT_COLLECTION);
+          deletedPoolAccountIds = (await accounts
+            .find({ group_id: { $in: groupIds } } as Document, { projection: { _id: 0, account_id: 1 }, session })
+            .toArray()).map((d) => String((d as Document).account_id)).sort();
+          // Delete the accounts first, so a failure between the two deletes leaves an empty group
+          // and never an account without a group.
+          await accounts.deleteMany({ group_id: { $in: groupIds } } as Document, { session });
+          await cfg.deleteMany({ group_id: { $in: groupIds } } as Document, { session });
+        }
+        await this.col("meta_agents").deleteMany({ team_id: { $in: ids } } as Document, { session });
+        await this.col("meta_tasks").deleteMany({ team_id: { $in: ids } } as Document, { session });
+        await this.col("meta_assets").deleteMany({ team_id: { $in: ids } } as Document, { session });
+        // Members go last before the team row: the team admin check reads them, so a failed
+        // non-transactional run must leave them for the retry.
+        await this.col("meta_team_members").deleteMany({ team_id: { $in: ids } } as Document, { session });
+      }
+      const result = await this.batchDelete("meta_teams", "team_id", teamIds, session);
+      return { ...result, deleted_pool_account_ids: deletedPoolAccountIds };
+    });
   }
 
   async listTeamsByUser(userId: string, pagination?: PaginationParams | null, filter?: { name?: string }): Promise<ListPage<TeamEntity>> {
@@ -1676,10 +1678,10 @@ export class MongoMetadataStore implements IMetadataStore {
     await this.col(collection).updateOne(filter, { $set: set });
   }
 
-  private async batchDelete(collection: string, pkCol: string, ids: string[]): Promise<BatchDeleteResult> {
+  private async batchDelete(collection: string, pkCol: string, ids: string[], session?: ClientSession): Promise<BatchDeleteResult> {
     const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
     for (const id of ids) {
-      const res = await this.col(collection).deleteOne({ [pkCol]: id });
+      const res = await this.col(collection).deleteOne({ [pkCol]: id }, { session });
       if (res.deletedCount && res.deletedCount > 0) result.deleted_ids.push(id);
       else result.failed.push({ id, reason: "not_found" });
     }
