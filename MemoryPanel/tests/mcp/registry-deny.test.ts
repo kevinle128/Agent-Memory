@@ -95,20 +95,23 @@ describe('every registered tool denies a caller outside the team', () => {
         for (const tool of TOOL_REGISTRY) {
           h.ks.clearCalls();
           const extra = withTeamId ? { team_id: SECRET_TEAM_ID } : {};
-          const res = await callTool(h.app, key, tool.name, argsFor(tool, extra));
+          const builtArgs = argsFor(tool, extra);
+          const res = await callTool(h.app, key, tool.name, builtArgs);
           expect(res.status, tool.name).toBe(200);
           expectNoLeak(res.text);
           // The fake knowledge service answers any id, so a data call that reaches it means the gate let the caller in.
           // Only `code_status` may probe `codeGraphGet`: it lets the owner of a graph that has no asset row read the status.
           const allowed = tool.name === 'code_status' ? ['codeGraphGet'] : [];
           expect(h.ks.calls.filter((c) => !allowed.includes(c.method)), tool.name).toEqual([]);
-          if (withTeamId && res.isError) {
-            // The only error that names the team is the fixed not-readable message.
+          // A foreign team id (help aside) or a secret asset id must be refused, with the fixed not-readable message only.
+          const hasSecretAssetId = Object.keys(builtArgs).some((k) => k !== 'team_id' && k.endsWith('_id'));
+          if (hasSecretAssetId || (withTeamId && tool.name !== 'help')) {
+            expect(res.isError, tool.name).toBe(true);
             expect([
               `No readable team with id ${SECRET_TEAM_ID}.`,
               `No readable wiki or code graph with id ${SECRET_ASSET_ID}.`,
               `No readable wiki or code graph with id ${SECRET_CODE_GRAPH_ID}.`,
-            ]).toContain(res.text);
+            ], tool.name).toContain(res.text);
           }
         }
       });

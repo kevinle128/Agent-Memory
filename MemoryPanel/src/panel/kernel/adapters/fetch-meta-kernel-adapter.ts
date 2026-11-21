@@ -6,8 +6,16 @@ import { toKernelCredentials, type MetaCallContext } from '../types.js';
 // 只有 auth/verify 走"无 user-key"路径：它的 user_key 放 body，不放 Header。
 // user/create(-with-key) 已改回要求 system_admin，建号时传实例 admin user_key。
 const OMIT_USER_KEY_ACTIONS = new Set(['auth/verify']);
-// The same actions carry a user key in the body, so the transport must not log their bodies.
-const SECRET_BODY_ACTIONS = OMIT_USER_KEY_ACTIONS;
+// Actions whose request or response body carries a user key or an upstream API key.
+// The transport must not log their bodies, not even a masked prefix.
+const SECRET_BODY_ACTIONS = new Set([
+  'auth/verify',
+  'user/create',
+  'user/create-with-key',
+  'user-key/create',
+  'instance-upstream/groups/create',
+  'instance-upstream/groups/update',
+]);
 
 function sanitizeBody(action: string, body: Record<string, unknown>): Record<string, unknown> {
   if (META_LIST_ACTIONS.has(action)) return body;

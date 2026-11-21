@@ -95,7 +95,7 @@ describe('agent-memory MCP over HTTP', () => {
     world.addTeam('A', 'Alpha', 'ann');
     const client = await connect(key);
     try {
-      await client.callTool({ name: 'whoami', arguments: { team_id: 'A' } });
+      await client.callTool({ name: 'whoami', arguments: { team_id: 'A', extra: 'sentinel-arg-value' } });
     } finally {
       await client.close();
     }
@@ -108,6 +108,15 @@ describe('agent-memory MCP over HTTP', () => {
       team_ids: ['A'],
       outcome: 'ok',
     });
+    expect(Object.keys(lines[0]!.fields!).sort()).toEqual([
+      'component',
+      'duration_ms',
+      'outcome',
+      'team_ids',
+      'tool',
+      'user_id',
+    ]);
     expect(JSON.stringify(fixture.logs)).not.toContain(key);
+    expect(JSON.stringify(fixture.logs)).not.toContain('sentinel-arg-value');
   });
 });

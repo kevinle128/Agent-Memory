@@ -23,6 +23,8 @@ const MAX_ID_CHARS = 128;
 /** Upper bounds that the copied schemas do not state. */
 const MAX_WIKI_SEARCH_LIMIT = 100;
 const MAX_CODE_FILES_DEPTH = 20;
+/** `PAGE_READ_MAX` of the knowledge service: more refs is a 400. */
+const MAX_WIKI_READ_REFS = 20;
 
 type AssetKind = typeof ASSET_TYPE_WIKI | typeof ASSET_TYPE_CODE_GRAPH;
 type ToolResult = { text: string; isError: boolean };
@@ -99,7 +101,11 @@ function validateArgs(def: McpToolDef, args: Record<string, unknown>, skip: stri
 function pickParams(def: McpToolDef, args: Record<string, unknown>, skip: string): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   for (const name of Object.keys(def.inputSchema.properties)) {
-    if (name !== skip && args[name] !== undefined && args[name] !== null) params[name] = args[name];
+    const value = args[name];
+    if (name === skip || value === undefined || value === null) continue;
+    // A blank optional filter means "not set": the knowledge service refuses an empty string with a 400.
+    if (typeof value === 'string' && !value.trim()) continue;
+    params[name] = value;
   }
   return params;
 }
@@ -166,6 +172,16 @@ function codeTool(name: string): RegisteredTool {
       if (isFailure(gated)) return gated;
       const problem = validateArgs(def, args, 'code_graph_id');
       if (problem) return failure(problem);
+      if (name === 'code_status') {
+        // The knowledge service answers every query on a graph that is not ready with an empty text,
+        // so the build state and its error come from the graph itself.
+        const detail = await access.knowledge().codeGraphGet(gated.id);
+        if (detail.status !== 'ready') {
+          const lines = [`status: ${detail.status}`];
+          if (detail.sync_error) lines.push(`sync_error: ${detail.sync_error}`);
+          return withTeam(gated.entry, lines.join('\n'));
+        }
+      }
       const params = pickParams(def, args, 'code_graph_id');
       if (name === 'code_files' && typeof params.maxDepth === 'number') {
         params.maxDepth = Math.min(params.maxDepth, MAX_CODE_FILES_DEPTH);
@@ -181,6 +197,8 @@ function codeTool(name: string): RegisteredTool {
 function wikiTool(
   name: string,
   call: (access: RequestAccess, id: string, args: Record<string, unknown>) => Promise<unknown>,
+  /** Bounds of the knowledge service that the copied schema does not state. */
+  checkBounds?: (args: Record<string, unknown>) => string | null,
 ): RegisteredTool {
   const def = definition(name);
   return {
@@ -189,7 +207,7 @@ function wikiTool(
     async run(args, access) {
       const gated = await gateAsset(access, args, 'wiki_id', ASSET_TYPE_WIKI, false);
       if (isFailure(gated)) return gated;
-      const problem = validateArgs(def, args, 'wiki_id');
+      const problem = validateArgs(def, args, 'wiki_id') ?? checkBounds?.(args) ?? null;
       if (problem) return failure(problem);
       const data = await call(access, gated.id, args);
       return withTeam(gated.entry, JSON.stringify(data, null, 2));
@@ -266,15 +284,27 @@ export const knowledgeTools: RegisteredTool[] = [
   codeTool('code_node'),
   codeTool('code_status'),
   codeTool('code_files'),
-  wikiTool('wiki_search', (access, id, args) => {
-    const graph: { hop?: number; decay?: number; minScore?: number } = {};
-    if (typeof args.hop === 'number') graph.hop = args.hop;
-    if (typeof args.decay === 'number') graph.decay = args.decay;
-    if (typeof args.minScore === 'number') graph.minScore = args.minScore;
-    const limit = typeof args.limit === 'number' ? Math.min(args.limit, MAX_WIKI_SEARCH_LIMIT) : undefined;
-    return access.knowledge().wikiSearch(id, String(args.query), limit, graph);
-  }),
-  wikiTool('wiki_read', (access, id, args) => access.knowledge().wikiPageRead(id, args.refs as string[])),
+  wikiTool(
+    'wiki_search',
+    (access, id, args) => {
+      const graph: { hop?: number; decay?: number; minScore?: number } = {};
+      if (typeof args.hop === 'number') graph.hop = args.hop;
+      if (typeof args.decay === 'number') graph.decay = args.decay;
+      if (typeof args.minScore === 'number') graph.minScore = args.minScore;
+      const limit = typeof args.limit === 'number' ? Math.min(args.limit, MAX_WIKI_SEARCH_LIMIT) : undefined;
+      return access.knowledge().wikiSearch(id, String(args.query), limit, graph);
+    },
+    (args) =>
+      typeof args.limit === 'number' && args.limit < 1 ? 'Invalid argument limit: expected a value of at least 1.' : null,
+  ),
+  wikiTool(
+    'wiki_read',
+    (access, id, args) => access.knowledge().wikiPageRead(id, args.refs as string[]),
+    (args) =>
+      Array.isArray(args.refs) && args.refs.length > MAX_WIKI_READ_REFS
+        ? `Invalid argument refs: expected at most ${MAX_WIKI_READ_REFS} items.`
+        : null,
+  ),
   wikiTool('wiki_list', (access, id) => access.knowledge().wikiPageLs(id)),
   wikiTool('wiki_graph', (access, id) => access.knowledge().wikiGraph(id)),
 ];

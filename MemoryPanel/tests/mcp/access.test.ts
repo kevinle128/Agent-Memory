@@ -269,6 +269,13 @@ describe('Core failures', () => {
     world.failWith('auth/verify', 502);
     expect((await rpc(h.app, key, 'tools/list')).status).toBe(503);
   });
+
+  it('an auth/verify 4xx (gateway token or service id refused) is HTTP 503, not 401', async () => {
+    const { world } = h;
+    const key = world.addUser('ann');
+    world.failWith('auth/verify', 401);
+    expect((await rpc(h.app, key, 'tools/list')).status).toBe(503);
+  });
 });
 
 describe('resolveScope and resolveCaller', () => {

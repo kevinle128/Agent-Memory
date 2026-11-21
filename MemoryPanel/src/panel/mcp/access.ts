@@ -20,6 +20,7 @@ import {
 } from '../http/routes/knowledge/common.js';
 import type { KnowledgeClientPort } from '../kernel/ports/knowledge-client-port.js';
 import { resolveTeamRole, type TeamRole } from '../authz/team-role.js';
+import { CoreUpstreamError } from '../domain/errors.js';
 import { DeadlineExceededError, createRequestLifecycle, type RequestLifecycle } from './guards.js';
 
 /** Same id rule as the proxy and the Processing History filters. */
@@ -72,16 +73,20 @@ function scopeOf(role: TeamRole): ScopeEntry['scope'] {
   return role === 'admin' ? 'team' : 'own';
 }
 
-/** One `auth/verify` call. `null` means the key is invalid, expired or revoked. */
+/**
+ * One `auth/verify` call. `null` means the key is invalid, expired or revoked.
+ * Core answers an unknown key with code 0 and `valid: false`, so any other code is a
+ * Panel-to-Core failure (gateway token, service id), not a bad caller key.
+ */
 export async function resolveCaller(deps: PanelDeps, ctx: MetaCallContext): Promise<Caller | null> {
   if (!ctx.userKey) return null;
   const env = await deps.metaKernel.invoke('auth/verify', { user_key: ctx.userKey }, ctx);
-  if (env.code >= 500) throw new UpstreamUnavailableError(`auth/verify failed with code ${env.code}`);
+  if (env.code !== 0) throw new UpstreamUnavailableError(`auth/verify failed with code ${env.code}`);
   const data = env.data as {
     valid?: boolean;
     user?: { user_id?: string; username?: string; user_type?: string } | null;
   } | null;
-  const user = env.code === 0 && data?.valid ? data.user : null;
+  const user = data?.valid ? data.user : null;
   if (!user || typeof user.user_id !== 'string' || !user.user_id) return null;
   return {
     userId: user.user_id,
@@ -276,24 +281,46 @@ export function createRequestAccess(
       }),
     knowledge: () => knowledgeReader,
     async checkKnowledgeRead(knowledgeId, opts) {
-      // The gate reads a Core failure as "no access". Track it here, so an outage is not shown as a refusal.
-      let coreFailed = false;
+      // The gate reads a Core or knowledge service failure as "no access", and swallows thrown errors.
+      // Track them here, so an outage or the request deadline is not shown as a refusal.
+      let upstreamFailed = false;
+      let deadline: DeadlineExceededError | null = null;
+      const record = (err: unknown) => {
+        if (err instanceof DeadlineExceededError) deadline ??= err;
+        else upstreamFailed = true;
+      };
       const check = await checkKnowledgeRead(
         {
           metaKernel: {
             invoke: async (action, body) => {
-              const env = await core(action, body);
-              if (env.code >= 500) coreFailed = true;
-              return env;
+              try {
+                const env = await core(action, body);
+                if (env.code >= 500) upstreamFailed = true;
+                return env;
+              } catch (err) {
+                record(err);
+                throw err;
+              }
             },
           },
-          knowledgeClientFactory: () => knowledgeReader,
+          knowledgeClientFactory: () => ({
+            codeGraphGet: async (id: string) => {
+              try {
+                return await knowledgeReader.codeGraphGet(id);
+              } catch (err) {
+                // A 4xx answer means "no such code graph"; a 5xx, a network error or an abort is an outage.
+                if (!(err instanceof CoreUpstreamError && err.httpStatus < 500)) record(err);
+                throw err;
+              }
+            },
+          }),
         },
         ctx,
         knowledgeId,
         { allowInFlightCodeOwner: opts?.allowInFlightCodeOwner === true, action: 'read', userId: caller.userId },
       );
-      if (!check.ok && coreFailed) throw new UpstreamUnavailableError('knowledge read check failed');
+      if (deadline) throw deadline;
+      if (!check.ok && upstreamFailed) throw new UpstreamUnavailableError('knowledge read check failed');
       return check;
     },
     scope(teamId?: unknown) {

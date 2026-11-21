@@ -66,6 +66,14 @@ describe('persona: member of A', () => {
     expect(await listIds('mia')).toEqual(['cg-a-team', 'wiki-a-team']);
   });
 
+  it('lists and reads a restricted wiki that an ACL rule grants to the member', async () => {
+    h.world.grantRead('wiki-a-restricted', 'mia');
+    expect(await listIds('mia')).toEqual(['cg-a-team', 'wiki-a-restricted', 'wiki-a-team']);
+    const res = await readWiki('mia', 'wiki-a-restricted', { refs: ['plan'] });
+    expect(res.isError, res.text).toBe(false);
+    expect(res.text).toContain('Secret plan of a');
+  });
+
   it('is refused for every id of team B, and for team_id=B', async () => {
     for (const id of ['wiki-b-team', 'wiki-b-restricted']) expectRefused(await readWiki('mia', id), id);
     expectRefused(await searchCode('mia', 'cg-b-team'), 'cg-b-team');
@@ -275,7 +283,8 @@ describe('code graph that is still building', () => {
   it('lets the owner read its status, but not search it', async () => {
     h.ks.addCodeGraph('cg-new', { team_id: 'A', owner_user_id: 'mia', status: 'processing', text: { status: 'indexing 40%' } });
     const status = await callTool(h.app, keyOf('mia'), 'code_status', { code_graph_id: 'cg-new' });
-    expect(status.text).toBe('team: Alpha (A)\nindexing 40%');
+    // The knowledge service answers queries on a graph that is not ready with an empty text, so the state comes from the graph.
+    expect(status.text).toBe('team: Alpha (A)\nstatus: processing');
     expectRefused(await searchCode('mia', 'cg-new'), 'cg-new');
   });
 
@@ -405,8 +414,44 @@ describe('assets that are not active', () => {
 
   it('keeps the status of a code graph that is still building for its owner only', async () => {
     h.ks.addCodeGraph('cg-building', { team_id: 'A', owner_user_id: 'mia', status: 'processing', text: { status: 'building' } });
-    expect((await callTool(h.app, keyOf('mia'), 'code_status', { code_graph_id: 'cg-building' })).isError).toBe(false);
+    const own = await callTool(h.app, keyOf('mia'), 'code_status', { code_graph_id: 'cg-building' });
+    expect(own.isError).toBe(false);
+    expect(own.text).toBe('team: Alpha (A)\nstatus: processing');
     expectRefused(await callTool(h.app, keyOf('adm'), 'code_status', { code_graph_id: 'cg-building' }), 'cg-building');
+  });
+});
+
+describe('code_status of a graph that is not ready', () => {
+  it('shows the build state and the sync error instead of an empty result', async () => {
+    h.ks.addCodeGraph('cg-broken', { team_id: 'A', owner_user_id: 'mia', status: 'failed', sync_error: 'clone failed' });
+    const res = await callTool(h.app, keyOf('mia'), 'code_status', { code_graph_id: 'cg-broken' });
+    expect(res.isError).toBe(false);
+    expect(res.text).toBe('team: Alpha (A)\nstatus: failed\nsync_error: clone failed');
+    expect(h.ks.calls.filter((c) => c.method === 'codeGraphQuery')).toEqual([]);
+  });
+});
+
+describe('knowledge service outage during the read check', () => {
+  it('answers "could not answer" when codeGraphGet of an in-flight graph fails, not "not readable"', async () => {
+    h.ks.addCodeGraph('cg-building', { team_id: 'A', owner_user_id: 'mia', status: 'processing' });
+    h.ks.failWith('codeGraphGet');
+    const res = await callTool(h.app, keyOf('mia'), 'code_status', { code_graph_id: 'cg-building' });
+    expect(res.isError).toBe(true);
+    expect(res.text).toBe('Agent-Memory could not answer this call.');
+  });
+
+  it('rethrows the deadline when the membership lookup runs after the request is over', async () => {
+    const ctx = { instanceId: 'default', gatewayEndpoint: 'x', gatewayApiKey: 'y', userKey: keyOf('mia') };
+    const lifecycle = createRequestLifecycle();
+    const access = createRequestAccess(h.fixture.deps, ctx, { userId: 'mia', username: 'n', userType: 'user' }, lifecycle);
+    const original = h.fixture.deps.metaKernel.invoke;
+    h.fixture.deps.metaKernel = {
+      invoke: async (action: string, body: Record<string, unknown>, c: never) => {
+        if (action === 'acl/check') lifecycle.stop();
+        return original(action, body, c);
+      },
+    } as typeof h.fixture.deps.metaKernel;
+    await expect(access.checkKnowledgeRead('wiki-a-team')).rejects.toBeInstanceOf(DeadlineExceededError);
   });
 });
 
@@ -440,6 +485,23 @@ describe('limits', () => {
     await callTool(h.app, keyOf('mia'), 'code_files', { code_graph_id: 'cg-a-team', maxDepth: 3 });
     const depths = h.ks.calls.filter((c) => c.method === 'codeGraphQuery').map((c) => (c.args[2] as { maxDepth: number }).maxDepth);
     expect(depths).toEqual([20, 3]);
+  });
+});
+
+describe('argument bounds of the knowledge service', () => {
+  it('refuses more than 20 refs and a wiki_search limit below 1 without calling the knowledge service', async () => {
+    const refs = Array.from({ length: 21 }, (_, i) => `p${i}`);
+    const many = await readWiki('mia', 'wiki-a-team', { refs });
+    expect(many).toMatchObject({ isError: true, text: 'Invalid argument refs: expected at most 20 items.' });
+    const zero = await callTool(h.app, keyOf('mia'), 'wiki_search', { wiki_id: 'wiki-a-team', query: 'team', limit: 0 });
+    expect(zero).toMatchObject({ isError: true, text: 'Invalid argument limit: expected a value of at least 1.' });
+    expect(h.ks.calls.filter((c) => c.method === 'wikiPageRead' || c.method === 'wikiSearch')).toEqual([]);
+  });
+
+  it('drops a blank optional string instead of sending it to the knowledge service', async () => {
+    await callTool(h.app, keyOf('mia'), 'code_files', { code_graph_id: 'cg-a-team', path: '  ' });
+    const params = h.ks.calls.filter((c) => c.method === 'codeGraphQuery').map((c) => c.args[2]);
+    expect(params).toEqual([{}]);
   });
 });
 

@@ -55,6 +55,26 @@ describe('kernel call logging', () => {
     expect(JSON.stringify(lines)).not.toContain(SECRET_KEY.slice(0, 8));
   });
 
+  for (const action of [
+    'user/create',
+    'user/create-with-key',
+    'user-key/create',
+    'instance-upstream/groups/create',
+    'instance-upstream/groups/update',
+  ]) {
+    it(`keeps the body of ${action}, which carries a key, out of the logs`, async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(JSON.stringify({ code: 0, message: 'ok', data: { key_value: SECRET_KEY } }))),
+      );
+      const lines: Array<{ level: string; msg: string; fields?: Record<string, unknown> }> = [];
+      const adapter = new FetchMetaKernelAdapter(new FetchKernelHttpAdapter(recordingLogger(lines)), 1000);
+      await adapter.invoke(action, { user_key: SECRET_KEY, api_key: SECRET_KEY }, ctx);
+      expect(JSON.stringify(lines)).not.toContain(SECRET_KEY.slice(0, 8));
+      expect(JSON.stringify(lines)).not.toContain('requestBody');
+    });
+  }
+
   it('logs the body of other actions as before', async () => {
     vi.stubGlobal(
       'fetch',

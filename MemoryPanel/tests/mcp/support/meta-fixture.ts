@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import { Hono } from 'hono';
+import { CoreUpstreamError } from '../../../src/panel/domain/errors.js';
 import { registerMcpRoutes, type McpRouteOptions } from '../../../src/panel/mcp/route.js';
 import type { PanelDeps } from '../../../src/panel/panel-deps.js';
 import { createPanelFixture, stubMetaKernel, type PanelFixture } from '../../extensions/support/panel-fixture.js';
@@ -240,6 +241,7 @@ interface FakeCodeGraph {
   branch: string;
   status: string;
   owner_user_id: string | null;
+  sync_error?: string | null;
   /** Text that the query of one code tool answers with. */
   text: Record<string, string>;
 }
@@ -270,7 +272,8 @@ export function createFakeKnowledge() {
   };
   const graphOf = (id: string) => {
     const g = codeGraphs.get(id);
-    if (!g) throw new Error(`code graph not found: ${id}`);
+    // Like the knowledge service: an unknown code graph is a 404, not an outage.
+    if (!g) throw new CoreUpstreamError('CORE_UPSTREAM_ERROR', 404, `code graph not found: ${id}`, 404);
     return g;
   };
   const stamp = '2026-11-01T00:00:00.000Z';
@@ -290,7 +293,7 @@ export function createFakeKnowledge() {
       const g = graphOf(id);
       return {
         code_graph_id: id, team_id: g.team_id, repo_name: g.repo_name, repo_url: `https://git.test/${g.repo_name}`,
-        branch: g.branch, status: g.status, summary: null, sync_error: null, commit_hash: 'abc123',
+        branch: g.branch, status: g.status, summary: null, sync_error: g.sync_error ?? null, commit_hash: 'abc123',
         owner_user_id: g.owner_user_id, stats: { files: 3, nodes: 9, edges: 12 },
         created_at: stamp, updated_at: stamp, last_sync_at: stamp,
       };
@@ -298,6 +301,8 @@ export function createFakeKnowledge() {
     async codeGraphQuery(id: string, tool: string, params: Record<string, unknown>) {
       record('codeGraphQuery', [id, tool, params]);
       const g = graphOf(id);
+      // Like the knowledge service: a graph that is not ready answers every query with an empty text.
+      if (g.status !== 'ready') return { text: '', isError: false };
       return { text: g.text[tool] ?? `${tool} found nothing in ${g.repo_name}`, isError: false };
     },
     async wikiSearch(id: string, query: string, limit?: number, graph?: Record<string, unknown>) {
