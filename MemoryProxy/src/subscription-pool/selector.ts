@@ -9,7 +9,7 @@
  *   4. nothing (`null`), and the caller falls back to the client's own login or a 429.
  */
 
-import type { PoolAccount, PoolQuotaWindow } from "./types.js";
+import { windowAppliesToModel, type PoolAccount, type PoolQuotaWindow } from "./types.js";
 
 /** A window at this usage has no quota left. */
 const QUOTA_REACHED_PCT = 100;
@@ -31,10 +31,7 @@ function windowUsage(window: PoolQuotaWindow, now: number): number {
 
 /** Windows that limit a request for `requestedModel`: the shared ones and the model's own. */
 function applicableWindows(account: PoolAccount, requestedModel: string): PoolQuotaWindow[] {
-  return account.usage.windows.filter((window) => {
-    const scope = window.model_scope;
-    return scope === null || scope === undefined || scope === requestedModel;
-  });
+  return account.usage.windows.filter((window) => windowAppliesToModel(window, requestedModel));
 }
 
 /** Highest usage over the windows that apply to the request. 0 when the account has no window. */

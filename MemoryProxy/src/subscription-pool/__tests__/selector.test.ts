@@ -241,3 +241,32 @@ describe("hasAccountBelowQuota", () => {
     expect(hasAccountBelowQuota([account], NOW, "claude-sonnet-4")).toBe(true);
   });
 });
+
+describe("quota group windows", () => {
+  const group = (name: string, used: number, models: string[]): PoolQuotaWindow => ({
+    ...win(name, used, HOUR, "gemini"), shared_models: models,
+  });
+  const gemini = ["gemini-4-argon-high", "gemini-4-neon-low"];
+
+  it("stops every model that the group lists and no other model", () => {
+    const account = acct("a", {}, [group("weekly", 100, gemini)]);
+    expect(hasAccountBelowQuota([account], NOW, "gemini-4-neon-low")).toBe(false);
+    expect(hasAccountBelowQuota([account], NOW, "gemini-4-argon-high")).toBe(false);
+    expect(hasAccountBelowQuota([account], NOW, "claude-sonnet-4-6")).toBe(true);
+  });
+
+  it("stops a model the group does not list by the group rule", () => {
+    const geminiFull = acct("a", {}, [group("weekly", 100, gemini)]);
+    expect(hasAccountBelowQuota([geminiFull], NOW, "gemini-4-carbon-image")).toBe(false);
+    expect(hasAccountBelowQuota([geminiFull], NOW, "claude-opus-5-5-high")).toBe(true);
+    const thirdPartyFull = acct("b", {}, [{ ...win("5h", 100, HOUR, "3p"), shared_models: ["claude-sonnet-4-6"] }]);
+    expect(hasAccountBelowQuota([thirdPartyFull], NOW, "claude-opus-5-5-high")).toBe(false);
+    expect(hasAccountBelowQuota([thirdPartyFull], NOW, "gemini-4-argon-high")).toBe(true);
+  });
+
+  it("uses the fullest bucket of the group, weekly or 5h", () => {
+    const account = acct("a", {}, [group("weekly", 20, gemini), group("5h", 96, gemini)]);
+    expect(accountUsagePct(account, NOW, "gemini-4-argon-high")).toBe(96);
+    expect(accountUsagePct(account, NOW, "claude-sonnet-4-6")).toBe(0);
+  });
+});

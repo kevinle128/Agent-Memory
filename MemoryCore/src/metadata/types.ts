@@ -867,6 +867,13 @@ export interface SubscriptionQuotaWindow {
   observed_at: number;
   /** Where the observation came from, for example a response header, the usage API or a 429. */
   source: string;
+  /** Display name of the quota group (AntiGravity). Absent for a window of one model or a shared window. */
+  group_label?: string;
+  /**
+   * Model ids that this window stops when it is full (AntiGravity). When set, the window applies
+   * to these models instead of the single model in `model_scope`.
+   */
+  shared_models?: string[];
 }
 
 export interface SubscriptionAccountUsage {

@@ -17,6 +17,10 @@ export interface PoolWindow {
   resets_at: number | null;
   observed_at: number;
   source: string;
+  /** Display name of the quota group (AntiGravity). Set only on a group window. */
+  group_label?: string;
+  /** Model ids that the group window limits (AntiGravity). */
+  shared_models?: string[];
 }
 
 /** AntiGravity accounts have no reset credits, so the credits column and the redeem action are hidden for them. */
@@ -140,6 +144,45 @@ export function groupWindows(windows: PoolWindow[]): {
     else extra.push(w);
   }
   return { primary, secondary, extra };
+}
+
+export interface QuotaGroupColumn {
+  /** Group key: the `model_scope` that the windows of the group share. */
+  key: string;
+  label: string;
+}
+
+/**
+ * Quota groups of the accounts (AntiGravity), one column each, in the order they first appear.
+ * The names come from the provider data, so a new group needs no code change.
+ */
+export function quotaGroupColumns(accounts: Array<{ usage: { windows: PoolWindow[] } }>): QuotaGroupColumn[] {
+  const columns: QuotaGroupColumn[] = [];
+  for (const account of accounts) {
+    for (const w of account.usage.windows) {
+      if (!w.group_label || !w.model_scope) continue;
+      if (!columns.some((c) => c.key === w.model_scope)) columns.push({ key: w.model_scope, label: w.group_label });
+    }
+  }
+  return columns;
+}
+
+const BUCKET_ORDER = ['weekly', '5h'];
+
+/** Windows of one quota group, weekly first, then 5h, then any other bucket. */
+export function groupBuckets(windows: PoolWindow[], key: string): PoolWindow[] {
+  const rank = (w: PoolWindow) => {
+    const i = BUCKET_ORDER.indexOf(w.name);
+    return i === -1 ? BUCKET_ORDER.length : i;
+  };
+  return windows
+    .filter((w) => w.group_label && w.model_scope === key)
+    .sort((a, b) => rank(a) - rank(b));
+}
+
+/** Percent left of a window, the number the AntiGravity app shows. */
+export function remainingPct(usedPct: number): number {
+  return Math.round(100 - clampPct(usedPct));
 }
 
 /**

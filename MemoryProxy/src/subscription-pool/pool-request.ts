@@ -37,7 +37,7 @@ import { reportAccount } from "./reporter.js";
 import { recordPoolUpstreamError, sanitizeErrorText } from "./upstream-error.js";
 import { POOL_RETRY_BUDGET_MS, POOL_RETRY_MAX_WAIT_MS, PoolRetryDeadline, withinRetryDeadline, waitForPoolRetry, notePoolRetryAfter, poolRetryBlockedUntil, originalRateLimitResponse, sharedPoolUsageCheck, readPoolErrorBody } from "./retry.js";
 import { earliestReset, hasAccountBelowQuota, selectAccount, type Selection } from "./selector.js";
-import type { PoolAccount, PoolSnapshot } from "./types.js";
+import { windowAppliesToModel, type PoolAccount, type PoolSnapshot } from "./types.js";
 
 const TAG = "[subscription-pool]";
 
@@ -419,7 +419,7 @@ class PoolRequestImpl implements PoolRequest {
       if (result.failed !== false || !Array.isArray(result.account?.usage?.windows)) return false;
       observeAccountWindows(this.input.spaceId, account.account_id, result.account.usage.windows);
       const full = result.account.usage.windows.some((window) => (
-        (!window.model_scope || window.model_scope === this.model)
+        windowAppliesToModel(window, this.model)
         && window.source === "usage_api"
         && typeof result.account.usage_updated_at === "number"
         && window.observed_at >= result.account.usage_updated_at

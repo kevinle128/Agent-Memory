@@ -12,7 +12,10 @@ import {
   type PoolResetCredit,
   describeWindow,
   effectiveWindow,
+  groupBuckets,
   groupWindows,
+  quotaGroupColumns,
+  remainingPct,
   windowColumns,
   meterLevel,
   oauthCompleteInput,
@@ -354,5 +357,45 @@ describe('antigravity provider', () => {
   it('groups per-model windows into extra rows when no shared window exists', () => {
     const window = { name: 'quota', model_scope: 'claude-opus-5-5', used_pct: 10, resets_at: null, observed_at: 0, source: 'usage_api' };
     expect(groupWindows([window])).toEqual({ primary: null, secondary: null, extra: [window] });
+  });
+});
+
+describe('quota groups (AntiGravity)', () => {
+  const bucket = (name: string, scope: string, label: string, used = 10) =>
+    win({ name, model_scope: scope, group_label: label, used_pct: used });
+  const account = {
+    usage: { windows: [
+      bucket('5h', 'gemini', 'Gemini Models'), bucket('weekly', 'gemini', 'Gemini Models'),
+      bucket('weekly', '3p', 'Claude and GPT models'), bucket('5h', '3p', 'Claude and GPT models'),
+    ] },
+  };
+
+  it('makes one column per group, named by the provider data, in order of appearance', () => {
+    expect(quotaGroupColumns([account])).toEqual([
+      { key: 'gemini', label: 'Gemini Models' },
+      { key: '3p', label: 'Claude and GPT models' },
+    ]);
+  });
+
+  it('ignores per-model windows that have no group label', () => {
+    expect(quotaGroupColumns([{ usage: { windows: [win({ name: 'quota', model_scope: 'gemini-4-argon-high' })] } }])).toEqual([]);
+  });
+
+  it('lists the weekly bucket of a group before its 5h bucket', () => {
+    expect(groupBuckets(account.usage.windows, 'gemini').map((w) => w.name)).toEqual(['weekly', '5h']);
+    expect(groupBuckets(account.usage.windows, 'none')).toEqual([]);
+  });
+
+  it('keeps group windows out of the shared primary and weekly slots', () => {
+    const g = groupWindows(account.usage.windows);
+    expect(g.primary).toBeNull();
+    expect(g.secondary).toBeNull();
+    expect(g.extra).toHaveLength(4);
+  });
+
+  it('converts used percent to percent left', () => {
+    expect(remainingPct(7.02)).toBe(93);
+    expect(remainingPct(100)).toBe(0);
+    expect(remainingPct(120)).toBe(0);
   });
 });
