@@ -86,4 +86,4 @@ jobs:
         with:
           sparse-checkout: deploy/komodo
       - name: Deploy the new revision
-        run: python3 deploy/komodo/deploy-revision.py agent-memory AGENT_MEMORY_MEMORY_BUILD_REVISION "$REVISION"
+        run: python3 deploy/komodo/deploy-revision.py agent-memory "$REVISION"
