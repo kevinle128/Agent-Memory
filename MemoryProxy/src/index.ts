@@ -34,6 +34,10 @@ import { checkConnectivity } from "./connectivity.js";
 import { initProxyStorage, getEffectiveBackend } from "./storage/factory.js";
 import { flushPendingWrites, pendingWriteCount } from "./tdai/pending-writes.js";
 import { startHookRecallLogCleanup } from "./db/hook-recall-log.js";
+import { installFetchDefaultHeaderFilter } from "./common/fetch-default-headers.js";
+
+// Before any upstream call: fetch must not add its own `sec-fetch-mode` and `accept-language: *`.
+await installFetchDefaultHeaderFilter();
 
 const overrides = parseArgv(process.argv);
 const config = buildConfig(overrides);
