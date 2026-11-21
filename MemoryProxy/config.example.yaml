@@ -443,6 +443,12 @@ langfuse:
                            #   OTLP 模式：填 OTLP endpoint
   publicKey: ""            # Langfuse public key（pk-lf-...）；OTLP 模式：填 token
   secretKey: ""            # Langfuse secret key（sk-lf-...）；OTLP 模式：留空
+  # 对话 generation（Anthropic / OpenAI chat / Codex / WorkBuddy / 系统用户直通）上报
+  # 实际发往上游的完整原生请求（system / messages 原生 content block / tools / 请求参数）
+  # 与完整原生回复（text / thinking / tool_use / stop_reason）。凭据类字段（body 顶层 key、
+  # MCP token、tool headers）以 "[redacted]" 替换；HTTP 请求头不进入 input / output。
+  # debug 只控制额外的"请求指纹"metadata（含白名单请求头，凭据类请求头值为 "[redacted]"）。
+  debug: false             # true = 额外写入请求指纹 metadata（排障用）
 
 
 # ── ClickHouse 用量上报 ──────────────────────────────────────────────────────

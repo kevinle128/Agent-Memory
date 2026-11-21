@@ -81,6 +81,7 @@ import {
   langfuseTurnTraceId,
   type LangfuseTurnContext,
 } from "../../langfuse.js";
+import { buildLangfuseRequestInput, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
 
 // ── TDAI L0 + Skill extraction imports ────────────────────────────────────────
 import { TdaiClient, buildTdaiClientForRequest } from "../../tdai/client.js";
@@ -429,29 +430,6 @@ async function triggerWorkbuddyArchiveHooks(
 
 // ── Upstream helpers ─────────────────────────────────────────────────────────
 
-/**
- * 把 workbuddy 请求 body 结构化成 langfuse observation 的 `input` 字段。
- *
- * workbuddy 走 Responses API，请求体形态：
- *   - body.input:        Array<InputItem>（必有，用户消息 / 工具输出等）
- *   - body.instructions: string           （可选，system-level 指令）
- *
- * 组合策略（尽量减少 langfuse UI 嵌套层级）：
- *   - 有 instructions → 返回 { input, instructions }
- *   - 仅 input       → 直接返回 body.input
- *   - 都缺失         → 返回 undefined（langfuse 侧不写 input 字段）
- */
-function buildWorkbuddyLangfuseInput(body: Record<string, unknown>): unknown {
-  const hasInput = Array.isArray(body.input);
-  const hasInstructions =
-    typeof body.instructions === "string" && (body.instructions as string).length > 0;
-  if (!hasInput && !hasInstructions) return undefined;
-  if (hasInput && hasInstructions) {
-    return { input: body.input, instructions: body.instructions };
-  }
-  return hasInput ? body.input : { instructions: body.instructions };
-}
-
 function buildUpstreamHeaders(c: Context, config: ProxyConfig): Record<string, string> {
   const h: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
@@ -693,7 +671,7 @@ async function forwardToUpstream(
           model: modelId,
           startTime,
           endTime: new Date().toISOString(),
-          input: buildWorkbuddyLangfuseInput(body),
+          input: buildLangfuseRequestInput(body),
           statusMessage: `fetch_failed: ${msg}`.slice(0, 500),
           extraTags: ["error"],
           observationMetadata: {
@@ -726,7 +704,7 @@ async function forwardToUpstream(
         model: modelId,
         startTime,
         endTime: new Date().toISOString(),
-        input: buildWorkbuddyLangfuseInput(body),
+        input: buildLangfuseRequestInput(body),
         status: upstreamResp.status,
         statusMessage: `upstream_${upstreamResp.status}`,
         extraTags: ["error"],
@@ -908,7 +886,7 @@ interface WorkbuddyTapContext {
   archiveCtx: WorkbuddyArchiveCtx | null;
   /**
    * 转发到上游的最终 body（含注入后的 input[]）。用于两个地方：
-   *   1) langfuse observation.input（buildWorkbuddyLangfuseInput）
+   *   1) langfuse observation.input（buildLangfuseRequestInput）
    *   2) 兜底 —— 目前未用，但对齐 codex 便于后续扩展
    */
   inputBody: Record<string, unknown>;
@@ -930,8 +908,9 @@ interface WorkbuddyTapContext {
  *   - toolUseCount 累积：Responses API 里 `response.output_item.done` +
  *     `item.type==="function_call"` 计一次工具调用；透传给 skill 归档做
  *     round 边界判据
- *   - buildWorkbuddyLangfuseInput(inputBody)：把 body.input + instructions
- *     结构化写入 langfuse observation.input，便于排障
+ *   - buildLangfuseRequestInput(inputBody)：把完整原生请求体（input、
+ *     instructions、tools 与请求参数）写入 langfuse observation.input；
+ *     output 用 ResponsesAssembler 重建的完整 output[] + status
  */
 async function consumeWorkbuddyStream(
   stream: ReadableStream<Uint8Array>,
@@ -948,7 +927,8 @@ async function consumeWorkbuddyStream(
   // 按 call_id 累积工具调用，供增量会话的 CFQ 侧信道使用。output_item.done
   // 与 completed 会重复给出同一条，Map 去重后以终态为准。
   const toolCalls = new Map<string, UpstreamToolCall>();
-  const replyAssembler = ctx.sessionTurnCtx ? new ResponsesAssembler() : null;
+  // Always built: Langfuse needs the full reply; the session trace only takes it when recorded.
+  const replyAssembler = new ResponsesAssembler();
 
   // P: 5 分钟超时兜底。上游或客户端断链可能让 reader.read() 一直挂起，
   // 用 setTimeout 强制 cancel，避免 tap coroutine 泄漏。用 flag 而不是
@@ -985,7 +965,7 @@ async function consumeWorkbuddyStream(
         try {
           const evt = JSON.parse(payload) as Record<string, unknown>;
           const evtType = evt.type as string | undefined;
-          replyAssembler?.push(evt);
+          replyAssembler.push(evt);
           if (evtType === "response.output_text.delta") {
             const delta = evt.delta;
             if (typeof delta === "string") assistantText += delta;
@@ -1031,10 +1011,9 @@ async function consumeWorkbuddyStream(
     }
   }
 
-  if (replyAssembler) {
-    parseSseData(buf).forEach((evt) => replyAssembler.push(evt));
-    submitSessionTurn(ctx.sessionTurnCtx, replyAssembler.result(), ctx.modelId);
-  }
+  parseSseData(buf).forEach((evt) => replyAssembler.push(evt));
+  const reply = replyAssembler.result();
+  if (ctx.sessionTurnCtx) submitSessionTurn(ctx.sessionTurnCtx, reply, ctx.modelId);
 
   const endTime = new Date().toISOString();
   if (ctx.lf) {
@@ -1088,15 +1067,19 @@ async function consumeWorkbuddyStream(
   }
   if (ctx.lf) {
     try {
-      // R: 用结构化 input 上报（body.input + instructions），便于 langfuse UI 排障
+      // Full native request and the full Responses output (items + status).
+      const langfuseOutput = langfuseOutputFromReply(reply, "responses");
+      const replyStatus = langfuseReplyStatus(reply);
     langfuseReportGeneration({
       traceId: ctx.lf.traceId,
       name: `workbuddy:${ctx.modelId}`,
       model: ctx.modelId,
       startTime: ctx.startTime,
       endTime,
-      input: buildWorkbuddyLangfuseInput(ctx.inputBody),
-      output: assistantText,
+      input: buildLangfuseRequestInput(ctx.inputBody),
+      output: langfuseOutput,
+      level: replyStatus.level,
+      statusMessage: replyStatus.statusMessage,
       usage: usage && Object.keys(usage).length > 0 ? usage : undefined,
       traceName: ctx.lf.traceName,
       userId: ctx.lf.userId,
@@ -1104,13 +1087,14 @@ async function consumeWorkbuddyStream(
       instanceId: ctx.lf.instanceId,
       tags: ctx.lf.tags,
       traceInput: ctx.lf.userQuery || undefined,
-      traceOutput: assistantText,
+      traceOutput: langfuseOutput,
       observationMetadata: {
         stream: true,
         response_id: responseId,
         keyId: ctx.keyId,
         upstreamUrl: ctx.upstreamUrl,
         tool_use_count: toolUseCount,
+        ...replyStatus.metadata,
       },
     });
     } catch (err) {

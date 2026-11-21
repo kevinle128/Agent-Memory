@@ -8,7 +8,7 @@
  *   4. stageOpikStreamSpan     — opikUpdateTrace(main) + opikUpdateTrace(fork) + opikCreateLlmSpan
  *
  * 不做"一次巨型 stageStreamFinalize", 因为 4 runner 的 finalize:
- *   - Langfuse input formatter 各 protocol 不同 (buildLangfuseInputChat / buildLangfuseInput / codex+wb 各自)
+ *   - Langfuse 的 input/output 由 common/langfuse-payload.ts 按 protocol 构造 (reply 形态各不同)
  *   - assistantMessage 组装形态各不同 (openai role+content+tool_calls / anthropic content[] / responses type+content)
  *   - notifyUpstreamResponse toolCalls mapper 各不同 (openai/anthropic/wb 特色)
  * 这些留在 caller inline, 只抽"给相同参数产生相同副作用"的 4 段。

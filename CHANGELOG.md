@@ -11,6 +11,27 @@
 
 ## [Unreleased]
 
+### 🔍 Langfuse 上报完整请求与回复
+
+- 以下 generation 现在上报完整原生请求：Anthropic、OpenAI chat、Codex、WorkBuddy 四个 runner
+  的对话 generation（流式与非流式、成功与失败），以及系统用户直通（system user passthrough）。
+  input 取自实际发往上游的请求体（已含 body overrides、thinking 块清理、订阅账号的 1h cache TTL
+  升级）：system、带原生 content block 的 messages（thinking 全文与签名、tool_use、tool_result、
+  图片）、tools 定义和请求参数。output 是完整 assistant 消息（含 tool_use 的完整输入、thinking、
+  stop_reason），仅调用工具的回复不再为空
+- 内部 generation（cost guard、请求预处理、`/mem` 命令拦截）不变；Opik 上报不变（系统用户直通除外，见下）
+- 凭据不上报：body 顶层的凭据类 key 被丢弃；`tools[]` / `mcp_servers[]` 中的 `authorization`、
+  `authorization_token`、`headers` 值替换为 `[redacted]`。系统用户直通的 Langfuse 与 Opik 副本都做同样处理，
+  无法解析的请求体不再原样上报，只留占位与字节数。发往上游的请求体不受影响
+- 被截断或失败的流不再冒充正常生成：Anthropic `error` 事件、Responses `response.failed` /
+  `response.incomplete`、在 stop 事件前结束的流、被截断的 tool call，generation 的 level 为
+  `ERROR`（上游报错）或 `WARNING`（流中断），metadata 带 `stream_incomplete: true`，错误对象写入 output
+  与 statusMessage。OpenAI chat 流在客户端断开时也会尽力上报已收到的部分（level `WARNING`）
+- `langfuse.debug` 只保留额外的请求指纹 metadata。其中的 `header_*` 不再外传凭据类 header
+  （名称含 key / token / auth / secret / cookie / password / session 的 header，值为 `[redacted]`）
+- 存储量：对含大量 thinking 与 tools 的长会话，单条 generation 的 input/output 体积约为原压平形式的 1.8 倍
+  （已知并接受；未做裁剪）
+
 ### 🔁 Codex 订阅账号池（可选，默认关闭）
 
 - 新的上游分组模式 `subscription_pool`：Proxy 为每个新 Codex 会话轮流分配 ChatGPT 订阅账号，

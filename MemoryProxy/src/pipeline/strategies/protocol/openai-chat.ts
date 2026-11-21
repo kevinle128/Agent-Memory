@@ -13,7 +13,7 @@
  *   - buildUpstreamBody: 需要 target 已 resolve + prepareUpstreamRequest 逻辑
  *   - buildUpstreamHeaders: 需要 effectiveApiKey + SKIP_REQUEST_HEADERS
  *   - createStreamTap: 需要完整 ctx (lf/tdai/opik/cfq) — Phase 4 定型
- *   - buildMemResponse / buildLangfuseInput: 大量入参, Phase 4 时按需
+ *   - buildMemResponse: 大量入参, Phase 4 时按需
  *
  * 所以本策略当前不完整, 尚不能被 runPipeline 直接使用; 属于 "types.ts 契约 +
  * 首批可复用纯函数集中放置" 的过渡形态。Phase 4 前会补齐所有方法。
@@ -113,10 +113,5 @@ export const openaiChatProtocol: ProtocolStrategy = {
       JSON.stringify({ error: { message: msg, type: "invalid_request_error" } }),
       { status, headers: { "content-type": "application/json" } },
     );
-  },
-
-  buildLangfuseInput(body): unknown {
-    // 复用 handler.ts flattenMessagesForOpik 语义, Phase 4 直接 import
-    return Array.isArray(body.messages) ? body.messages : [];
   },
 };

@@ -115,9 +115,4 @@ export const responsesProtocol: ProtocolStrategy = {
       { status, headers: { "content-type": "application/json" } },
     );
   },
-
-  buildLangfuseInput(body): unknown {
-    // Phase 4: buildCodexLangfuseInput / buildWorkbuddyLangfuseInput
-    return { input: body.input };
-  },
 };
