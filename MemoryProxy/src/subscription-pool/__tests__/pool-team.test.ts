@@ -10,7 +10,7 @@ import type { BindingRepo } from "../../db/binding-repo.js";
 import { setMetadataClient, type MetadataClient } from "../../meta/client.js";
 import { initSystemUsers } from "../../systemUser.js";
 import type { ProxyConfig } from "../../types.js";
-import { __primeAccountCacheForTests } from "../account-cache.js";
+import { __primeAccountCacheForTests, markAccountUnavailable } from "../account-cache.js";
 import {
   __setTeamListFetcherForTests, clearTeamCaches, immediateTeamError, listMemberTeamIds, resolveRequestTeam,
   settleRequestTeam, settleTeamAfterInit, teamErrorResponse, type RequestTeamInput,
@@ -296,14 +296,55 @@ describe("request team helper", () => {
       expect(await ask({ session: null })).toMatchObject({ kind: "error", code: "pool_unavailable", status: 503 });
     });
 
-    it("lets an error wait for session init only while init can still register a team", async () => {
+    it("lets an error wait for the session stages whenever they can run", async () => {
       setPoolTestTeams([]);
       prime([poolOf("team-a")], [accountOf("team-a")]);
       expect(await ask({ session: null, sessionInitMayRun: true })).toMatchObject({ kind: "error", deferrable: false });
       expect(await ask({ sessionInitMayRun: true })).toMatchObject({ kind: "error", code: "no_active_team", deferrable: true });
+      expect(await ask({ sessionInitMayRun: false })).toMatchObject({ kind: "error", code: "no_active_team", deferrable: false });
+    });
+
+    it("defers the error of a final session state so mem:session-reset and mem commands still run", async () => {
+      setPoolTestTeams([]);
+      prime([poolOf("team-a")], [accountOf("team-a")]);
       await seed({ status: "initialized", bypassed: true, sessionInfo: null });
-      expect(await ask({ sessionInitMayRun: true })).toMatchObject({ kind: "error", code: "no_active_team", deferrable: false });
-      expect(immediateTeamError(await ask({ sessionInitMayRun: true }))).not.toBeNull();
+      const first = await ask({ sessionInitMayRun: true });
+      expect(first).toMatchObject({ kind: "error", code: "no_active_team", deferrable: true });
+      expect(immediateTeamError(first)).toBeNull();
+      // The error still stands right before the upstream is chosen.
+      const settled = await settleRequestTeam({
+        config, spaceId: SPACE, userId: POOL_TEST_USER, userKey: KEY, first,
+        session: { keyId: "claude-code:s1", agentSource: "claude-code", sessionId: "s1" }, now: NOW,
+      });
+      expect(settled.error).toMatchObject({ code: "no_active_team" });
+    });
+
+    it("does not predict the user default team for a final session state", async () => {
+      setPoolTestTeams(["team-b", "team-a"]);
+      userDefault = { team_id: "team-b" };
+      prime([poolOf("team-a")], [accountOf("team-a")]);
+      await seed({ status: "initialized", bypassed: true, sessionInfo: null });
+      expect(await ask({ sessionInitMayRun: true })).toEqual({ kind: "team", teamId: "team-a", source: "fallback" });
+    });
+
+    it("answers pool_unavailable, not pool_exhausted, when a below-quota account is on a refresh hold", async () => {
+      setPoolTestTeams(["team-a"]);
+      prime([poolOf("team-a")], [accountOf("team-a")]);
+      markAccountUnavailable(SPACE, "acc-team-a", NOW + 60_000);
+      expect(await ask({ session: null })).toMatchObject({ kind: "error", code: "pool_unavailable", status: 503 });
+    });
+
+    it("skips a team whose pool source does not allow the client or the model", async () => {
+      setPoolTestTeams(["team-b", "team-a"]);
+      config.modelSources = { enabled: true };
+      const models = [{ id: "claude-sonnet", enabled: true }];
+      prime([
+        poolOf("team-b", { agents: [], source_name: "sub-claude", source_agents: [], source_models: models }),
+        poolOf("team-a", { agents: [], source_name: "sub-claude", source_agents: ["hermes"], source_models: models }),
+      ], [accountOf("team-b"), accountOf("team-a")]);
+      const hermes = { agentSource: "hermes", model: "sub-claude/claude-sonnet", session: null };
+      expect(await ask(hermes)).toEqual({ kind: "team", teamId: "team-a", source: "fallback" });
+      expect(await ask({ ...hermes, model: "sub-claude/claude-other" })).toEqual({ kind: "team", teamId: "team-b", source: "fallback" });
     });
 
     it("treats x-memory-mode: off as a request without a registered team", async () => {

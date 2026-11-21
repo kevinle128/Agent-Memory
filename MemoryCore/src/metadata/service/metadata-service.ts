@@ -2812,19 +2812,30 @@ export class MetadataService {
     }
     // Accounts can be added before the pool is turned on: the pool group then starts switched off
     // and without clients, so the proxy does not see its accounts until `enable` switches it on.
-    const group = await this.teamPoolGroup(teamId, input.provider)
-      ?? await this.store.createInstanceUpstreamGroup({
-        group_type: "custom",
-        team_id: teamId,
-        name: this.subscriptionPoolName(input.provider),
-        agents: [],
-        enabled: false,
-        mode: "subscription_pool",
-        base_url: "",
-        api_key: "",
-        model_id: "",
-        description: `${input.provider} subscription accounts`,
-      });
+    let group = await this.teamPoolGroup(teamId, input.provider);
+    if (!group) {
+      try {
+        group = await this.store.createInstanceUpstreamGroup({
+          group_type: "custom",
+          team_id: teamId,
+          name: this.subscriptionPoolName(input.provider),
+          agents: [],
+          enabled: false,
+          mode: "subscription_pool",
+          base_url: "",
+          api_key: "",
+          model_id: "",
+          description: `${input.provider} subscription accounts`,
+        });
+      } catch (e) {
+        // Another login or `enable` of the same team created the pool group first: use that group.
+        const raced = e instanceof InstanceUpstreamWriteConflictError && e.reason === "name_duplicate"
+          ? await this.teamPoolGroup(teamId, input.provider)
+          : undefined;
+        if (!raced) throw this.translateUpstreamConflict(e);
+        group = raced;
+      }
+    }
 
     // A code works once, so the login is used up whatever the exchange result is.
     this.subscriptionOAuthPending.delete(pending.state);

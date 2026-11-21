@@ -1027,10 +1027,18 @@ export class MongoMetadataStore implements IMetadataStore {
       await this.col("meta_agents").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
       await this.col("meta_tasks").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
       await this.col("meta_assets").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
+    }
+    // The team row is gone before the pool cleanup runs. A team that is already gone (an earlier
+    // call failed after deleting it) still gets its pools removed, so a retry cleans them up.
+    const goneTeamIds = [
+      ...result.deleted_ids,
+      ...result.failed.filter((f) => f.reason === "not_found").map((f) => f.id),
+    ].filter((id) => id !== "");
+    if (goneTeamIds.length > 0) {
       deletedPoolAccountIds = await this.withTx(async (session) => {
         const cfg = this.col("meta_instance_upstream_config");
         const groupIds = (await cfg
-          .find({ mode: "subscription_pool", team_id: { $in: result.deleted_ids } } as Document, {
+          .find({ mode: "subscription_pool", team_id: { $in: goneTeamIds } } as Document, {
             projection: { _id: 0, group_id: 1 },
             session,
           })

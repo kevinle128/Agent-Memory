@@ -119,6 +119,8 @@ const provider = http.createServer(async (req, res) => {
     const u = usage.get(token) ?? {};
     const copy = structuredClone(codexUsage);
     copy.rate_limit.primary_window.used_percent = u.five_hour ?? 10;
+    // The fixture's reset_at is a fixed date; keep the window in the future so the selector does not treat it as reset.
+    copy.rate_limit.primary_window.reset_at = Math.floor(Date.parse(u.five_reset ?? hours(4)) / 1000);
     return json(res, 200, copy);
   }
   if (host === "chatgpt.com" && p === "/backend-api/wham/rate-limit-reset-credits") return json(res, 200, codexCredits);

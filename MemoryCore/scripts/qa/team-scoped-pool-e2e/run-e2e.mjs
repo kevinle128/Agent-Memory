@@ -564,7 +564,15 @@ async function main() {
   if (want(16)) {
     await check(16, "ab with x-memory-mode off: account comes from team B (newest team first), not team A", async () => {
       await resetAll(Object.fromEntries([...A_TOKENS, ...B_TOKENS].map((t) => [t, { five_hour: 10 }])));
-
+      const tokens = await waitFor("memory-off turn of ab on team B", async () => {
+        const out = [];
+        for (let i = 0; i < 3; i++) out.push((await claudeTurn({ user: "ab", memoryOff: true })).poolToken);
+        return out.every((t) => teamOfToken(t) === "B") ? out : false;
+      }, { timeoutMs: 120000 });
+      const order = (await core("/v3/meta/team/list", { user_key: key("ab") }, key("ab"))).data?.items?.map((t) => t.name);
+      return `tokens ${tokens.join(",")}; Core team order for ab: ${order}`;
+    });
+  }
   if (want(22)) {
     await check(22, "a answers the session start form with skip (bypass without a chosen team): the fallback picks team A's pool", async () => {
       const a = await formTurn({ user: "a", answer: "No, skip for this session" });
@@ -575,16 +583,6 @@ async function main() {
         return r.status === 200 && teamOfToken(r.poolToken) === "B" ? r : false;
       }, { timeoutMs: 120000 });
       return `a: token ${a.poolToken}; ab (teams A and B, both with pools): token ${ab.poolToken}, the first team in Core order`;
-    });
-  }
-
-      const tokens = await waitFor("memory-off turn of ab on team B", async () => {
-        const out = [];
-        for (let i = 0; i < 3; i++) out.push((await claudeTurn({ user: "ab", memoryOff: true })).poolToken);
-        return out.every((t) => teamOfToken(t) === "B") ? out : false;
-      }, { timeoutMs: 120000 });
-      const order = (await core("/v3/meta/team/list", { user_key: key("ab") }, key("ab"))).data?.items?.map((t) => t.name);
-      return `tokens ${tokens.join(",")}; Core team order for ab: ${order}`;
     });
   }
   if (want(17)) {

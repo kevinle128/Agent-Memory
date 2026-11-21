@@ -51,9 +51,16 @@ export async function assertPortsFree(ports) {
 export function startProcess({ name, command, args, env = {}, cwd, logFile, port }) {
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const out = fs.openSync(logFile, "a");
-  const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", out, out], detached: false });
-  const entry = { name, command: [command, ...args].join(" "), pid: child.pid, port: port ?? null, logFile, startedAt: new Date().toISOString(), stoppedAt: null, exit: null };
-  child.on("exit", (code, signal) => { entry.exit = signal ?? code; entry.stoppedAt = new Date().toISOString(); });
+  let child;
+  try {
+    child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: ["ignore", out, out], detached: false });
+  } finally {
+    fs.closeSync(out);
+  }
+  const entry = { name, command: [command, ...args].join(" "), pid: child.pid ?? null, port: port ?? null, logFile, startedAt: new Date().toISOString(), stoppedAt: null, exit: null };
+  // A spawn failure (for example ENOENT) emits 'error' and never 'exit'; record it as stopped.
+  child.on("error", (err) => { entry.exit = err.code ?? String(err); entry.stoppedAt ??= new Date().toISOString(); });
+  child.on("exit", (code, signal) => { entry.exit = signal ?? code; entry.stoppedAt ??= new Date().toISOString(); });
   entry.child = child;
   registry.push(entry);
   return entry;
@@ -67,7 +74,8 @@ export async function stopProcess(entry, timeoutMs = 15000) {
   if (!entry.stoppedAt) {
     entry.child.kill("SIGKILL");
     entry.signalUsed = "SIGKILL";
-    while (!entry.stoppedAt) await sleep(50);
+    const killDeadline = Date.now() + 5000;
+    while (!entry.stoppedAt && Date.now() < killDeadline) await sleep(50);
   }
 }
 

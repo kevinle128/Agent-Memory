@@ -24,29 +24,39 @@ export async function startMongo(work) {
   });
   const { MongoClient } = requireFromCore("mongodb");
   const deadline = Date.now() + 60000;
-  let client;
-  while (Date.now() < deadline) {
+  let client = null;
+  while (Date.now() < deadline && !entry.stoppedAt) {
+    const candidate = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 1500 });
     try {
-      client = new MongoClient(MONGO_URI, { serverSelectionTimeoutMS: 1500 });
-      await client.connect();
+      await candidate.connect();
+      client = candidate;
       break;
     } catch {
+      await candidate.close().catch(() => {});
       await sleep(500);
     }
   }
-  if (!client) throw new Error("mongod did not start");
+  if (!client) throw new Error(`mongod did not start (exit ${entry.exit ?? "none"}, see ${entry.logFile})`);
   try {
-    await client.db("admin").command({ replSetInitiate: { _id: "rs0", members: [{ _id: 0, host: `127.0.0.1:${PORTS.mongo}` }] } });
-  } catch (e) {
-    if (!/already initialized/i.test(String(e.message))) throw e;
+    try {
+      await client.db("admin").command({ replSetInitiate: { _id: "rs0", members: [{ _id: 0, host: `127.0.0.1:${PORTS.mongo}` }] } });
+    } catch (e) {
+      if (!/already initialized/i.test(String(e.message))) throw e;
+    }
+    const primaryDeadline = Date.now() + 60000;
+    let isPrimary = false;
+    while (Date.now() < primaryDeadline && !entry.stoppedAt) {
+      const hello = await client.db("admin").command({ hello: 1 });
+      if (hello.isWritablePrimary) {
+        isPrimary = true;
+        break;
+      }
+      await sleep(500);
+    }
+    if (!isPrimary) throw new Error("mongod did not become writable primary");
+  } finally {
+    await client.close();
   }
-  const primaryDeadline = Date.now() + 60000;
-  while (Date.now() < primaryDeadline) {
-    const hello = await client.db("admin").command({ hello: 1 });
-    if (hello.isWritablePrimary) break;
-    await sleep(500);
-  }
-  await client.close();
   return entry;
 }
 
@@ -64,6 +74,7 @@ function runTool(command, args, extraEnv = {}) {
     let out = "";
     child.stdout.on("data", (d) => { out += d; });
     child.stderr.on("data", (d) => { out += d; });
+    child.once("error", (err) => reject(new Error(`${command} error: ${err.message}`)));
     child.on("exit", (code) => (code === 0 ? resolve(out) : reject(new Error(`${command} exit ${code}: ${out.slice(-600)}`))));
   });
 }

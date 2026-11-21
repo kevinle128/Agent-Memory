@@ -18,7 +18,8 @@ const apiKey = process.env.E2E_GATEWAY_KEY;
 if (!root || !port || !dataDir || !apiKey) throw new Error("CORE_ROOT, E2E_CORE_PORT, E2E_DATA_DIR and E2E_GATEWAY_KEY are required");
 
 // With a Mongo URI the metadata lives in Mongo; Core refuses both settings at once.
-if (!process.env.TDAI_METADATA_MONGO_URI) process.env.TDAI_METADATA_SQLITE_BASE_DIR = path.join(dataDir, "metadata");
+if (process.env.TDAI_METADATA_MONGO_URI) delete process.env.TDAI_METADATA_SQLITE_BASE_DIR;
+else process.env.TDAI_METADATA_SQLITE_BASE_DIR = path.join(dataDir, "metadata");
 const { TdaiGateway } = await import(pathToFileURL(path.join(root, "src/gateway/server.ts")).href);
 
 const gateway = new TdaiGateway({

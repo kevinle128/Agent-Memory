@@ -29,7 +29,7 @@ import type { ProxyConfig } from "../types.js";
 import { getPoolSnapshot, unavailableAccountIds } from "./account-cache.js";
 import type { PoolCoreConfig } from "./core-client.js";
 import { buildPoolExhaustedResponse, buildPoolUnavailableResponse } from "./exhausted-response.js";
-import { earliestReset, selectAccount } from "./selector.js";
+import { earliestReset, hasAccountBelowQuota, selectAccount } from "./selector.js";
 import type { PoolAccount } from "./types.js";
 
 const TAG = "[subscription-pool]";
@@ -62,9 +62,9 @@ export interface RequestTeamError {
   /** Earliest reset in epoch milliseconds, for `pool_exhausted`. Null when no account reports one. */
   resetAtMs?: number | null;
   /**
-   * True when session init may still register a team for this request. The caller then goes on
-   * with no team, lets init run (it may only show a form), and applies the error after init when
-   * the session still has no team.
+   * True when session init (or a session reset / local mem command) may still run for this
+   * request. The caller then goes on with no team, lets those stages run (they may answer without
+   * an upstream), and applies the error after init when the session still has no team.
    */
   deferrable: boolean;
 }
@@ -288,14 +288,18 @@ export async function resolveRequestTeam(input: RequestTeamInput): Promise<Reque
       userId, agentSource: input.session.agentSource, sessionId: input.session.sessionId, spaceId,
     });
   }
-  // Init may still add a team while the session has no final state. A final state never changes.
-  const deferrable = mayRegister && peek.state !== "registered";
+  // Init may still add a team while the session has no final state, so only then a predicted
+  // team is tried. An error still waits for the stages that run before the upstream is chosen,
+  // even on a final state: mem:session-reset and local mem commands need no upstream, and
+  // settleRequestTeam answers the error before any upstream call.
+  const predicts = mayRegister && peek.state !== "registered";
+  const deferrable = mayRegister;
 
   const candidates: Array<{ teamId: string; source: RequestTeamSource }> = [];
   const peekedTeamId = peek.state === "none" ? null : peek.teamId;
   if (peekedTeamId) {
     candidates.push({ teamId: peekedTeamId, source: peek.state === "pending" ? "pending" : "session" });
-  } else if (deferrable) {
+  } else if (predicts) {
     // The user default and the header preset decide the team that init registers in this very
     // request. Init tries the user default first and the preset second, so this does the same.
     const defaultTeamId = await userDefaultTeamId(config, spaceId, userId, userKey, now);
@@ -316,17 +320,19 @@ export async function resolveRequestTeam(input: RequestTeamInput): Promise<Reque
   const skipped = unavailableAccountIds(spaceId, now);
   const model = modelOf(input.model);
   let hasPool = false;
-  // A source request to a pool that is switched off still gets the answer of its own team: the
-  // source is disabled. So the first team with such a row is kept in case no pool is on.
+  // A source request to a pool that is switched off, or that does not allow this client or model,
+  // still gets the answer of its own team (source disabled, not allowed, model not enabled). So the
+  // first team with such a row is kept in case no team pool serves the request.
   let switchedOffSourceTeam: string | null = null;
   const poolAccounts: PoolAccount[] = [];
   for (const teamId of teamIds) {
     if (switchedOffSourceTeam === null && prefix !== null
-      && rows.some((r) => isTeamPoolRow(r, teamId) && !r.enabled && r.source_name === prefix)) {
+      && rows.some((r) => isTeamPoolRow(r, teamId) && r.source_name === prefix
+        && (!r.enabled || !poolRowServes(r, agentSource, prefix, model)))) {
       switchedOffSourceTeam = teamId;
     }
     const row = rows.find((r) => r.group_type === "custom" && isTeamPoolRow(r, teamId) && r.enabled
-      && poolRowServes(r, agentSource, prefix));
+      && poolRowServes(r, agentSource, prefix, model));
     if (!row) continue;
     hasPool = true;
     const accounts = snapshot.accounts.filter((account) => account.group_id === row.group_id);
@@ -337,12 +343,23 @@ export async function resolveRequestTeam(input: RequestTeamInput): Promise<Reque
   }
   if (!hasPool && switchedOffSourceTeam !== null) return { kind: "team", teamId: switchedOffSourceTeam, source: "fallback" };
   if (!hasPool) return failure("no_team_pool", 403, agentSource, deferrable);
-  if (snapshot.unavailable) return failure("pool_unavailable", 503, agentSource, deferrable);
+  // An account below its limit that was still held back (a failed token refresh) is no quota cause.
+  if (snapshot.unavailable || hasAccountBelowQuota(poolAccounts, now, model)) {
+    return failure("pool_unavailable", 503, agentSource, deferrable);
+  }
   return failure("pool_exhausted", 429, agentSource, deferrable, earliestReset(poolAccounts, now, snapshot.thresholdPct, model));
 }
 
-function poolRowServes(row: InstanceUpstreamRow, agentSource: string, prefix: string | null): boolean {
-  return row.agents.includes(agentSource) || (prefix !== null && row.source_name === prefix);
+/**
+ * True when the pool row serves the request: it holds the agent, or it is the source of a
+ * `<source>/<model>` request that allows this agent and has the model enabled (as stageModelSource checks).
+ */
+function poolRowServes(row: InstanceUpstreamRow, agentSource: string, prefix: string | null, upstreamModel: string): boolean {
+  if (row.agents.includes(agentSource)) return true;
+  if (prefix === null || row.source_name !== prefix) return false;
+  if (!(row.source_agents ?? []).includes(agentSource)) return false;
+  const entry = (row.source_models ?? []).find((m) => m.id === upstreamModel);
+  return entry !== undefined && entry.enabled === true && entry.available !== false;
 }
 
 // ── After session init ───────────────────────────────────────────────────────

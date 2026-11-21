@@ -247,7 +247,8 @@ export class SessionStore {
         ? {
             outcome: "bypassed",
             userId: state.userId,
-            teamId: state.sessionInfo?.team_id,
+            // A bypassed session keeps the team it chose (no sessionInfo), so peekForTeam can find it.
+            teamId: state.selectedTeamId ?? state.sessionInfo?.team_id,
             agentId: state.sessionInfo?.agent_id,
             taskId: state.sessionInfo?.task_id,
             agentSource: id.agentSource,
@@ -480,6 +481,8 @@ export class SessionStore {
 
     // Step 3.1: bypassed outcome → construct bypass state
     if (binding.outcome === "bypassed") {
+      // The chosen team of a bypassed session comes back only for the user that chose it.
+      const sameUser = !binding.userId || !identity.userId || binding.userId === identity.userId;
       const state: SessionInitState = {
         status: "initialized",
         keyId,
@@ -489,6 +492,8 @@ export class SessionStore {
         sessionInfo: null,
         agentDetail: null,
         taskDetail: null,
+        ...(sameUser && binding.userId ? { userId: binding.userId } : {}),
+        ...(sameUser && binding.teamId ? { selectedTeamId: binding.teamId } : {}),
       };
       await this.set(keyId, state);
       return this.tagRecoverySource(state, "l2b");

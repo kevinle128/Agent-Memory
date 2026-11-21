@@ -22,8 +22,8 @@
  *
  * Safety:
  *   - `--dry-run` opens the database read only, prints the plan and changes nothing.
- *   - Before the first write the script copies `metadata.db`, `metadata.db-wal` and
- *     `metadata.db-shm` to a new folder in the backup directory (mode 600) and checks each copy.
+ *   - Before the first write the script copies `metadata.db`, `metadata.db-journal`, `metadata.db-wal`
+ *     and `metadata.db-shm` (those that exist) to a new folder in the backup directory (mode 600) and checks each copy.
  *   - All writes run in one transaction. The transaction is rolled back when `PRAGMA quick_check`
  *     does not return `ok`.
  *   - It prints counts and ids only. It never reads or prints a token.
@@ -44,7 +44,9 @@ const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
 
 const OLD_INDEX = "ux_iuc_source_name";
 const NEW_INDEX = "ux_iuc_team_source_name";
-const DB_SUFFIXES = ["", "-wal", "-shm"];
+// "-journal" is the rollback journal of a database that is not in WAL mode; a hot journal is needed
+// to read a copy taken after a crash mid-transaction.
+const DB_SUFFIXES = ["", "-journal", "-wal", "-shm"];
 
 /** The database is not safe to roll back yet. Nothing was changed. */
 export class DownStepRefused extends Error {
@@ -219,13 +221,20 @@ export function runDownStep({ db: dbPath, dryRun = false, backupDir, now = () =>
   return result;
 }
 
+/** Value of an option. A missing value or another flag in its place is an error, never a value. */
+function takeOptionValue(argv, index, flag) {
+  const value = argv[index];
+  if (!value || value.startsWith("-")) throw new Error(`${flag} requires a value`);
+  return value;
+}
+
 function parseArgs(argv) {
   const out = { dryRun: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--dry-run") out.dryRun = true;
-    else if (arg === "--db") out.db = argv[++i];
-    else if (arg === "--backup-dir") out.backupDir = argv[++i];
+    else if (arg === "--db") out.db = takeOptionValue(argv, ++i, "--db");
+    else if (arg === "--backup-dir") out.backupDir = takeOptionValue(argv, ++i, "--backup-dir");
     else if (arg === "--help" || arg === "-h") out.help = true;
     else throw new Error(`unknown argument: ${arg}`);
   }

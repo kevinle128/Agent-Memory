@@ -435,6 +435,8 @@ export async function runAntigravityModels(c: Context, config: ProxyConfig): Pro
       config, spaceId: route.spaceId, userId: auth.userId, userKey: route.accessKey, agentSource: AGENT,
       session: null, lcHeaders: {}, model: "", sessionInitMayRun: false,
     });
+    // Only "no team pool" means the 400 below; a full, unreachable or unknown team keeps its own answer.
+    if (listTeam?.kind === "error" && listTeam.code !== "no_team_pool") return teamErrorResponse(listTeam);
     const row = await resolvePool(config, route.spaceId, teamIdOf(listTeam));
     if (row instanceof Response) return row;
 
@@ -526,7 +528,7 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
     const teamSession = sessionId ? { keyId: `${AGENT}:${sessionId}`, agentSource: AGENT, sessionId } : null;
     const requestTeam = await resolveRequestTeam({
       config, spaceId, userId, userKey: route.accessKey, agentSource: AGENT, session: teamSession,
-      lcHeaders: headers, model: "", memoryOff,
+      lcHeaders: headers, model: upstreamModel, memoryOff,
       sessionInitMayRun: !memoryOff && config.sessionInit?.enabled === true && Boolean(sessionId) && isStream,
     });
     const requestTeamError = immediateTeamError(requestTeam);
