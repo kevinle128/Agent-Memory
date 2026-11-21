@@ -110,10 +110,7 @@ export async function stageForwardWithRetry(
 
     const retryBody = input.buildRetryBody(input.originalBody, retryTarget.model);
     const retryHeaders: Record<string, string> = { ...input.originalHeaders };
-    retryHeaders["content-type"] = "application/json";
-    if (input.sessionKeyForDebug) {
-      retryHeaders["x-vertex-ai-session-id"] = input.sessionKeyForDebug;
-    }
+    retryHeaders["content-type"] = retryHeaders["content-type"] ?? "application/json";
 
     try {
       if (input.rateLimitContext) {

@@ -32,7 +32,7 @@ import { extractSpaceIdFromPath } from "../../credit-reporter.js";
 import { extractSseUsage, flattenMessagesForOpik } from "./openai-chat.js";
 import { resolveSessionKey } from "../../guard-adapter.js";
 import { poolServiceRejection } from "../../pool-service.js";
-import { SKIP_REQUEST_HEADERS_WITH_INTERNAL, filterResponseHeaders } from "../../common/constants.js";
+import { shouldSkipRequestHeader, filterResponseHeaders } from "../../common/constants.js";
 import {
   stripDirectPrefix,
   buildDirectUpstreamUrl,
@@ -47,7 +47,7 @@ import {
 function buildDirectRequestHeaders(c: Context): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS_WITH_INTERNAL.has(k.toLowerCase())) {
+    if (!shouldSkipRequestHeader(k)) {
       headers[k] = v;
     }
   }

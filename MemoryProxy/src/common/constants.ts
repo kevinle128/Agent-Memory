@@ -39,17 +39,84 @@ export const SKIP_REQUEST_HEADERS_HOP_BY_HOP: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * 请求头黑名单 — hop-by-hop + proxy 内部身份头 (5 项)。
- * 原用户: anthropicHandler.ts / codexHandler.ts / workbuddyHandler.ts。
- * `x-tdai-user-key` 是 proxy 内部 session-init 才用的头, 绝不允许透传上游。
+ * 请求头黑名单 — hop-by-hop + proxy 内部身份头 + 反向代理透传头。
+ * 原用户: anthropicHandler.ts / codexHandler.ts / workbuddyHandler.ts / direct / utility。
+ * 绝不允许将代理内部头 (`x-tdai-*`, `x-memory-mode`) 或 Nginx/Cloudflare/LB 注入的
+ * 转发头 (`x-forwarded-*`, `via`, `cf-*` 等) 透传给上游 LLM API。
  */
 export const SKIP_REQUEST_HEADERS_WITH_INTERNAL: ReadonlySet<string> = new Set([
+  // RFC 7230 hop-by-hop headers
   "host",
   "content-length",
   "transfer-encoding",
   "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailers",
+  "upgrade",
+  // Proxy-internal headers
   "x-tdai-user-key",
+  "x-tdai-user-token",
+  "x-memory-mode",
+  // Reverse-proxy / CDN / load-balancer headers
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-proto",
+  "x-forwarded-port",
+  "x-forwarded-server",
+  "x-real-ip",
+  "forwarded",
+  "via",
+  "cf-connecting-ip",
+  "cf-ipcountry",
+  "cf-ray",
+  "cf-visitor",
+  "cf-ew-via",
+  "cdn-loop",
+  "true-client-ip",
+  "x-amzn-trace-id",
+  "x-request-start",
 ]);
+
+const SKIP_REQUEST_HEADER_PREFIXES = ["x-tdai-", "x-envoy-"] as const;
+
+/**
+ * 判断客户端请求头是否应在转发上游前剥离。
+ * 除精确匹配 SKIP_REQUEST_HEADERS_WITH_INTERNAL 外，同时剥离所有 `x-tdai-*` 与 `x-envoy-*` 头，
+ * 保留客户端（如 Claude Code）发出的全部原生业务请求头。
+ */
+export function shouldSkipRequestHeader(headerName: string): boolean {
+  const lower = headerName.toLowerCase();
+  if (SKIP_REQUEST_HEADERS_WITH_INTERNAL.has(lower)) return true;
+  return SKIP_REQUEST_HEADER_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+/**
+ * 将原始请求 URL 中的 query string（例如 Claude Code 的 `?beta=true`）保留到目标上游 URL 上。
+ * 若上游 URL 已含同名参数则保留上游值；若原始 URL 无 query string 则原样返回。
+ */
+export function preserveRequestQuery(upstreamUrl: string, rawRequestUrl: string): string {
+  const qIdx = rawRequestUrl.indexOf("?");
+  if (qIdx === -1) return upstreamUrl;
+  const rawSearch = rawRequestUrl.slice(qIdx + 1);
+  if (!rawSearch) return upstreamUrl;
+  try {
+    const target = new URL(upstreamUrl);
+    const incoming = new URLSearchParams(rawSearch);
+    let changed = false;
+    for (const [key, value] of incoming.entries()) {
+      if (!target.searchParams.has(key)) {
+        target.searchParams.append(key, value);
+        changed = true;
+      }
+    }
+    return changed ? target.toString() : upstreamUrl;
+  } catch {
+    return upstreamUrl.includes("?") ? `${upstreamUrl}&${rawSearch}` : `${upstreamUrl}?${rawSearch}`;
+  }
+}
 
 /**
  * 响应头黑名单 (4 项, 6 个 handler 完全一致)。

@@ -31,7 +31,7 @@ import type { ProxyConfig } from "../../types.js";
 import { verifyUserKey } from "../../auth.js";
 import { apiKeyToKeyId, uuidv7 } from "../../opik.js";
 import { writeLog } from "../../logger.js";
-import { filterResponseHeaders } from "../../common/constants.js";
+import { shouldSkipRequestHeader, preserveRequestQuery, filterResponseHeaders } from "../../common/constants.js";
 import { extractUserQueryText } from "../../common/user-query-extractor.js";
 import { getInstanceUpstreamConfigs, resolveForAgent, type InstanceUpstreamRow } from "../../instance-upstream-cache.js";
 import { isExtractionAllowed, logExtractionSkipped } from "../../extraction-gate.js";
@@ -331,10 +331,50 @@ function upstreamBaseOf(config: ProxyConfig, row: InstanceUpstreamRow): string {
   return (row.base_url || config.upstream.agents?.[AGENT]?.url || ANTIGRAVITY_BASE_URL).replace(/\/+$/, "");
 }
 
+/**
+ * Client headers that are never sent to Cloud Code. The call runs with the credentials of a
+ * pool account, so a client header that names other credentials or another quota project would
+ * conflict with them. `cookie` belongs to the client. The proxy re-serializes the body and reads
+ * the response itself, so it owns the body and response encodings.
+ */
+const ANTIGRAVITY_SKIP_CLIENT_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "x-api-key",
+  "x-goog-api-key",
+  "x-goog-user-project",
+  "cookie",
+  "content-encoding",
+  "accept-encoding",
+]);
+
+/**
+ * Headers for one Cloud Code call: the other client headers, then the headers that the proxy
+ * owns. The user agent is always ANTIGRAVITY_USER_AGENT, because Cloud Code answers other
+ * client strings with UNSUPPORTED_CLIENT.
+ */
+function buildAntigravityUpstreamHeaders(
+  incomingHeaders: Headers,
+  accessToken: string,
+  stream: boolean,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of incomingHeaders.entries()) {
+    const lower = k.toLowerCase();
+    if (shouldSkipRequestHeader(lower) || ANTIGRAVITY_SKIP_CLIENT_HEADERS.has(lower)) continue;
+    headers[lower] = v;
+  }
+  headers["authorization"] = `Bearer ${accessToken}`;
+  headers["content-type"] = "application/json";
+  headers["user-agent"] = ANTIGRAVITY_USER_AGENT;
+  if (stream) headers["accept"] = "text/event-stream";
+  return headers;
+}
+
 /** One upstream call with the credentials of the selected account. The path key is never part of it. */
 function accountFetch(
   config: ProxyConfig,
   url: string,
+  incomingHeaders: Headers,
   makePayload: (auth: Extract<PoolAuth, { kind: "account" }> & { projectId: string }) => Record<string, unknown>,
   stream: boolean,
 ): (auth: PoolAuth, signal?: AbortSignal) => Promise<Response> {
@@ -349,12 +389,7 @@ function accountFetch(
     const combined = signal && timeout ? AbortSignal.any([signal, timeout]) : signal ?? timeout;
     return fetch(url, {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${auth.accessToken}`,
-        "content-type": "application/json",
-        "user-agent": ANTIGRAVITY_USER_AGENT,
-        ...(stream ? { accept: "text/event-stream" } : {}),
-      },
+      headers: buildAntigravityUpstreamHeaders(incomingHeaders, auth.accessToken, stream),
       body: JSON.stringify(makePayload({ ...auth, projectId: auth.projectId })),
       ...(combined ? { signal: combined } : {}),
     });
@@ -387,7 +422,7 @@ export async function runAntigravityModels(c: Context, config: ProxyConfig): Pro
         body: null, userKey: route.accessKey, bindSession: false, signal: c.req.raw.signal,
       });
       const url = `${upstreamBaseOf(config, row)}/v1internal:fetchAvailableModels`;
-      const resp = await pool.send(accountFetch(config, url, (a) => ({ project: a.projectId }), false));
+      const resp = await pool.send(accountFetch(config, url, c.req.raw.headers, (a) => ({ project: a.projectId }), false));
       if (resp.status !== 200) {
         console.warn(`${TAG} model list upstream status=${resp.status} space=${route.spaceId}`);
         return new Response(await resp.text(), { status: resp.status, headers: clientHeaders(resp.headers, "application/json") });
@@ -529,8 +564,11 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
       sessionId: sessionId ?? undefined,
       signal: c.req.raw.signal,
     });
-    const url = `${upstreamBaseOf(config, row)}/v1internal:${isStream ? "streamGenerateContent?alt=sse" : "generateContent"}`;
-    const resp = await pool.send(accountFetch(config, url, (a) => wrapEnvelope(upstreamModel, a.projectId, body), isStream));
+    const url = preserveRequestQuery(
+      `${upstreamBaseOf(config, row)}/v1internal:${isStream ? "streamGenerateContent?alt=sse" : "generateContent"}`,
+      c.req.url,
+    );
+    const resp = await pool.send(accountFetch(config, url, c.req.raw.headers, (a) => wrapEnvelope(upstreamModel, a.projectId, body), isStream));
 
     writeLog(config, {
       timestamp: startTime, event: "request", modelId: upstreamModel, keyId, sessionKey: keyId,

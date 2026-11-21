@@ -117,7 +117,7 @@ import { hasExplicitAgentName, requireWecomIdentity } from "../../wecom-identity
 // ── Constants ────────────────────────────────────────────────────────────────
 
 // SKIP header sets 已合并到 common/constants.ts (codex 用 WITH_INTERNAL 版本)
-import { SKIP_REQUEST_HEADERS_WITH_INTERNAL as SKIP_REQUEST_HEADERS, filterResponseHeaders } from "../../common/constants.js";
+import { shouldSkipRequestHeader, preserveRequestQuery, filterResponseHeaders } from "../../common/constants.js";
 
 // ── TDAI L0 helpers (对齐 anthropicHandler / handler 姿势) ───────────────────
 
@@ -256,7 +256,7 @@ function buildUpstreamHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS.has(k.toLowerCase())) {
+    if (!shouldSkipRequestHeader(k)) {
       headers[k] = v;
     }
   }
@@ -1124,7 +1124,7 @@ async function forwardToUpstream(
   let upstreamUrl = joinUrl(upstreamBase, c.req.path);
   const upstreamHeaders = buildUpstreamHeaders(c, config);
   let skipCreditReport = false;
-  upstreamHeaders["content-type"] = "application/json";
+  upstreamHeaders["content-type"] = upstreamHeaders["content-type"] ?? "application/json";
   // 覆盖 apiKey 与 per-agent 策略一致：agentUpstreamEntry.apiKey 优先，
   // 否则透传客户端 Bearer。
   if (agentUpstreamEntry) {
@@ -1189,6 +1189,7 @@ async function forwardToUpstream(
     }
   }
   if (_upstreamResolve.skipCreditReport) skipCreditReport = true;
+  upstreamUrl = preserveRequestQuery(upstreamUrl, c.req.url);
 
   // Optional private preparation stage. It rewrites `body` and the `input[]`
   // items in place, so it has to land after every host-side mutation (model

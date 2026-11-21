@@ -30,7 +30,7 @@ import {
   getInstanceUpstreamConfigs,
   resolveForAgent,
 } from "../../instance-upstream-cache.js";
-import { SKIP_REQUEST_HEADERS_WITH_INTERNAL, SKIP_RESPONSE_HEADERS, filterResponseHeaders } from "../../common/constants.js";
+import { shouldSkipRequestHeader, preserveRequestQuery, filterResponseHeaders } from "../../common/constants.js";
 
 function buildAuxUpstreamHeaders(
   c: Context,
@@ -39,7 +39,7 @@ function buildAuxUpstreamHeaders(
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS_WITH_INTERNAL.has(k.toLowerCase())) {
+    if (!shouldSkipRequestHeader(k)) {
       headers[k] = v;
     }
   }
@@ -173,6 +173,9 @@ export async function runUtilityPipeline(c: Context, config: ProxyConfig): Promi
   }
 
   // 4. pipe log + forward
+  if (entry.protocol === "anthropic") {
+    upstreamUrl = preserveRequestQuery(upstreamUrl, c.req.url);
+  }
   const pipe = createPipeline(config, traceId, modelId);
   pipe.info("AUX_ENDPOINT", `${entry.pathSuffix} → ${entry.upstreamEndpoint} (${entry.protocol})`);
   pipe.forwardStart();

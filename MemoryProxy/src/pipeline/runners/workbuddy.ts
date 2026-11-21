@@ -113,7 +113,7 @@ import { hasExplicitAgentName, requireWecomIdentity } from "../../wecom-identity
 // ── Handler-level constants ──────────────────────────────────────────────────
 
 // SKIP header sets 已合并到 common/constants.ts (workbuddy 用 WITH_INTERNAL 版本)
-import { SKIP_REQUEST_HEADERS_WITH_INTERNAL as SKIP_REQUEST_HEADERS, filterResponseHeaders } from "../../common/constants.js";
+import { shouldSkipRequestHeader, filterResponseHeaders } from "../../common/constants.js";
 
 // ── Types (exported for unit tests) ──────────────────────────────────────────
 
@@ -455,7 +455,7 @@ function buildWorkbuddyLangfuseInput(body: Record<string, unknown>): unknown {
 function buildUpstreamHeaders(c: Context, config: ProxyConfig): Record<string, string> {
   const h: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS.has(k.toLowerCase())) h[k] = v;
+    if (!shouldSkipRequestHeader(k)) h[k] = v;
   }
   if (config.upstream.apiKey) {
     h["authorization"] = `Bearer ${config.upstream.apiKey}`;
