@@ -40,7 +40,7 @@ function errorResult(text: string) {
 }
 
 /**
- * Result handling of the stdio knowledge MCP: a `{ text, isError }` answer passes through as
+ * Result handling of a tool call: a `{ text, isError }` answer passes through as
  * text; any other data is sent as JSON.
  */
 export function toToolResult(data: unknown) {

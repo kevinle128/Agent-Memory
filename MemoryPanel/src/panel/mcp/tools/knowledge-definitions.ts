@@ -1,6 +1,5 @@
 /**
  * Definitions of the 12 knowledge query tools: names, descriptions and JSON schemas.
- * Copied unchanged from the stdio knowledge MCP, so an agent sees the same tools.
  * The `endpoint` of each tool names the query of the knowledge service that it runs.
  *
  * Code-Graph (8): code_search, code_explore, code_callers, code_callees,
