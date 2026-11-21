@@ -1294,29 +1294,39 @@ upsert 知识明细（幂等）。
 InstanceUpstreamConfig v2 的 §6.D 接口：Proxy 拉该实例全量组配置（**api_key 明文**），响应同时触发 default 组 seed。
 
 **请求体**：`instance_id?`。
-
+ Every row has `team_id` (`""` for a group that is not a team pool).
 **响应** `data`：`{ items: InstanceUpstreamConfig[] }`。
 
 ### POST /v3/meta/subscription-pool/*
 
-Authenticated users may read `status`; all other actions require System Admin. Only `codex` is supported; it moves agent `codex`. `claude` is accepted by `status` but `enable`, `account/oauth-start` and `account/oauth-complete` return `400 PROVIDER_NOT_SUPPORTED` (Anthropic's terms do not allow pooled subscription tokens). Public responses never include `access_token` or `refresh_token`.
+A Subscription Pool belongs to one team: one pool row (with `team_id`) per team and provider (`claude`, `codex`, `antigravity`), with its accounts. Every call except `settings/update` names the team (`team_id`, required). Rules:
 
-| Path | Body | Result |
-|---|---|---|
-| `status` | `provider?` (`claude` or `codex`) | Pool on/off, masked accounts, threshold |
-| `enable` | `provider` | Move the agent onto its pool group. `409 POOL_AGENT_CUSTOM_GROUP` when the agent already sits in another custom group |
-| `disable` | `provider` | Move the agent back to `default`. The pool group and its accounts stay |
-| `settings/update` | `threshold_pct` 50–100 | Global config param `subscription_pool.threshold_pct` |
-| `account/oauth-start` | `provider` | `{ state, authorize_url, expires_at }`. The code verifier stays in Core memory for 10 minutes |
-| `account/oauth-complete` | `provider`, `state`, `code?` or `redirect_url?`, `display_name?` | Masked account plus `created`. The same provider account logged in again keeps its row, name and state; only its tokens change. The login state works once. Accounts can be added before the pool is on: the first account creates the pool group switched off and without agents, so the proxy does not see it until `enable`. `502 OAUTH_EXCHANGE_FAILED` when the provider refuses the code |
-| `account/update` | `account_id`, `display_name?`, `enabled?`, `status?`, `expected_version?` | Masked account |
-| `account/delete` | `account_id` | `{ deleted }` |
-| `account/check-usage` | `account_id` | Masked account after a usage API call. `404 account_not_found` for an unknown id |
-| `check-all` | `{}` | `{ checked, failed }` for every enabled account |
+- View (`status`): an active member of the team, or System Admin.
+- Manage (all other calls): an admin of the team, or System Admin.
+- A caller who fails the check for an account id or pool group id gets `404 account_not_found` / `404 POOL_NOT_FOUND`, the same answer as for an id that does not exist. A team call for a team the caller is not in gets `403 permission_denied`. A System Admin naming an unknown team gets `404 team_not_found`; a blank team gets `400 team_required`.
+- Public responses never include `access_token` or `refresh_token`.
+- Each account has its own `threshold_pct` (integer 50-100, else `400 INVALID_THRESHOLD`). The usage check, the reset-check timer and the Proxy use the value of the account.
+
+| Path | Body | Check | Result |
+|---|---|---|---|
+| `status` | `team_id`, `provider?` | view | `{ team_id, default_threshold_pct, providers[] }`. Each provider: `enabled`, `group_id`, `clients` (agents of the pool row plus `source_agents`), `accounts` (each with `threshold_pct`), `summary`, `source`. A team without a pool row gets no accounts |
+| `enable` | `team_id`, `provider` | manage | Create or switch on the team pool row with its fixed source name. Clients do not move |
+| `disable` | `team_id`, `provider` | manage | Switch the team pool off. `409 SOURCE_IN_USE` (`detail.clients`) while a client uses it; clear the clients with `clients/update` first. `409 POOL_NOT_ENABLED` when it is off |
+| `clients/update` | `team_id`, `provider`, `agents[]` | manage | Set the clients of the team pool. A single-source client goes to `agents`, a multi-source client to `source_agents`; the client keeps its place in its instance group. `409 SOURCE_DISABLED` when the pool is off and `agents` is not empty; `400 SOURCE_FORMAT_MISMATCH`; `400 INVALID_AGENTS` |
+| `settings/update` | `threshold_pct` 50-100 | System Admin | Start value (config param `subscription_pool.threshold_pct`) for new accounts. It never changes an existing account |
+| `account/oauth-start` | `team_id`, `provider` | manage | `{ state, authorize_url, expires_at }`. The state is bound to the team and the caller |
+| `account/oauth-complete` | `team_id`, `provider`, `state`, `code?` or `redirect_url?`, `display_name?`, `threshold_pct?` | manage | Masked account plus `created`. A state of another team or caller gives `400 INVALID_OAUTH_STATE`. A new account takes `threshold_pct` from the request, else the start value; a login of an existing account keeps its value. The first account creates the pool row switched off |
+| `account/update` | `account_id`, `display_name?`, `enabled?`, `status?`, `threshold_pct?`, `expected_version?` | manage, by account | Masked account |
+| `account/delete` | `account_id` | manage, by account | `{ deleted }` |
+| `account/check-usage` | `account_id` | manage, by account | Masked account after a usage API call |
+| `account/redeem-reset-credit` | `account_id`, `credit_id`, `request_id` | manage, by account | Redeem result and masked account |
+| `check-all` | `team_id?` | manage; without `team_id`, System Admin only | `{ checked, failed }` for the accounts of the team (or of every team) |
+
+Generic group routes (`instance-upstream/groups/create|update|toggle|delete`) answer `400 POOL_GROUP_TEAM_SCOPED` for a pool row. `groups/source-models/update` and `groups/source-refresh` accept a pool row from an admin of its team or System Admin; every other caller gets `403 permission_denied`, also for an unknown id. `client-sources/list` has no pool sources, and `client-sources/update` with a pool source name answers `404 SOURCE_NOT_FOUND`. The names `sub-claude`, `sub-openai` and `sub-antigravity` are reserved for pool rows: an API source with one of them gets `400 SOURCE_NAME_RESERVED`. `team/delete` also deletes the pool rows and accounts of the team and stops their timers. `groups/list` rows carry `team_id`.
 
 ### POST /v3/internal/meta/subscription-pool/accounts/list
 
-Proxy service token. Accounts of enabled `subscription_pool` groups. Each row has `access_token`, `provider_account_id`, `display_name` and `account_label` (the e-mail and plan from the provider profile). The proxy sends `provider_account_id` as the Codex `ChatGPT-Account-ID` header together with the bearer token. `refresh_token` is omitted.
+Proxy service token. Accounts of enabled `subscription_pool` groups of every team. Each row has `threshold_pct` (threshold of the account), `group_id`, `access_token`, `provider_account_id`, `display_name` and `account_label` (the e-mail and plan from the provider profile). The proxy sends `provider_account_id` as the Codex `ChatGPT-Account-ID` header together with the bearer token. `refresh_token` is omitted.
 
 ### POST /v3/internal/meta/subscription-pool/report
 
@@ -1343,6 +1353,21 @@ Body `{ account_id, held_expires_at? }`. Call it after a 401. `held_expires_at` 
 ### Subscription pool timers
 
 Core keeps the timers in memory and does not scan the database. When Core first serves an instance (at start in standalone mode, on the first metadata request in service mode) it refreshes tokens with less than 10 minutes left and reads usage for every account, one account per second. Timers: token refresh 10 minutes before expiry; usage check 30 s after an exhausted account's reset and after each reset of a window at or above the threshold; usage check of every account each `SUBSCRIPTION_POOL_CHECK_INTERVAL_MIN` minutes (default 30), which also refreshes tokens with less than 40 minutes left; retries after 1, 5 and 15 minutes when a refresh or a usage call fails. `SUBSCRIPTION_POOL_ENABLED=false` turns all timers off. Run one Core process per instance: several replicas would refresh the same rotating token.
+
+### Team of the pool rows at start
+
+An older database has pool rows without a team. On each start, Core gives every pool row without a team to the default team, and it also puts each pooled agent back into the `agents` of the default instance group, so no client gets `400 AGENT_NOT_CONFIGURED`. The first time Core opens an older database, it also copies the global start value of the threshold (`subscription_pool.threshold_pct`) into the `threshold_pct` of every existing account. The start is safe to repeat: when nothing changes, Core writes no log line.
+
+The default team is found by name with one rule for SQLite and MongoDB:
+
+1. When the optional variable `TDAI_METADATA_DEFAULT_TEAM_ID` is set, only the active team with that id counts, and the name rules below are not used. A missing or inactive team gives no team: the pool rows stay unassigned and Core logs one error line (`reason=configured_team_not_active`) on each start. Use the id on a deployment where any user can create a team, because a team name is not unique and a user can pick any name.
+2. When the optional variable `TDAI_METADATA_DEFAULT_TEAM_NAME` is set (and the id is not), only a team with that name matches.
+3. When neither is set, a team named `default` matches. Only when no team has that name, a team named `default-team` (the name that a new install creates) matches.
+4. A name that matches exactly one active team wins. A name that matches two or more teams stops the rule at once; Core does not try the next name. No match gives no team.
+
+On success Core logs one line: `[subscription-pool] team backfill team=<team_id> groups=<count> agents_restored=<agents>`. When Core finds no single team, the pool rows stay at `team_id = ''`: no team uses them, every client runs on its instance group, and Core logs an error with the `candidates=` team ids on each start. Set `TDAI_METADATA_DEFAULT_TEAM_ID` (or `TDAI_METADATA_DEFAULT_TEAM_NAME`, or fix the team name) and restart Core to give the rows to the team. A database that has one team named `default` needs no setting.
+
+Core reads `TDAI_METADATA_DEFAULT_TEAM_ID` and `TDAI_METADATA_DEFAULT_TEAM_NAME` from its own process environment, next to the other `TDAI_METADATA_*` variables. A blank value counts as not set. `compose.yaml` and `deploy/global-images/start-memory-core.sh` pass both variables to the container when the deploy environment (the Komodo stack environment or the `.env` file) sets them.
 
 ### POST /v3/internal/meta/upstream/supported-agents
 

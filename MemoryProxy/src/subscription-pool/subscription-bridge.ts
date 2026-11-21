@@ -31,6 +31,8 @@
  *     415 41501 content_type_invalid
  *     503 50301 storage_unavailable, pool_unavailable
  *
+ * The pool is the pool of the team of the registered session. A session without a team, or a
+ * user that left the team, gets `not_pool_session`; the accounts of another team never show.
  * The permission comes only from `canUseAccountSwitch`. The provider and the space come from the
  * session that the Proxy knows, never from a default or from config: a wrong space gives a valid
  * binding key that no pool request reads. A switch changes only the Session Binding of this
@@ -65,6 +67,10 @@ interface PoolSession {
   spaceId: string;
   userId: string;
   agentSource: string;
+  /** Team of the registered session. Empty when the session has none. */
+  teamId: string;
+  /** Key of the user that registered the session. Empty when the session did not keep it. */
+  userKey: string;
 }
 
 /** Ends the request with an error envelope. */
@@ -129,7 +135,10 @@ async function findSession(sessionId: string, headerSpaceId: string): Promise<Po
     const info = state?.status === "initialized" ? state.sessionInfo : null;
     if (!info?.user_id || !info.space_id) continue;
     if (headerSpaceId && headerSpaceId !== info.space_id) throw notPoolSession();
-    return { sessionId, spaceId: info.space_id, userId: info.user_id, agentSource };
+    return {
+      sessionId, spaceId: info.space_id, userId: info.user_id, agentSource,
+      teamId: info.team_id ?? "", userKey: info.user_key ?? "",
+    };
   }
 
   const bindingRepo = store.getBindingRepo();
@@ -149,7 +158,10 @@ async function findSession(sessionId: string, headerSpaceId: string): Promise<Po
   // An old binding without an agent gives no provider. Never guess one.
   const boundAgent = binding.agentSource;
   if (!boundAgent || !(POOL_AGENTS as readonly string[]).includes(boundAgent)) throw notPoolSession();
-  return { sessionId, spaceId: headerSpaceId, userId: binding.userId, agentSource: boundAgent };
+  return {
+    sessionId, spaceId: headerSpaceId, userId: binding.userId, agentSource: boundAgent,
+    teamId: binding.teamId ?? "", userKey: binding.userKey ?? "",
+  };
 }
 
 async function readEmail(c: Context): Promise<string> {
@@ -190,7 +202,7 @@ function rejectionError(rejection: AccountSwitchRejection): BridgeError {
     case "account_above_threshold": {
       const at = isoOrNull(rejection.resets_at);
       return new BridgeError(409, 40901, rejection.reason,
-        `The account has used ${rejection.usage_pct}% of its quota, which is at or above the pool threshold of ${rejection.threshold_pct}%.`
+        `The account has used ${rejection.usage_pct}% of its quota, which is at or above the threshold of this account (${rejection.threshold_pct}%).`
           + (at ? ` Its usage resets at ${at}.` : ""),
         { resets_at: at, resets_at_ms: rejection.resets_at, usage_pct: rejection.usage_pct, threshold_pct: rejection.threshold_pct });
     }
@@ -240,7 +252,10 @@ async function handleAction(config: ProxyConfig, action: Action, session: PoolSe
   if (!(await canUseAccountSwitch(config, { spaceId, userId: session.userId }))) {
     throw new BridgeError(403, 40301, "not_system_admin", "Only a System Admin can see or change the subscription account.");
   }
-  const pool = await resolveSwitchPool(config, spaceId, session.agentSource);
+  // The pool is the one of the team of the session, never the pool of another team of the user.
+  const pool = await resolveSwitchPool(config, spaceId, session.agentSource, {
+    userId: session.userId, userKey: session.userKey, teamId: session.teamId,
+  });
   if (!pool) throw notPoolSession();
   const { provider, row } = pool;
 
@@ -281,7 +296,7 @@ async function handleAction(config: ProxyConfig, action: Action, session: PoolSe
 
   if (action === "current") return current(provider, accounts, binding, key, now);
   return switchAccount(config, {
-    provider, spaceId, storage, key, accounts, binding, email, now, thresholdPct: snapshot.thresholdPct,
+    provider, spaceId, storage, key, accounts, binding, email, now, thresholdPct: snapshot.thresholdPct, teamId: session.teamId,
   });
 }
 
@@ -325,7 +340,10 @@ interface SwitchInput {
   binding: SessionBinding | null;
   email: string;
   now: number;
+  /** Pool-wide fallback for an account that has no threshold of its own. */
   thresholdPct: number;
+  /** Team of the session, for the log line only. */
+  teamId: string;
 }
 
 async function switchAccount(config: ProxyConfig, input: SwitchInput): Promise<Response> {
@@ -340,7 +358,7 @@ async function switchAccount(config: ProxyConfig, input: SwitchInput): Promise<R
   const target = matches[0]!;
   const rejection = accountSwitchRejection(target, now, input.thresholdPct);
   if (rejection) {
-    console.info(`${TAG} account switch refused space=${spaceId} provider=${provider} to=${target.account_id} reason=${rejection.reason}`);
+    console.info(`${TAG} account switch refused space=${spaceId} team=${input.teamId} provider=${provider} to=${target.account_id} reason=${rejection.reason}`);
     throw rejectionError(rejection);
   }
 
@@ -361,7 +379,7 @@ async function switchAccount(config: ProxyConfig, input: SwitchInput): Promise<R
   }
   clearSessionClientLogin(key);
   reportPoolSessionCounts(config.coreSkill, storage, spaceId, provider, [target.account_id, binding?.account_id], now);
-  console.info(`${TAG} account switch space=${spaceId} provider=${provider} from=${binding?.account_id ?? "none"} to=${target.account_id}`);
+  console.info(`${TAG} account switch space=${spaceId} team=${input.teamId} provider=${provider} from=${binding?.account_id ?? "none"} to=${target.account_id}`);
 
   const previousAccount = binding ? accounts.find((account) => account.account_id === binding.account_id) : undefined;
   return json({

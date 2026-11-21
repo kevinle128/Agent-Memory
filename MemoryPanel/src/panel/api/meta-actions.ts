@@ -85,10 +85,12 @@ export const META_ACTIONS = [
   'user-session-default/get',
   'user-session-default/set',
   'user-session-default/delete',
-  // Subscription pool (System Admin only; the kernel enforces the role)
+  // Subscription pool of a team: a team admin or System Admin manages it, team members view it.
+  // Core enforces the roles; the System Admin alone sets the start threshold (settings/update).
   'subscription-pool/status',
   'subscription-pool/enable',
   'subscription-pool/disable',
+  'subscription-pool/clients/update',
   'subscription-pool/settings/update',
   'subscription-pool/account/oauth-start',
   'subscription-pool/account/oauth-complete',

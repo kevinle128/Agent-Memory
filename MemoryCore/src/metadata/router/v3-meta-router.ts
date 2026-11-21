@@ -90,6 +90,12 @@ function bind<S2 extends ZodType>(schema: S2, fn: BizFn<S2["_output"]>): Handler
   };
 }
 
+/** Every signed-in v3 request has a user id; a missing one is an auth bug, so it fails closed. */
+function requireCallerUserId(ctx: Ctx): string {
+  if (!ctx.userId) throw new MetadataError("permission_denied", "authentication required");
+  return ctx.userId;
+}
+
 function orNotFound<T>(entity: T | null, code: string, id: string): T {
   if (entity === null || entity === undefined) {
     throw new MetadataError(code, `not found: ${id}`);
@@ -428,7 +434,7 @@ const routeTable: Record<string, Handler> = {
     return s.suggestSourceName(d);
   }),
   [`${V3_PREFIX}/instance-upstream/groups/source-models/update`]: bind(S.upstreamSourceModelsUpdateSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
+    await s.assertCanManageSourceGroup(c, d.group_id);
     return s.updateSourceModels(d);
   }),
   [`${V3_PREFIX}/instance-upstream/client-sources/list`]: bind(S.upstreamClientSourcesListSchema, async (_d, _c, s, _reqId, deps) => {
@@ -439,7 +445,7 @@ const routeTable: Record<string, Handler> = {
     return s.updateClientSources(d, deps.getSupportedAgents());
   }),
   [`${V3_PREFIX}/instance-upstream/groups/source-refresh`]: bind(S.upstreamSourceRefreshSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
+    await s.assertCanManageSourceGroup(c, d.group_id);
     return s.refreshSourceModels(d);
   }),
 
@@ -471,49 +477,60 @@ const routeTable: Record<string, Handler> = {
     return s.deleteInstanceUpstreamExtraction(deps.getSupportedAgents());
   }),
 
-  // Authenticated users may view the public, token-free status. All mutations remain admin-only.
-  [`${V3_PREFIX}/subscription-pool/status`]: bind(S.subscriptionPoolStatusSchema, async (d, _c, s) => {
-    return s.getSubscriptionPoolStatus(d.provider);
+  // Pools belong to a team. A member of the team views; an admin of the team or the System Admin
+  // manages. An account or pool id of a team the caller cannot use answers "not found".
+  [`${V3_PREFIX}/subscription-pool/status`]: bind(S.subscriptionPoolStatusSchema, async (d, c, s) => {
+    await s.assertCanViewTeamPool(c, d.team_id);
+    return s.getSubscriptionPoolStatus(d.team_id, d.provider);
   }),
   [`${V3_PREFIX}/subscription-pool/enable`]: bind(S.subscriptionPoolEnableSchema, async (d, c, s, _reqId, deps) => {
-    s.assertCanManageUsers(c);
-    return s.enableSubscriptionPool(d.provider, deps.getSupportedAgents());
+    await s.assertCanManageTeamPool(c, d.team_id);
+    return s.enableSubscriptionPool(d.team_id, d.provider, deps.getSupportedAgents());
   }),
   [`${V3_PREFIX}/subscription-pool/disable`]: bind(S.subscriptionPoolDisableSchema, async (d, c, s, _reqId, deps) => {
-    s.assertCanManageUsers(c);
-    return s.disableSubscriptionPool(d.provider, deps.getSupportedAgents());
+    await s.assertCanManageTeamPool(c, d.team_id);
+    return s.disableSubscriptionPool(d.team_id, d.provider, deps.getSupportedAgents());
   }),
+  [`${V3_PREFIX}/subscription-pool/clients/update`]: bind(S.subscriptionPoolClientsUpdateSchema, async (d, c, s, _reqId, deps) => {
+    await s.assertCanManageTeamPool(c, d.team_id);
+    return s.updateSubscriptionPoolClients(d.team_id, d.provider, d.agents, deps.getSupportedAgents());
+  }),
+  // The start value of the threshold of a new account is one value for the instance.
   [`${V3_PREFIX}/subscription-pool/settings/update`]: bind(S.subscriptionPoolSettingsSchema, async (d, c, s) => {
     s.assertCanManageUsers(c);
     return s.updateSubscriptionPoolSettings(d.threshold_pct);
   }),
   [`${V3_PREFIX}/subscription-pool/account/oauth-start`]: bind(S.subscriptionPoolOAuthStartSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
-    return s.startSubscriptionOAuth(d.provider);
+    await s.assertCanManageTeamPool(c, d.team_id);
+    return s.startSubscriptionOAuth(d.team_id, d.provider, requireCallerUserId(c));
   }),
   [`${V3_PREFIX}/subscription-pool/account/oauth-complete`]: bind(S.subscriptionPoolOAuthCompleteSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
-    return s.completeSubscriptionOAuth(d);
+    await s.assertCanManageTeamPool(c, d.team_id);
+    return s.completeSubscriptionOAuth(d, requireCallerUserId(c));
   }),
   [`${V3_PREFIX}/subscription-pool/account/update`]: bind(S.subscriptionPoolAccountUpdateSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
-    return s.updateSubscriptionAccount(d.account_id, { display_name: d.display_name, enabled: d.enabled, status: d.status }, d.expected_version);
+    await s.requireTeamPoolAccount(c, d.account_id, "manage");
+    return s.updateSubscriptionAccount(d.account_id, { display_name: d.display_name, enabled: d.enabled, status: d.status, threshold_pct: d.threshold_pct }, d.expected_version);
   }),
   [`${V3_PREFIX}/subscription-pool/account/delete`]: bind(S.subscriptionPoolAccountDeleteSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
+    await s.requireTeamPoolAccount(c, d.account_id, "manage");
     return s.deleteSubscriptionAccount(d.account_id);
   }),
   [`${V3_PREFIX}/subscription-pool/account/check-usage`]: bind(S.subscriptionPoolAccountCheckSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
+    await s.requireTeamPoolAccount(c, d.account_id, "manage");
     return s.checkSubscriptionAccountUsage(d.account_id);
   }),
   [`${V3_PREFIX}/subscription-pool/account/redeem-reset-credit`]: bind(S.subscriptionPoolAccountRedeemResetCreditSchema, async (d, c, s) => {
-    s.assertCanManageUsers(c);
+    await s.requireTeamPoolAccount(c, d.account_id, "manage");
     return s.redeemSubscriptionResetCredit(d.account_id, d.credit_id, d.request_id);
   }),
-  [`${V3_PREFIX}/subscription-pool/check-all`]: bind(S.subscriptionPoolCheckAllSchema, async (_d, c, s) => {
-    s.assertCanManageUsers(c);
-    return s.checkAllSubscriptionAccountUsage();
+  [`${V3_PREFIX}/subscription-pool/check-all`]: bind(S.subscriptionPoolCheckAllSchema, async (d, c, s) => {
+    if (d.team_id === undefined) {
+      s.assertCanManageUsers(c);
+    } else {
+      await s.assertCanManageTeamPool(c, d.team_id);
+    }
+    return s.checkAllSubscriptionAccountUsage(d.team_id);
   }),
 };
 
@@ -558,6 +575,7 @@ function mapErrorCode(code: string): number {
     // ── v2 InstanceUpstream 错误码(§6.E)──
     case "GROUP_NOT_FOUND":
     case "SOURCE_NOT_FOUND":
+    case "POOL_NOT_FOUND":
       return 404;
     case "SOURCE_IN_USE":
       return 409;
@@ -586,6 +604,9 @@ function mapErrorCode(code: string): number {
     case "INVALID_THRESHOLD":
     case "INVALID_OAUTH_STATE":
     case "INVALID_OAUTH_CODE":
+    case "POOL_GROUP_TEAM_SCOPED":
+    case "SOURCE_NAME_RESERVED":
+    case "team_required":
       return 400;
     case "POOL_AGENT_CUSTOM_GROUP":
     case "POOL_NOT_ENABLED":

@@ -245,4 +245,39 @@ describe("SubscriptionPoolScheduler", () => {
     expect(adapter.refresh).toHaveBeenCalledTimes(1);
     expect((await fx.store.getSubscriptionAccount(account.account_id))?.refresh_fail_count).toBe(0);
   });
+
+  it("plans the reset-check timer of an account from its own threshold", async () => {
+    await setup();
+    const low = await fx.addAccount({ token_expires_at: null, threshold_pct: 70 });
+    const high = await fx.addAccount({ token_expires_at: null, threshold_pct: 95 });
+    adapter.fetchUsage.mockImplementation(async () => usageReading([win(80, T0 + 3 * HOUR)]));
+    await register();
+    const resetChecks = () => scheduler.pendingTimers().filter((timer) => timer.kind === "reset-check");
+    expect(resetChecks()).toEqual([expect.objectContaining({ accountId: low.account_id, at: T0 + 3 * HOUR + 30_000 })]);
+
+    // Raising the threshold of the low account moves its timer away; lowering the other one arms it.
+    await fx.svc.updateSubscriptionAccount(low.account_id, { threshold_pct: 90 });
+    await fx.svc.updateSubscriptionAccount(high.account_id, { threshold_pct: 60 });
+    expect(resetChecks()).toEqual([expect.objectContaining({ accountId: high.account_id, at: T0 + 3 * HOUR + 30_000 })]);
+  });
+
+  it("drops the timers of an account that a team delete removed", async () => {
+    await setup();
+    const team = "team-pool-delete";
+    await fx.store.createTeam({ team_id: team, name: "to delete", owner_user_id: "usr-owner" });
+    const pool = await fx.store.createInstanceUpstreamGroup({
+      group_type: "custom", team_id: team, name: "claude subscription pool", mode: "subscription_pool", enabled: true, agents: [],
+    });
+    const { account } = await fx.store.upsertSubscriptionAccountByProviderId({
+      group_id: pool.group_id, provider: "codex", provider_account_id: "acct-team", display_name: "Team", access_token: "a", refresh_token: "r",
+      token_expires_at: T0 + 5 * HOUR,
+    });
+    await register();
+    expect(scheduler.pendingTimers().some((timer) => timer.accountId === account.account_id)).toBe(true);
+
+    await fx.svc.deleteTeams([team]);
+
+    expect(await fx.store.getSubscriptionAccount(account.account_id)).toBeNull();
+    expect(scheduler.pendingTimers().some((timer) => timer.accountId === account.account_id)).toBe(false);
+  });
 });

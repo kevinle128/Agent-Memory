@@ -34,6 +34,10 @@ import { writeLog } from "../../logger.js";
 import { shouldSkipRequestHeader, preserveRequestQuery, filterResponseHeaders } from "../../common/constants.js";
 import { extractUserQueryText } from "../../common/user-query-extractor.js";
 import { getInstanceUpstreamConfigs, resolveForAgent, type InstanceUpstreamRow } from "../../instance-upstream-cache.js";
+import {
+  immediateTeamError, resolveRequestTeam, settleRequestTeam, teamIdOf, type RequestTeamError,
+} from "../../subscription-pool/pool-team.js";
+import { buildPoolExhaustedResponse, buildPoolUnavailableResponse } from "../../subscription-pool/exhausted-response.js";
 import { isExtractionAllowed, logExtractionSkipped } from "../../extraction-gate.js";
 import { withSessionProject } from "../../project-scope/session-workspace.js";
 import { resolveProxyOrigin, SESSION_ID_RE } from "../../session/hook-gate-core.js";
@@ -315,9 +319,13 @@ async function authenticate(c: Context): Promise<Authenticated | Response> {
   return { route, userId: verify.userId, keyId };
 }
 
-async function resolvePool(config: ProxyConfig, spaceId: string): Promise<InstanceUpstreamRow | Response> {
+/**
+ * The pool row of the request team. A known team without an AntiGravity pool gets the 400 below,
+ * because AntiGravity has no normal upstream. A null team never gets a pool.
+ */
+async function resolvePool(config: ProxyConfig, spaceId: string, teamId: string | null): Promise<InstanceUpstreamRow | Response> {
   const rows = await getInstanceUpstreamConfigs(config.coreSkill, spaceId, config.instanceUpstream);
-  const resolution = resolveForAgent(rows, AGENT);
+  const resolution = resolveForAgent(rows, AGENT, teamId);
   if (resolution.kind === "pool") return resolution.row;
   if (resolution.kind === "blocked") return googleError(400, "The upstream group of this agent is disabled.", "FAILED_PRECONDITION");
   return googleError(
@@ -325,6 +333,15 @@ async function resolvePool(config: ProxyConfig, spaceId: string): Promise<Instan
     "AntiGravity runs only on a subscription pool. Ask the instance administrator to add AntiGravity to a pool group.",
     "FAILED_PRECONDITION",
   );
+}
+
+/** Answer for a team error in the Google error shape. Pool answers keep their own shape. */
+function teamErrorResponse(err: RequestTeamError): Response {
+  if (err.code === "pool_exhausted") return buildPoolExhaustedResponse(err.resetAtMs ?? null, Date.now());
+  if (err.code === "pool_unavailable") return buildPoolUnavailableResponse();
+  const res = googleError(err.status, err.message, err.status === 403 ? "PERMISSION_DENIED" : "UNAVAILABLE");
+  if (err.code === "team_list_unavailable") res.headers.set("retry-after", "5");
+  return res;
 }
 
 function upstreamBaseOf(config: ProxyConfig, row: InstanceUpstreamRow): string {
@@ -412,7 +429,13 @@ export async function runAntigravityModels(c: Context, config: ProxyConfig): Pro
     const { route } = auth;
     if (route.kind !== "models-gemini" && route.kind !== "models-openai") return googleError(404, "Unknown AntiGravity endpoint.", "NOT_FOUND");
 
-    const row = await resolvePool(config, route.spaceId);
+    // The model list has no session. It uses the first team of the user, in the order of Core, that
+    // has an enabled AntiGravity pool with a usable account. No such team gives the 400 below.
+    const listTeam = await resolveRequestTeam({
+      config, spaceId: route.spaceId, userId: auth.userId, userKey: route.accessKey, agentSource: AGENT,
+      session: null, lcHeaders: {}, model: "", sessionInitMayRun: false,
+    });
+    const row = await resolvePool(config, route.spaceId, teamIdOf(listTeam));
     if (row instanceof Response) return row;
 
     let models = modelsFromRow(row);
@@ -492,13 +515,29 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
     // original history (its own answers are found by their marker); the L0 row reads the clean one.
     const body = stripSessionInitTurns(original);
 
-    const row = await resolvePool(config, spaceId);
-    if (row instanceof Response) return row;
-
     const sessionId = cascadeIdOf(body);
     const headers: Record<string, string> = {};
     for (const [k, v] of c.req.raw.headers.entries()) headers[k.toLowerCase()] = v;
     const upstreamModel = upstreamModelFor(route.model, body);
+
+    // ── Team of the request ──
+    // A pool belongs to one team. Only the main stream request runs session init, so only it may
+    // wait for init to give a team. Null when no team pool serves AntiGravity in this instance.
+    const teamSession = sessionId ? { keyId: `${AGENT}:${sessionId}`, agentSource: AGENT, sessionId } : null;
+    const requestTeam = await resolveRequestTeam({
+      config, spaceId, userId, userKey: route.accessKey, agentSource: AGENT, session: teamSession,
+      lcHeaders: headers, model: "", memoryOff,
+      sessionInitMayRun: !memoryOff && config.sessionInit?.enabled === true && Boolean(sessionId) && isStream,
+    });
+    const requestTeamError = immediateTeamError(requestTeam);
+    if (requestTeamError) return teamErrorResponse(requestTeamError);
+    // A team error that waits for init leaves the pool open until init has run.
+    let row: InstanceUpstreamRow | null = null;
+    if (requestTeam === null || requestTeam.kind === "team") {
+      const resolved = await resolvePool(config, spaceId, teamIdOf(requestTeam));
+      if (resolved instanceof Response) return resolved;
+      row = resolved;
+    }
 
     // ── Hook gate: no hook report, no model answer. The body is not changed. ──
     const gate = await runAntigravityHookGate({
@@ -551,6 +590,19 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
       } catch (err) {
         console.error(`${TAG} session-init error:`, err instanceof Error ? err.message : String(err));
       }
+    }
+
+    // ── Settle the team after session init ──
+    // Init may have registered the session in another team than the first answer, or left it
+    // without a team. A team error that waited for init is answered here, before any upstream call.
+    const settledTeam = await settleRequestTeam({
+      config, spaceId, userId, userKey: route.accessKey, first: requestTeam, session: teamSession,
+    });
+    if (settledTeam.error) return teamErrorResponse(settledTeam.error);
+    if (row === null || settledTeam.changed) {
+      const resolved = await resolvePool(config, spaceId, settledTeam.teamId);
+      if (resolved instanceof Response) return resolved;
+      row = resolved;
     }
 
     // ── Pool account, Cloud Code call ──

@@ -43,6 +43,14 @@ export function accountUsagePct(account: PoolAccount, now: number, requestedMode
   return max;
 }
 
+/**
+ * Threshold of one account. Each account has its own value. The fallback is the pool-wide value
+ * of the snapshot, for an account that Core sent without the field.
+ */
+export function accountThreshold(account: PoolAccount, fallbackPct: number): number {
+  return typeof account.threshold_pct === "number" ? account.threshold_pct : fallbackPct;
+}
+
 /** True while the account must not receive requests because of a 429 or a quota stop. */
 export function isExhausted(account: PoolAccount, now: number): boolean {
   if (account.exhausted_until !== null) return now < account.exhausted_until;
@@ -59,15 +67,16 @@ function isServable(account: PoolAccount, now: number): boolean {
   return !isExhausted(account, now);
 }
 
-function isEligible(account: PoolAccount, now: number, thresholdPct: number, requestedModel: string): boolean {
-  return isServable(account, now) && accountUsagePct(account, now, requestedModel) < thresholdPct;
+function isEligible(account: PoolAccount, now: number, fallbackThresholdPct: number, requestedModel: string): boolean {
+  return isServable(account, now)
+    && accountUsagePct(account, now, requestedModel) < accountThreshold(account, fallbackThresholdPct);
 }
 
 export function selectAccount(
   accounts: readonly PoolAccount[],
   binding: string | null,
   now: number,
-  thresholdPct: number,
+  fallbackThresholdPct: number,
   requestedModel: string,
   cursor = 0,
   excluded: ReadonlySet<string> = new Set(),
@@ -88,7 +97,7 @@ export function selectAccount(
   for (let step = 0; step < candidates.length; step++) {
     const index = (start + step) % candidates.length;
     const account = candidates[index]!;
-    if (isEligible(account, now, thresholdPct, requestedModel)) {
+    if (isEligible(account, now, fallbackThresholdPct, requestedModel)) {
       return { account, kind: "round_robin", nextCursor: (index + 1) % candidates.length };
     }
   }
@@ -131,7 +140,7 @@ export function hasAccountBelowQuota(
 export function earliestReset(
   accounts: readonly PoolAccount[],
   now: number,
-  thresholdPct: number,
+  fallbackThresholdPct: number,
   requestedModel: string,
 ): number | null {
   let earliest: number | null = null;
@@ -145,8 +154,9 @@ export function earliestReset(
       consider(account.exhausted_until);
       continue;
     }
+    const threshold = accountThreshold(account, fallbackThresholdPct);
     for (const window of applicableWindows(account, requestedModel)) {
-      if (windowUsage(window, now) >= thresholdPct) consider(window.resets_at);
+      if (windowUsage(window, now) >= threshold) consider(window.resets_at);
     }
   }
   return earliest;
@@ -170,8 +180,9 @@ export type AccountSwitchRejection =
 export function accountSwitchRejection(
   account: PoolAccount,
   now: number,
-  thresholdPct: number,
+  fallbackThresholdPct: number,
 ): AccountSwitchRejection | null {
+  const thresholdPct = accountThreshold(account, fallbackThresholdPct);
   if (!account.enabled || account.status === "disabled") return { reason: "account_disabled" };
   if (account.status === "auth_error") return { reason: "account_needs_login" };
   if (isExhausted(account, now)) {

@@ -5,7 +5,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearCache, __primeCacheForTests, type InstanceUpstreamRow } from "../../instance-upstream-cache.js";
 import { __primeAccountCacheForTests } from "../account-cache.js";
-import { CORE_URL, installFetch, jsonResponse, makeApp, makeConfig } from "./test-harness.js";
+import { initAuth, resetAuthCacheForTest } from "../../auth.js";
+import { clearTeamCaches } from "../pool-team.js";
+import { CORE_URL, installFetch, jsonResponse, makeApp, makeConfig, resetPoolState } from "./test-harness.js";
 import type { PoolAccount } from "../types.js";
 
 const SPACE = "sp-off";
@@ -101,8 +103,22 @@ describe("pool off keeps the upstream request unchanged", () => {
     expect(upstreamCalls[0]!.headers["authorization"]).toBe("Bearer chatgpt-login");
   });
 
+  // The only case that changed: a pool serves only the team of a request, so this case needs a
+  // user and a team. It sets up auth and teams itself and puts both back after it.
   it("claude count_tokens in a pool group uses the pool account bearer and the oauth beta", async () => {
-    __primeCacheForTests(SPACE, [row({}), row({ group_id: "p", group_type: "custom", agents: ["claude-code"], mode: "subscription_pool" })]);
+    resetPoolState();
+    try {
+      await claudeCountTokensInPool();
+    } finally {
+      initAuth({ enabled: false, url: "", timeoutMs: 0, apiKey: "" });
+      resetAuthCacheForTest();
+      clearTeamCaches();
+      vi.restoreAllMocks();
+    }
+  });
+
+  async function claudeCountTokensInPool(): Promise<void> {
+    __primeCacheForTests(SPACE, [row({}), row({ group_id: "p", group_type: "custom", agents: ["claude-code"], mode: "subscription_pool", team_id: "team-a" })]);
     const account: PoolAccount = {
       account_id: "a", group_id: "p", provider: "claude", provider_account_id: "acct-a",
       status: "active", enabled: true, access_token: "secret-token-a", token_expires_at: Date.now() + 3_600_000,
@@ -121,7 +137,7 @@ describe("pool off keeps the upstream request unchanged", () => {
     expect(upstreamCalls[0]!.headers["x-api-key"]).toBeUndefined();
     expect(upstreamCalls[0]!.headers["anthropic-beta"]).toBe("prompt-caching-2024-07-31,oauth-2025-04-20");
     expect(JSON.stringify(upstreamCalls[0]!.headers)).not.toContain("sk-mem");
-  });
+  }
 
   it("utility route: official group keeps the global upstream", async () => {
     __primeCacheForTests(SPACE, [row({})]);

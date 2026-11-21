@@ -56,9 +56,12 @@ import { inspectAndRecord } from "../../identity.js";
 import { writeFailedReportRaw } from "../../clickhouse.js";
 import { verifyUserKey } from "../../auth.js";
 import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-request.js";
+import {
+  immediateTeamError, resolveRequestTeam, settleRequestTeam, teamErrorResponse, teamIdOf,
+} from "../../subscription-pool/pool-team.js";
 import { stageAuth } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
-import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
+import { stageModelSource, applyModelSource, modelSourceErrorResponse, type ModelSourceResolution } from "../stages/model-source.js";
 import { withClaudeCodeIdentity } from "../../subscription-pool/claude-identity.js";
 import { applyPromptCacheTtl } from "../../subscription-pool/prompt-cache-ttl.js";
 import { stageModelGate } from "../stages/model-gate.js";
@@ -478,23 +481,6 @@ export async function runAnthropicPipeline(
   }
   // eslint-disable-next-line prefer-const
   let body = parseResult.body;
-  // `<source>/<model>` of a multi-source agent: returns `none` before any other work for every
-  // other agent, so the model-pool and main-model steps below run unchanged for them.
-  const sourceAgent = c.req.path.split("/").filter(Boolean)[0];
-  const modelSource = await stageModelSource({
-    config, agent: sourceAgent, spaceId: earlySpaceId,
-    format: "anthropic-messages", model: body.model, servesPool: true,
-  });
-  if (modelSource.kind === "error") return modelSourceErrorResponse(c, "anthropic", modelSource);
-  const modelSourceMetadata = modelSource.kind === "matched"
-    ? applyModelSource(c, body, modelSource, sourceAgent ?? "")
-    : {};
-  const poolService = modelSource.kind === "matched"
-    ? { routed: false, clientFacingModel: null }
-    : applyPoolService(config, body);
-  if (poolService.clientFacingModel) c.set("clientFacingModel", poolService.clientFacingModel);
-  const mainModelFrom = modelSource.kind === "matched" || poolService.routed ? null : applyMainModel(body);
-
   // ── CC request classification (feature-gated, per-agent) ─────────────────
   // 通过 agentAdapter 分类请求 —— 每个客户端有自己的规则：
   //   - claude-code: 按 cache_control marker + tools/thinking 三分
@@ -502,6 +488,7 @@ export async function runAnthropicPipeline(
   //
   // 关闭 ccRequestRouting.enabled 时强制视为 main，走完全等价现状的老链路。
   // 详见 docs/design/2026-07-30-cc-request-routing-plan.md
+  // This block is pure, and it sits before the model-source stage so the team lookup can use it.
   const _pathPartsEarly = c.req.path.split("/").filter(Boolean);
   const _agentFromPathEarly = _pathPartsEarly[0]
     && !["v1", "proxy", "skill-bridge", "memory-bridge"].includes(_pathPartsEarly[0])
@@ -531,6 +518,45 @@ export async function runAnthropicPipeline(
   /** 本轮是否允许触碰记忆：mem 命令、session-init、injection、L0、skill。 */
   const memoryTurn = memoryGates.memoryTurn;
 
+  // ── Team of the request ──
+  // A pool belongs to one team, so the team is known before any stage can pick a pool. It comes
+  // from the session, the form choice, the header preset, the user default or the ordered
+  // fallback. Null when no team pool serves this client; the request then runs as before.
+  const { resolveConversationId } = await import("../../session/session-key.js");
+  const conversationId = resolveConversationId(c);
+  const lcHeaders: Record<string, string> = {};
+  for (const [k, v] of c.req.raw.headers.entries()) {
+    lcHeaders[k.toLowerCase()] = v;
+  }
+  const teamUserKey = c.req.header("x-tdai-user-key") || extractApiKey(c) || "";
+  const teamSession = conversationId
+    ? { keyId: `${_agentSourceEarly}:${conversationId}`, agentSource: _agentSourceEarly, sessionId: conversationId }
+    : null;
+  const requestTeam = legacyProxy ? null : await resolveRequestTeam({
+    config, spaceId: earlySpaceId, userId: earlyVerify.userId, userKey: teamUserKey,
+    agentSource: _agentSourceEarly, session: teamSession, lcHeaders, model: body.model,
+    sessionInitMayRun: config.sessionInit?.enabled === true && conversationId !== null && !memoryGates.skipSessionInit,
+  });
+  const requestTeamError = immediateTeamError(requestTeam);
+  if (requestTeamError) return teamErrorResponse(c, "anthropic", requestTeamError);
+
+  // `<source>/<model>` of a multi-source agent: returns `none` before any other work for every
+  // other agent, so the model-pool and main-model steps below run unchanged for them.
+  const sourceAgent = c.req.path.split("/").filter(Boolean)[0];
+  const modelSource = await stageModelSource({
+    config, agent: sourceAgent, spaceId: earlySpaceId,
+    format: "anthropic-messages", model: body.model, servesPool: true, teamId: teamIdOf(requestTeam),
+  });
+  if (modelSource.kind === "error") return modelSourceErrorResponse(c, "anthropic", modelSource);
+  const modelSourceMetadata = modelSource.kind === "matched"
+    ? applyModelSource(c, body, modelSource, sourceAgent ?? "")
+    : {};
+  const poolService = modelSource.kind === "matched"
+    ? { routed: false, clientFacingModel: null }
+    : applyPoolService(config, body);
+  if (poolService.clientFacingModel) c.set("clientFacingModel", poolService.clientFacingModel);
+  const mainModelFrom = modelSource.kind === "matched" || poolService.routed ? null : applyMainModel(body);
+
   // ── Model gate: reject requests whose `model` is not a registered display name ──
   // 价目表已配置时，客户端 `model` 必须匹配某条 entry 的 `modelName`（展示名，
   // 大小写不敏感）。真实 model_id 是内部细节，不作为客户端入口。未匹配则直接
@@ -556,7 +582,7 @@ export async function runAnthropicPipeline(
   // ── Early instance upstream config (via shared stage, anthropic envelope) ──
   const earlyResult = await stageInstanceUpstreamEarly({
     c, config, spaceId: earlySpaceId, earlyUserId: earlyVerify.userId,
-    errorEnvelope: "anthropic",
+    errorEnvelope: "anthropic", teamId: teamIdOf(requestTeam),
     ...(modelSource.kind === "matched" ? { presetResolution: modelSource.resolution } : {}),
   });
   if (earlyResult.blockedResp) return earlyResult.blockedResp;
@@ -642,15 +668,8 @@ export async function runAnthropicPipeline(
     wecomName = wecomIdentity.name;
   }
 
-  // ── Lowercased headers for agent profile detection + session key ──────────
-  const lcHeaders: Record<string, string> = {};
-  for (const [k, v] of c.req.raw.headers.entries()) {
-    lcHeaders[k.toLowerCase()] = v;
-  }
 
 // ── Session key: prefer conversation header, fallback to agent profile ───────────
-  const { resolveConversationId } = await import("../../session/session-key.js");
-  const conversationId = resolveConversationId(c);
   const sessionKey = conversationId ?? resolveSessionKey(config, lcHeaders, c.req.path, body, keyId);
 
   // ── Auth verification (user_key → user_id) ──────────────────────────────────────
@@ -1059,6 +1078,44 @@ export async function runAnthropicPipeline(
     hasTools = Array.isArray(body.tools) && body.tools.length > 0;
   }
 
+  // ── Settle the team after session init ──
+  // Init may have registered the session in a team that differs from the first answer (a fallback
+  // or a predicted team), or it may have left the session without a team. This runs right before
+  // the upstream is chosen, so a mem command or a form that needs no upstream never gets a team
+  // error. A team error that waited for init is answered here, before any upstream call.
+  const settledTeam = await settleRequestTeam({
+    config, spaceId, userId: earlyVerify.userId, userKey: teamUserKey, first: requestTeam, session: teamSession,
+  });
+  if (settledTeam.error) return teamErrorResponse(c, "anthropic", settledTeam.error);
+  let convResolution: Resolution = _earlyConvResolution;
+  if (settledTeam.changed) {
+    // A pool source is the pool of one team, so a source request finds its source again.
+    let lateSource: ModelSourceResolution | undefined = modelSource.kind === "matched" ? modelSource.resolution : undefined;
+    if (modelSource.kind === "matched" && modelSource.resolution.kind === "pool") {
+      const again = await stageModelSource({
+        config, agent: sourceAgent, spaceId: earlySpaceId, format: "anthropic-messages",
+        model: modelSource.clientModel, servesPool: true, teamId: settledTeam.teamId,
+      });
+      if (again.kind === "error") return modelSourceErrorResponse(c, "anthropic", again);
+      lateSource = again.kind === "matched" ? again.resolution : undefined;
+      // A known team without that pool runs as if no pool existed: the client's model name stays.
+      if (again.kind !== "matched") body.model = modelSource.clientModel;
+    }
+    const lateEarly = await stageInstanceUpstreamEarly({
+      c, config, spaceId: earlySpaceId, earlyUserId: earlyVerify.userId,
+      errorEnvelope: "anthropic", teamId: settledTeam.teamId,
+      ...(lateSource ? { presetResolution: lateSource } : {}),
+    });
+    if (lateEarly.blockedResp) return lateEarly.blockedResp;
+    convResolution = lateEarly.earlyConvResolution;
+    // The model gate and the alias ran for the first team. An override group of the new team
+    // would need its own model handling, so this one turn uses the official target.
+    if (convResolution.kind === "override" && _earlyConvResolution.kind !== "override") {
+      console.log(`[subscription-pool] team changed during session init; official target this turn`);
+      convResolution = { kind: "official", row: null };
+    }
+  }
+
   // ── Cost guard: resolve forward target (opaque — no routing logic here) ──
   // upstream.agents[agent] is a single map keyed by agent name (URL path
   // prefix); both url and apiKey may be overridden per agent. When there's
@@ -1082,7 +1139,7 @@ export async function runAnthropicPipeline(
   // b11bf612 GLM anthropic base_url /v1 auto-insert 修复走 joinUrl,已在
   // stageInstanceUpstreamOverride 内部替换手动拼接为 joinUrl(base, c.req.path)。
   const overrideResult = stageInstanceUpstreamOverride({
-    earlyConvResolution: _earlyConvResolution,
+    earlyConvResolution: convResolution,
     target, forwardEndpoint, apiKey: clientCredential, body, modelId,
     requestPath: c.req.path,
   });
@@ -1096,11 +1153,11 @@ export async function runAnthropicPipeline(
   }
   let skipCreditReport = overrideResult.skipCreditReport;
   // A Claude subscription pool swaps only the bearer. The client's own headers and body stay.
-  const poolRequest = _earlyConvResolution.kind === "pool"
+  const poolRequest = convResolution.kind === "pool"
     ? openPoolRequest({
         config,
         spaceId,
-        row: _earlyConvResolution.row,
+        row: convResolution.row,
         clientHeaders: c.req.raw.headers,
         signal: c.req.raw.signal,
         body,
@@ -1384,6 +1441,15 @@ export async function runAnthropicPipeline(
     return c.json({ error: "Upstream request failed" }, 502);
   }
 
+  // The account is known only after the send: a failover or a fallback to the client's own login
+  // changes it. The line and the usage fields carry ids only, never a token.
+  const poolServing = poolRequest?.accountId && convResolution.kind === "pool"
+    ? { subscriptionAccountId: poolRequest.accountId, subscriptionTeamId: convResolution.row.team_id ?? "" }
+    : null;
+  if (poolServing) {
+    console.info(`[subscription-pool] served account_id=${poolServing.subscriptionAccountId} team=${poolServing.subscriptionTeamId}`);
+  }
+
   // Build response headers — via shared filterResponseHeaders
   const respHeaders = filterResponseHeaders(upstreamResp.headers);
 
@@ -1402,6 +1468,7 @@ export async function runAnthropicPipeline(
   const responseLogMeta = {
     ...routeLogMeta,
     ...(retried ? { retrySuccess: true } : {}),
+    ...(poolServing ?? {}),
   };
 
   // ── Streaming response (Anthropic SSE) ──────────────────────────────────

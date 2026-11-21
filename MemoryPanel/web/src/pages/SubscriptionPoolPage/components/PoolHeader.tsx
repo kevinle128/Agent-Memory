@@ -15,9 +15,10 @@ interface Props {
   switchDisabled: boolean;
   onToggle: (next: boolean) => void;
   instanceName: string;
+  teamName: string;
 }
 
-export function PoolHeader({ readOnly, provider, onProviderChange, poolEnabled, switchDisabled, onToggle, instanceName }: Props) {
+export function PoolHeader({ readOnly, provider, onProviderChange, poolEnabled, switchDisabled, onToggle, instanceName, teamName }: Props) {
   const { t } = useTranslation();
   const agent = t(`subscriptionPool.agent.${provider}`);
   return (
@@ -25,6 +26,7 @@ export function PoolHeader({ readOnly, provider, onProviderChange, poolEnabled, 
       <Card.Body>
         <div className="_memory-pool-header">
           <H3>{t('subscriptionPool.title')}</H3>
+          <Tag theme="primary">{t('subscriptionPool.team', { name: teamName })}</Tag>
           <Tabs
             tabs={[
               { id: 'claude', label: t('subscriptionPool.tab.claude') },
@@ -50,7 +52,7 @@ export function PoolHeader({ readOnly, provider, onProviderChange, poolEnabled, 
             </div>
         </div>
         <Text theme="weak" parent="div" style={{ marginTop: 8 }}>
-          {t('subscriptionPool.subtitle', { instance: instanceName, agent })}
+          {t('subscriptionPool.subtitle', { instance: instanceName, team: teamName, agent })}
         </Text>
       </Card.Body>
     </Card>

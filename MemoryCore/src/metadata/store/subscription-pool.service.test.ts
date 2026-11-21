@@ -3,7 +3,7 @@ import type * as http from "node:http";
 import { SqliteMetadataStore } from "./sqlite-adapter.js";
 import { MetadataService, type SubscriptionAccountChange } from "../service/metadata-service.js";
 import { SubscriptionProviderError } from "../../subscription-pool/providers/types.js";
-import { fakeAdapter, tokens, usageReading } from "../../subscription-pool/test-support.js";
+import { fakeAdapter, tokens, usageReading, POOL_TEAM_ID, POOL_USER_ID } from "../../subscription-pool/test-support.js";
 import { handleV3MetaRoute } from "../router/v3-meta-router.js";
 import type { SupportedAgent } from "../types.js";
 
@@ -26,35 +26,23 @@ describe("subscription pool service", () => {
     await store.close();
   });
 
-  /** Puts the agent back into the default group, as choosing another source does, so the pool is no longer in use. */
-  async function releaseToDefault(agent: string): Promise<void> {
-    const groups = await store.listInstanceUpstreamGroups(undefined, AGENTS);
-    const holder = groups.find((group) => group.agents.includes(agent))!;
-    const fallback = groups.find((group) => group.group_type === "default")!;
-    await store.moveAgentBetweenUpstreamGroups({ agent, from: [{ group_id: holder.group_id }], to: { group_id: fallback.group_id } });
-  }
-
-  /** The state of an instance that enabled the pool before clients chose sources: the agent sits in the pool group. */
-  async function moveIntoPool(agent: string): Promise<void> {
-    const groups = await store.listInstanceUpstreamGroups(undefined, AGENTS);
-    const holder = groups.find((group) => group.agents.includes(agent))!;
-    const pool = groups.find((group) => group.mode === "subscription_pool")!;
-    await store.moveAgentBetweenUpstreamGroups({ agent, from: [{ group_id: holder.group_id }], to: { group_id: pool.group_id } });
-  }
-
   it("turns the codex pool on as a source without moving codex, and switches it off only while unused", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const enabled = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     const defaultGroup = enabled.find((group) => group.group_type === "default");
     const pool = enabled.find((group) => group.mode === "subscription_pool");
     expect(defaultGroup?.agents).toEqual(expect.arrayContaining(["codex", "claude-code"]));
-    expect(pool).toMatchObject({ agents: [], enabled: true, source_name: "sub-openai", base_url: "", api_key: "" });
-    expect(await svc.getSubscriptionPoolStatus("codex")).toMatchObject({ providers: [{ enabled: true }] });
+    expect(pool).toMatchObject({ agents: [], enabled: true, source_name: "sub-openai", base_url: "", api_key: "", team_id: POOL_TEAM_ID });
+    expect(await svc.getSubscriptionPoolStatus(POOL_TEAM_ID, "codex")).toMatchObject({ providers: [{ enabled: true, clients: [] }] });
 
-    await moveIntoPool("codex");
-    await expect(svc.disableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["codex"] } });
-    await releaseToDefault("codex");
-    const disabled = await svc.disableSubscriptionPool("codex", AGENTS);
+    await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", ["codex"], AGENTS);
+    expect((await store.getInstanceUpstreamGroup(pool!.group_id))?.agents).toEqual(["codex"]);
+    await expect(svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["codex"] } });
+    // The client keeps its place in the instance group while it uses the pool.
+    expect((await store.listInstanceUpstreamGroups(undefined, AGENTS)).find((group) => group.group_type === "default")?.agents).toContain("codex");
+
+    await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", [], AGENTS);
+    const disabled = await svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const after = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     const defaultAfter = after.find((group) => group.group_type === "default");
     expect(defaultAfter?.group_id).toBe(defaultGroup?.group_id);
@@ -72,23 +60,24 @@ describe("subscription pool service", () => {
       from: [{ group_id: fallback.group_id }],
       to: { create: { name: "office gateway", mode: "custom_unified", base_url: "https://gw.example.test", api_key: "secret" } },
     });
-    await expect(svc.enableSubscriptionPool("codex", AGENTS)).resolves.toMatchObject({ enabled: true, agents: [] });
+    await expect(svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS)).resolves.toMatchObject({ enabled: true, agents: [] });
     const still = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     expect(still.find((group) => group.name === "office gateway")?.agents).toEqual(["codex"]);
   });
 
-  it("rejects a base url on a subscription pool group", async () => {
+  it("refuses to create a subscription pool group through the generic group call", async () => {
     await expect(svc.createInstanceUpstreamCustomGroup({
       name: "claude subscription pool",
       agents: ["claude-code"],
       mode: "subscription_pool",
       base_url: "https://api.anthropic.com",
       api_key: "should-not-stick",
-    }, AGENTS)).rejects.toMatchObject({ code: "POOL_REJECTS_UPSTREAM_CREDENTIALS" });
+    }, AGENTS)).rejects.toMatchObject({ code: "POOL_GROUP_TEAM_SCOPED" });
+    expect((await store.listInstanceUpstreamGroups({ mode: "subscription_pool" })).length).toBe(0);
   });
 
   it("hides tokens on the public status and shows the access token only to the proxy", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const pool = (await store.listInstanceUpstreamGroups()).find((group) => group.mode === "subscription_pool")!;
     await store.upsertSubscriptionAccountByProviderId({
       group_id: pool.group_id,
@@ -101,7 +90,7 @@ describe("subscription pool service", () => {
       token_expires_at: Date.now() + 60 * 60 * 1000,
     });
 
-    const status = JSON.stringify(await svc.getSubscriptionPoolStatus("codex"));
+    const status = JSON.stringify(await svc.getSubscriptionPoolStatus(POOL_TEAM_ID, "codex"));
     expect(status).not.toContain("access-secret");
     expect(status).not.toContain("refresh-secret");
     expect(status).not.toContain("access_token");
@@ -118,13 +107,12 @@ describe("subscription pool service", () => {
     expect(JSON.stringify(listed)).not.toContain("refresh-secret");
     expect(JSON.stringify(listed)).not.toContain("refresh_token");
 
-    await releaseToDefault("codex");
-    await svc.disableSubscriptionPool("codex", AGENTS);
+    await svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     expect((await svc.listSubscriptionAccountsInternal()).accounts).toEqual([]);
   });
 
   it("keeps an account active when the proxy reports an unclassified 429", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const pool = (await store.listInstanceUpstreamGroups()).find((group) => group.mode === "subscription_pool")!;
     const { account } = await store.upsertSubscriptionAccountByProviderId({
       group_id: pool.group_id,
@@ -144,23 +132,23 @@ describe("subscription pool service", () => {
   });
 
   it("returns an authorize url without the code verifier", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
-    const started = svc.startSubscriptionOAuth("codex");
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
+    const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "codex", POOL_USER_ID);
     expect(started.authorize_url).toContain("client_id=app_EMoamEEZ73f0CkXaXp7hrann");
     expect(started.authorize_url).toContain(`state=${started.state}`);
     expect(started.authorize_url).not.toContain("code_verifier");
     expect(JSON.stringify(started)).not.toContain("codeVerifier");
   });
 
-  it("moves claude-code onto its own pool and returns a Claude authorize URL", async () => {
-    await svc.enableSubscriptionPool("claude", AGENTS);
+  it("gives claude-code to the team pool and back without leaving the default group", async () => {
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS);
     const enabled = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     const defaultGroup = enabled.find((group) => group.group_type === "default");
     const pool = enabled.find((group) => group.mode === "subscription_pool");
     expect(defaultGroup?.agents).toEqual(expect.arrayContaining(["codex", "claude-code"]));
     expect(pool).toMatchObject({ agents: [], name: "claude subscription pool", source_name: "sub-claude" });
 
-    const started = svc.startSubscriptionOAuth("claude");
+    const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "claude", POOL_USER_ID);
     const url = new URL(started.authorize_url);
     expect(url.origin + url.pathname).toBe("https://claude.com/cai/oauth/authorize");
     expect(url.searchParams.get("client_id")).toBe("9d1c250a-e61b-44d9-88ed-5944d1962f5e");
@@ -168,10 +156,12 @@ describe("subscription pool service", () => {
     expect(started.authorize_url).not.toContain("code_verifier");
     expect(JSON.stringify(started)).not.toContain("codeVerifier");
 
-    await moveIntoPool("claude-code");
-    await expect(svc.disableSubscriptionPool("claude", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
-    await releaseToDefault("claude-code");
-    await svc.disableSubscriptionPool("claude", AGENTS);
+    await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "claude", ["claude-code"], AGENTS);
+    expect((await store.getInstanceUpstreamGroup(pool!.group_id))?.agents).toEqual(["claude-code"]);
+    expect((await store.listInstanceUpstreamGroups(undefined, AGENTS)).find((group) => group.group_type === "default")?.agents).toContain("claude-code");
+    await expect(svc.disableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
+    await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "claude", [], AGENTS);
+    await svc.disableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS);
     const disabled = await store.listInstanceUpstreamGroups(undefined, AGENTS);
     expect(disabled.find((group) => group.group_type === "default")?.agents).toContain("claude-code");
   });
@@ -199,23 +189,23 @@ describe("subscription pool provider calls", () => {
   });
 
   async function login(redirect = true) {
-    const started = svc.startSubscriptionOAuth("codex");
+    const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "codex", POOL_USER_ID);
     const input = redirect
       ? { redirect_url: `http://localhost:1455/auth/callback?code=code-1&state=${started.state}` }
       : { code: "code-1" };
-    return { started, account: await svc.completeSubscriptionOAuth({ provider: "codex", state: started.state, ...input }) };
+    return { started, account: await svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID, provider: "codex", state: started.state, ...input }, POOL_USER_ID) };
   }
 
   it("adds a claude account from a code#state paste and hides the tokens", async () => {
     adapter.fetchUsage.mockResolvedValue(usageReading([{
       name: "five_hour", model_scope: null, used_pct: 40, resets_at: null, observed_at: 1, source: "usage_api",
     }]));
-    const started = svc.startSubscriptionOAuth("claude");
-    const account = await svc.completeSubscriptionOAuth({
+    const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "claude", POOL_USER_ID);
+    const account = await svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID,
       provider: "claude",
       state: started.state,
       code: `code-1#${started.state}`,
-    });
+    }, POOL_USER_ID);
     expect(account).toMatchObject({ provider: "claude", provider_account_id: "acct-9", created: true });
     expect(JSON.stringify(account)).not.toContain("access-new");
     expect(JSON.stringify(account)).not.toContain("refresh-new");
@@ -246,27 +236,27 @@ describe("subscription pool provider calls", () => {
     });
 
     it("uses the client id from the environment in the authorize URL", () => {
-      const url = new URL(svc.startSubscriptionOAuth("antigravity").authorize_url);
+      const url = new URL(svc.startSubscriptionOAuth(POOL_TEAM_ID, "antigravity", POOL_USER_ID).authorize_url);
       expect(url.searchParams.get("client_id")).toBe("test-client-id.apps.googleusercontent.com");
     });
 
     it("refuses to start or finish a login without the OAuth client, and leaves claude and codex alone", async () => {
-      const started = svc.startSubscriptionOAuth("antigravity");
+      const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "antigravity", POOL_USER_ID);
       vi.stubEnv("ANTIGRAVITY_OAUTH_CLIENT_SECRET", "");
-      expect(() => svc.startSubscriptionOAuth("antigravity")).toThrow("AntiGravity OAuth is not configured: set ANTIGRAVITY_OAUTH_CLIENT_ID and ANTIGRAVITY_OAUTH_CLIENT_SECRET");
-      await expect(svc.completeSubscriptionOAuth({
+      expect(() => svc.startSubscriptionOAuth(POOL_TEAM_ID, "antigravity", POOL_USER_ID)).toThrow("AntiGravity OAuth is not configured: set ANTIGRAVITY_OAUTH_CLIENT_ID and ANTIGRAVITY_OAUTH_CLIENT_SECRET");
+      await expect(svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID,
         provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=c&state=${started.state}`,
-      })).rejects.toMatchObject({ code: "PROVIDER_NOT_CONFIGURED" });
+      }, POOL_USER_ID)).rejects.toMatchObject({ code: "PROVIDER_NOT_CONFIGURED" });
       expect(adapter.exchangeCode).not.toHaveBeenCalled();
-      expect(() => svc.startSubscriptionOAuth("claude")).not.toThrow();
-      expect(() => svc.startSubscriptionOAuth("codex")).not.toThrow();
+      expect(() => svc.startSubscriptionOAuth(POOL_TEAM_ID, "claude", POOL_USER_ID)).not.toThrow();
+      expect(() => svc.startSubscriptionOAuth(POOL_TEAM_ID, "codex", POOL_USER_ID)).not.toThrow();
     });
 
     it("stores the project, shows it in the public view and passes it to the usage check", async () => {
-      const started = svc.startSubscriptionOAuth("antigravity");
-      const account = await svc.completeSubscriptionOAuth({
+      const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "antigravity", POOL_USER_ID);
+      const account = await svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID,
         provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=code-1&state=${started.state}`,
-      });
+      }, POOL_USER_ID);
       expect(account).toMatchObject({ provider: "antigravity", provider_account_id: "pool@example.com", project_id: "proj-1", created: true });
       expect(JSON.stringify(account)).not.toContain("access-new");
       expect(adapter.exchangeCode).toHaveBeenCalledWith(expect.objectContaining({ code: "code-1", codeVerifier: "", redirectUri: REDIRECT }));
@@ -274,25 +264,25 @@ describe("subscription pool provider calls", () => {
     });
 
     it("rejects a pasted code without the state, because nothing else binds it to this login", async () => {
-      const started = svc.startSubscriptionOAuth("antigravity");
-      await expect(svc.completeSubscriptionOAuth({ provider: "antigravity", state: started.state, code: "code-1" }))
+      const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "antigravity", POOL_USER_ID);
+      await expect(svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID, provider: "antigravity", state: started.state, code: "code-1" }, POOL_USER_ID))
         .rejects.toMatchObject({ code: "INVALID_OAUTH_STATE" });
       expect(adapter.exchangeCode).not.toHaveBeenCalled();
     });
 
     it("rejects a pasted state that belongs to another login", async () => {
-      const started = svc.startSubscriptionOAuth("antigravity");
-      await expect(svc.completeSubscriptionOAuth({
+      const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "antigravity", POOL_USER_ID);
+      await expect(svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID,
         provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=code-1&state=other`,
-      })).rejects.toMatchObject({ code: "INVALID_OAUTH_STATE" });
+      }, POOL_USER_ID)).rejects.toMatchObject({ code: "INVALID_OAUTH_STATE" });
     });
 
     it("keeps the stored project when a re-login finds none, and replaces it when one is found", async () => {
       const login = async () => {
-        const started = svc.startSubscriptionOAuth("antigravity");
-        return svc.completeSubscriptionOAuth({
+        const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "antigravity", POOL_USER_ID);
+        return svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID,
           provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=c&state=${started.state}`,
-        });
+        }, POOL_USER_ID);
       };
       const first = await login();
       adapter.exchangeCode.mockResolvedValue(tokens({ providerAccountId: "pool@example.com", accountLabel: "pool@example.com", projectId: null }));
@@ -303,18 +293,18 @@ describe("subscription pool provider calls", () => {
     });
 
     it("gives the proxy the project of an account in an enabled pool", async () => {
-      await svc.enableSubscriptionPool("antigravity", AGENTS);
-      const started = svc.startSubscriptionOAuth("antigravity");
-      await svc.completeSubscriptionOAuth({
+      await svc.enableSubscriptionPool(POOL_TEAM_ID, "antigravity", AGENTS);
+      const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "antigravity", POOL_USER_ID);
+      await svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID,
         provider: "antigravity", state: started.state, redirect_url: `${REDIRECT}?code=c&state=${started.state}`,
-      });
+      }, POOL_USER_ID);
       expect((await svc.listSubscriptionAccountsInternal()).accounts).toMatchObject([{ provider: "antigravity", project_id: "proj-1" }]);
     });
   });
 
   it("lists the antigravity pool as a gemini source next to the other two in the default status", async () => {
-    await svc.enableSubscriptionPool("antigravity", AGENTS);
-    const status = await svc.getSubscriptionPoolStatus() as { providers: Array<{ provider: string; source: Record<string, unknown> | null }> };
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "antigravity", AGENTS);
+    const status = await svc.getSubscriptionPoolStatus(POOL_TEAM_ID) as { providers: Array<{ provider: string; source: Record<string, unknown> | null }> };
     expect(status.providers.map((p) => p.provider)).toEqual(["claude", "codex", "antigravity"]);
     expect(status.providers[2]!.source).toMatchObject({ source_name: "sub-antigravity", source_provider: "antigravity", source_formats: ["gemini"] });
   });
@@ -329,19 +319,19 @@ describe("subscription pool provider calls", () => {
     expect(groups.find((group) => group.group_type === "default")?.agents).toContain("codex");
     expect((await svc.listSubscriptionAccountsInternal()).accounts).toEqual([]);
 
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
 
     const enabled = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).filter((group) => group.mode === "subscription_pool");
     expect(enabled).toHaveLength(1);
     expect(enabled[0]).toMatchObject({ group_id: pool?.group_id, enabled: true, agents: [] });
     expect((await svc.listSubscriptionAccountsInternal()).accounts).toHaveLength(1);
-    const status = await svc.getSubscriptionPoolStatus("codex") as { providers: Array<{ group_id: string | null; accounts: unknown[] }> };
+    const status = await svc.getSubscriptionPoolStatus(POOL_TEAM_ID, "codex") as { providers: Array<{ group_id: string | null; accounts: unknown[] }> };
     expect(status.providers[0]).toMatchObject({ group_id: pool?.group_id });
     expect(status.providers[0].accounts).toHaveLength(1);
   });
 
   it("creates an account from the pasted redirect url and returns it without tokens", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const { started, account } = await login();
 
     expect(adapter.exchangeCode).toHaveBeenCalledWith(expect.objectContaining({ code: "code-1", state: started.state }));
@@ -353,7 +343,7 @@ describe("subscription pool provider calls", () => {
   });
 
   it("replaces the tokens of the same provider account and keeps its name", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const { account } = await login();
     await svc.updateSubscriptionAccount(String(account.account_id), { display_name: "Pro A" });
     adapter.exchangeCode.mockResolvedValueOnce(tokens({ providerAccountId: "acct-9", accessToken: "access-2", refreshToken: "refresh-2" }));
@@ -365,7 +355,7 @@ describe("subscription pool provider calls", () => {
   });
 
   it("returns an account that needed a new login to service after the re-login", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const { account } = await login();
     const id = String(account.account_id);
     await store.updateSubscriptionAccount(id, { status: "auth_error", refresh_fail_count: 2, last_error: "re-login needed" });
@@ -377,7 +367,7 @@ describe("subscription pool provider calls", () => {
   });
 
   it("keeps an admin switch-off through a re-login", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const { account } = await login();
     await svc.updateSubscriptionAccount(String(account.account_id), { enabled: false });
     await login();
@@ -385,20 +375,20 @@ describe("subscription pool provider calls", () => {
   });
 
   it("uses a login state only once", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const { started } = await login();
-    await expect(svc.completeSubscriptionOAuth({ provider: "codex", state: started.state, code: "code-1" }))
+    await expect(svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID, provider: "codex", state: started.state, code: "code-1" }, POOL_USER_ID))
       .rejects.toMatchObject({ code: "INVALID_OAUTH_STATE" });
   });
 
   it("reports a failed code exchange without the provider body", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     adapter.exchangeCode.mockRejectedValueOnce(new SubscriptionProviderError("bad code", true, 400));
     await expect(login(false)).rejects.toMatchObject({ code: "OAUTH_EXCHANGE_FAILED" });
   });
 
   it("checks usage now and returns the account without tokens", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const { account } = await login();
     adapter.fetchUsage.mockResolvedValueOnce(usageReading([{ name: "primary_window", model_scope: null, used_pct: 12, resets_at: null, observed_at: 1, source: "usage_api" }]));
 
@@ -415,7 +405,7 @@ describe("subscription pool provider calls", () => {
     };
 
     it("redeems once, then reads usage again and returns the updated account", async () => {
-      await svc.enableSubscriptionPool("codex", AGENTS);
+      await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
       const { account } = await login();
       adapter.fetchUsage.mockClear();
       adapter.fetchUsage.mockResolvedValueOnce(usageReading([], credits));
@@ -431,7 +421,7 @@ describe("subscription pool provider calls", () => {
     });
 
     it("refreshes a token that expires within a minute before the call, with no deadlock", async () => {
-      await svc.enableSubscriptionPool("codex", AGENTS);
+      await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
       const { account } = await login();
       await store.updateSubscriptionAccount(String(account.account_id), { token_expires_at: Date.now() + 10_000 });
       adapter.refresh.mockResolvedValueOnce(tokens({ accessToken: "access-fresh", expiresAt: Date.now() + 3_600_000 }));
@@ -447,14 +437,14 @@ describe("subscription pool provider calls", () => {
     });
 
     it("does not refresh a token that is valid for more than a minute", async () => {
-      await svc.enableSubscriptionPool("codex", AGENTS);
+      await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
       const { account } = await login();
       await svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345");
       expect(adapter.refresh).not.toHaveBeenCalled();
     });
 
     it("reports an outcome that did not reset as information, not an error", async () => {
-      await svc.enableSubscriptionPool("codex", AGENTS);
+      await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
       const { account } = await login();
       adapter.redeemResetCredit.mockResolvedValueOnce({ outcome: "nothing_to_reset", resetApplied: false, message: null });
       const result = await svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345");
@@ -462,7 +452,7 @@ describe("subscription pool provider calls", () => {
     });
 
     it("fails with a safe message when the provider rejects the redeem", async () => {
-      await svc.enableSubscriptionPool("codex", AGENTS);
+      await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
       const { account } = await login();
       adapter.redeemResetCredit.mockRejectedValueOnce(new SubscriptionProviderError("credit not found", false, 404));
       await expect(svc.redeemSubscriptionResetCredit(String(account.account_id), "credit-1", "request-12345"))
@@ -475,7 +465,7 @@ describe("subscription pool provider calls", () => {
     });
 
     it("fails without calling the provider when the token refresh fails", async () => {
-      await svc.enableSubscriptionPool("codex", AGENTS);
+      await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
       const { account } = await login();
       await store.updateSubscriptionAccount(String(account.account_id), { token_expires_at: Date.now() + 1_000 });
       adapter.refresh.mockRejectedValueOnce(new SubscriptionProviderError("invalid_grant", true, 400));
@@ -491,7 +481,7 @@ describe("subscription pool provider calls", () => {
   });
 
   it("checks usage of every account", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     await login();
     adapter.exchangeCode.mockResolvedValueOnce(tokens({ providerAccountId: "acct-10" }));
     await login();
@@ -504,7 +494,7 @@ describe("subscription pool provider calls", () => {
   });
 
   it("refreshes at once on a proxy 401 and returns the stored token to later callers", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     await login();
     const held = (await store.listSubscriptionAccounts())[0];
     adapter.refresh.mockResolvedValueOnce(tokens({ accessToken: "access-3", expiresAt: Date.now() + 9 * 24 * 3600 * 1000 }));
@@ -518,7 +508,7 @@ describe("subscription pool provider calls", () => {
   });
 
   it("fails the proxy refresh when the provider refuses the refresh token", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     await login();
     const held = (await store.listSubscriptionAccounts())[0];
     adapter.refresh.mockRejectedValueOnce(new SubscriptionProviderError("refresh_token_reused", true, 401));
@@ -529,7 +519,7 @@ describe("subscription pool provider calls", () => {
   });
 
   it("tells the scheduler about reports, updates and deletes", async () => {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     await login();
     const id = (await store.listSubscriptionAccounts())[0].account_id;
     changes = [];
@@ -581,52 +571,107 @@ describe("subscription pool routes", () => {
     return { status, body: parsed };
   }
 
-  it("allows members and system admins to view status without tokens", async () => {
-    store.createUser({ username: "member", auth_provider: "local", external_id: "member", default_key_value: "member-key", user_type: "normal" });
+  /** One team with an admin, a member and an outsider, plus a System Admin. */
+  function seedTeam() {
+    store.createUser({ user_id: "usr-owner", username: "owner", auth_provider: "local", external_id: "owner", default_key_value: "owner-key", user_type: "normal" });
+    store.createUser({ user_id: "usr-member", username: "member", auth_provider: "local", external_id: "member", default_key_value: "member-key", user_type: "normal" });
+    store.createUser({ user_id: "usr-outsider", username: "outsider", auth_provider: "local", external_id: "outsider", default_key_value: "outsider-key", user_type: "normal" });
     store.createUser({ username: "admin", auth_provider: "local", external_id: "admin", default_key_value: "admin-key", user_type: "system_admin" });
+    store.createTeam({ team_id: POOL_TEAM_ID, name: "team a", owner_user_id: "usr-owner" });
+    store.addTeamMember({ team_id: POOL_TEAM_ID, user_id: "usr-member", role: "member" });
+  }
 
-    await svc.enableSubscriptionPool("codex", AGENTS);
+  async function seedPoolWithAccount(): Promise<string> {
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const pool = (await store.listInstanceUpstreamGroups()).find((group) => group.mode === "subscription_pool")!;
-    await store.upsertSubscriptionAccountByProviderId({
+    const { account } = await store.upsertSubscriptionAccountByProviderId({
       group_id: pool.group_id, provider: "codex", provider_account_id: "acct-private",
       display_name: "Shared account", access_token: "access-secret", refresh_token: "refresh-secret",
       token_expires_at: null,
     });
+    return account.account_id;
+  }
 
-    const member = await post("member-key", {});
+  it("allows members of the team and system admins to view the team pool", async () => {
+    seedTeam();
+    await seedPoolWithAccount();
+
+    const member = await post("member-key", { team_id: POOL_TEAM_ID });
     expect(member.status).toBe(200);
     expect(member.body.code).toBe(0);
     expect(JSON.stringify(member.body)).toContain("Shared account");
     expect(JSON.stringify(member.body)).not.toMatch(/access_token|refresh_token|access-secret|refresh-secret/);
 
-    const allowed = await post("admin-key", {});
+    const allowed = await post("admin-key", { team_id: POOL_TEAM_ID });
     expect(allowed.status).toBe(200);
     expect(allowed.body.code).toBe(0);
+    expect(JSON.stringify(allowed.body)).toContain("Shared account");
     expect(JSON.stringify(allowed.body)).not.toContain("access_token");
   });
 
+  it("refuses status of a team the caller is not in", async () => {
+    seedTeam();
+    await seedPoolWithAccount();
+    const outsider = await post("outsider-key", { team_id: POOL_TEAM_ID });
+    expect(outsider.status).toBe(403);
+    expect(JSON.stringify(outsider.body)).not.toContain("Shared account");
+    expect((await post("member-key", { team_id: "team-that-does-not-exist" })).status).toBe(403);
+    expect((await post("member-key", {})).status).toBe(400);
+  });
+
   it.each(["", "invalid-key"])("rejects unauthenticated status requests (%s)", async (key) => {
-    expect((await post(key, {})).status).toBe(401);
+    expect((await post(key, { team_id: POOL_TEAM_ID })).status).toBe(401);
   });
 
   it.each([
-    ["enable", { provider: "codex" }],
-    ["disable", { provider: "codex" }],
-    ["settings/update", { threshold_pct: 90 }],
-    ["account/oauth-start", { provider: "codex" }],
-    ["account/oauth-complete", { provider: "codex", state: "test-state", code: "test-code" }],
-    ["account/update", { account_id: "test-account", enabled: false }],
-    ["account/delete", { account_id: "test-account" }],
-    ["account/check-usage", { account_id: "test-account" }],
-    ["account/redeem-reset-credit", { account_id: "test-account", credit_id: "credit-1", request_id: "request-12345" }],
-    ["check-all", {}],
+    ["enable", { team_id: POOL_TEAM_ID, provider: "codex" }],
+    ["disable", { team_id: POOL_TEAM_ID, provider: "codex" }],
+    ["clients/update", { team_id: POOL_TEAM_ID, provider: "codex", agents: [] }],
+    ["account/oauth-start", { team_id: POOL_TEAM_ID, provider: "codex" }],
+    ["account/oauth-complete", { team_id: POOL_TEAM_ID, provider: "codex", state: "test-state", code: "test-code" }],
+    ["check-all", { team_id: POOL_TEAM_ID }],
   ])("rejects member mutation %s", async (action, body) => {
-    store.createUser({ username: "member", auth_provider: "local", external_id: "member", default_key_value: "member-key", user_type: "normal" });
+    seedTeam();
     const denied = await post("member-key", body, action as string);
     expect(denied.status).toBe(403);
     expect(denied.body.message).toContain("permission_denied");
   });
 
+  it.each([
+    ["settings/update", { threshold_pct: 90 }],
+    ["check-all", {}],
+  ])("keeps %s for the system admin only", async (action, body) => {
+    seedTeam();
+    for (const key of ["member-key", "owner-key"]) {
+      const denied = await post(key, body, action as string);
+      expect(denied.status).toBe(403);
+      expect(denied.body.message).toContain("permission_denied");
+    }
+  });
+
+  it.each([
+    ["account/update", { enabled: false }],
+    ["account/delete", {}],
+    ["account/check-usage", {}],
+    ["account/redeem-reset-credit", { credit_id: "credit-1", request_id: "request-12345" }],
+  ])("answers not found to a member on account route %s", async (action, extra) => {
+    seedTeam();
+    const accountId = await seedPoolWithAccount();
+    const denied = await post("member-key", { account_id: accountId, ...extra }, action as string);
+    expect(denied.status).toBe(404);
+    expect(denied.body.message).toContain("account_not_found");
+    expect(await store.getSubscriptionAccount(accountId)).not.toBeNull();
+  });
+
+  it("lets the team admin and the system admin manage an account of the team", async () => {
+    seedTeam();
+    const accountId = await seedPoolWithAccount();
+    for (const key of ["owner-key", "admin-key"]) {
+      const updated = await post(key, { account_id: accountId, display_name: `by ${key}` }, "account/update");
+      expect(updated.status).toBe(200);
+    }
+    expect((await store.getSubscriptionAccount(accountId))?.display_name).toBe("by admin-key");
+  });
 });
 
 describe("subscription pool writes that race", () => {
@@ -640,7 +685,7 @@ describe("subscription pool writes that race", () => {
     svc = new MetadataService(store, "default");
     adapter = fakeAdapter({ exchangeCode: async () => tokens({ providerAccountId: "acct-9", accessToken: "A-login", refreshToken: "R-login" }) });
     svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
   });
 
   afterEach(async () => {
@@ -648,8 +693,8 @@ describe("subscription pool writes that race", () => {
   });
 
   async function login() {
-    const started = svc.startSubscriptionOAuth("codex");
-    return svc.completeSubscriptionOAuth({ provider: "codex", state: started.state, code: "c" });
+    const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "codex", POOL_USER_ID);
+    return svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID, provider: "codex", state: started.state, code: "c" }, POOL_USER_ID);
   }
 
   it("keeps a re-login that lands while a refresh is running", async () => {
@@ -680,8 +725,8 @@ describe("subscription pool writes that race", () => {
   });
 
   it("rejects a malformed redirect url as a bad code", async () => {
-    const started = svc.startSubscriptionOAuth("codex");
-    await expect(svc.completeSubscriptionOAuth({ provider: "codex", state: started.state, redirect_url: "http://[broken" }))
+    const started = svc.startSubscriptionOAuth(POOL_TEAM_ID, "codex", POOL_USER_ID);
+    await expect(svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID, provider: "codex", state: started.state, redirect_url: "http://[broken" }, POOL_USER_ID))
       .rejects.toMatchObject({ code: "INVALID_OAUTH_CODE" });
   });
 

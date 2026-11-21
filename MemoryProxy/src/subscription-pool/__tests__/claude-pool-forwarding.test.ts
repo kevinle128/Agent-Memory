@@ -17,7 +17,7 @@ const defaultRow: InstanceUpstreamRow = {
 };
 const poolRow: InstanceUpstreamRow = {
   group_id: "pool-claude", group_type: "custom", name: "claude subscription pool", agents: ["claude-code"], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
 };
 
 function acct(id: string): PoolAccount {

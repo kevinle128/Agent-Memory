@@ -25,7 +25,7 @@ const defaultRow: InstanceUpstreamRow = {
 };
 const poolRow: InstanceUpstreamRow = {
   group_id: "pool-codex", group_type: "custom", name: "Codex pool", agents: ["codex"], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
 };
 
 function win(name: string, used: number, resetsIn: number): PoolQuotaWindow {

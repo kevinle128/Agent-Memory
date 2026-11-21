@@ -24,6 +24,17 @@ export interface MetadataStoreConfig {
   storeCacheMaxInstances?: number;
   /** 元数据库名前缀，默认 `tdai_metadata`；完整库名 `{prefix}_{instance_id}`。 */
   mongoDbPrefix?: string;
+  /**
+   * Name of the team that gets the subscription pool groups without a team at start
+   * (env TDAI_METADATA_DEFAULT_TEAM_NAME). Unset: the team named `default`, else `default-team`.
+   */
+  defaultTeamName?: string;
+  /**
+   * Id of the team that gets the pool groups without a team at start (env
+   * TDAI_METADATA_DEFAULT_TEAM_ID). When set, only an active team with this id counts and the
+   * name rules are not used.
+   */
+  defaultTeamId?: string;
 }
 
 export interface PurgeMetadataResult {
@@ -82,6 +93,14 @@ export function loadStoreConfig(
   const mongoDbPrefix =
     env.TDAI_METADATA_MONGO_DB_PREFIX?.trim() || DEFAULT_METADATA_DB_PREFIX;
 
+  // Only set when configured, so a config without it keeps its old shape.
+  const defaultTeamName = env.TDAI_METADATA_DEFAULT_TEAM_NAME?.trim();
+  const defaultTeamId = env.TDAI_METADATA_DEFAULT_TEAM_ID?.trim();
+  const teamName = {
+    ...(defaultTeamName ? { defaultTeamName } : {}),
+    ...(defaultTeamId ? { defaultTeamId } : {}),
+  };
+
   if (mongoUri) {
     return {
       backend: "mongodb",
@@ -89,6 +108,7 @@ export function loadStoreConfig(
       mongoTransactions: env.TDAI_METADATA_MONGO_TRANSACTIONS !== "false",
       storeCacheMaxInstances,
       mongoDbPrefix,
+      ...teamName,
     };
   }
 
@@ -97,6 +117,7 @@ export function loadStoreConfig(
     sqliteBaseDir: env.TDAI_METADATA_SQLITE_BASE_DIR ?? fallbackSqliteBaseDir ?? DEFAULT_SQLITE_BASE,
     storeCacheMaxInstances,
     mongoDbPrefix,
+    ...teamName,
   };
 }
 
@@ -141,7 +162,7 @@ export async function createMetadataStore(
     case "sqlite": {
       const baseDir = config.sqliteBaseDir ?? DEFAULT_SQLITE_BASE;
       const dbPath = resolveSqliteDbPath(baseDir, instanceId, config.mongoDbPrefix);
-      const store = new SqliteMetadataStore(dbPath);
+      const store = new SqliteMetadataStore(dbPath, { defaultTeamName: config.defaultTeamName, defaultTeamId: config.defaultTeamId });
       await store.init();
       return store;
     }
@@ -157,6 +178,8 @@ export async function createMetadataStore(
       const store = new MongoMetadataStore(client, dbName, {
         useTransactions: config.mongoTransactions ?? true,
         ownsClient: true,
+        defaultTeamName: config.defaultTeamName,
+        defaultTeamId: config.defaultTeamId,
       });
       await store.init();
       return store;
@@ -244,6 +267,8 @@ export class MetadataStorePool {
       const store = new MongoMetadataStore(client, dbName, {
         useTransactions: this.config.mongoTransactions ?? true,
         ownsClient: false,
+        defaultTeamName: this.config.defaultTeamName,
+        defaultTeamId: this.config.defaultTeamId,
       });
       await store.init();
       const entry: CachedStore = { instanceId, store, mongoClient: client };

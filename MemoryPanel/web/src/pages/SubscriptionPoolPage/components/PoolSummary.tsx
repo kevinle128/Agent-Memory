@@ -4,16 +4,15 @@
 import { useTranslation } from 'react-i18next';
 import { Card, Text } from 'tea-component';
 import i18n from '@/i18n';
-import { formatRemaining, formatResetAt } from '@/lib/subscription-pool-display';
+import { describeThresholds, formatRemaining, formatResetAt } from '@/lib/subscription-pool-display';
 import type { SubscriptionPoolProviderStatus } from '@/lib/api/subscription-pool';
 
 interface Props {
   status: SubscriptionPoolProviderStatus;
-  thresholdPct: number;
   now: number;
 }
 
-export function PoolSummary({ status, thresholdPct, now }: Props) {
+export function PoolSummary({ status, now }: Props) {
   const { t } = useTranslation();
   const { summary } = status;
   const reset = summary.earliest_reset;
@@ -32,7 +31,7 @@ export function PoolSummary({ status, thresholdPct, now }: Props) {
       value: resetUpcoming ? formatResetAt(reset, now, { locale: i18n.language }) : t('subscriptionPool.summary.none'),
       note: resetUpcoming ? formatRemaining(reset, now) : undefined,
     },
-    { key: 'threshold', label: t('subscriptionPool.summary.threshold'), value: `${thresholdPct}%` },
+    { key: 'threshold', label: t('subscriptionPool.summary.threshold'), value: describeThresholds(status.accounts) ?? t('subscriptionPool.summary.none') },
   ];
   return (
     <div className="_memory-pool-summary">

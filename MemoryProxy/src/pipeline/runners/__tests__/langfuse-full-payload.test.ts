@@ -11,7 +11,7 @@ import { runWorkbuddyPipeline } from "../workbuddy.js";
 import { __primeCacheForTests } from "../../../instance-upstream-cache.js";
 import { __primeAccountCacheForTests } from "../../../subscription-pool/account-cache.js";
 import { handleSystemUserPassthrough } from "../../../systemUserPassthrough.js";
-import { CORE_URL, installFetch, jsonResponse, makeApp, makeConfig, resetPoolState } from "../../../subscription-pool/__tests__/test-harness.js";
+import { CORE_URL, POOL_TEST_TEAM, installFetch, jsonResponse, makeApp, makeConfig, resetPoolState } from "../../../subscription-pool/__tests__/test-harness.js";
 
 const SESSION = "01a16c99-623a-7cc3-b2c4-91528f4f0665";
 
@@ -523,7 +523,7 @@ describe("the reported input is the body sent upstream", () => {
     const now = Date.now();
     __primeCacheForTests("sp-ttl", [
       { group_id: "d", group_type: "default", name: "default", agents: ["codex"], enabled: true, mode: "official", base_url: "", api_key: "", model_id: "" },
-      { group_id: "pool-claude", group_type: "custom", name: "pool", agents: ["claude-code"], enabled: true, mode: "subscription_pool", base_url: "", api_key: "", model_id: "" },
+      { group_id: "pool-claude", group_type: "custom", name: "pool", agents: ["claude-code"], enabled: true, mode: "subscription_pool", team_id: POOL_TEST_TEAM, base_url: "", api_key: "", model_id: "" },
     ]);
     __primeAccountCacheForTests("sp-ttl", {
       thresholdPct: 95,

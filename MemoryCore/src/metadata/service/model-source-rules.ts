@@ -48,6 +48,9 @@ const POOL_SOURCE: Record<PoolProvider, { name: string; provider: string; format
   antigravity: { name: "sub-antigravity", provider: "antigravity", format: "gemini" },
 };
 
+/** Source names that only a subscription pool row may use. Clients address a pool as `sub-claude/<model>`. */
+export const POOL_SOURCE_NAMES: ReadonlySet<string> = new Set(Object.values(POOL_SOURCE).map((fixed) => fixed.name));
+
 /** Source fields a subscription pool group gets: a fixed name, provider and format. */
 export function poolSourceFields(provider: PoolProvider): Pick<InstanceUpstreamSourceFields, "source_name" | "source_provider" | "source_formats"> {
   const fixed = POOL_SOURCE[provider];
@@ -79,7 +82,7 @@ export interface SourceWriteContext {
   modelId: string;
   input: SourceInput;
   supportedAgents: SupportedAgent[];
-  /** source_name values held by the other groups. */
+  /** source_name values held by the other groups of the same scope (the instance, or one team). */
   takenNames: ReadonlySet<string>;
 }
 
@@ -144,6 +147,9 @@ export function resolveSourceWrite(ctx: SourceWriteContext): SourceWriteResult {
         "INVALID_SOURCE_NAME",
         "source_name must be 1-40 lowercase letters, digits or hyphens, starting and ending with a letter or digit",
       );
+    }
+    if (!isPool && POOL_SOURCE_NAMES.has(name)) {
+      throw new SourceRuleError("SOURCE_NAME_RESERVED", `source name is reserved for subscription pools: ${name}`);
     }
     if (ctx.takenNames.has(name)) {
       throw new SourceRuleError("SOURCE_NAME_TAKEN", `source name is already used by another group: ${name}`);

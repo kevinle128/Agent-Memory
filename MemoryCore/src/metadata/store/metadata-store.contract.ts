@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DuplicateUserKeyError, type IMetadataStore } from "./interface.js";
-import type { CreateUserInput, CreateTeamInput, SupportedAgent } from "../types.js";
+import type { CreateInstanceUpstreamGroupInput, CreateUserInput, CreateTeamInput, SupportedAgent } from "../types.js";
 import { DEFAULT_GROUP_NAME, EXTRACTION_GROUP_NAME, InstanceUpstreamWriteConflictError } from "../types.js";
 import { DEFAULT_PAGINATION } from "../pagination.js";
 import { newExternalAssetId } from "../utils/external-asset-id.js";
@@ -1647,6 +1647,7 @@ export function runMetadataStoreContract(
           await store.listInstanceUpstreamGroups(undefined, TEST_SUPPORTED_AGENTS);
           const pool = await store.createInstanceUpstreamGroup({
             group_type: "custom",
+            team_id: "team-a",
             name: "claude pool",
             agents: [],
             mode: "subscription_pool",
@@ -1658,10 +1659,17 @@ export function runMetadataStoreContract(
           const off = await store.toggleInstanceUpstreamGroup({ group_id: pool.group_id, enabled: false });
           expect(off).toMatchObject({ enabled: false, ...expected });
 
-          const defaultGroup = (await store.listInstanceUpstreamGroups()).find((g) => g.group_type === "default")!;
+          // An agent moves only between groups of one scope, so the second group is a pool of the same team.
+          const otherPool = await store.createInstanceUpstreamGroup({
+            group_type: "custom",
+            team_id: "team-a",
+            name: "other pool",
+            agents: ["claude-code"],
+            mode: "subscription_pool",
+          });
           const joined = await store.moveAgentBetweenUpstreamGroups({
             agent: "claude-code",
-            from: [{ group_id: defaultGroup.group_id }],
+            from: [{ group_id: otherPool.group_id }],
             to: { group_id: pool.group_id, enabled: true },
           });
           expect(joined.to).toMatchObject({ enabled: true, agents: ["claude-code"], ...expected });
@@ -1669,10 +1677,229 @@ export function runMetadataStoreContract(
           const left = await store.moveAgentBetweenUpstreamGroups({
             agent: "claude-code",
             from: [{ group_id: pool.group_id, enabled: false }],
-            to: { group_id: defaultGroup.group_id },
+            to: { group_id: otherPool.group_id },
           });
           expect(left.from[0]).toMatchObject({ enabled: false, agents: [], ...expected });
           expect(await store.getInstanceUpstreamGroup(pool.group_id)).toMatchObject(expected);
+        });
+      });
+
+      describe("team-scoped subscription pool groups", () => {
+        const poolInput = (
+          teamId: string | undefined,
+          over: Partial<CreateInstanceUpstreamGroupInput> = {},
+        ): CreateInstanceUpstreamGroupInput => ({
+          group_type: "custom",
+          team_id: teamId,
+          name: "claude subscription pool",
+          agents: [],
+          mode: "subscription_pool",
+          source_name: "sub-claude",
+          source_provider: "claude",
+          source_formats: ["anthropic-messages"],
+          ...over,
+        });
+
+        const conflictReason = async (action: () => unknown): Promise<string> => {
+          try {
+            await action();
+          } catch (err) {
+            expect(err).toBeInstanceOf(InstanceUpstreamWriteConflictError);
+            return (err as InstanceUpstreamWriteConflictError).reason;
+          }
+          throw new Error("expected a write conflict");
+        };
+
+        const defaultGroup = async () =>
+          (await store.listInstanceUpstreamGroups()).find((g) => g.group_type === "default")!;
+
+        it("writes the team of a pool group on create and lists pool groups by team and mode", async () => {
+          await store.listInstanceUpstreamGroups(undefined, TEST_SUPPORTED_AGENTS);
+          const a = await store.createInstanceUpstreamGroup(poolInput("team-a"));
+          const b = await store.createInstanceUpstreamGroup(poolInput("team-b"));
+          expect(a.team_id).toBe("team-a");
+          expect((await store.getInstanceUpstreamGroup(b.group_id))!.team_id).toBe("team-b");
+
+          const ofA = await store.listInstanceUpstreamGroups({ team_id: "team-a", mode: "subscription_pool" });
+          expect(ofA.map((g) => g.group_id)).toEqual([a.group_id]);
+          const pools = await store.listInstanceUpstreamGroups({ mode: "subscription_pool" });
+          expect(pools.map((g) => g.group_id).sort()).toEqual([a.group_id, b.group_id].sort());
+          const instance = await store.listInstanceUpstreamGroups({ team_id: "" });
+          expect(instance.map((g) => g.group_type)).toEqual(["default"]);
+          expect(instance[0]!.team_id).toBe("");
+        });
+
+        it("keeps a team only on a pool group", async () => {
+          const custom = await store.createInstanceUpstreamGroup({
+            group_type: "custom",
+            team_id: "team-a",
+            name: "api group",
+            agents: [],
+            mode: "custom_unified",
+            base_url: "https://x.example.com",
+            api_key: "sk-x",
+          });
+          expect(custom.team_id).toBe("");
+          expect((await store.getInstanceUpstreamGroup(custom.group_id))!.team_id).toBe("");
+        });
+
+        it("rejects a pool group without a team", async () => {
+          expect(await conflictReason(() => store.createInstanceUpstreamGroup(poolInput(undefined)))).toBe("team_required");
+          expect(await conflictReason(() => store.createInstanceUpstreamGroup(poolInput("  ")))).toBe("team_required");
+          expect(await store.listInstanceUpstreamGroups({ mode: "subscription_pool" })).toEqual([]);
+        });
+
+        it("rejects an update that turns a group without a team into a pool group", async () => {
+          const custom = await store.createInstanceUpstreamGroup({
+            group_type: "custom", name: "api group", agents: [], mode: "custom_unified",
+          });
+          expect(await conflictReason(() => store.updateInstanceUpstreamGroup({
+            group_id: custom.group_id, expected_group_type: "custom", mode: "subscription_pool",
+          }))).toBe("team_required");
+          expect((await store.getInstanceUpstreamGroup(custom.group_id))!.mode).toBe("custom_unified");
+        });
+
+        it("allows the same pool name and source name in two teams", async () => {
+          const a = await store.createInstanceUpstreamGroup(poolInput("team-a"));
+          const b = await store.createInstanceUpstreamGroup(poolInput("team-b"));
+          expect([a.name, a.source_name]).toEqual([b.name, b.source_name]);
+          // Names are unique per scope, so an instance group may use the name of a team pool.
+          const custom = await store.createInstanceUpstreamGroup({
+            group_type: "custom", name: "claude subscription pool", agents: [], mode: "custom_unified",
+          });
+          expect(custom.team_id).toBe("");
+        });
+
+        it("rejects a second pool for the same provider in one team", async () => {
+          await store.createInstanceUpstreamGroup(poolInput("team-a"));
+          expect(await conflictReason(() => store.createInstanceUpstreamGroup(poolInput("team-a"))))
+            .toBe("name_duplicate");
+          expect(await conflictReason(() => store.createInstanceUpstreamGroup(poolInput("team-a", { name: "second claude pool" }))))
+            .toBe("source_name_duplicate");
+          const other = await store.createInstanceUpstreamGroup(poolInput("team-a", {
+            name: "codex subscription pool", source_name: "sub-openai", source_provider: "codex",
+          }));
+          expect(await conflictReason(() => store.updateInstanceUpstreamGroup({
+            group_id: other.group_id, expected_group_type: "custom", name: "claude subscription pool",
+          }))).toBe("name_duplicate");
+          expect((await store.listInstanceUpstreamGroups({ team_id: "team-a" })).length).toBe(2);
+        });
+
+        it("rejects an agent in two pool groups of one team, and allows it in pools of two teams", async () => {
+          await store.createInstanceUpstreamGroup(poolInput("team-a", { agents: ["claude-code"] }));
+          expect(await conflictReason(() => store.createInstanceUpstreamGroup(poolInput("team-a", {
+            name: "other pool", source_name: "sub-other", agents: ["claude-code"],
+          })))).toBe("agents_overlap");
+          const second = await store.createInstanceUpstreamGroup(poolInput("team-a", {
+            name: "other pool", source_name: "sub-other",
+          }));
+          expect(await conflictReason(() => store.updateInstanceUpstreamGroup({
+            group_id: second.group_id, expected_group_type: "custom", agents: ["claude-code"],
+          }))).toBe("agents_overlap");
+
+          const inB = await store.createInstanceUpstreamGroup(poolInput("team-b", { agents: ["claude-code"] }));
+          expect(inB.agents).toEqual(["claude-code"]);
+        });
+
+        it("keeps the instance rule: an agent stays in exactly one default or custom group", async () => {
+          await store.listInstanceUpstreamGroups(undefined, TEST_SUPPORTED_AGENTS);
+          // A pool agent keeps its instance home, so the pool does not clash with the default group.
+          const pool = await store.createInstanceUpstreamGroup(poolInput("team-a", { agents: ["claude-code"] }));
+          expect(pool.agents).toEqual(["claude-code"]);
+          expect((await defaultGroup()).agents).toContain("claude-code");
+
+          expect(await conflictReason(() => store.createInstanceUpstreamGroup({
+            group_type: "custom", name: "api group", agents: ["claude-code"], mode: "custom_unified",
+          }))).toBe("agents_overlap");
+          await store.createInstanceUpstreamGroup({
+            group_type: "custom", name: "cursor group", agents: ["cursor"], mode: "custom_unified",
+          });
+          expect(await conflictReason(() => store.createInstanceUpstreamGroup({
+            group_type: "custom", name: "cursor group 2", agents: ["cursor"], mode: "custom_unified",
+          }))).toBe("agents_overlap");
+        });
+
+        it("does not count pool agents as used when it syncs the default group", async () => {
+          await store.listInstanceUpstreamGroups(undefined, [TEST_SUPPORTED_AGENTS[0]!]);
+          await store.createInstanceUpstreamGroup(poolInput("team-a", { agents: ["codex"] }));
+          await store.createInstanceUpstreamGroup({
+            group_type: "custom", name: "buddy group", agents: ["codebuddy"], mode: "custom_unified",
+          });
+
+          await store.listInstanceUpstreamGroups(undefined, TEST_SUPPORTED_AGENTS);
+          const agents = (await defaultGroup()).agents;
+          expect(agents).toContain("codex");
+          expect(agents).not.toContain("codebuddy");
+        });
+
+        it("moves an agent only between groups of one scope", async () => {
+          await store.listInstanceUpstreamGroups(undefined, TEST_SUPPORTED_AGENTS);
+          const def = await defaultGroup();
+          const poolA = await store.createInstanceUpstreamGroup(poolInput("team-a", { agents: ["claude-code"] }));
+          const poolA2 = await store.createInstanceUpstreamGroup(poolInput("team-a", { name: "second", source_name: "sub-second" }));
+          const poolB = await store.createInstanceUpstreamGroup(poolInput("team-b"));
+          const custom = await store.createInstanceUpstreamGroup({
+            group_type: "custom", name: "api group", agents: [], mode: "custom_unified",
+          });
+
+          expect(await conflictReason(() => store.moveAgentBetweenUpstreamGroups({
+            agent: "claude-code", from: [{ group_id: def.group_id }], to: { group_id: poolA.group_id },
+          }))).toBe("group_not_found");
+          expect(await conflictReason(() => store.moveAgentBetweenUpstreamGroups({
+            agent: "claude-code", from: [{ group_id: poolA.group_id }], to: { group_id: poolB.group_id },
+          }))).toBe("group_not_found");
+          expect(await conflictReason(() => store.moveAgentBetweenUpstreamGroups({
+            agent: "claude-code", from: [{ group_id: poolA.group_id }], to: { create: { name: "new", mode: "custom_unified" } },
+          }))).toBe("group_not_found");
+          expect(await conflictReason(() => store.moveAgentBetweenUpstreamGroups({
+            agent: "codex", from: [{ group_id: def.group_id }], to: { create: { name: "new pool", mode: "subscription_pool" } },
+          }))).toBe("team_required");
+          // Nothing changed after the rejected moves.
+          expect((await store.getInstanceUpstreamGroup(poolA.group_id))!.agents).toEqual(["claude-code"]);
+          expect((await store.getInstanceUpstreamGroup(def.group_id))!.agents).toContain("claude-code");
+
+          // Inside one scope a move works, and a pool that holds the agent does not block an instance move.
+          const inTeam = await store.moveAgentBetweenUpstreamGroups({
+            agent: "claude-code", from: [{ group_id: poolA.group_id }], to: { group_id: poolA2.group_id },
+          });
+          expect(inTeam.to.agents).toEqual(["claude-code"]);
+          const inInstance = await store.moveAgentBetweenUpstreamGroups({
+            agent: "claude-code", from: [{ group_id: def.group_id }], to: { group_id: custom.group_id },
+          });
+          expect(inInstance.to.agents).toEqual(["claude-code"]);
+          expect(inInstance.from[0]!.agents).not.toContain("claude-code");
+        });
+
+        it("deleting a team removes its pool groups and their accounts and leaves other teams alone", async () => {
+          const owner = await store.createUser(uniqueUserInput());
+          const teamA = await store.createTeam(teamInput(owner.user_id, { name: "A" }));
+          const teamB = await store.createTeam(teamInput(owner.user_id, { name: "B" }));
+          const poolA = await store.createInstanceUpstreamGroup(poolInput(teamA.team_id));
+          const poolA2 = await store.createInstanceUpstreamGroup(poolInput(teamA.team_id, { name: "codex pool", source_name: "sub-openai" }));
+          const poolB = await store.createInstanceUpstreamGroup(poolInput(teamB.team_id));
+          const custom = await store.createInstanceUpstreamGroup({
+            group_type: "custom", name: "api group", agents: [], mode: "custom_unified",
+          });
+          const addAccount = async (groupId: string, n: number) => (await store.upsertSubscriptionAccountByProviderId({
+            group_id: groupId, provider: "claude", provider_account_id: `acct-${n}`, display_name: `Max ${n}`,
+            access_token: "a", refresh_token: "r", token_expires_at: null,
+          })).account.account_id;
+          const accountsOfA = [await addAccount(poolA.group_id, 1), await addAccount(poolA.group_id, 2), await addAccount(poolA2.group_id, 3)];
+          const accountOfB = await addAccount(poolB.group_id, 4);
+
+          const res = await store.deleteTeams([teamA.team_id]);
+          expect(res.deleted_ids).toEqual([teamA.team_id]);
+          expect(res.deleted_pool_account_ids).toEqual([...accountsOfA].sort());
+          expect(await store.getInstanceUpstreamGroup(poolA.group_id)).toBeNull();
+          expect(await store.getInstanceUpstreamGroup(poolA2.group_id)).toBeNull();
+          for (const id of accountsOfA) expect(await store.getSubscriptionAccount(id)).toBeNull();
+
+          expect((await store.getInstanceUpstreamGroup(poolB.group_id))!.team_id).toBe(teamB.team_id);
+          expect(await store.getSubscriptionAccount(accountOfB)).not.toBeNull();
+          expect(await store.getInstanceUpstreamGroup(custom.group_id)).not.toBeNull();
+
+          const again = await store.deleteTeams([teamA.team_id]);
+          expect(again.deleted_pool_account_ids).toEqual([]);
         });
       });
 

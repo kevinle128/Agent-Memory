@@ -478,14 +478,21 @@ const upstreamGroupTypeConvOnly = z.enum(["default", "custom"]); // update/delet
 const upstreamMode = z.enum(["official", "custom_unified", "custom_passthrough", "subscription_pool"]);
 
 export const subscriptionPoolProviderSchema = z.enum(["claude", "codex", "antigravity"]);
-export const subscriptionPoolStatusSchema = z.object({ provider: subscriptionPoolProviderSchema.optional() });
-export const subscriptionPoolEnableSchema = z.object({ provider: subscriptionPoolProviderSchema });
-export const subscriptionPoolDisableSchema = z.object({ provider: subscriptionPoolProviderSchema });
-export const subscriptionPoolSettingsSchema = z.object({ threshold_pct: z.number().int().min(50).max(100) });
+const subscriptionThresholdPct = z.number().int().min(50).max(100);
+export const subscriptionPoolStatusSchema = z.object({ team_id: nonEmpty, provider: subscriptionPoolProviderSchema.optional() });
+export const subscriptionPoolEnableSchema = z.object({ team_id: nonEmpty, provider: subscriptionPoolProviderSchema });
+export const subscriptionPoolDisableSchema = z.object({ team_id: nonEmpty, provider: subscriptionPoolProviderSchema });
+export const subscriptionPoolClientsUpdateSchema = z.object({
+  team_id: nonEmpty,
+  provider: subscriptionPoolProviderSchema,
+  agents: z.array(nonEmpty),
+});
+export const subscriptionPoolSettingsSchema = z.object({ threshold_pct: subscriptionThresholdPct });
 export const subscriptionPoolAccountUpdateSchema = z.object({
   account_id: z.string().min(1), expected_version: z.number().int().nonnegative().optional(),
   display_name: z.string().min(1).optional(), enabled: z.boolean().optional(),
   status: z.enum(["active", "exhausted", "auth_error", "disabled"]).optional(),
+  threshold_pct: subscriptionThresholdPct.optional(),
 });
 export const subscriptionPoolAccountDeleteSchema = z.object({ account_id: z.string().min(1) });
 export const subscriptionPoolAccountsListSchema = z.object({}).catchall(z.unknown());
@@ -495,13 +502,15 @@ export const subscriptionPoolReportSchema = z.object({
     name: z.string(), model_scope: z.string().nullable().optional(), used_pct: z.number(), resets_at: z.number().nullable(), observed_at: z.number(), source: z.string(),
   })).optional(),
 });
-export const subscriptionPoolOAuthStartSchema = z.object({ provider: subscriptionPoolProviderSchema });
+export const subscriptionPoolOAuthStartSchema = z.object({ team_id: nonEmpty, provider: subscriptionPoolProviderSchema });
 export const subscriptionPoolOAuthCompleteSchema = z.object({
+  team_id: nonEmpty,
   provider: subscriptionPoolProviderSchema,
   state: z.string().min(1),
   code: z.string().min(1).optional(),
   redirect_url: z.string().min(1).optional(),
   display_name: z.string().min(1).optional(),
+  threshold_pct: subscriptionThresholdPct.optional(),
 });
 export const subscriptionPoolAccountCheckSchema = z.object({ account_id: z.string().min(1) });
 export const subscriptionPoolAccountRedeemResetCreditSchema = z.object({
@@ -510,7 +519,8 @@ export const subscriptionPoolAccountRedeemResetCreditSchema = z.object({
   /** Made once per admin click. The provider uses it to ignore a repeat of the same click. */
   request_id: z.string().min(8).max(100),
 });
-export const subscriptionPoolCheckAllSchema = z.object({}).catchall(z.unknown());
+/** `team_id` may be left out only by the System Admin, who then checks every team. */
+export const subscriptionPoolCheckAllSchema = z.object({ team_id: nonEmpty.optional() }).catchall(z.unknown());
 export const subscriptionPoolRefreshSchema = z.object({
   account_id: z.string().min(1),
   /** Expiry of the token the proxy used. A newer stored token is returned without a provider call. */

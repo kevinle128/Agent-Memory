@@ -15,6 +15,7 @@ import {
   handleModels,
   handleSourceModel,
 } from "../modelsHandler.js";
+import { __primeMembershipForTests, __setTeamListFetcherForTests, clearTeamCaches } from "../subscription-pool/pool-team.js";
 import type { ProxyConfig } from "../types.js";
 
 const SPACE = "sp-models";
@@ -59,7 +60,7 @@ const apiSource: InstanceUpstreamRow = {
 
 const poolSource: InstanceUpstreamRow = {
   group_id: "g-pool", group_type: "custom", name: "openai pool", agents: [], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
   source_name: "sub-openai", source_provider: "openai",
   source_formats: ["openai-responses", "openai-chat"],
   source_agents: ["omp", "openclaw"],
@@ -90,9 +91,11 @@ describe("GET /v1/models", () => {
   beforeEach(() => {
     verifyUserKey.mockReset();
     verifyUserKey.mockResolvedValue({ userId: "u", rejected: false });
+    clearTeamCaches();
+    __primeMembershipForTests(SPACE, "u", ["team-a"]);
     prime(apiSource, poolSource, hiddenSource, switchedOff);
   });
-  afterEach(() => clearCache());
+  afterEach(() => { clearCache(); clearTeamCaches(); });
 
   it("lists source models for omp in the documented shape, legacy list after", async () => {
     const res = await get(makeApp(makeConfig({ enabled: true })), `/omp/${SPACE}/v1/models`);
@@ -184,9 +187,11 @@ describe("GET /v1/models/:model", () => {
   beforeEach(() => {
     verifyUserKey.mockReset();
     verifyUserKey.mockResolvedValue({ userId: "u", rejected: false });
+    clearTeamCaches();
+    __primeMembershipForTests(SPACE, "u", ["team-a"]);
     prime(apiSource, poolSource);
   });
-  afterEach(() => clearCache());
+  afterEach(() => { clearCache(); clearTeamCaches(); });
 
   it("returns one source entry, including ids that contain a slash", async () => {
     const app = makeApp(makeConfig({ enabled: true }));
@@ -225,5 +230,69 @@ describe("POST /hermes/:spaceId/api/show", () => {
     const res = await app.request(`/hermes/${SPACE}/api/show`, { method: "POST", body: "{}" });
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain("model_not_found");
+  });
+});
+
+describe("pool sources and teams", () => {
+  const poolOfTeamB: InstanceUpstreamRow = {
+    ...poolSource, group_id: "g-pool-b", team_id: "team-b",
+    source_models: [
+      { id: "gpt-6-sol", display_name: "GPT-6 Sol", enabled: true, available: true },
+      { id: "only-team-b", enabled: true, available: true },
+    ],
+  };
+  const ids = async (path: string): Promise<string[]> => {
+    const res = await get(makeApp(makeConfig({ enabled: true })), path);
+    const body = await res.json() as { data: Array<{ id: string }> };
+    return body.data.map((m) => m.id);
+  };
+
+  beforeEach(() => {
+    verifyUserKey.mockReset();
+    verifyUserKey.mockResolvedValue({ userId: "u", rejected: false });
+    clearTeamCaches();
+  });
+  afterEach(() => { clearCache(); clearTeamCaches(); });
+
+  it("lists pool models of the caller's teams only", async () => {
+    __primeMembershipForTests(SPACE, "u", ["team-a"]);
+    prime(poolSource, poolOfTeamB);
+    const listed = await ids(`/omp/${SPACE}/v1/models`);
+    expect(listed).toContain("sub-openai/gpt-6-sol");
+    expect(listed).not.toContain("sub-openai/only-team-b");
+  });
+
+  it("dedupes a source that two of the caller's teams have", async () => {
+    __primeMembershipForTests(SPACE, "u", ["team-a", "team-b"]);
+    prime(poolSource, poolOfTeamB);
+    const listed = await ids(`/omp/${SPACE}/v1/models`);
+    expect(listed.filter((id) => id === "sub-openai/gpt-6-sol")).toHaveLength(1);
+    expect(listed).toContain("sub-openai/only-team-b");
+  });
+
+  it("lists no pool model for a caller that belongs to no team", async () => {
+    __primeMembershipForTests(SPACE, "u", []);
+    prime(apiSource, poolSource);
+    const listed = await ids(`/omp/${SPACE}/v1/models`);
+    expect(listed.some((id) => id.startsWith("sub-openai/"))).toBe(false);
+    expect(listed).toContain("api-deepseek/deepseek-chat");
+  });
+
+  it("lists instance sources only when the team list is not available", async () => {
+    __setTeamListFetcherForTests(async () => { throw new Error("core down"); });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    prime(apiSource, poolSource);
+    const listed = await ids(`/omp/${SPACE}/v1/models`);
+    expect(listed.some((id) => id.startsWith("sub-openai/"))).toBe(false);
+    expect(listed).toContain("api-deepseek/deepseek-chat");
+    vi.restoreAllMocks();
+  });
+
+  it("answers a single model of another team's pool with 404", async () => {
+    __primeMembershipForTests(SPACE, "u", ["team-a"]);
+    prime(poolSource, poolOfTeamB);
+    const app = makeApp(makeConfig({ enabled: true }));
+    expect((await get(app, `/omp/${SPACE}/v1/models/sub-openai/only-team-b`)).status).toBe(404);
+    expect((await get(app, `/omp/${SPACE}/v1/models/sub-openai/gpt-6-sol`)).status).toBe(200);
   });
 });

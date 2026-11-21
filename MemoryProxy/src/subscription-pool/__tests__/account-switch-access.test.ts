@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __primeCacheForTests, clearCache, type InstanceUpstreamRow } from "../../instance-upstream-cache.js";
 import { canUseAccountSwitch, resetAccountSwitchAccessForTests, resolveSwitchPool } from "../account-switch-access.js";
+import { __primeMembershipForTests, clearTeamCaches } from "../pool-team.js";
 
 const CONFIG = {
   coreSkill: { endpoint: "http://core.test", serviceToken: "svc", timeoutMs: 1000 },
@@ -138,6 +139,7 @@ describe("canUseAccountSwitch", () => {
 
 describe("resolveSwitchPool", () => {
   const SPACE = "sp-pool";
+  const session = { userId: "u1", userKey: "sk-mem-u1", teamId: "team-a" };
   const defaultRow: InstanceUpstreamRow = {
     group_id: "d", group_type: "default", name: "default", agents: ["claude-code", "codex", "codebuddy"], enabled: true,
     mode: "official", base_url: "", api_key: "", model_id: "",
@@ -145,49 +147,85 @@ describe("resolveSwitchPool", () => {
   function poolRow(partial: Partial<InstanceUpstreamRow>): InstanceUpstreamRow {
     return {
       group_id: "pool", group_type: "custom", name: "pool", agents: [], enabled: true,
-      mode: "subscription_pool", base_url: "", api_key: "", model_id: "", ...partial,
+      mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "", ...partial,
     };
   }
 
   beforeEach(() => {
     clearCache();
-    // Any Core call means the primed instance config was not used.
+    clearTeamCaches();
+    __primeMembershipForTests(SPACE, "u1", ["team-a", "team-b"]);
+    // Any Core call means the primed instance config or team list was not used.
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("unexpected Core call"); }));
   });
   afterEach(() => {
     clearCache();
+    clearTeamCaches();
     vi.unstubAllGlobals();
   });
 
   it("maps a pool for claude-code to the claude provider", async () => {
     const row = poolRow({ agents: ["claude-code"] });
     __primeCacheForTests(SPACE, [defaultRow, row]);
-    expect(await resolveSwitchPool(CONFIG, SPACE, "claude-code")).toEqual({ provider: "claude", row });
+    expect(await resolveSwitchPool(CONFIG, SPACE, "claude-code", session)).toEqual({ provider: "claude", row });
   });
 
   it("maps a pool for codex to the codex provider", async () => {
     const row = poolRow({ agents: ["codex"] });
     __primeCacheForTests(SPACE, [defaultRow, row]);
-    expect(await resolveSwitchPool(CONFIG, SPACE, "codex")).toEqual({ provider: "codex", row });
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", session)).toEqual({ provider: "codex", row });
   });
 
   it("returns null for an agent without account switch support", async () => {
     __primeCacheForTests(SPACE, [defaultRow, poolRow({ agents: ["codebuddy"] })]);
-    expect(await resolveSwitchPool(CONFIG, SPACE, "codebuddy")).toBeNull();
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codebuddy", session)).toBeNull();
   });
 
   it("returns null when the agent group is custom_unified", async () => {
-    __primeCacheForTests(SPACE, [defaultRow, poolRow({ agents: ["codex"], mode: "custom_unified", base_url: "http://x" })]);
-    expect(await resolveSwitchPool(CONFIG, SPACE, "codex")).toBeNull();
+    __primeCacheForTests(SPACE, [defaultRow, poolRow({ agents: ["codex"], mode: "custom_unified", base_url: "http://x", team_id: "" })]);
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", session)).toBeNull();
   });
 
   it("returns null when the pool group is disabled", async () => {
     __primeCacheForTests(SPACE, [defaultRow, poolRow({ agents: ["codex"], enabled: false })]);
-    expect(await resolveSwitchPool(CONFIG, SPACE, "codex")).toBeNull();
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", session)).toBeNull();
   });
 
   it("returns null when the agent uses the default group", async () => {
     __primeCacheForTests(SPACE, [defaultRow]);
-    expect(await resolveSwitchPool(CONFIG, SPACE, "claude-code")).toBeNull();
+    expect(await resolveSwitchPool(CONFIG, SPACE, "claude-code", session)).toBeNull();
+  });
+
+  it("switch lists accounts of the session team only: the pool of another team of the user is never returned", async () => {
+    const poolA = poolRow({ group_id: "pool-a", team_id: "team-a", agents: ["codex"] });
+    const poolB = poolRow({ group_id: "pool-b", team_id: "team-b", agents: ["codex"] });
+    __primeCacheForTests(SPACE, [defaultRow, poolB, poolA]);
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", session)).toEqual({ provider: "codex", row: poolA });
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", { ...session, teamId: "team-b" })).toEqual({ provider: "codex", row: poolB });
+  });
+
+  it("returns null for a session team that has no pool, even when another team of the user has one", async () => {
+    __primeCacheForTests(SPACE, [defaultRow, poolRow({ team_id: "team-b", agents: ["codex"] })]);
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", session)).toBeNull();
+  });
+
+  it("returns null when the user left the team of the session", async () => {
+    clearTeamCaches();
+    __primeMembershipForTests(SPACE, "u1", ["team-b"]);
+    __primeCacheForTests(SPACE, [defaultRow, poolRow({ agents: ["codex"] })]);
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", session)).toBeNull();
+  });
+
+  it("returns null for a session without a team or without the user key", async () => {
+    __primeCacheForTests(SPACE, [defaultRow, poolRow({ agents: ["codex"] })]);
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", { ...session, teamId: "" })).toBeNull();
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", { ...session, userKey: "" })).toBeNull();
+  });
+
+  it("returns null when the team list cannot be read", async () => {
+    clearTeamCaches();
+    __primeCacheForTests(SPACE, [defaultRow, poolRow({ agents: ["codex"] })]);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(await resolveSwitchPool(CONFIG, SPACE, "codex", session)).toBeNull();
   });
 });

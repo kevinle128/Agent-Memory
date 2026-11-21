@@ -41,6 +41,7 @@ import type {
   TeamFilter,
   AssetFilter,
   BatchDeleteResult,
+  DeleteTeamsResult,
   ListPage,
   PaginationParams,
   InstanceUserListFilter,
@@ -125,7 +126,11 @@ export interface IMetadataStore {
   createTeam(input: CreateTeamInput): MaybePromise<TeamEntity>;
   getTeamById(teamId: string): MaybePromise<TeamEntity | null>;
   updateTeam(teamId: string, patch: Partial<TeamEntity>): MaybePromise<TeamEntity | null>;
-  deleteTeams(teamIds: string[]): MaybePromise<BatchDeleteResult>;
+  /**
+   * Delete teams with their members, agents, tasks and assets. The `subscription_pool` groups of
+   * the deleted teams and their accounts are deleted too; the result lists those account ids.
+   */
+  deleteTeams(teamIds: string[]): MaybePromise<DeleteTeamsResult>;
   listTeamsByUser(userId: string, pagination?: PaginationParams | null, filter?: TeamFilter): MaybePromise<ListPage<TeamEntity>>;
 
   // ── TeamMember ──
@@ -251,9 +256,13 @@ export interface IMetadataStore {
   // 关键约束(store 层必须保证):
   //   1. group_id 由 store 生成 (dflt-<r> / grp-<r> / ext-<r>)。
   //   2. default / extraction 每实例最多 1 行(UNIQUE partial index)。
-  //   3. agents 全域唯一:同一实例内 default.agents ∪ 所有 custom.agents 元素两两不重复。
-  //      写入时需在事务内 SELECT-all → 内存交集校验 → 写入,冲突抛
-  //      InstanceUpstreamWriteConflictError("agents_overlap")。
+  //   3. Agent and name rules apply inside one scope. Instance scope = default and custom
+  //      groups that are not `subscription_pool`: each agent is in at most one of them.
+  //      Team scope = `subscription_pool` groups of one team: each agent is in at most one of
+  //      them. Group names are unique per scope, and source names are unique per team_id.
+  //      A write checks the rows of its scope in a transaction; a clash throws
+  //      InstanceUpstreamWriteConflictError("agents_overlap" / "name_duplicate" /
+  //      "source_name_duplicate"). A pool group without a team is in no team scope.
   //   4. version 字段乐观锁:update / toggle 传入 expected_version,不匹配抛
   //      InstanceUpstreamWriteConflictError("version_mismatch")。SQLite 侧
   //      同时用 BEGIN IMMEDIATE 加事务锁,双重保护。
@@ -266,6 +275,7 @@ export interface IMetadataStore {
   /**
    * 列出该实例的所有行(default + custom + extraction),按 group_type 排序
    * (default 首、custom 次、extraction 末),同类按 updated_at DESC。
+   * The filter can select by `group_type`, exact `team_id` and `mode`.
    * 触发 ensureDefaultSeeded:如果表内 0 default 行且传入 supported-agents
    * 非空,自动 seed 一条 default 行(agents=supportedAgents, enabled=true)。
    * 传 undefined 时不触发 seed。
@@ -279,7 +289,10 @@ export interface IMetadataStore {
    * 创建新组:custom / default(仅 seed 内部用) / extraction。
    * 冲突场景:
    *   - default_already_exists / extraction_already_exists → 抛 InstanceUpstreamWriteConflictError
-   *   - agents 与其他行重叠 → agents_overlap
+   *   - agents 与其他行重叠 → agents_overlap (only rows of the same scope count)
+   *   - team_required: a `subscription_pool` group must have a non-empty `team_id`
+   * The store keeps `team_id` only on a pool group. A pool group is checked against the pool
+   * groups of its team; every other group against the instance scope.
    */
   createInstanceUpstreamGroup(
     input: CreateInstanceUpstreamGroupInput,
@@ -288,6 +301,8 @@ export interface IMetadataStore {
   /**
    * PATCH 更新已存在的组;冲突场景:
    *   - group_not_found / group_type_mismatch / version_mismatch / agents_overlap
+   *   - team_required: the update changes a group without a team into a `subscription_pool` group
+   * A group that leaves the `subscription_pool` mode loses its team and joins the instance scope.
    */
   updateInstanceUpstreamGroup(
     input: UpdateInstanceUpstreamGroupInput,
@@ -311,10 +326,14 @@ export interface IMetadataStore {
   /**
    * Move one agent from some groups into another group in one transaction, so the agent is never
    * left in no group or in two groups. The target can be created in the same transaction.
+   * All groups of one move must be in the same scope: the instance scope, or the pool groups of
+   * one team. A created target is in the instance scope.
    * Throws InstanceUpstreamWriteConflictError:
-   *   - group_not_found: a source or the target group does not exist (or is an extraction row)
-   *   - agents_overlap: a default / custom group other than the source and target holds the agent
-   *   - name_duplicate: the group to create has a name that is already used
+   *   - group_not_found: a source or the target group does not exist (or is an extraction row),
+   *     or the groups of the move are not in one scope
+   *   - agents_overlap: a group of the same scope, other than the source and target, holds the agent
+   *   - name_duplicate: the group to create has a name that is already used in the instance scope
+   *   - team_required: the group to create is a `subscription_pool` group
    */
   moveAgentBetweenUpstreamGroups(
     input: MoveAgentBetweenUpstreamGroupsInput,

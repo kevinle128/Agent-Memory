@@ -4,6 +4,7 @@
  */
 import type { ClientSource, ClientSourceAgent } from './api/client-sources';
 import type { SourceFormat } from './api/model-providers';
+import { POOL_FORMAT, type PoolProvider } from './subscription-pool-display';
 
 const ALL_FORMATS: readonly SourceFormat[] = ['anthropic-messages', 'openai-responses', 'openai-chat'];
 
@@ -41,6 +42,15 @@ export function toggleSource(selected: readonly string[], name: string): string[
 /** Clients that hold the source, in list order. */
 export function clientsUsing(agents: readonly ClientSourceAgent[], sourceName: string): ClientSourceAgent[] {
   return agents.filter((a) => a.selected.includes(sourceName));
+}
+
+/**
+ * Clients that can use the team pool of a provider: a client whose wire format fits the pool format.
+ * Core applies the same format rule when it stores the clients of a pool.
+ */
+export function poolClientCandidates(agents: readonly ClientSourceAgent[], provider: PoolProvider): ClientSourceAgent[] {
+  const format = POOL_FORMAT[provider];
+  return agents.filter((a) => (agentFormats(a) as readonly string[]).includes(format));
 }
 
 /** Option rows of a dropdown, filtered by the search text on source name or provider. */

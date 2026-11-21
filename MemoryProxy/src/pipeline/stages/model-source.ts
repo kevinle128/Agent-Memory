@@ -9,6 +9,8 @@
  *   - custom_unified    → { kind: "override" } with a copy of the row whose `model_id` is the
  *                         real model id, handled by stageInstanceUpstreamOverride.
  *
+ * A pool source is found only in the pool row of the request team (`teamId`).
+ *
  * The stage returns `none` before it reads the cache or the body when the switch is off, the agent
  * is not multi-source, the agent is outside `modelSources.agents`, or the model has no known
  * prefix. Claude Code and Codex are not multi-source, so they never reach the cache.
@@ -18,6 +20,7 @@ import type { Context } from "hono";
 import type { ProxyConfig } from "../../types.js";
 import {
   getInstanceUpstreamConfigs,
+  isPoolRow,
   type InstanceUpstreamRow,
   type Resolution,
 } from "../../instance-upstream-cache.js";
@@ -60,6 +63,12 @@ export interface ModelSourceInput {
   model: unknown;
   /** False when the calling runner has no subscription pool branch for this format. */
   servesPool: boolean;
+  /**
+   * Team of the request, from the request team helper. Only a pool source of this team is found.
+   * Null when no pool serves the client: a pool prefix is then not found, like an unknown one.
+   * Ignored when `servesPool` is false.
+   */
+  teamId: string | null;
 }
 
 export function isSourceRow(row: InstanceUpstreamRow): boolean {
@@ -77,22 +86,42 @@ function fail(
   return { kind: "error", code, message, detail };
 }
 
+/**
+ * Lower-case source prefix of `<source>/<model>` when the request is one a model source can
+ * serve: the switch is on, the agent is multi-source and allowed, and the model has a prefix.
+ * Null otherwise. The stage and the request team helper share it, so both agree on what a
+ * source request is.
+ */
+export function modelSourcePrefix(
+  config: Pick<ProxyConfig, "modelSources">,
+  agent: string | undefined,
+  model: unknown,
+): string | null {
+  if (config.modelSources?.enabled !== true) return null;
+  if (!agent || !isMultiSourceAgent(agent)) return null;
+  const allowed = config.modelSources.agents;
+  if (allowed && !allowed.includes(agent)) return null;
+  if (typeof model !== "string") return null;
+  const slash = model.indexOf("/");
+  if (slash <= 0) return null;
+  return model.slice(0, slash).toLowerCase();
+}
+
 export async function stageModelSource(input: ModelSourceInput): Promise<ModelSourceResult> {
   const { config, agent, spaceId, format, model } = input;
 
-  if (config.modelSources?.enabled !== true) return { kind: "none" };
-  if (!agent || !isMultiSourceAgent(agent)) return { kind: "none" };
-  const allowed = config.modelSources.agents;
-  if (allowed && !allowed.includes(agent)) return { kind: "none" };
-  if (typeof model !== "string") return { kind: "none" };
-  const slash = model.indexOf("/");
-  if (slash <= 0) return { kind: "none" };
-
-  const prefix = model.slice(0, slash).toLowerCase();
-  const upstreamModel = model.slice(slash + 1);
+  const prefix = modelSourcePrefix(config, agent, model);
+  if (prefix === null || !agent || typeof model !== "string") return { kind: "none" };
+  const upstreamModel = model.slice(model.indexOf("/") + 1);
 
   const items = await getInstanceUpstreamConfigs(config.coreSkill, spaceId, config.instanceUpstream);
-  const row = items.find((r) => isSourceRow(r) && r.source_name === prefix);
+  // The source name of a pool repeats in every team, so a pool source is found only in the pool
+  // of the request team. A known team without that pool gets `none`, as if no pool existed.
+  // A runner that cannot use a pool at all answers the format error whichever team asks, so it
+  // needs no team and no pool of any team is ever opened for it.
+  const row = items.find((r) => isSourceRow(r) && r.source_name === prefix
+    && (!isPoolRow(r) || !input.servesPool
+      || (input.teamId !== null && input.teamId !== "" && r.team_id === input.teamId)));
   if (!row) return { kind: "none" };
 
   const detail = { agent, source: prefix, format };

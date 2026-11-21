@@ -693,11 +693,18 @@ export interface InstanceUpstreamConfigEntity extends InstanceUpstreamSourceFiel
   /** 后端生成的组 ID:`dflt-<random>` / `grp-<random>` / `ext-<random>`。 */
   group_id: string;
   group_type: GroupType;
+  /**
+   * Team that owns the group. Only a `subscription_pool` group has a team; every other group has
+   * `''` (instance scope). A pool group with `''` comes from a database made before pools had a
+   * team, and no team uses it. A group never changes its team.
+   */
+  team_id: string;
   /** custom: 用户自定义;default 固定 DEFAULT_GROUP_NAME;extraction 固定 EXTRACTION_GROUP_NAME。 */
   name: string;
   /**
    * default / custom 组:显式管理的 agent 列表(可 0~N);extraction 行:恒 []。
-   * 全域唯一约束:同一实例内 default.agents ∪ 所有 custom.agents 元素两两不重复。
+   * Instance scope: each agent is in at most one default or custom group that is not a pool.
+   * Team scope: each agent is in at most one pool group of the same team.
    */
   agents: string[];
   /**
@@ -740,6 +747,11 @@ export interface InstanceUpstreamConfigEntity extends InstanceUpstreamSourceFiel
  */
 export interface CreateInstanceUpstreamGroupInput extends Partial<InstanceUpstreamSourceFields> {
   group_type: GroupType;
+  /**
+   * Team of a `subscription_pool` group. It is necessary for a pool group (else `team_required`).
+   * The store writes `''` for every other mode.
+   */
+  team_id?: string;
   name?: string;
   agents?: string[];
   enabled?: boolean;
@@ -788,10 +800,13 @@ export interface MoveAgentBetweenUpstreamGroupsInput {
    * its `enabled` flag when one is given.
    */
   from: Array<{ group_id: string; enabled?: boolean }>;
-  /** The group the agent joins: an existing one, or a custom group to create with the agent in it. */
+  /**
+   * The group the agent joins: an existing one, or a custom group to create with the agent in it.
+   * A created group is in the instance scope, so it cannot be a pool group.
+   */
   to:
     | { group_id: string; enabled?: boolean }
-    | { create: Omit<CreateInstanceUpstreamGroupInput, "agents" | "group_type" | keyof InstanceUpstreamSourceFields> };
+    | { create: Omit<CreateInstanceUpstreamGroupInput, "agents" | "group_type" | "team_id" | keyof InstanceUpstreamSourceFields> };
 }
 
 export interface MoveAgentBetweenUpstreamGroupsResult {
@@ -814,7 +829,17 @@ export interface DeleteInstanceUpstreamGroupInput {
 /** 查询过滤(list 用)。 */
 export interface InstanceUpstreamConfigFilter {
   group_type?: GroupType;
+  /** Exact team id. `''` selects the groups without a team. */
+  team_id?: string;
+  mode?: UpstreamMode;
 }
+
+/**
+ * Result of a team delete. `deleted_pool_account_ids` lists the subscription accounts that went
+ * with the pool groups of the deleted teams, so the caller can stop their timers. It is internal
+ * and is not part of the public `team/delete` response.
+ */
+export type DeleteTeamsResult = BatchDeleteResult & { deleted_pool_account_ids: string[] };
 
 /** supported-agents 单元(Core yaml 里读出来,也是本模块 seed default agents 的来源)。 */
 export interface SupportedAgent {
@@ -833,7 +858,7 @@ export interface SupportedAgent {
  */
 export class InstanceUpstreamWriteConflictError extends Error {
   constructor(
-    public readonly reason: "agents_overlap" | "name_duplicate" | "group_not_found" | "group_type_mismatch" | "version_mismatch" | "default_already_exists" | "extraction_already_exists" | "source_name_duplicate",
+    public readonly reason: "agents_overlap" | "name_duplicate" | "group_not_found" | "group_type_mismatch" | "version_mismatch" | "default_already_exists" | "extraction_already_exists" | "source_name_duplicate" | "team_required",
     message: string,
     public readonly detail?: Record<string, unknown>,
   ) {
@@ -948,6 +973,11 @@ export interface SubscriptionAccountEntity {
   last_error: string | null;
   /** Client sessions bound to the account, as the proxy reported them last. 0 when never reported. */
   active_sessions: number;
+  /**
+   * Used percentage of a Quota Window at which this account stops getting new Session Bindings.
+   * An integer from 50 to 100. Each account has its own value.
+   */
+  threshold_pct: number;
   /** Optimistic lock. Each write adds 1. */
   version: number;
   created_at: string;
@@ -975,6 +1005,8 @@ export interface SubscriptionAccountProxyView {
   token_expires_at: number | null;
   usage: SubscriptionAccountUsage;
   exhausted_until: number | null;
+  /** Threshold of this account (see `SubscriptionAccountEntity.threshold_pct`). */
+  threshold_pct: number;
 }
 
 /**
@@ -995,6 +1027,11 @@ export interface UpsertSubscriptionAccountInput {
   access_token: string;
   refresh_token: string;
   token_expires_at: number | null;
+  /**
+   * Threshold of a new account. Ignored when the account exists, so a new login keeps the stored
+   * value. Absent gives 95. The caller checks the range.
+   */
+  threshold_pct?: number;
 }
 
 export interface UpsertSubscriptionAccountResult {
@@ -1023,6 +1060,8 @@ export interface UpdateSubscriptionAccountPatch {
   refresh_fail_count?: number;
   last_error?: string | null;
   active_sessions?: number;
+  /** The caller checks the range (integer from 50 to 100). */
+  threshold_pct?: number;
 }
 
 /** Write conflict of a subscription account. The store throws it so it does not depend on the service layer. */
