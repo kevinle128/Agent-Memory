@@ -70,14 +70,7 @@ import {
   recordInputTokenUsage,
 } from "./rate-limit/guard.js";
 
-/** Hop-by-hop headers we must strip before forwarding to upstream. */
-const SKIP_REQUEST_HEADERS = new Set([
-  "host",
-  "content-length",
-  "transfer-encoding",
-  "connection",
-  "x-tdai-user-key",
-]);
+import { shouldSkipRequestHeader } from "./common/constants.js";
 
 /** Response headers that would confuse the client if forwarded verbatim. */
 const SKIP_RESPONSE_HEADERS = new Set([
@@ -100,7 +93,7 @@ const SKIP_RESPONSE_HEADERS = new Set([
 function buildPassthroughHeaders(c: Context, config: ProxyConfig): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS.has(k.toLowerCase())) {
+    if (!shouldSkipRequestHeader(k)) {
       headers[k] = v;
     }
   }

@@ -166,9 +166,10 @@ export function extractPoolSessionId(headers: Headers, body: Record<string, unkn
 
 /** Headers for one attempt: the base headers with the credentials of `auth` applied. */
 function withOAuthBeta(existing: string | undefined): string {
-  const parts = (existing ?? "").split(",").map((part) => part.trim()).filter(Boolean);
-  if (!parts.includes(OAUTH_BETA)) parts.push(OAUTH_BETA);
-  return parts.join(",");
+  if (!existing) return OAUTH_BETA;
+  const parts = existing.split(",").map((part) => part.trim()).filter(Boolean);
+  if (parts.includes(OAUTH_BETA)) return existing;
+  return `${existing},${OAUTH_BETA}`;
 }
 
 export function applyPoolAuth(

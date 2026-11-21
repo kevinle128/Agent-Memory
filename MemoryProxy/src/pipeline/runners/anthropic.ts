@@ -117,8 +117,8 @@ import {
 } from "../../rate-limit/guard.js";
 
 // SKIP header sets 已合并到 common/constants.ts
-// anthropic 老行为: WITH_INTERNAL 5 项 (含 x-tdai-user-key 泄漏保护)
-import { SKIP_REQUEST_HEADERS_WITH_INTERNAL as SKIP_REQUEST_HEADERS, filterResponseHeaders } from "../../common/constants.js";
+// 剥离 hop-by-hop / x-tdai-* / 反向代理头，完整保留 Claude Code 原生请求头与 query string
+import { shouldSkipRequestHeader, preserveRequestQuery, filterResponseHeaders } from "../../common/constants.js";
 
 /**
  * Build a per-request TdaiClient. `spaceId` (extracted from the request path
@@ -380,16 +380,16 @@ function buildUpstreamHeaders(
   c: Context,
   config: ProxyConfig,
   target: ForwardTarget,
-  sessionKey?: string,
+  _sessionKey?: string,
   effectiveApiKey?: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS.has(k.toLowerCase())) {
+    if (!shouldSkipRequestHeader(k)) {
       headers[k] = v;
     }
   }
-  headers["content-type"] = "application/json";
+  headers["content-type"] = headers["content-type"] ?? "application/json";
 
   // `effectiveApiKey` is pre-resolved by the caller according to the
   // per-agent fallback rule (see the resolveEffectiveApiKey call site).
@@ -409,9 +409,6 @@ function buildUpstreamHeaders(
     }
   }
 
-  if (sessionKey) {
-    headers["x-vertex-ai-session-id"] = sessionKey;
-  }
   Object.assign(headers, anthropicUpstreamHeaderOverrides(config, target.url));
   return headers;
 }
@@ -1145,6 +1142,14 @@ export async function runAnthropicPipeline(
     // or the subscription account answers 429. Claude Code itself never takes this branch.
     if (modelSource.kind === "matched") body = withClaudeCodeIdentity(body);
   }
+  // Preserve query parameters sent by Claude Code (e.g. `?beta=true` on `/v1/messages?beta=true`).
+  target.url = preserveRequestQuery(target.url, c.req.url);
+  if (target.retryTarget) {
+    target.retryTarget = {
+      ...target.retryTarget,
+      url: preserveRequestQuery(target.retryTarget.url, c.req.url),
+    };
+  }
 
   // ── Skill selection (proxy 选择 → 客户端加载) ─────────────────────────────
   // 新用户轮次选中 skill → 不调用上游，直接返回一条 tool_use，由客户端执行加载；
@@ -1313,7 +1318,7 @@ export async function runAnthropicPipeline(
   // client's raw auth to tokenhub and gets 401.
   const originalHeaders: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS.has(k.toLowerCase())) {
+    if (!shouldSkipRequestHeader(k)) {
       originalHeaders[k] = v;
     }
   }

@@ -241,7 +241,7 @@ export function flattenMessagesForOpik(messages: unknown[]): unknown[] {
 
 // SKIP header sets 已合并到 common/constants.ts
 // x-tdai-user-key can carry the user key (see stages/auth.ts) and must never reach the upstream.
-import { SKIP_REQUEST_HEADERS_WITH_INTERNAL as SKIP_REQUEST_HEADERS, filterResponseHeaders } from "../../common/constants.js";
+import { shouldSkipRequestHeader, preserveRequestQuery, filterResponseHeaders } from "../../common/constants.js";
 
 /** Extract usage object from a block of OpenAI SSE text. */
 export function extractSseUsage(sseText: string): Record<string, unknown> | null {
@@ -290,16 +290,16 @@ function buildUpstreamHeaders(
   c: Context,
   _config: ProxyConfig,
   target: ForwardTarget,
-  sessionKey?: string,
+  _sessionKey?: string,
   effectiveApiKey?: string,
 ): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS.has(k.toLowerCase())) {
+    if (!shouldSkipRequestHeader(k)) {
       headers[k] = v;
     }
   }
-  headers["content-type"] = "application/json";
+  headers["content-type"] = headers["content-type"] ?? "application/json";
 
   // `effectiveApiKey` is pre-resolved by the caller — see the resolveEffective
   // block near the call site. Non-empty → inject as server-side Bearer;
@@ -315,9 +315,6 @@ function buildUpstreamHeaders(
     }
   }
 
-  if (sessionKey) {
-    headers["x-vertex-ai-session-id"] = sessionKey;
-  }
   return headers;
 }
 
@@ -1265,7 +1262,7 @@ export async function runOpenaiChatPipeline(
   // client's raw auth to tokenhub and gets 401.
   const originalHeaders: Record<string, string> = {};
   for (const [k, v] of c.req.raw.headers.entries()) {
-    if (!SKIP_REQUEST_HEADERS.has(k.toLowerCase())) {
+    if (!shouldSkipRequestHeader(k)) {
       originalHeaders[k] = v;
     }
   }
