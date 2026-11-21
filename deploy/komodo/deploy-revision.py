@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Deploy one image revision to a Komodo stack and wait until its containers are healthy.
 
-Usage: deploy-revision.py <stack> <revision-variable> <revision>
+Usage: deploy-revision.py <stack> <revision>
 
-The stack environment reads the image tag from the Komodo Variable named
-<revision-variable> (MEMORY_BUILD_REVISION=[[AGENT_MEMORY_MEMORY_BUILD_REVISION]]), so
-this script sets that Variable, runs DeployStack, waits for the Komodo update to
-finish, and then waits until every container of the compose project runs the
-new tag and reports healthy.
+The image tag is the line MEMORY_BUILD_REVISION=<revision> in the stack
+environment. This script rewrites that one line (UpdateStack), runs DeployStack,
+waits for the Komodo update to finish, and then waits until every container of
+the compose project runs the new tag and reports healthy. The other environment
+lines only reference secret Variables, so the script never handles a secret.
+A Komodo Variable is not used for the tag, because only an admin may write
+Variables and the deploy key belongs to a service user.
 
 Environment: KOMODO_URL (default http://localhost:9120), KOMODO_API_KEY and
-KOMODO_API_SECRET of a Komodo service user that may write Variables and deploy
-the stack. It runs on the Komodo host, because the API listens there only.
+KOMODO_API_SECRET of a Komodo service user with Write on the stack. It runs on
+the Komodo host, because the API listens there only.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -91,13 +94,23 @@ def wait_healthy(project: str, revision: str) -> bool:
         time.sleep(5)
 
 
+def set_revision(stack: str, revision: str) -> None:
+    current = kapi("read", "GetStack", {"stack": stack})
+    env = current["config"]["environment"]
+    line = f"MEMORY_BUILD_REVISION={revision}"
+    updated, count = re.subn(r"(?m)^MEMORY_BUILD_REVISION=.*$", line, env)
+    if count != 1:
+        raise SystemExit(f"stack {stack}: expected one MEMORY_BUILD_REVISION line, found {count}")
+    kapi("write", "UpdateStack", {"id": current["_id"]["$oid"], "config": {"environment": updated}})
+    print(line)
+
+
 def main() -> int:
-    if len(sys.argv) != 4:
+    if len(sys.argv) != 3 or not re.fullmatch(r"[0-9a-f]{7,40}", sys.argv[2]):
         print(__doc__, file=sys.stderr)
         return 2
-    stack, variable, revision = sys.argv[1:]
-    kapi("write", "UpdateVariableValue", {"name": variable, "value": revision})
-    print(f"{variable}={revision}")
+    stack, revision = sys.argv[1:]
+    set_revision(stack, revision)
     if not wait_update(kapi("execute", "DeployStack", {"stack": stack, "services": []})):
         print("DeployStack failed", file=sys.stderr)
         return 1
