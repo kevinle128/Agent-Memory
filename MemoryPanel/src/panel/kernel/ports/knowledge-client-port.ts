@@ -298,7 +298,16 @@ export interface KnowledgeClientPort {
   codeGraphSync(codeGraphId: string): Promise<CodeGraphSyncResult>;
   codeGraphDelete(codeGraphIds: string[]): Promise<BatchDeleteResult>;
   codeGraphUpdateMeta(codeGraphId: string, patch: { repo_name?: string; summary?: string | null }): Promise<CodeGraphDetail>;
-  codeGraphQuery(codeGraphId: string, tool: string, params: Record<string, unknown>): Promise<CodeGraphToolResult>;
+  /**
+   * `returnToolErrors`: the knowledge service answers a failed code query as `{ code: 0, data: { text, isError: true } }`
+   * with HTTP 500. With the option, that answer is returned as data, so the caller can show the text.
+   */
+  codeGraphQuery(
+    codeGraphId: string,
+    tool: string,
+    params: Record<string, unknown>,
+    opts?: { returnToolErrors?: boolean },
+  ): Promise<CodeGraphToolResult>;
 
   /**
    * 取（必要时生成）该用户的 SSH 密钥对，只回公钥。

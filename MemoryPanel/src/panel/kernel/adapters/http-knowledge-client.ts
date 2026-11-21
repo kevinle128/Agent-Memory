@@ -62,7 +62,7 @@ export class HttpKnowledgeClient implements KnowledgeClientPort {
   private async request<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
-    opts?: { body?: unknown; query?: Record<string, string>; userId?: string; teamId?: string },
+    opts?: { body?: unknown; query?: Record<string, string>; userId?: string; teamId?: string; acceptOkEnvelopeOnHttpError?: boolean },
   ): Promise<T> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.cfg.timeoutMs ?? 15_000);
@@ -94,7 +94,7 @@ export class HttpKnowledgeClient implements KnowledgeClientPort {
           json.code,
         );
       }
-      if (!resp.ok) {
+      if (!resp.ok && !(opts?.acceptOkEnvelopeOnHttpError && json.code === 0)) {
         throw new CoreUpstreamError('CORE_UPSTREAM_ERROR', resp.status, json.message || `HTTP ${resp.status}`, 0);
       }
       return json.data as T;
@@ -305,7 +305,8 @@ export class HttpKnowledgeClient implements KnowledgeClientPort {
   }
 
   async wikiSearch(wikiId: string, query: string, limit?: number, graph?: { hop?: number; decay?: number; minScore?: number }): Promise<WikiSearchResult> {
-    return this.post('/v3/wiki/search', { wiki_id: wikiId, query, limit: limit ?? 20, ...(graph && Object.keys(graph).length > 0 ? { graph } : {}) });
+    // The knowledge service reads `hop`, `decay` and `minScore` from the top level of the body.
+    return this.post('/v3/wiki/search', { wiki_id: wikiId, query, limit: limit ?? 20, ...graph });
   }
 
   async wikiUpdateMeta(wikiId: string, patch: { name?: string; summary?: string | null }): Promise<WikiDetail> {
@@ -358,7 +359,15 @@ export class HttpKnowledgeClient implements KnowledgeClientPort {
     return this.post('/v3/code-graph/update-meta', { code_graph_id: codeGraphId, ...patch });
   }
 
-  async codeGraphQuery(codeGraphId: string, tool: string, params: Record<string, unknown>): Promise<CodeGraphToolResult> {
-    return this.post(`/v3/code-graph/${tool}`, { code_graph_id: codeGraphId, ...params });
+  async codeGraphQuery(
+    codeGraphId: string,
+    tool: string,
+    params: Record<string, unknown>,
+    opts?: { returnToolErrors?: boolean },
+  ): Promise<CodeGraphToolResult> {
+    return this.request<CodeGraphToolResult>('POST', `/v3/code-graph/${tool}`, {
+      body: { code_graph_id: codeGraphId, ...params },
+      acceptOkEnvelopeOnHttpError: opts?.returnToolErrors === true,
+    });
   }
 }

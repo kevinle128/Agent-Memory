@@ -24,6 +24,7 @@ import type { MetaCallContext } from '../../kernel/types.js';
 import { toKernelCredentials } from '../../kernel/types.js';
 import { validatePanelMetaHeaders } from '../middleware/validate-panel-headers.js';
 import { respondControlError, respondEnvelope } from '../envelope.js';
+import { resolveTeamRole } from '../../authz/team-role.js';
 import { buildCtx, okEnvelope, readJson, str } from './knowledge/common.js';
 import {
   FEEDBACK_TARGET_TYPES,
@@ -57,13 +58,8 @@ async function requireTeamAdmin(
   if (!userId) return { error: respondControlError(c, 401, 'INVALID_USER_KEY') };
   if (data?.user?.user_type === 'system_admin') return { userId };
 
-  const member = await deps.metaKernel.invoke('team-member/get', { team_id: teamId, user_id: userId }, ctx);
-  const m = member.data as { role?: string; status?: string } | null;
-  if (member.code === 0 && m?.status === 'active' && m.role === 'admin') return { userId };
-
-  const team = await deps.metaKernel.invoke('team/get', { team_id: teamId }, ctx);
-  const t = team.data as { owner_user_id?: string } | null;
-  if (team.code === 0 && t?.owner_user_id === userId) return { userId };
+  const role = await resolveTeamRole(deps, ctx, userId, teamId, { ownerFallback: true });
+  if (role === 'admin') return { userId };
 
   return { error: respondControlError(c, 403, 'NOT_TEAM_ADMIN') };
 }
