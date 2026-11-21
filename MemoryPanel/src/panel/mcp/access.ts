@@ -308,8 +308,9 @@ export function createRequestAccess(
               try {
                 return await knowledgeReader.codeGraphGet(id);
               } catch (err) {
-                // A 4xx answer means "no such code graph"; a 5xx, a network error or an abort is an outage.
-                if (!(err instanceof CoreUpstreamError && err.httpStatus < 500)) record(err);
+                // A 404 (or 400 for a malformed id) means "no such code graph"; any other status
+                // (auth, rate limit, 5xx), a network error or an abort is an outage.
+                if (!(err instanceof CoreUpstreamError && (err.httpStatus === 404 || err.httpStatus === 400))) record(err);
                 throw err;
               }
             },
@@ -320,7 +321,8 @@ export function createRequestAccess(
         { allowInFlightCodeOwner: opts?.allowInFlightCodeOwner === true, action: 'read', userId: caller.userId },
       );
       if (deadline) throw deadline;
-      if (!check.ok && upstreamFailed) throw new UpstreamUnavailableError('knowledge read check failed');
+      // Also on a grant: a failed Core asset/get must not fall back to the in-flight owner path.
+      if (upstreamFailed) throw new UpstreamUnavailableError('knowledge read check failed');
       return check;
     },
     scope(teamId?: unknown) {

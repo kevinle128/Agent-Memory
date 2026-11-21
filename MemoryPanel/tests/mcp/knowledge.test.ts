@@ -440,6 +440,15 @@ describe('knowledge service outage during the read check', () => {
     expect(res.text).toBe('Agent-Memory could not answer this call.');
   });
 
+  it('answers "could not answer" when codeGraphGet is refused with 403 or 429, not "not readable"', async () => {
+    h.ks.addCodeGraph('cg-building', { team_id: 'A', owner_user_id: 'mia', status: 'processing' });
+    for (const status of [403, 429]) {
+      h.ks.failWith('codeGraphGet', status);
+      const res = await callTool(h.app, keyOf('mia'), 'code_status', { code_graph_id: 'cg-building' });
+      expect(res.text).toBe('Agent-Memory could not answer this call.');
+    }
+  });
+
   it('rethrows the deadline when the membership lookup runs after the request is over', async () => {
     const ctx = { instanceId: 'default', gatewayEndpoint: 'x', gatewayApiKey: 'y', userKey: keyOf('mia') };
     const lifecycle = createRequestLifecycle();
@@ -514,4 +523,12 @@ describe('Core outage during the read check', () => {
       expect(res.text).toBe('Agent-Memory could not answer this call.');
     });
   }
+
+  it('does not grant code_status through the in-flight owner path when asset/get fails', async () => {
+    h.ks.addCodeGraph('cg-building', { team_id: 'A', owner_user_id: 'mia', status: 'processing' });
+    h.world.failWith('asset/get', 503);
+    const res = await callTool(h.app, keyOf('mia'), 'code_status', { code_graph_id: 'cg-building' });
+    expect(res.isError).toBe(true);
+    expect(res.text).toBe('Agent-Memory could not answer this call.');
+  });
 });

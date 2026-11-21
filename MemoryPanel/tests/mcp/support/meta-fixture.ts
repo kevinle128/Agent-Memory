@@ -260,10 +260,14 @@ export function createFakeKnowledge() {
   const codeGraphs = new Map<string, FakeCodeGraph>();
   const calls: KsCall[] = [];
   let failMethod: string | null = null;
+  let failStatus: number | undefined;
 
   const record = (method: string, args: unknown[]) => {
     calls.push({ method, args });
-    if (failMethod === method) throw new Error(`injected knowledge failure in ${method}`);
+    if (failMethod === method) {
+      if (failStatus !== undefined) throw new CoreUpstreamError('CORE_UPSTREAM_ERROR', failStatus, `injected ${failStatus}`, failStatus);
+      throw new Error(`injected knowledge failure in ${method}`);
+    }
   };
   const wikiOf = (id: string) => {
     const w = wikis.get(id);
@@ -345,8 +349,9 @@ export function createFakeKnowledge() {
         repo_name: `repo-${id}`, branch: 'main', status: 'ready', owner_user_id: null, text: {}, ...graph,
       });
     },
-    failWith(method: string | null) {
+    failWith(method: string | null, httpStatus?: number) {
       failMethod = method;
+      failStatus = httpStatus;
     },
     clearCalls() {
       calls.length = 0;
