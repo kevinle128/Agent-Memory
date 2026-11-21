@@ -1486,6 +1486,7 @@ export async function runAnthropicPipeline(
       isCustomUpstream: _isCustomUpstream,
       gates: _gates,
       sessionTurnCtx: upstreamResp.ok ? sessionTurnCtx : null,
+      upstreamStatus: upstreamResp.status,
     });
 
     // CFQ 剥离排在最后：tap 走的是另一条 tee 分支，读到的仍是模型原始输出。
@@ -1950,6 +1951,8 @@ interface AnthropicTapContext {
   gates?: import("../strategies/agent/types.js").StageGates;
   /** Online session trace for this call; null when it is not recorded. */
   sessionTurnCtx: SessionTurnContext | null;
+  /** Upstream HTTP status; a non-2xx stream is reported to Langfuse as a failure. */
+  upstreamStatus: number;
 }
 
 /**
@@ -1965,6 +1968,10 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
     let outputText = "";
     let toolUseCount = 0;
     let streamCompleted = false;
+    // Set when reading the stream failed or timed out: Langfuse gets level ERROR.
+    let readError: string | undefined;
+    // Head of the raw body, kept for the Langfuse failure report of a non-2xx stream.
+    let errorBodyHead = "";
     // 内部使用埋点用：按 index 累积每个 tool_use 块。
     // Anthropic SSE 协议：
     //   1. content_block_start(type=tool_use)  → 拿到 index + name（此时 input 是空 {}）
@@ -1978,6 +1985,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
     const timeoutHandle = setTimeout(() => {
       if (!streamCompleted) {
         pipe.error("STREAM_TIMEOUT", "Anthropic stream reading exceeded 5 minutes");
+        readError = "stream read timed out after 5 minutes";
         // completeStream 是 async；这里 fire-and-forget（timeout 里已经无法 await）
         void completeStream().catch((err) => pipe.error("STREAM_TIMEOUT_COMPLETE", err));
       }
@@ -2022,41 +2030,63 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
       // Output is the message the assembler rebuilt from the SSE events (all
       // blocks incl. thinking, signature and parsed tool_use input, plus stop_reason).
       try {
-        const langfuseOutput = langfuseOutputFromReply(reply, "anthropic");
-        const streamDebugExtra = ctx.langfuseDebug
-          ? {
-              stream_tool_use_count: toolUseCount,
-              stream_output_text_len: outputText.length,
-            }
-          : {};
-        const replyStatus = langfuseReplyStatus(reply);
-        langfuseReportGeneration({
-          traceId: lf.traceId,
-          name: modelId,
-          model: modelId,
-          startTime,
-          endTime,
-          input: ctx.langfuseInput,
-          output: langfuseOutput,
-          level: replyStatus.level,
-          statusMessage: replyStatus.statusMessage,
-          usage: Object.keys(usage).length > 0 ? usage : undefined,
-          traceName: lf.traceName,
-          userId: lf.userId,
-          sessionId: lf.sessionId,
-          instanceId: lf.instanceId,
-          tags: lf.tags,
-          traceInput: lf.userQuery || undefined,
-          traceOutput: langfuseOutput,
-          traceMetadata: {
-            stream: true, retried, upstreamUrl, ...logMeta,
-            ...ctx.debugMetadata, ...streamDebugExtra,
-          },
-          observationMetadata: {
-            retried, ...logMeta,
-            ...ctx.debugMetadata, ...streamDebugExtra, ...replyStatus.metadata,
-          },
-        });
+        if (ctx.upstreamStatus >= 400) {
+          // A non-2xx reply (e.g. 529 Overloaded, or a retried 4xx) is a failed
+          // call, not a cut assistant message.
+          langfuseReportFailure({
+            lf,
+            model: modelId,
+            startTime,
+            endTime,
+            input: ctx.langfuseInput,
+            status: ctx.upstreamStatus,
+            statusMessage: errorBodyHead.slice(0, 500),
+            extraTags: ["error"],
+            observationMetadata: { stage: "upstream", stream: true, retried, ...ctx.debugMetadata },
+          });
+        } else {
+          const langfuseOutput = langfuseOutputFromReply(reply, "anthropic");
+          const streamDebugExtra = ctx.langfuseDebug
+            ? {
+                stream_tool_use_count: toolUseCount,
+                stream_output_text_len: outputText.length,
+              }
+            : {};
+          const replyStatus = readError === undefined
+            ? langfuseReplyStatus(reply)
+            : {
+                level: "ERROR" as const,
+                statusMessage: `stream incomplete: stream read failed ${readError}`.slice(0, 500),
+                metadata: { stream_incomplete: true, stream_incomplete_reason: "stream read failed" },
+              };
+          langfuseReportGeneration({
+            traceId: lf.traceId,
+            name: modelId,
+            model: modelId,
+            startTime,
+            endTime,
+            input: ctx.langfuseInput,
+            output: langfuseOutput,
+            level: replyStatus.level,
+            statusMessage: replyStatus.statusMessage,
+            usage: Object.keys(usage).length > 0 ? usage : undefined,
+            traceName: lf.traceName,
+            userId: lf.userId,
+            sessionId: lf.sessionId,
+            instanceId: lf.instanceId,
+            tags: lf.tags,
+            traceInput: lf.userQuery || undefined,
+            traceOutput: langfuseOutput,
+            traceMetadata: {
+              stream: true, retried, upstreamUrl, ...logMeta,
+              ...ctx.debugMetadata, ...streamDebugExtra,
+            },
+            observationMetadata: {
+              retried, ...logMeta,
+              ...ctx.debugMetadata, ...streamDebugExtra, ...replyStatus.metadata,
+            },
+          });
+        }
       } catch (langfuseErr: unknown) {
         pipe.error("LANGFUSE_SPAN", langfuseErr);
       }
@@ -2175,7 +2205,11 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
         const { done, value } = await reader.read();
         if (done) break;
 
-        sseBuf += decoder.decode(value, { stream: true });
+        const chunk = decoder.decode(value, { stream: true });
+        if (ctx.upstreamStatus >= 400 && errorBodyHead.length < 500) {
+          errorBodyHead += chunk.slice(0, 500 - errorBodyHead.length);
+        }
+        sseBuf += chunk;
 
         const parts = sseBuf.split("\n\n");
         sseBuf = parts.pop() ?? "";
@@ -2267,6 +2301,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
       }
     } catch (err: unknown) {
       pipe.error("STREAM", err);
+      readError = err instanceof Error ? err.message : String(err);
     }
 
     await completeStream();

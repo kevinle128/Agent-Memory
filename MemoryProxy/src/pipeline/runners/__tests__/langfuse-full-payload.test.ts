@@ -728,6 +728,37 @@ describe("a cut or failed stream does not look like a normal generation", () => 
     expect(g.observationMetadata).toMatchObject({ stream_incomplete: true });
   });
 
+  it("anthropic: a streamed 5xx reply is a failure with its status, not a cut generation", async () => {
+    installFetch(() => jsonResponse({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }, 529));
+    await post("/claude-code/default/v1/messages", { ...anthropicBody, stream: true }, anthropicHeaders);
+    await vi.waitFor(() => expect(failures).toHaveLength(1));
+    expect(generations).toHaveLength(0);
+    expect(failures[0]!.status).toBe(529);
+    expect(failures[0]!.statusMessage).toContain("overloaded_error");
+    expect(failures[0]!.extraTags).toContain("error");
+  });
+
+  it("anthropic: a stream whose read fails gives level ERROR", async () => {
+    const enc = new TextEncoder();
+    installFetch(() => new Response(new ReadableStream<Uint8Array>({
+      start(ctrl) {
+        ctrl.enqueue(enc.encode(`event: message_start\ndata: ${JSON.stringify({ type: "message_start", message: { id: "m", role: "assistant", content: [], usage: { input_tokens: 1, output_tokens: 0 } } })}\n\n`));
+        ctrl.error(new Error("socket reset"));
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const res = await makeApp(config()).request("/claude-code/default/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", ...anthropicHeaders },
+      body: JSON.stringify({ ...anthropicBody, stream: true }),
+    });
+    await res.text().catch(() => undefined);
+    await vi.waitFor(() => expect(generations).toHaveLength(1));
+    const g = generations[0]!;
+    expect(g.level).toBe("ERROR");
+    expect(g.statusMessage).toContain("socket reset");
+    expect(g.observationMetadata).toMatchObject({ stream_incomplete: true, stream_incomplete_reason: "stream read failed" });
+  });
+
   it("anthropic: a stream that ends before the stop event gives level WARNING", async () => {
     installFetch(() => sse([
       ["message_start", { type: "message_start", message: { id: "m", role: "assistant", content: [], usage: { input_tokens: 1, output_tokens: 0 } } }],
