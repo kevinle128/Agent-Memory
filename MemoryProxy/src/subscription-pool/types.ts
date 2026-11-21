@@ -13,6 +13,16 @@ export interface PoolQuotaWindow {
   resets_at: number | null;
   observed_at: number;
   source: string;
+  /** Display name of the quota group (AntiGravity). */
+  group_label?: string;
+  /** Model ids that this window stops (AntiGravity group). When set, it replaces the single-model scope. */
+  shared_models?: string[];
+}
+
+/** True when the window limits a request for `model`: a shared window, the model's own, or a group that lists it. */
+export function windowAppliesToModel(window: Pick<PoolQuotaWindow, "model_scope" | "shared_models">, model: string): boolean {
+  if (window.shared_models) return window.shared_models.includes(model);
+  return !window.model_scope || window.model_scope === model;
 }
 
 export type PoolAccountStatus = "active" | "exhausted" | "auth_error" | "disabled";

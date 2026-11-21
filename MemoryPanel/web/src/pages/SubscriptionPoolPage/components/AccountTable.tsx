@@ -15,10 +15,13 @@ import {
   describeWindow,
   formatClock,
   formatResetAt,
+  groupBuckets,
   groupWindows,
   windowColumns,
   latestObservation,
   nearestExpiringCredit,
+  quotaGroupColumns,
+  remainingPct,
   supportsResetCredits,
   thresholdMark,
   usageCheckFailing,
@@ -58,12 +61,15 @@ function Meter({
   thresholdPct,
   showMark,
   label,
+  showRemaining = false,
 }: {
   window: PoolWindow | null;
   now: number;
   thresholdPct: number;
   showMark: boolean;
   label?: string;
+  /** Show the percent left and fill the bar with it, like the AntiGravity app. */
+  showRemaining?: boolean;
 }) {
   const { t } = useTranslation();
   if (!window) {
@@ -84,14 +90,14 @@ function Meter({
     <div className="_memory-pool-meter">
       <div className="_memory-pool-meter-label">
         {label && <span className="_memory-pool-meter-name">{label} </span>}
-        {Math.round(view.pct)}%
+        {showRemaining ? t('subscriptionPool.window.pctLeft', { pct: remainingPct(view.pct) }) : `${Math.round(view.pct)}%`}
       </div>
       <div className="_memory-pool-bar">
-        <i className={`_memory-pool-fill _memory-pool-fill--${view.level}`} style={{ width: `${view.pct}%` }} />
+        <i className={`_memory-pool-fill _memory-pool-fill--${view.level}`} style={{ width: `${showRemaining ? 100 - view.pct : view.pct}%` }} />
         {showMark && (
           <span
             className="_memory-pool-mark"
-            style={{ left: `${thresholdMark(thresholdPct)}%` }}
+            style={{ left: `${showRemaining ? 100 - thresholdMark(thresholdPct) : thresholdMark(thresholdPct)}%` }}
             title={t('subscriptionPool.window.thresholdTip', { pct: thresholdPct })}
           />
         )}
@@ -103,9 +109,51 @@ function Meter({
 
 /** Short label of a window in the model limits column: the model, or the window name for a shared window. */
 function windowLabel(window: PoolWindow, t: (key: string) => string): string {
-  if (window.model_scope) return window.model_scope;
+  if (window.model_scope && !window.group_label) return window.model_scope;
   const key = `subscriptionPool.window.name.${window.name}`;
   return i18n.exists(key) ? t(key) : window.name;
+}
+
+/** One quota group of an account: its weekly and 5h limits as "% left", with the models they cover. */
+function QuotaGroupCell({
+  account,
+  groupKey,
+  now,
+  thresholdPct,
+  showMark,
+}: {
+  account: SubscriptionAccount;
+  groupKey: string;
+  now: number;
+  thresholdPct: number;
+  showMark: boolean;
+}) {
+  const { t } = useTranslation();
+  const buckets = groupBuckets(account.usage.windows, groupKey);
+  if (buckets.length === 0) return <Text theme="weak">—</Text>;
+  const models = buckets.find((w) => w.shared_models && w.shared_models.length > 0)?.shared_models ?? [];
+  return (
+    <div>
+      <div className="_memory-pool-meter-list">
+        {buckets.map((window) => (
+          <Meter
+            key={window.name}
+            window={window}
+            now={now}
+            thresholdPct={thresholdPct}
+            showMark={showMark}
+            showRemaining
+            label={windowLabel(window, t)}
+          />
+        ))}
+      </div>
+      {models.length > 0 && (
+        <Bubble content={models.join(', ')}>
+          <Text theme="weak" className="_memory-pool-small">{t('subscriptionPool.group.models', { count: models.length })}</Text>
+        </Bubble>
+      )}
+    </div>
+  );
 }
 
 function sourceLabel(source: string, t: (key: string) => string): string {
@@ -148,11 +196,16 @@ export function AccountTable({
   }
 
   const visible = windowColumns(accounts);
+  const groupColumns = quotaGroupColumns(accounts);
+  // Group columns replace the weekly column and the per-model column of an account that has groups.
+  // A model window without a group (the fallback reading) keeps the per-model column.
+  const showWeekly = groupColumns.length === 0 || accounts.some((a) => groupWindows(a.usage.windows).secondary);
+  const showModels = visible.models && accounts.some((a) => groupWindows(a.usage.windows).extra.some((w) => !w.group_label));
   // The pool page lists one provider at a time, so the column goes only when none of the rows can have credits.
   const showCredits = accounts.some((account) => supportsResetCredits(account.provider));
   // Every column has a fixed width. When their sum is wider than the page, the table scrolls
   // sideways instead of squeezing the account name into one letter per line.
-  const minWidth = 220 + 150 + (visible.primary ? 220 : 0) + 220 + (visible.models ? 220 : 0) + (showCredits ? 170 : 0) + 120 + 150 + 260;
+  const minWidth = 220 + 150 + (visible.primary ? 220 : 0) + (showWeekly ? 220 : 0) + (showModels ? 220 : 0) + groupColumns.length * 240 + (showCredits ? 170 : 0) + 120 + 150 + 260;
 
   return (
     <Table
@@ -220,7 +273,7 @@ export function AccountTable({
             );
           },
         }] : []),
-        {
+        ...(showWeekly ? [{
           key: 'secondary',
           header: t('subscriptionPool.col.secondary'),
           width: 220,
@@ -235,13 +288,13 @@ export function AccountTable({
               />
             );
           },
-        },
-        ...(visible.models ? [{
+        }] : []),
+        ...(showModels ? [{
           key: 'models',
           header: t('subscriptionPool.col.models'),
           width: 220,
           render: (account: SubscriptionAccount) => {
-            const extra = groupWindows(account.usage.windows).extra;
+            const extra = groupWindows(account.usage.windows).extra.filter((w) => !w.group_label);
             if (extra.length === 0) return <Text theme="weak">—</Text>;
             return (
               <div className="_memory-pool-meter-list">
@@ -259,6 +312,23 @@ export function AccountTable({
             );
           },
         }] : []),
+        ...groupColumns.map((group) => ({
+          key: `group:${group.key}`,
+          header: group.label,
+          width: 240,
+          render: (account: SubscriptionAccount) => {
+            const state = stateOf(account);
+            return (
+              <QuotaGroupCell
+                account={account}
+                groupKey={group.key}
+                now={now}
+                thresholdPct={thresholdPct}
+                showMark={state !== 'disabled' && state !== 'auth_error'}
+              />
+            );
+          },
+        })),
         ...(showCredits ? [{
           key: 'credits',
           header: t('subscriptionPool.col.credits'),

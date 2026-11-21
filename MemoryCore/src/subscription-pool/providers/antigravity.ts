@@ -151,6 +151,68 @@ export function parseAntigravityUsage(raw: unknown, now = Date.now()): Subscript
   return windows;
 }
 
+/** Name of a bucket window: the app sends `window` as `weekly` or `5h`; the bucket id suffix is the fallback. */
+function bucketWindowName(bucket: Record<string, unknown>): string {
+  if (typeof bucket.window === "string" && bucket.window.trim()) return bucket.window.trim();
+  const id = typeof bucket.bucketId === "string" ? bucket.bucketId : "";
+  return /-(weekly|5h)$/.exec(id)?.[1] ?? id;
+}
+
+/**
+ * Group key of a bucket: its id without the window suffix (`gemini-weekly` gives `gemini`,
+ * `3p-5h` gives `3p`). A group has no id of its own in the payload.
+ */
+function bucketGroupKey(bucket: Record<string, unknown>): string {
+  const id = typeof bucket.bucketId === "string" ? bucket.bucketId : "";
+  return id.replace(/-(weekly|5h)$/, "");
+}
+
+/**
+ * Quota of every group of a `retrieveUserQuotaSummary` payload: one window per bucket (weekly and
+ * 5h), the same limits the AntiGravity app shows.
+ *
+ * Why per group: every model of a group shares both limits, so a drained bucket must stop all of
+ * those models and no other. `model_scope` is the group key and `shared_models` lists the model
+ * ids (from `fetchAvailableModels`) that the bucket stops. The payload names a group's models
+ * only by display name, so the app's own rule decides membership: a model whose id contains
+ * `gemini` belongs to the Gemini group and every other model to the third-party group.
+ *
+ * A bucket without `remainingFraction` is read as nothing left, like a model in
+ * `parseAntigravityUsage`.
+ */
+export function parseAntigravityQuotaSummary(summary: unknown, models: unknown, now = Date.now()): SubscriptionQuotaWindow[] {
+  const modelIds = Object.entries(asRecord(asRecord(models).models))
+    .filter(([id, info]) => isUsableModel(id, asRecord(info)))
+    .map(([id]) => id);
+  const groups = asRecord(summary).groups;
+  const windows: SubscriptionQuotaWindow[] = [];
+  for (const rawGroup of Array.isArray(groups) ? groups : []) {
+    const group = asRecord(rawGroup);
+    const groupLabel = typeof group.displayName === "string" ? group.displayName.trim() : "";
+    for (const rawBucket of Array.isArray(group.buckets) ? group.buckets : []) {
+      const bucket = asRecord(rawBucket);
+      const key = bucketGroupKey(bucket);
+      const name = bucketWindowName(bucket);
+      if (!key || !name) continue;
+      const fraction = typeof bucket.remainingFraction === "number" && Number.isFinite(bucket.remainingFraction)
+        ? Math.min(1, Math.max(0, bucket.remainingFraction))
+        : 0;
+      const geminiGroup = key.toLowerCase().includes("gemini");
+      windows.push({
+        name,
+        model_scope: key,
+        used_pct: Math.round((1 - fraction) * 10_000) / 100,
+        resets_at: parseResetTime(bucket.resetTime, now),
+        observed_at: now,
+        source: "usage_api",
+        ...(groupLabel ? { group_label: groupLabel } : {}),
+        shared_models: modelIds.filter((id) => id.toLowerCase().includes("gemini") === geminiGroup),
+      });
+    }
+  }
+  return windows;
+}
+
 /** Models of a `fetchAvailableModels` payload. `models` is an object keyed by model id. */
 export function parseAntigravityModels(raw: unknown): SourceModelReading[] {
   const models: SourceModelReading[] = [];
@@ -258,6 +320,18 @@ export function createAntigravityAdapter(
     return await response.json();
   }
 
+  async function quotaSummary(accessToken: string, projectId: string | null | undefined): Promise<unknown> {
+    const response = await fetchImpl(cloudCodeUrl("retrieveUserQuotaSummary"), {
+      method: "POST",
+      headers: cloudCodeHeaders(accessToken),
+      body: JSON.stringify(projectId ? { project: projectId } : {}),
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw await readProviderError(response);
+    return await response.json();
+  }
+
   function expiresAtOf(body: Record<string, unknown>, now: number): number | null {
     const expiresIn = Number(body.expires_in);
     return Number.isFinite(expiresIn) && expiresIn > 0 ? now + expiresIn * 1000 : null;
@@ -296,8 +370,12 @@ export function createAntigravityAdapter(
       };
     },
     async fetchUsage(accessToken: string, _providerAccountId: string, usageOptions: FetchUsageOptions = {}) {
-      const windows = parseAntigravityUsage(await availableModels(accessToken, usageOptions.projectId));
-      return { windows, resetCredits: null };
+      const models = await availableModels(accessToken, usageOptions.projectId);
+      // The quota summary has the groups with weekly and 5h limits. When it fails or has no group,
+      // the per-model fractions of `fetchAvailableModels` still give a usable reading.
+      const summary = await quotaSummary(accessToken, usageOptions.projectId).catch(() => null);
+      const grouped = summary ? parseAntigravityQuotaSummary(summary, models) : [];
+      return { windows: grouped.length > 0 ? grouped : parseAntigravityUsage(models), resetCredits: null };
     },
     async fetchModels(accessToken: string, _providerAccountId: string, modelOptions: FetchModelsOptions = {}) {
       return parseAntigravityModels(await availableModels(accessToken, modelOptions.projectId));

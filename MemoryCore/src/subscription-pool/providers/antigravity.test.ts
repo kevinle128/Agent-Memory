@@ -6,11 +6,13 @@ import {
   AntigravityOAuthNotConfiguredError,
   createAntigravityAdapter,
   parseAntigravityModels,
+  parseAntigravityQuotaSummary,
   parseAntigravityUsage,
 } from "./antigravity.js";
 import { SubscriptionProviderError, type SubscriptionFetch } from "./types.js";
 
 const MODELS_FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/antigravity-available-models.json", import.meta.url), "utf8"));
+const QUOTA_SUMMARY_FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/antigravity-quota-summary.json", import.meta.url), "utf8"));
 
 interface Captured { url: string; init?: RequestInit }
 type Reply = { status?: number; body: unknown };
@@ -46,7 +48,7 @@ describe("antigravity Cloud Code host", () => {
     const calls: Captured[] = [];
     const adapter = createAntigravityAdapter(scripted([
       TOKEN_REPLY, USERINFO_REPLY, { body: {} }, { body: { done: true, response: { cloudaicompanionProject: "p" } } },
-      { body: MODELS_FIXTURE }, { body: MODELS_FIXTURE },
+      { body: MODELS_FIXTURE }, { body: QUOTA_SUMMARY_FIXTURE }, { body: MODELS_FIXTURE },
     ], calls));
     await adapter.exchangeCode({ code: "c", codeVerifier: "", redirectUri: "", state: "s" });
     await adapter.fetchUsage("a", "x", { projectId: "p" });
@@ -55,6 +57,7 @@ describe("antigravity Cloud Code host", () => {
       "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     ]);
   });
@@ -267,22 +270,69 @@ describe("parseAntigravityModels", () => {
 });
 
 describe("antigravity fetchUsage and fetchModels", () => {
-  it("posts the project to fetchAvailableModels and returns no reset credits", async () => {
+  it("reads the quota groups with the project and returns no reset credits", async () => {
     const calls: Captured[] = [];
-    const adapter = createAntigravityAdapter(scripted([{ body: MODELS_FIXTURE }, { body: MODELS_FIXTURE }], calls));
+    const adapter = createAntigravityAdapter(scripted([{ body: MODELS_FIXTURE }, { body: QUOTA_SUMMARY_FIXTURE }, { body: MODELS_FIXTURE }], calls));
     const usage = await adapter.fetchUsage("access-1", "pool-1@example.com", { projectId: "proj-1" });
     expect(usage.resetCredits).toBeNull();
-    expect(usage.windows).toHaveLength(3);
+    expect(usage.windows.map((w) => `${w.model_scope}:${w.name}`)).toEqual(["gemini:weekly", "gemini:5h", "3p:weekly", "3p:5h"]);
     expect(calls[0]!.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
-    expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({ project: "proj-1" });
+    expect(calls[1]!.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary");
+    expect(JSON.parse(String(calls[1]!.init!.body))).toEqual({ project: "proj-1" });
     expect((calls[0]!.init!.headers as Record<string, string>).authorization).toBe("Bearer access-1");
 
     const models = await adapter.fetchModels("access-1", "pool-1@example.com", { projectId: "proj-1" });
     expect(models.map((m) => m.id)).toContain("claude-opus-5-5-high");
   });
 
+  it("falls back to the per-model fractions when the quota summary fails", async () => {
+    const adapter = createAntigravityAdapter(scripted([{ body: MODELS_FIXTURE }, { status: 500, body: { error: { message: "boom" } } }]));
+    const usage = await adapter.fetchUsage("access-1", "pool-1@example.com", { projectId: "proj-1" });
+    expect(usage.windows).toHaveLength(3);
+    expect(usage.windows.every((w) => w.name === "quota")).toBe(true);
+  });
+
   it("throws a provider error with the status when Google refuses", async () => {
     const adapter = createAntigravityAdapter(scripted([{ status: 401, body: { error: { message: "expired" } } }]));
     await expect(adapter.fetchModels("bad", "x")).rejects.toMatchObject({ status: 401, permanent: true });
+  });
+});
+
+describe("parseAntigravityQuotaSummary", () => {
+  const NOW = Date.parse("2026-11-21T11:00:00Z");
+  const models = { models: {
+    "gemini-4-argon-high": { displayName: "Gemini 4 Argon (High)", quotaInfo: {} },
+    "gemini-4-neon-low": { displayName: "Gemini 4 Neon (Low)", quotaInfo: {} },
+    "claude-sonnet-4-6": { displayName: "Claude Sonnet 4.6 (Thinking)", quotaInfo: {} },
+    "gpt-oss-120b-medium": { displayName: "GPT-OSS 120B (Medium)", quotaInfo: {} },
+    "tab_flash_lite_preview": { quotaInfo: {} },
+    "gemini-4-hydrogen-tiered-high": { displayName: "Gemini 4 Hydrogen (High)", quotaInfo: {} },
+  } };
+
+  it("makes one window per bucket, scoped to the group key, with used percent and reset time", () => {
+    const windows = parseAntigravityQuotaSummary(QUOTA_SUMMARY_FIXTURE, models, NOW);
+    expect(windows).toHaveLength(4);
+    expect(windows[0]).toMatchObject({
+      name: "weekly", model_scope: "gemini", group_label: "Gemini Models", source: "usage_api", observed_at: NOW,
+      used_pct: 7.02, resets_at: Date.parse("2026-11-28T08:48:17Z"),
+    });
+    expect(windows[1]).toMatchObject({ name: "5h", model_scope: "gemini", used_pct: 24.5 });
+    expect(windows[2]).toMatchObject({ name: "weekly", model_scope: "3p", group_label: "Claude and GPT models", used_pct: 0.19 });
+  });
+
+  it("lists the models each group stops: gemini ids in the Gemini group, the others in the third-party group", () => {
+    const windows = parseAntigravityQuotaSummary(QUOTA_SUMMARY_FIXTURE, models, NOW);
+    expect(windows[0]!.shared_models).toEqual(["gemini-4-argon-high", "gemini-4-neon-low", "gemini-4-hydrogen-tiered-high"]);
+    expect(windows[2]!.shared_models).toEqual(["claude-sonnet-4-6", "gpt-oss-120b-medium"]);
+  });
+
+  it("reads a bucket without remainingFraction as full", () => {
+    const windows = parseAntigravityQuotaSummary(QUOTA_SUMMARY_FIXTURE, models, NOW);
+    expect(windows[3]).toMatchObject({ name: "5h", model_scope: "3p", used_pct: 100 });
+  });
+
+  it("returns no window for a payload without groups", () => {
+    expect(parseAntigravityQuotaSummary({}, models, NOW)).toEqual([]);
+    expect(parseAntigravityQuotaSummary(null, models, NOW)).toEqual([]);
   });
 });

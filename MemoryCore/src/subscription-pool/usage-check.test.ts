@@ -33,6 +33,17 @@ describe("checkAccountUsage", () => {
     expect(result.account.usage.windows).toEqual([win(30, NOW + 60 * MIN)]);
   });
 
+  it("replaces the old per-model windows with the quota group windows of the new reading", async () => {
+    const account = await fx.addAccount();
+    const perModel = win(30, NOW + 60 * MIN, { name: "quota", model_scope: "gemini-4-argon-high" });
+    await fx.store.updateSubscriptionAccount(account.account_id, { usage: { windows: [perModel] } });
+    const group = win(7, NOW + 60 * MIN, { name: "weekly", model_scope: "gemini", group_label: "Gemini Models", shared_models: ["gemini-4-argon-high"] });
+
+    const result = await checkAccountUsage(fx.store, account.account_id, fakeAdapter({ fetchUsage: async () => usageReading([group]) }), 95, NOW);
+
+    expect(result.account.usage.windows).toEqual([group]);
+  });
+
   it("stores the reset credits of the reading and clears them when the provider gives none", async () => {
     const account = await fx.addAccount();
     const resetCredits = {
