@@ -7,6 +7,7 @@
  */
 import type { Context } from 'hono';
 import type { PanelDeps } from '../../../panel-deps.js';
+import type { KnowledgeClientPort } from '../../../kernel/ports/knowledge-client-port.js';
 import { toKernelCredentials, type MetaCallContext } from '../../../kernel/types.js';
 import type { MetaEnvelope } from '../../../kernel/envelope.js';
 import { DomainError } from '../../../domain/errors.js';
@@ -54,7 +55,7 @@ export function extractListItems<T>(env: MetaEnvelope<unknown>): T[] {
 
 /** 通过 auth/verify 反查 caller 的 user_id。失败返 null。 */
 export async function resolveCallerUserId(
-  deps: PanelDeps,
+  deps: Pick<PanelDeps, 'metaKernel'>,
   ctx: MetaCallContext,
 ): Promise<string | null> {
   if (!ctx.userKey) return null;
@@ -80,7 +81,7 @@ export async function isCallerSystemAdmin(
 
 /** 校验 user 是否是 team 成员（team-member/get 存在→成员）。异常保守返 false。 */
 export async function isTeamMember(
-  deps: PanelDeps,
+  deps: Pick<PanelDeps, 'metaKernel'>,
   ctx: MetaCallContext,
   teamId: string,
   userId: string,
@@ -305,7 +306,7 @@ export function isActiveMetaAsset(status: string | undefined): boolean {
 
 /** acl/check：caller 对 asset 是否有指定 action 权限。 */
 export async function checkAssetPermission(
-  deps: PanelDeps,
+  deps: Pick<PanelDeps, 'metaKernel'>,
   ctx: MetaCallContext,
   userId: string,
   assetId: string,
@@ -331,29 +332,56 @@ export async function checkAssetReadPermission(
   return checkAssetPermission(deps, ctx, userId, assetId, 'read');
 }
 
+export type KnowledgeReadDenial = 'invalid_key' | 'forbidden' | 'not_member' | 'not_found';
+
+export type KnowledgeReadCheck =
+  | {
+      ok: true;
+      userId: string;
+      /** Team of the asset. For an in-flight code graph it comes from the knowledge service. */
+      teamId: string;
+      asset?: KnowledgeAssetMetaRaw;
+    }
+  | { ok: false; reason: KnowledgeReadDenial };
+
+export interface KnowledgeReadOptions {
+  allowInFlightCodeOwner?: boolean;
+  action?: 'read' | 'write' | 'use';
+  /** Caller that the route already resolved. Skips the `auth/verify` call. */
+  userId?: string;
+}
+
 /**
- * 知识资源读门控：meta asset 存在时走 acl/check；
- * code-graph 构建中无 meta 时，仅允许 KS owner 读 get（窄例外）。
+ * Read gate for a wiki or a code graph, without an HTTP response.
+ * When a meta asset exists, `acl/check` decides and the caller must be an active team member.
+ * A code graph that is still building has no meta asset: only its owner may read it (narrow exception).
+ * The result names the denial reason. The caller decides how to show it: the Panel routes map it
+ * to a status code, the MCP server maps every reason to one error.
  */
-export async function requireKnowledgeRead(
-  deps: PanelDeps,
-  c: Context,
+/** What the read gate needs: Core calls, and `codeGraphGet` of the knowledge service. */
+export interface KnowledgeGateDeps {
+  metaKernel: PanelDeps['metaKernel'];
+  knowledgeClientFactory: (instanceId: string) => Pick<KnowledgeClientPort, 'codeGraphGet'>;
+}
+
+export async function checkKnowledgeRead(
+  deps: KnowledgeGateDeps,
   ctx: MetaCallContext,
   knowledgeId: string,
-  opts?: { allowInFlightCodeOwner?: boolean; action?: 'read' | 'write' | 'use' },
-): Promise<{ userId: string; asset?: KnowledgeAssetMetaRaw } | { error: Response }> {
-  const userId = await resolveCallerUserId(deps, ctx);
-  if (!userId) return { error: respondControlError(c, 401, 'INVALID_USER_KEY') };
+  opts?: KnowledgeReadOptions,
+): Promise<KnowledgeReadCheck> {
+  const userId = opts?.userId ?? (await resolveCallerUserId(deps, ctx));
+  if (!userId) return { ok: false, reason: 'invalid_key' };
   const action = opts?.action ?? 'read';
 
   const assetEnv = await deps.metaKernel.invoke('asset/get', { asset_id: knowledgeId }, ctx);
   if (assetEnv.code === 0 && assetEnv.data) {
     const asset = assetEnv.data as KnowledgeAssetMetaRaw;
     const allowed = await checkAssetPermission(deps, ctx, userId, knowledgeId, action);
-    if (!allowed) return { error: respondControlError(c, 403, 'FORBIDDEN') };
+    if (!allowed) return { ok: false, reason: 'forbidden' };
     const member = await isTeamMember(deps, ctx, asset.team_id, userId);
-    if (!member) return { error: respondControlError(c, 403, 'NOT_TEAM_MEMBER') };
-    return { userId, asset };
+    if (!member) return { ok: false, reason: 'not_member' };
+    return { ok: true, userId, teamId: asset.team_id, asset };
   }
 
   if (opts?.allowInFlightCodeOwner && (action === 'read' || action === 'write')) {
@@ -362,15 +390,39 @@ export async function requireKnowledgeRead(
       const detail = await kc.codeGraphGet(knowledgeId);
       if (detail.owner_user_id === userId) {
         const member = await isTeamMember(deps, ctx, detail.team_id, userId);
-        if (!member) return { error: respondControlError(c, 403, 'NOT_TEAM_MEMBER') };
-        return { userId };
+        if (!member) return { ok: false, reason: 'not_member' };
+        return { ok: true, userId, teamId: detail.team_id };
       }
     } catch {
       /* fall through */
     }
   }
 
-  return { error: respondControlError(c, 404, 'KNOWLEDGE_NOT_FOUND') };
+  return { ok: false, reason: 'not_found' };
+}
+
+/**
+ * Read gate for the Panel routes: maps each denial reason of `checkKnowledgeRead` to its HTTP status and error code.
+ */
+export async function requireKnowledgeRead(
+  deps: PanelDeps,
+  c: Context,
+  ctx: MetaCallContext,
+  knowledgeId: string,
+  opts?: { allowInFlightCodeOwner?: boolean; action?: 'read' | 'write' | 'use' },
+): Promise<{ userId: string; asset?: KnowledgeAssetMetaRaw } | { error: Response }> {
+  const check = await checkKnowledgeRead(deps, ctx, knowledgeId, opts);
+  if (check.ok) return check.asset ? { userId: check.userId, asset: check.asset } : { userId: check.userId };
+  switch (check.reason) {
+    case 'invalid_key':
+      return { error: respondControlError(c, 401, 'INVALID_USER_KEY') };
+    case 'forbidden':
+      return { error: respondControlError(c, 403, 'FORBIDDEN') };
+    case 'not_member':
+      return { error: respondControlError(c, 403, 'NOT_TEAM_MEMBER') };
+    case 'not_found':
+      return { error: respondControlError(c, 404, 'KNOWLEDGE_NOT_FOUND') };
+  }
 }
 
 /**
@@ -428,7 +480,7 @@ export interface KnowledgeAssetListItem {
 }
 
 async function joinWikiKs(
-  kc: ReturnType<PanelDeps['knowledgeClientFactory']>,
+  kc: Pick<KnowledgeClientPort, 'wikiGet'>,
   meta: KnowledgeAssetMetaRaw,
 ): Promise<KnowledgeAssetListItem> {
   const base: KnowledgeAssetListItem = {
@@ -467,7 +519,7 @@ async function joinWikiKs(
 }
 
 async function joinCodeKs(
-  kc: ReturnType<PanelDeps['knowledgeClientFactory']>,
+  kc: Pick<KnowledgeClientPort, 'codeGraphGet'>,
   meta: KnowledgeAssetMetaRaw,
 ): Promise<KnowledgeAssetListItem> {
   const base: KnowledgeAssetListItem = {
@@ -513,7 +565,15 @@ export async function joinKnowledgeAssetsWithKs(
   assets: KnowledgeAssetMetaRaw[],
   assetType: typeof ASSET_TYPE_WIKI | typeof ASSET_TYPE_CODE_GRAPH,
 ): Promise<KnowledgeAssetListItem[]> {
-  const kc = deps.knowledgeClientFactory(ctx.instanceId);
+  return joinKnowledgeAssetsWithClient(deps.knowledgeClientFactory(ctx.instanceId), assets, assetType);
+}
+
+/** Same join with a given client, so a caller that has a narrow client does not need `deps`. */
+export async function joinKnowledgeAssetsWithClient(
+  kc: Pick<KnowledgeClientPort, 'wikiGet' | 'codeGraphGet'>,
+  assets: KnowledgeAssetMetaRaw[],
+  assetType: typeof ASSET_TYPE_WIKI | typeof ASSET_TYPE_CODE_GRAPH,
+): Promise<KnowledgeAssetListItem[]> {
   const joiner = assetType === ASSET_TYPE_WIKI ? joinWikiKs : joinCodeKs;
   const settled = await Promise.allSettled(assets.map((a) => joiner(kc, a)));
   return settled.map((r, i) => {

@@ -16,6 +16,7 @@ import { registerAgentLifecycleRoutes } from './routes/agent-lifecycle.js';
 import { registerKnowledgeRoutes } from './routes/knowledge/index.js';
 import { registerAuthRoutes, registerWoaIngressRoutes } from './routes/auth.js';
 import { registerProcessingHistoryRoutes } from './routes/processing-history.js';
+import { registerMcpRoutes } from '../mcp/route.js';
 
 const API_PREFIX = '/api/v1';
 
@@ -49,6 +50,8 @@ export function buildPanelApp(deps: PanelDeps): Hono {
   registerKnowledgeRoutes(api, deps);
   // Processing History (injections, extractions, ratings): team admins only.
   registerProcessingHistoryRoutes(api, deps);
+  // agent-memory MCP server: read-only, user-key auth, per-team access checks.
+  registerMcpRoutes(api, deps);
   // Hono copies routes at route() time, so extension routes must be added first.
   deps.extensions?.mountApi(api);
   app.route(API_PREFIX, api);

@@ -1,0 +1,411 @@
+[
+  {
+    "id": "member-whoami",
+    "persona": "member",
+    "question": "Which teams am I in, and what is my role in each?",
+    "calls": [
+      {
+        "tool": "whoami",
+        "args": {}
+      }
+    ],
+    "facts": [
+      "\"team_name\": \"Alpha\"",
+      "\"role\": \"member\"",
+      "\"scope\": \"own\""
+    ]
+  },
+  {
+    "id": "member-team-knowledge",
+    "persona": "member",
+    "question": "Which wikis and code graphs does my team have?",
+    "calls": [
+      {
+        "tool": "knowledge_list",
+        "args": {}
+      }
+    ],
+    "facts": [
+      "wiki-a-team",
+      "cg-a-team",
+      "\"team_name\": \"Alpha\""
+    ],
+    "absent": [
+      "wiki-a-restricted",
+      "wiki-a-private",
+      "wiki-b-team",
+      "cg-b-team"
+    ]
+  },
+  {
+    "id": "member-wiki-search-and-read",
+    "persona": "member",
+    "question": "What does the team wiki say in its overview page?",
+    "calls": [
+      {
+        "tool": "wiki_search",
+        "args": {
+          "wiki_id": "wiki-a-team",
+          "query": "overview"
+        }
+      },
+      {
+        "tool": "wiki_read",
+        "args": {
+          "wiki_id": "wiki-a-team",
+          "refs": [
+            "overview"
+          ]
+        }
+      }
+    ],
+    "facts": [
+      "team: Alpha (A)",
+      "Overview of the a team wiki"
+    ],
+    "absent": [
+      "Secret plan",
+      "Private notes"
+    ]
+  },
+  {
+    "id": "member-code-callers-and-impact",
+    "persona": "member",
+    "question": "Where is the symbol sym used, and what breaks if I change it?",
+    "calls": [
+      {
+        "tool": "code_search",
+        "args": {
+          "code_graph_id": "cg-a-team",
+          "query": "sym"
+        }
+      },
+      {
+        "tool": "code_callers",
+        "args": {
+          "code_graph_id": "cg-a-team",
+          "symbol": "sym"
+        }
+      },
+      {
+        "tool": "code_impact",
+        "args": {
+          "code_graph_id": "cg-a-team",
+          "symbol": "sym"
+        }
+      }
+    ],
+    "facts": [
+      "symbol hit in a graph",
+      "handleRequest, runJob",
+      "12 files"
+    ]
+  },
+  {
+    "id": "member-restricted-wiki-denied",
+    "persona": "member",
+    "question": "Show me the restricted wiki of my team.",
+    "calls": [
+      {
+        "tool": "wiki_read",
+        "args": {
+          "wiki_id": "wiki-a-restricted",
+          "refs": [
+            "plan"
+          ]
+        }
+      }
+    ],
+    "denied": true,
+    "absent": [
+      "Secret plan"
+    ]
+  },
+  {
+    "id": "member-other-team-code-denied",
+    "persona": "member",
+    "question": "Find the symbol sym in the code graph of team B.",
+    "calls": [
+      {
+        "tool": "code_search",
+        "args": {
+          "code_graph_id": "cg-b-team",
+          "query": "sym"
+        }
+      },
+      {
+        "tool": "code_callers",
+        "args": {
+          "code_graph_id": "cg-b-team",
+          "symbol": "sym"
+        }
+      }
+    ],
+    "denied": true,
+    "absent": [
+      "symbol hit in b graph",
+      "handleRequest"
+    ]
+  },
+  {
+    "id": "member-who-sees-private",
+    "persona": "member",
+    "question": "Who can see a private asset?",
+    "calls": [
+      {
+        "tool": "help",
+        "args": {
+          "topic": "access"
+        }
+      }
+    ],
+    "facts": [
+      "`private`: only the owner",
+      "Team admins cannot read it"
+    ]
+  },
+  {
+    "id": "plain-what-is-kept",
+    "persona": "non_technical",
+    "question": "What does Agent-Memory keep for me?",
+    "calls": [
+      {
+        "tool": "help",
+        "args": {
+          "topic": "overview"
+        }
+      }
+    ],
+    "facts": [
+      "Chat Memory",
+      "Skills",
+      "Wiki",
+      "CodeGraph",
+      "This MCP server is read-only"
+    ]
+  },
+  {
+    "id": "plain-how-recall-works",
+    "persona": "non_technical",
+    "question": "How does it remember what I told it, and how does it bring it back?",
+    "calls": [
+      {
+        "tool": "help",
+        "args": {
+          "topic": "memory-pipeline"
+        }
+      }
+    ],
+    "facts": [
+      "L0 Conversation",
+      "L3 Core / Persona",
+      "character budget"
+    ]
+  },
+  {
+    "id": "plain-what-is-a-reviewer",
+    "persona": "non_technical",
+    "question": "What do the words admin, member and reviewer mean?",
+    "calls": [
+      {
+        "tool": "help",
+        "args": {
+          "topic": "glossary"
+        }
+      }
+    ],
+    "facts": [
+      "Role: `admin`, `member` or `reviewer` in one team",
+      "Scope: what you can read in a team"
+    ]
+  },
+  {
+    "id": "plain-which-wikis",
+    "persona": "non_technical",
+    "question": "Which wikis does my team have?",
+    "calls": [
+      {
+        "tool": "knowledge_list",
+        "args": {
+          "type": "wiki"
+        }
+      }
+    ],
+    "facts": [
+      "wiki-a-team",
+      "\"type\": \"wiki\""
+    ]
+  },
+  {
+    "id": "plain-who-am-i",
+    "persona": "non_technical",
+    "question": "Who am I in Agent-Memory?",
+    "calls": [
+      {
+        "tool": "whoami",
+        "args": {}
+      }
+    ],
+    "facts": [
+      "name-rev",
+      "\"role\": \"reviewer\"",
+      "Alpha"
+    ]
+  },
+  {
+    "id": "plain-wiki-or-code-graph",
+    "persona": "non_technical",
+    "question": "What is the difference between a wiki and a code graph?",
+    "calls": [
+      {
+        "tool": "help",
+        "args": {
+          "topic": "knowledge"
+        }
+      }
+    ],
+    "facts": [
+      "Wiki: product documents",
+      "CodeGraph: an index of a code base"
+    ]
+  },
+  {
+    "id": "admin-whoami",
+    "persona": "admin",
+    "question": "Which teams do I administer?",
+    "calls": [
+      {
+        "tool": "whoami",
+        "args": {}
+      }
+    ],
+    "facts": [
+      "\"role\": \"admin\"",
+      "\"scope\": \"team\"",
+      "\"team_name\": \"Alpha\""
+    ]
+  },
+  {
+    "id": "admin-list-with-restricted",
+    "persona": "admin",
+    "question": "List everything my team has, restricted wikis included.",
+    "calls": [
+      {
+        "tool": "knowledge_list",
+        "args": {}
+      }
+    ],
+    "facts": [
+      "wiki-a-restricted",
+      "\"visibility\": \"restricted\"",
+      "cg-a-team"
+    ],
+    "absent": [
+      "wiki-a-private",
+      "wiki-b-team",
+      "wiki-b-restricted",
+      "cg-b-team"
+    ]
+  },
+  {
+    "id": "admin-read-restricted-wiki",
+    "persona": "admin",
+    "question": "What does the restricted plan page say?",
+    "calls": [
+      {
+        "tool": "wiki_read",
+        "args": {
+          "wiki_id": "wiki-a-restricted",
+          "refs": [
+            "plan"
+          ]
+        }
+      }
+    ],
+    "facts": [
+      "team: Alpha (A)",
+      "Secret plan of a"
+    ],
+    "absent": [
+      "Secret plan of b"
+    ]
+  },
+  {
+    "id": "admin-other-team-wiki-denied",
+    "persona": "admin",
+    "question": "Read the overview of the wiki of team B.",
+    "calls": [
+      {
+        "tool": "wiki_read",
+        "args": {
+          "wiki_id": "wiki-b-team",
+          "refs": [
+            "overview"
+          ]
+        }
+      }
+    ],
+    "denied": true,
+    "absent": [
+      "Overview of the b team wiki"
+    ]
+  },
+  {
+    "id": "admin-other-team-list-denied",
+    "persona": "admin",
+    "question": "List the wikis and code graphs of team B.",
+    "calls": [
+      {
+        "tool": "knowledge_list",
+        "args": {
+          "team_id": "B"
+        }
+      }
+    ],
+    "denied": true,
+    "absent": [
+      "wiki-b-team",
+      "cg-b-team",
+      "Beta"
+    ]
+  },
+  {
+    "id": "admin-other-team-code-denied",
+    "persona": "admin",
+    "question": "What would a change to sym break in the code graph of team B?",
+    "calls": [
+      {
+        "tool": "code_impact",
+        "args": {
+          "code_graph_id": "cg-b-team",
+          "symbol": "sym"
+        }
+      }
+    ],
+    "denied": true,
+    "absent": [
+      "12 files in b",
+      "impact of sym in b graph"
+    ]
+  },
+  {
+    "id": "admin-private-wiki-of-another-member-denied",
+    "persona": "admin",
+    "question": "Read the private wiki of another member of my team.",
+    "calls": [
+      {
+        "tool": "wiki_read",
+        "args": {
+          "wiki_id": "wiki-a-private",
+          "refs": [
+            "diary"
+          ]
+        }
+      }
+    ],
+    "denied": true,
+    "absent": [
+      "Private notes"
+    ]
+  }
+]
