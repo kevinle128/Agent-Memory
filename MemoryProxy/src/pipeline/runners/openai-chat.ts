@@ -1314,7 +1314,12 @@ export async function runOpenaiChatPipeline(
     );
     upstreamResp = result.resp;
     retried = result.retried;
-    if (retried) langfuseInput = buildLangfuseRequestInput(body);
+    // The retry sends the client body with the retry target's model (buildRetryBody).
+    if (retried) {
+      langfuseInput = buildLangfuseRequestInput(
+        target.retryTarget ? { ...body, model: target.retryTarget.model } : body,
+      );
+    }
   } catch (err: unknown) {
     if (isRateLimitExceededError(err)) {
       pipe.info("RATE_LIMIT", "TPM/QPM exceeded");

@@ -1360,6 +1360,8 @@ export async function runAnthropicPipeline(
       pipe.info("RATE_LIMIT", "TPM/QPM exceeded");
       return err.response;
     }
+    // A pool attempt that threw may have sent the cache-TTL-upgraded body.
+    if (sentBody !== upstreamBody) langfuseInput = buildLangfuseRequestInput(sentBody);
     try {
       langfuseReportFailure({
         lf,
@@ -1655,8 +1657,11 @@ export async function runAnthropicPipeline(
         },
       });
     }
+  }
 
-    // Langfuse: report this LLM call as a generation under the turn trace
+  if (usage || upstreamResp.ok) {
+    // Langfuse: report this LLM call as a generation under the turn trace,
+    // also when a 2xx reply carries no usage.
     // Output is the full native assistant message: every content block
     // (text, thinking, tool_use) plus stop_reason.
     const langfuseOutput = langfuseOutputFromReply(langfuseReply, "anthropic");
@@ -1669,7 +1674,7 @@ export async function runAnthropicPipeline(
         endTime,
         input: langfuseInput,
         output: langfuseOutput,
-        usage,
+        usage: usage ?? undefined,
         traceName: lf.traceName,
         userId: lf.userId,
         sessionId: lf.sessionId,
@@ -2010,49 +2015,50 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
           usage, retried, upstreamUrl,
           // anthropic 老行为: 只 create span, 不 updateTrace, 无 "stream" tag
         });
+      }
 
-        // Langfuse: report this LLM call as a generation under the turn trace.
-        // Output is the message the assembler rebuilt from the SSE events (all
-        // blocks incl. thinking, signature and parsed tool_use input, plus stop_reason).
-        try {
-          const langfuseOutput = langfuseOutputFromReply(reply, "anthropic");
-          const streamDebugExtra = ctx.langfuseDebug
-            ? {
-                stream_tool_use_count: toolUseCount,
-                stream_output_text_len: outputText.length,
-              }
-            : {};
-          const replyStatus = langfuseReplyStatus(reply);
-          langfuseReportGeneration({
-            traceId: lf.traceId,
-            name: modelId,
-            model: modelId,
-            startTime,
-            endTime,
-            input: ctx.langfuseInput,
-            output: langfuseOutput,
-            level: replyStatus.level,
-            statusMessage: replyStatus.statusMessage,
-            usage,
-            traceName: lf.traceName,
-            userId: lf.userId,
-            sessionId: lf.sessionId,
-            instanceId: lf.instanceId,
-            tags: lf.tags,
-            traceInput: lf.userQuery || undefined,
-            traceOutput: langfuseOutput,
-            traceMetadata: {
-              stream: true, retried, upstreamUrl, ...logMeta,
-              ...ctx.debugMetadata, ...streamDebugExtra,
-            },
-            observationMetadata: {
-              retried, ...logMeta,
-              ...ctx.debugMetadata, ...streamDebugExtra, ...replyStatus.metadata,
-            },
-          });
-        } catch (langfuseErr: unknown) {
-          pipe.error("LANGFUSE_SPAN", langfuseErr);
-        }
+      // Langfuse: report this LLM call as a generation under the turn trace,
+      // also when no usage arrived (a stream cut or failed before message_start).
+      // Output is the message the assembler rebuilt from the SSE events (all
+      // blocks incl. thinking, signature and parsed tool_use input, plus stop_reason).
+      try {
+        const langfuseOutput = langfuseOutputFromReply(reply, "anthropic");
+        const streamDebugExtra = ctx.langfuseDebug
+          ? {
+              stream_tool_use_count: toolUseCount,
+              stream_output_text_len: outputText.length,
+            }
+          : {};
+        const replyStatus = langfuseReplyStatus(reply);
+        langfuseReportGeneration({
+          traceId: lf.traceId,
+          name: modelId,
+          model: modelId,
+          startTime,
+          endTime,
+          input: ctx.langfuseInput,
+          output: langfuseOutput,
+          level: replyStatus.level,
+          statusMessage: replyStatus.statusMessage,
+          usage: Object.keys(usage).length > 0 ? usage : undefined,
+          traceName: lf.traceName,
+          userId: lf.userId,
+          sessionId: lf.sessionId,
+          instanceId: lf.instanceId,
+          tags: lf.tags,
+          traceInput: lf.userQuery || undefined,
+          traceOutput: langfuseOutput,
+          traceMetadata: {
+            stream: true, retried, upstreamUrl, ...logMeta,
+            ...ctx.debugMetadata, ...streamDebugExtra,
+          },
+          observationMetadata: {
+            retried, ...logMeta,
+            ...ctx.debugMetadata, ...streamDebugExtra, ...replyStatus.metadata,
+          },
+        });
+      } catch (langfuseErr: unknown) {
+        pipe.error("LANGFUSE_SPAN", langfuseErr);
       }
 
       // CC 分流：FORK/SIDEQUERY 不是真实对话轮，跳过 L0/skill。Credit 仍上报。

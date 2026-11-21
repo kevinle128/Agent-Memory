@@ -662,7 +662,8 @@ describe("a Langfuse reporter that throws does not break the request", () => {
     installFetch(() => jsonResponse({ error: { message: "overloaded" } }, 529));
     const failed = await send("/claude-code/default/v1/messages", { ...anthropicBody, stream: false }, anthropicHeaders);
     expect(failed.res.status).toBe(529);
-    expect(generations.length + failures.length).toBeGreaterThanOrEqual(3);
+    // The stream generation is reported by a background tap; wait for it.
+    await vi.waitFor(() => expect(generations.length + failures.length).toBeGreaterThanOrEqual(3));
   });
 
   it("openai-chat stream", async () => {
@@ -692,6 +693,8 @@ describe("a Langfuse reporter that throws does not break the request", () => {
     }, { authorization: "Bearer sk-codex-secret", "session-id": SESSION });
     expect(out.res.status).toBe(200);
     expect(out.text).toContain("response.completed");
+    // Wait for the background tap, so its report does not leak into the next test.
+    await vi.waitFor(() => expect(generations).toHaveLength(1));
   });
 });
 
@@ -711,6 +714,18 @@ describe("a cut or failed stream does not look like a normal generation", () => 
     expect(g.observationMetadata).toMatchObject({ stream_incomplete: true });
     expect(g.statusMessage).toContain("overloaded_error");
     expect(g.output).toMatchObject({ error: { type: "overloaded_error" } });
+  });
+
+  it("anthropic: an error event before message_start is still reported (no usage)", async () => {
+    installFetch(() => sse([
+      ["error", { type: "error", error: { type: "overloaded_error", message: "Overloaded" } }],
+    ]));
+    await post("/claude-code/default/v1/messages", { ...anthropicBody, stream: true }, anthropicHeaders);
+    await vi.waitFor(() => expect(generations).toHaveLength(1));
+    const g = generations[0]!;
+    expect(g.level).toBe("ERROR");
+    expect(g.usage).toBeUndefined();
+    expect(g.observationMetadata).toMatchObject({ stream_incomplete: true });
   });
 
   it("anthropic: a stream that ends before the stop event gives level WARNING", async () => {

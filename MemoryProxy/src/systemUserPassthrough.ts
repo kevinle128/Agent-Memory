@@ -751,6 +751,7 @@ async function consumeStream(
   let buf = "";
   let rawText = "";
   const anthropicUsage: Record<string, unknown> = {};
+  let readError: string | undefined;
 
   try {
     while (true) {
@@ -776,13 +777,18 @@ async function consumeStream(
         buf += chunk;
       }
     }
-    if (isAnthropic && buf.trim()) {
-      mergeAnthropicUsageFromEvent(buf, anthropicUsage);
-    }
-    if (sseBuf.trim()) pushEvents(sseBuf);
+  } catch (err: unknown) {
+    // An upstream reset, abort or timeout mid-stream: keep what arrived so the
+    // cut stream is still reported, with the read error as its status.
+    readError = err instanceof Error ? err.message : String(err);
+    log.warn("systemUser.stream_read_failed", { path, error: readError });
   } finally {
     try { reader.releaseLock(); } catch { /* ignore */ }
   }
+  if (isAnthropic && buf.trim()) {
+    mergeAnthropicUsageFromEvent(buf, anthropicUsage);
+  }
+  if (sseBuf.trim()) pushEvents(sseBuf);
 
   const usage = isAnthropic
     ? (Object.keys(anthropicUsage).length > 0 ? anthropicUsage : null)
@@ -793,7 +799,13 @@ async function consumeStream(
     usage,
     rawText,
     reply: langfuseOutputFromReply(assembled, kind),
-    langfuseStatus: langfuseReplyStatus(assembled),
+    langfuseStatus: readError === undefined
+      ? langfuseReplyStatus(assembled)
+      : {
+          level: "ERROR",
+          statusMessage: `stream incomplete: stream read failed ${readError}`.slice(0, 500),
+          metadata: { stream_incomplete: true, stream_incomplete_reason: "stream read failed" },
+        },
   };
 }
 
