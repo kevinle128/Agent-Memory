@@ -1,20 +1,26 @@
 # Komodo override for the VTC dev server. Komodo runs compose.yaml with this file.
-# The three images are built on the server (run build on) and exist on no registry,
-# so `compose pull` must skip them. Set MEMORY_BUILD_REVISION in the stack
-# environment to the commit you deploy; it names the image tags.
+# GitHub Actions (.github/workflows/deploy.yml) builds the three images on each push
+# to master and pushes them to GHCR. The stack pulls the image whose tag is
+# MEMORY_BUILD_REVISION (the short commit), so the stack never builds on the server.
 #
-# Core reads its Langfuse settings from the stack environment here, because the
-# optional server-only Langfuse file next to core.yaml is not in git and Komodo
-# cannot read host files.
+# Komodo cannot read server-only files, so the values that compose.yaml reads from
+# the optional env files next to core.yaml come from the stack environment here:
+# Langfuse tracing for Core LLM calls, and the Google OAuth app of AntiGravity
+# (without it AntiGravity pool accounts cannot sign in).
 services:
   memory-core:
-    pull_policy: never
+    image: ghcr.io/kevinle128/agent-memory-core:${MEMORY_BUILD_REVISION:?set MEMORY_BUILD_REVISION}
+    pull_policy: missing
     environment:
       LANGFUSE_ENABLED: ${CORE_LANGFUSE_ENABLED:-false}
       LANGFUSE_HOST: ${LANGFUSE_HOST:-}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      ANTIGRAVITY_OAUTH_CLIENT_ID: ${ANTIGRAVITY_OAUTH_CLIENT_ID:-}
+      ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${ANTIGRAVITY_OAUTH_CLIENT_SECRET:-}
   memory-hub:
-    pull_policy: never
+    image: ghcr.io/kevinle128/agent-memory-hub:${MEMORY_BUILD_REVISION:?set MEMORY_BUILD_REVISION}
+    pull_policy: missing
   proxy:
-    pull_policy: never
+    image: ghcr.io/kevinle128/agent-memory-proxy:${MEMORY_BUILD_REVISION:?set MEMORY_BUILD_REVISION}
+    pull_policy: missing
