@@ -1,5 +1,5 @@
 # Dependencies
-node_modules/
+node_modules
 
 # Runtime workspace
 workspace/
@@ -24,7 +24,7 @@ scripts/read-local-memory/dist/
 # Root-level build output (not used at runtime, not published)
 dist/
 
-node_modules/
+node_modules
 benchmark-runs/
 .codebuddy
 .ai_assets
