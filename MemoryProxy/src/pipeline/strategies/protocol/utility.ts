@@ -58,5 +58,4 @@ export const utilityProtocol: ProtocolStrategy = {
       headers: { "content-type": "application/json" },
     });
   },
-  buildLangfuseInput(): unknown { return null; },
 };

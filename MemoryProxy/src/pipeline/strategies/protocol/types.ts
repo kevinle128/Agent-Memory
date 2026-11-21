@@ -98,7 +98,4 @@ export interface ProtocolStrategy {
 
   /** 构造错误响应 envelope */
   buildErrorResponse(msg: string, status: number): Response;
-
-  /** 构造 langfuse input (不同协议的 messages 结构不同) */
-  buildLangfuseInput(body: Record<string, unknown>): unknown;
 }

@@ -416,7 +416,29 @@ the question itself. Tool-only continuations leave the trace input unchanged; th
 never reuse an earlier question or overwrite it with tool output. This correction
 applies to new requests; it does not backfill existing traces with missing input.
 
-Default generation input uses the existing flattened message representation. For
-native message structures, configure `langfuse.debug: true` in Proxy YAML; this also
-adds request metadata. See the official [input/output troubleshooting guide](https://langfuse.com/faq/all/empty-trace-input-and-output)
+The conversation generations of the Anthropic, OpenAI chat, Codex and WorkBuddy
+runners and of the system user passthrough carry the full native request and the full
+native reply. (The internal generations of cost guard, request preparation and `/mem`
+commands are unchanged.) The input is the body that goes upstream, after body overrides,
+thinking-block cleanup and the 1h cache TTL of a subscription account. It holds the
+system prompt, all messages with their native content blocks (thinking text and
+signature, `tool_use`, `tool_result`, images, `cache_control`), the tool definitions,
+and the request parameters (model, `tool_choice`, thinking, `max_tokens`,
+`temperature`, and the other body fields). The output holds every reply block
+(text, thinking, `tool_use` with the complete input) and the stop reason; for a
+stream, the Proxy rebuilds it from the SSE events. A reply that only calls tools is
+therefore never empty. A stream that was cut or failed (an error event,
+`response.failed`, `response.incomplete`, no stop event, a cut tool call) is reported
+with level `ERROR` or `WARNING` and `stream_incomplete: true` in the metadata.
+
+Credentials are not reported. Credential-like top-level keys of the body are dropped.
+`authorization`, `authorization_token` and `headers` values of `tools[]` and
+`mcp_servers[]` are replaced by `[redacted]`. HTTP request headers are not part of
+input or output. With `langfuse.debug: true`, whitelisted `x-*` headers appear as
+metadata, but the value of a header whose name contains key, token, auth, secret,
+cookie, password or session is `[redacted]`. The request that goes upstream is not
+changed by any of this. The payload is about 1.8 times the size of the old flattened
+form for long sessions with thinking and tools, so it costs more Langfuse storage.
+`langfuse.debug: true` in Proxy YAML only adds
+request-fingerprint metadata. See the official [input/output troubleshooting guide](https://langfuse.com/faq/all/empty-trace-input-and-output)
 when distinguishing trace-level input from generation input.

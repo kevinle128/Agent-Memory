@@ -20,10 +20,8 @@ import {
   langfuseTurnTraceId,
   type LangfuseTurnContext,
 } from "../../langfuse.js";
-import {
-  buildLangfuseInputChat,
-  buildRequestDebugMetadata,
-} from "../../common/langfuse-debug.js";
+import { buildRequestDebugMetadata } from "../../common/langfuse-debug.js";
+import { buildLangfuseRequestInput, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
 import { countHumanTurns, resolveMonotonicTurnSeq, turnTraceScope } from "../../turnSeq.js";
 import type { ProxyConfig } from "../../types.js";
 import {
@@ -97,6 +95,7 @@ import {
   openaiReplyFromJson,
   parseSseData,
   submitSessionTurn,
+  type ModelReply,
   type SessionTurnContext,
 } from "../../session-trace/index.js";
 import { triggerSkillExtractIfReady } from "../../skill/handler-glue.js";
@@ -1286,6 +1285,11 @@ export async function runOpenaiChatPipeline(
     };
   }
 
+  // Full native request for Langfuse, built from the body that goes upstream
+  // (after injection, preparation, body overrides and stream_options). A retry
+  // sends the client body instead, so the input is rebuilt from it below.
+  let langfuseInput = buildLangfuseRequestInput(upstreamBody);
+
   // ── Forward to upstream (with automatic retry if configured) ──────────────
   // forwardTimeout gate 关闭 → 传 0 使 stageForwardWithRetry 的 timeoutBehavior='gated' 分支不设 AbortSignal
   const forwardTimeoutMs = _gates.forwardTimeout ? (config.server.forwardTimeoutMs ?? 600_000) : 0;
@@ -1310,21 +1314,31 @@ export async function runOpenaiChatPipeline(
     );
     upstreamResp = result.resp;
     retried = result.retried;
+    // The retry sends the client body with the retry target's model (buildRetryBody).
+    if (retried) {
+      langfuseInput = buildLangfuseRequestInput(
+        target.retryTarget ? { ...body, model: target.retryTarget.model } : body,
+      );
+    }
   } catch (err: unknown) {
     if (isRateLimitExceededError(err)) {
       pipe.info("RATE_LIMIT", "TPM/QPM exceeded");
       return err.response;
     }
-    langfuseReportFailure({
-      lf,
-      model: target.model,
-      startTime,
-      endTime: new Date().toISOString(),
-      input: buildLangfuseInputChat(messages, langfuseDebug, flattenMessagesForOpik),
-      statusMessage: err instanceof Error ? err.message : "Upstream request failed",
-      extraTags: ["error"],
-      observationMetadata: { stage: "forward", ...debugMetadata },
-    });
+    try {
+      langfuseReportFailure({
+        lf,
+        model: target.model,
+        startTime,
+        endTime: new Date().toISOString(),
+        input: langfuseInput,
+        statusMessage: err instanceof Error ? err.message : "Upstream request failed",
+        extraTags: ["error"],
+        observationMetadata: { stage: "forward", ...debugMetadata },
+      });
+    } catch (langfuseErr: unknown) {
+      pipe.error("LANGFUSE_SPAN", langfuseErr);
+    }
     return c.json({ error: "Upstream request failed" }, 502);
   }
 
@@ -1377,17 +1391,21 @@ export async function runOpenaiChatPipeline(
         spaceId,
         upstreamRequestId,
       });
-      langfuseReportFailure({
-        lf,
-        model: effectiveModel,
-        startTime,
-        endTime: new Date().toISOString(),
-        input: buildLangfuseInputChat(messages, langfuseDebug, flattenMessagesForOpik),
-        status: upstreamResp.status,
-        statusMessage: errText.slice(0, 500),
-        extraTags: ["error"],
-        observationMetadata: { stage: "upstream", stream: true, ...debugMetadata },
-      });
+      try {
+        langfuseReportFailure({
+          lf,
+          model: effectiveModel,
+          startTime,
+          endTime: new Date().toISOString(),
+          input: langfuseInput,
+          status: upstreamResp.status,
+          statusMessage: errText.slice(0, 500),
+          extraTags: ["error"],
+          observationMetadata: { stage: "upstream", stream: true, ...debugMetadata },
+        });
+      } catch (langfuseErr: unknown) {
+        pipe.error("LANGFUSE_SPAN", langfuseErr);
+      }
       pipe.streamDone(null);
       return new Response(clientPassStream, { status: upstreamResp.status, headers: respHeaders });
     }
@@ -1423,6 +1441,7 @@ export async function runOpenaiChatPipeline(
       lf,
       spaceId,
       upstreamRequestId,
+      langfuseInput,
       langfuseDebug,
       debugMetadata,
       preparedStats,
@@ -1450,8 +1469,10 @@ export async function runOpenaiChatPipeline(
 
   let usage: Record<string, unknown> | null = null;
   let assistantMessage: Record<string, unknown> | null = null;
+  let langfuseReply: ModelReply | null = null;
   try {
     const respJson = JSON.parse(respText) as Record<string, unknown>;
+    langfuseReply = openaiReplyFromJson(respJson);
     if (respJson.usage && typeof respJson.usage === "object") {
       usage = respJson.usage as Record<string, unknown>;
     }
@@ -1625,38 +1646,49 @@ export async function runOpenaiChatPipeline(
     }
 
     // Langfuse: report this LLM call as a generation under the turn trace.
-    langfuseReportGeneration({
-      traceId: lf.traceId,
-      name: effectiveModel,
-      model: effectiveModel,
-      startTime,
-      endTime,
-      input: buildLangfuseInputChat(messages, langfuseDebug, flattenMessagesForOpik),
-      output: assistantMessage,
-      usage: usage ?? undefined,
-      traceName: lf.traceName,
-      userId: lf.userId,
-      sessionId: lf.sessionId,
-      instanceId: lf.instanceId,
-      tags: lf.tags,
-      traceInput: lf.userQuery || undefined,
-      traceOutput: assistantMessage ?? undefined,
-      traceMetadata: { stream: false, retried, upstreamUrl: target.url, ...logMeta, ...debugMetadata },
-      observationMetadata: { retried, ...logMeta, ...debugMetadata },
-    });
+    // Output is the full native message (content, tool_calls, reasoning fields)
+    // plus finish_reason.
+    const langfuseOutput = langfuseOutputFromReply(langfuseReply, "openai");
+    try {
+      langfuseReportGeneration({
+        traceId: lf.traceId,
+        name: effectiveModel,
+        model: effectiveModel,
+        startTime,
+        endTime,
+        input: langfuseInput,
+        output: langfuseOutput,
+        usage: usage ?? undefined,
+        traceName: lf.traceName,
+        userId: lf.userId,
+        sessionId: lf.sessionId,
+        instanceId: lf.instanceId,
+        tags: lf.tags,
+        traceInput: lf.userQuery || undefined,
+        traceOutput: langfuseOutput,
+        traceMetadata: { stream: false, retried, upstreamUrl: target.url, ...logMeta, ...debugMetadata },
+        observationMetadata: { retried, ...logMeta, ...debugMetadata },
+      });
+    } catch (langfuseErr: unknown) {
+      pipe.error("LANGFUSE_SPAN", langfuseErr);
+    }
   } else if (upstreamResp.status >= 400) {
     pipe.error("UPSTREAM_4xx", `status=${upstreamResp.status} body=${respText.slice(0, 1000)}`);
-    langfuseReportFailure({
-      lf,
-      model: effectiveModel,
-      startTime,
-      endTime,
-      input: buildLangfuseInputChat(messages, langfuseDebug, flattenMessagesForOpik),
-      status: upstreamResp.status,
-      statusMessage: respText.slice(0, 500),
-      extraTags: ["error"],
-      observationMetadata: { stage: "upstream", stream: false, ...debugMetadata },
-    });
+    try {
+      langfuseReportFailure({
+        lf,
+        model: effectiveModel,
+        startTime,
+        endTime,
+        input: langfuseInput,
+        status: upstreamResp.status,
+        statusMessage: respText.slice(0, 500),
+        extraTags: ["error"],
+        observationMetadata: { stage: "upstream", stream: false, ...debugMetadata },
+      });
+    } catch (langfuseErr: unknown) {
+      pipe.error("LANGFUSE_SPAN", langfuseErr);
+    }
   }
 
   pipe.responseDone(usage);
@@ -1782,6 +1814,8 @@ interface TapContext {
   spaceId?: string;
   /** Upstream response header `x-request-id` (empty when not returned). */
   upstreamRequestId?: string;
+  /** Full native request for Langfuse (`buildLangfuseRequestInput`), built once per request. */
+  langfuseInput: unknown;
   /** `config.langfuse.debug === true` 的求值结果。 */
   langfuseDebug: boolean;
   /** buildRequestDebugMetadata 结果；debug=false 时为 {}。 */
@@ -1882,7 +1916,8 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
   let lastUsage: Record<string, unknown> | null = null;
   let assistantContent = "";
   const toolCallAccumulators = new Map<number, ToolCallAccumulator>();
-  const replyAssembler = ctx.sessionTurnCtx ? new OpenAIChatAssembler() : null;
+  // Always built: Langfuse needs the full reply; the session trace only takes it when recorded.
+  const replyAssembler = new OpenAIChatAssembler();
 
   function processSseChunk(chunk: string): void {
     sseBuf += chunk;
@@ -1894,7 +1929,58 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
       const { content, toolCallDeltas } = extractSseContentAndTools(part);
       assistantContent += content;
       mergeToolCallDeltas(toolCallAccumulators, toolCallDeltas);
-      if (replyAssembler) parseSseData(part).forEach((evt) => replyAssembler.push(evt));
+      parseSseData(part).forEach((evt) => replyAssembler.push(evt));
+    }
+  }
+
+  /**
+   * Langfuse: report the generation once, for a finished or a cut stream. The
+   * output is the message the assembler rebuilt from the SSE chunks (content,
+   * reasoning fields, complete tool_calls, finish_reason), not the text-only
+   * summary that feeds Opik and L0.
+   */
+  let langfuseReported = false;
+  function reportLangfuse(reply: ModelReply, endTime: string): void {
+    if (langfuseReported) return;
+    langfuseReported = true;
+    try {
+      const langfuseOutput = langfuseOutputFromReply(reply, "openai");
+      const streamDebugExtra = ctx.langfuseDebug
+        ? {
+            stream_tool_call_count: toolCallAccumulators.size,
+            stream_assistant_content_len: assistantContent.length,
+          }
+        : {};
+      const replyStatus = langfuseReplyStatus(reply);
+      langfuseReportGeneration({
+        traceId: lf.traceId,
+        name: modelId,
+        model: modelId,
+        startTime,
+        endTime,
+        input: ctx.langfuseInput,
+        output: langfuseOutput,
+        level: replyStatus.level,
+        statusMessage: replyStatus.statusMessage,
+        usage: lastUsage ?? undefined,
+        traceName: lf.traceName,
+        userId: lf.userId,
+        sessionId: lf.sessionId,
+        instanceId: lf.instanceId,
+        tags: lf.tags,
+        traceInput: lf.userQuery || undefined,
+        traceOutput: langfuseOutput,
+        traceMetadata: {
+          stream: true, retried, upstreamUrl, ...logMeta,
+          ...ctx.debugMetadata, ...streamDebugExtra,
+        },
+        observationMetadata: {
+          retried, ...logMeta,
+          ...ctx.debugMetadata, ...streamDebugExtra, ...replyStatus.metadata,
+        },
+      });
+    } catch (langfuseErr: unknown) {
+      pipe.error("LANGFUSE_SPAN", langfuseErr);
     }
   }
 
@@ -1905,10 +1991,11 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
       const { content, toolCallDeltas } = extractSseContentAndTools(sseBuf);
       assistantContent += content;
       mergeToolCallDeltas(toolCallAccumulators, toolCallDeltas);
-      if (replyAssembler) parseSseData(sseBuf).forEach((evt) => replyAssembler.push(evt));
+      parseSseData(sseBuf).forEach((evt) => replyAssembler.push(evt));
     }
 
-    if (replyAssembler) submitSessionTurn(ctx.sessionTurnCtx, replyAssembler.result(), modelId);
+    const reply = replyAssembler.result();
+    if (ctx.sessionTurnCtx) submitSessionTurn(ctx.sessionTurnCtx, reply, modelId);
 
     const endTime = new Date().toISOString();
 
@@ -1993,43 +2080,10 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
 
     if (!lastUsage) pipe.info("USAGE_MISSING", "stream completed without usage chunk");
     // Langfuse: report the completed turn even if the upstream omitted usage.
-    // 流式路径 inputMessages 保持原样（其它下游流水线也用同一份引用）；
-    // debug=true 时把 tool_call 累积计数塞进 metadata 兜底。
-    try {
-      const streamDebugExtra = ctx.langfuseDebug
-        ? {
-            stream_tool_call_count: toolCallAccumulators.size,
-            stream_assistant_content_len: assistantContent.length,
-          }
-        : {};
-      langfuseReportGeneration({
-        traceId: lf.traceId,
-        name: modelId,
-        model: modelId,
-        startTime,
-        endTime,
-        input: buildLangfuseInputChat(inputMessages, ctx.langfuseDebug, flattenMessagesForOpik),
-        output: outputMessage,
-        usage: lastUsage ?? undefined,
-        traceName: lf.traceName,
-        userId: lf.userId,
-        sessionId: lf.sessionId,
-        instanceId: lf.instanceId,
-        tags: lf.tags,
-        traceInput: lf.userQuery || undefined,
-        traceOutput: outputMessage ?? undefined,
-        traceMetadata: {
-          stream: true, retried, upstreamUrl, ...logMeta,
-          ...ctx.debugMetadata, ...streamDebugExtra,
-        },
-        observationMetadata: {
-          retried, ...logMeta,
-          ...ctx.debugMetadata, ...streamDebugExtra,
-        },
-      });
-    } catch (langfuseErr: unknown) {
-      pipe.error("LANGFUSE_SPAN", langfuseErr);
-    }
+    // Output is the message the assembler rebuilt from the SSE chunks (content,
+    // reasoning fields, complete tool_calls, finish_reason), not the text-only
+    // summary that feeds Opik and L0.
+    reportLangfuse(reply, endTime);
 
     if (ctx.l0Capture.skip) {
       console.log(`[tdai-l0] skip L0 write (subagent) session=${ctx.sessionKeyForSkill}`);
@@ -2092,7 +2146,8 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
     }
   }
 
-  return new TransformStream<Uint8Array, Uint8Array>({
+  // `cancel` is in the Streams standard (Node 22+) but not yet in this TypeScript lib.
+  const transformer: Transformer<Uint8Array, Uint8Array> & { cancel?: () => void } = {
     transform(chunk, controller) {
       controller.enqueue(chunk);
       try {
@@ -2108,5 +2163,15 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
         pipe.error("STREAM_FINALIZE", err);
       }
     },
-  });
+    // The client disconnected: `flush` never runs. Report what was received, as an
+    // incomplete stream. Usage, credit and archive work are not done for a cut stream.
+    cancel() {
+      try {
+        reportLangfuse(replyAssembler.result(), new Date().toISOString());
+      } catch (err: unknown) {
+        pipe.error("STREAM_FINALIZE", err);
+      }
+    },
+  };
+  return new TransformStream<Uint8Array, Uint8Array>(transformer);
 }

@@ -99,6 +99,7 @@ import {
   buildSessionTurnContext,
   createSessionTurnSeed,
   submitSessionTurn,
+  type ModelReply,
   type SessionTurnContext,
 } from "../../session-trace/index.js";
 import type { TdaiIdentity, TdaiMessage } from "../../tdai/types.js";
@@ -108,6 +109,7 @@ import { isExtractionAllowed, logExtractionSkipped } from "../../extraction-gate
 import type { CcRequestKind } from "../../common/cc-request-classifier.js";
 import { MEMORY_MODE_HEADER, resolveMemoryGates } from "../../common/memory-mode.js";
 import { buildRequestDebugMetadata } from "../../common/langfuse-debug.js";
+import { buildLangfuseRequestInput, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
 import { resolveAgentAdapter } from "../../agent-adapters/index.js";
 import { resolveAgentStrategy } from "../strategies/agent/index.js";
 import {
@@ -151,36 +153,8 @@ function stringifyAnthropicSystem(system: unknown): string {
 }
 
 /**
- * Build the `input` payload for Langfuse / Opik. Two modes:
- *
- * - Normal mode (default): calls `flattenAnthropicMessagesForOpik` — content
- *   arrays are stringified for compact display. Loses `cache_control` markers,
- *   `thinking` blocks with signatures, native `tool_use`/`tool_result` shape.
- *
- * - Debug mode (`langfuse.debug=true`): passes the raw Anthropic body straight
- *   through, preserving every native structure. Use when investigating cache
- *   markers, thinking-signature issues, or request classification. Costs 2-5x
- *   more upload bandwidth + Langfuse storage — leave off in production.
- */
-export function buildLangfuseInput(
-  messages: unknown[],
-  system: unknown,
-  debug: boolean,
-): unknown {
-  if (debug) {
-    // Preserve original shape end-to-end. Prepend a synthetic system message
-    // when it's non-empty so the display order matches other consumers.
-    const out: unknown[] = [];
-    if (system !== undefined && system !== null && system !== "") {
-      out.push({ role: "system", content: system });
-    }
-    return out.concat(messages);
-  }
-  return flattenAnthropicMessagesForOpik(messages, system);
-}
-
-/**
- * Flatten Anthropic messages for Opik / Langfuse display.
+ * Flatten Anthropic messages for Opik display. Opik keeps this compact form;
+ * Langfuse gets the full native request instead (`buildLangfuseRequestInput`).
  *
  * Anthropic puts the system prompt on `body.system` (not inside `messages`),
  * so callers should pass it explicitly — otherwise the reported input omits
@@ -1293,6 +1267,12 @@ export async function runAnthropicPipeline(
   });
 
   const { body: upstreamBody, sanitizedCount } = buildUpstreamBody(body, target);
+  // Full native request for Langfuse, built from the body that goes upstream
+  // (after injection, preparation, body overrides and thinking-block stripping).
+  // `sentBody` follows the body of the attempt that is actually sent: a retry
+  // and the cache TTL upgrade of a subscription account change it below.
+  let sentBody: Record<string, unknown> = upstreamBody;
+  let langfuseInput = buildLangfuseRequestInput(upstreamBody);
   if (sanitizedCount > 0) {
     pipe.info(
       "FORWARD",
@@ -1351,12 +1331,15 @@ export async function runAnthropicPipeline(
       // A subscription account gets the configured cache TTL. Apply it per attempt, so a
       // failover to another account gets it too and a fallback to the client's login does not.
       const cacheTtl = config.subscriptionPool?.promptCacheTtl ?? "default";
-      upstreamResp = await poolRequest.send((auth, signal) => fetch(target.url, {
-        method: "POST",
-        headers: applyPoolAuth(upstreamHeaders, c.req.raw.headers, auth, "claude"),
-        body: JSON.stringify(auth.kind === "account" ? applyPromptCacheTtl(upstreamBody, cacheTtl) : upstreamBody),
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(forwardTimeoutMs)]) : AbortSignal.timeout(forwardTimeoutMs),
-      }));
+      upstreamResp = await poolRequest.send((auth, signal) => {
+        sentBody = auth.kind === "account" ? applyPromptCacheTtl(upstreamBody, cacheTtl) : upstreamBody;
+        return fetch(target.url, {
+          method: "POST",
+          headers: applyPoolAuth(upstreamHeaders, c.req.raw.headers, auth, "claude"),
+          body: JSON.stringify(sentBody),
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(forwardTimeoutMs)]) : AbortSignal.timeout(forwardTimeoutMs),
+        });
+      });
       retried = false;
     } else {
       const result = await forwardWithRetry(
@@ -1368,22 +1351,31 @@ export async function runAnthropicPipeline(
       );
       upstreamResp = result.resp;
       retried = result.retried;
+      if (retried) sentBody = retryBody;
     }
+    // The reported input is the body of the attempt that went out.
+    if (sentBody !== upstreamBody) langfuseInput = buildLangfuseRequestInput(sentBody);
   } catch (err: unknown) {
     if (isRateLimitExceededError(err)) {
       pipe.info("RATE_LIMIT", "TPM/QPM exceeded");
       return err.response;
     }
-    langfuseReportFailure({
-      lf,
-      model: target.model,
-      startTime,
-      endTime: new Date().toISOString(),
-      input: buildLangfuseInput(messages, body.system, langfuseDebug),
-      statusMessage: err instanceof Error ? err.message : "Upstream request failed",
-      extraTags: ["error"],
-      observationMetadata: { stage: "forward", ...debugMetadata },
-    });
+    // A pool attempt that threw may have sent the cache-TTL-upgraded body.
+    if (sentBody !== upstreamBody) langfuseInput = buildLangfuseRequestInput(sentBody);
+    try {
+      langfuseReportFailure({
+        lf,
+        model: target.model,
+        startTime,
+        endTime: new Date().toISOString(),
+        input: langfuseInput,
+        statusMessage: err instanceof Error ? err.message : "Upstream request failed",
+        extraTags: ["error"],
+        observationMetadata: { stage: "forward", ...debugMetadata },
+      });
+    } catch (langfuseErr: unknown) {
+      pipe.error("LANGFUSE_SPAN", langfuseErr);
+    }
     return c.json({ error: "Upstream request failed" }, 502);
   }
 
@@ -1433,17 +1425,21 @@ export async function runAnthropicPipeline(
         spaceId,
         upstreamRequestId,
       });
-      langfuseReportFailure({
-        lf,
-        model: effectiveModel,
-        startTime,
-        endTime: new Date().toISOString(),
-        input: buildLangfuseInput(messages, body.system, langfuseDebug),
-        status: upstreamResp.status,
-        statusMessage: errText.slice(0, 500),
-        extraTags: ["error"],
-        observationMetadata: { stage: "upstream", stream: true, ...debugMetadata },
-      });
+      try {
+        langfuseReportFailure({
+          lf,
+          model: effectiveModel,
+          startTime,
+          endTime: new Date().toISOString(),
+          input: langfuseInput,
+          status: upstreamResp.status,
+          statusMessage: errText.slice(0, 500),
+          extraTags: ["error"],
+          observationMetadata: { stage: "upstream", stream: true, ...debugMetadata },
+        });
+      } catch (langfuseErr: unknown) {
+        pipe.error("LANGFUSE_SPAN", langfuseErr);
+      }
       pipe.streamDone(null);
       return new Response(clientStream, { status: upstreamResp.status, headers: respHeaders });
     }
@@ -1482,6 +1478,7 @@ export async function runAnthropicPipeline(
       upstreamRequestId,
       requestKind,
       memoryTurn,
+      langfuseInput,
       langfuseDebug,
       debugMetadata,
       preparedStats,
@@ -1489,6 +1486,7 @@ export async function runAnthropicPipeline(
       isCustomUpstream: _isCustomUpstream,
       gates: _gates,
       sessionTurnCtx: upstreamResp.ok ? sessionTurnCtx : null,
+      upstreamStatus: upstreamResp.status,
     });
 
     // CFQ 剥离排在最后：tap 走的是另一条 tee 分支，读到的仍是模型原始输出。
@@ -1510,6 +1508,7 @@ export async function runAnthropicPipeline(
   let usage: Record<string, unknown> | null = null;
   let outputContent: string | null = null;
   let assistantMessage: Record<string, unknown> | null = null;
+  let langfuseReply: ModelReply | null = null;
   try {
     const respJson = JSON.parse(respText) as Record<string, unknown>;
     if (upstreamResp.ok) {
@@ -1545,6 +1544,8 @@ export async function runAnthropicPipeline(
       outputContent = textParts.join("\n");
       // Preserve full content array (incl. tool_use blocks) for skill trigger.
       assistantMessage = { role: "assistant", content };
+      // Full native reply (all blocks + stop_reason) for Langfuse.
+      langfuseReply = anthropicReplyFromJson(respJson);
 
       // Report the completed response to the extension (same signal the
       // streaming path emits). Fire-and-forget.
@@ -1657,47 +1658,54 @@ export async function runAnthropicPipeline(
         },
       });
     }
+  }
 
-    // Langfuse: report this LLM call as a generation under the turn trace
-    // debug=true 时 output 用 assistantMessage 原生数组（含 tool_use / thinking /
-    // 原生 stop_reason），非 debug 走原有 text 拼接节省存储。
-    const langfuseOutput = langfuseDebug && assistantMessage
-      ? assistantMessage
-      : outputContent
-      ? { role: "assistant", content: outputContent }
-      : undefined;
-    langfuseReportGeneration({
-      traceId: lf.traceId,
-      name: effectiveModel,
-      model: effectiveModel,
-      startTime,
-      endTime,
-      input: buildLangfuseInput(messages, body.system, langfuseDebug),
-      output: langfuseOutput,
-      usage,
-      traceName: lf.traceName,
-      userId: lf.userId,
-      sessionId: lf.sessionId,
-      instanceId: lf.instanceId,
-      tags: lf.tags,
-      traceInput: lf.userQuery || undefined,
-      traceOutput: langfuseOutput,
-      traceMetadata: { stream: false, retried, upstreamUrl: target.url, ...logMeta, ...debugMetadata },
-      observationMetadata: { retried, ...logMeta, ...debugMetadata },
-    });
+  if (usage || upstreamResp.ok) {
+    // Langfuse: report this LLM call as a generation under the turn trace,
+    // also when a 2xx reply carries no usage.
+    // Output is the full native assistant message: every content block
+    // (text, thinking, tool_use) plus stop_reason.
+    const langfuseOutput = langfuseOutputFromReply(langfuseReply, "anthropic");
+    try {
+      langfuseReportGeneration({
+        traceId: lf.traceId,
+        name: effectiveModel,
+        model: effectiveModel,
+        startTime,
+        endTime,
+        input: langfuseInput,
+        output: langfuseOutput,
+        usage: usage ?? undefined,
+        traceName: lf.traceName,
+        userId: lf.userId,
+        sessionId: lf.sessionId,
+        instanceId: lf.instanceId,
+        tags: lf.tags,
+        traceInput: lf.userQuery || undefined,
+        traceOutput: langfuseOutput,
+        traceMetadata: { stream: false, retried, upstreamUrl: target.url, ...logMeta, ...debugMetadata },
+        observationMetadata: { retried, ...logMeta, ...debugMetadata },
+      });
+    } catch (langfuseErr: unknown) {
+      pipe.error("LANGFUSE_SPAN", langfuseErr);
+    }
   } else if (upstreamResp.status >= 400) {
     pipe.error("UPSTREAM_4xx", `status=${upstreamResp.status} body=${respText.slice(0, 1000)}`);
-    langfuseReportFailure({
-      lf,
-      model: effectiveModel,
-      startTime,
-      endTime,
-      input: buildLangfuseInput(messages, body.system, langfuseDebug),
-      status: upstreamResp.status,
-      statusMessage: respText.slice(0, 500),
-      extraTags: ["error"],
-      observationMetadata: { stage: "upstream", stream: false, ...debugMetadata },
-    });
+    try {
+      langfuseReportFailure({
+        lf,
+        model: effectiveModel,
+        startTime,
+        endTime,
+        input: langfuseInput,
+        status: upstreamResp.status,
+        statusMessage: respText.slice(0, 500),
+        extraTags: ["error"],
+        observationMetadata: { stage: "upstream", stream: false, ...debugMetadata },
+      });
+    } catch (langfuseErr: unknown) {
+      pipe.error("LANGFUSE_SPAN", langfuseErr);
+    }
   }
 
   pipe.responseDone(usage);
@@ -1927,6 +1935,8 @@ interface AnthropicTapContext {
   requestKind: CcRequestKind;
   /** The turn may touch memory (main kind, not legacy route, no `x-memory-mode: off`); gates L0 and skill. */
   memoryTurn: boolean;
+  /** Full native request for Langfuse (`buildLangfuseRequestInput`), built once per request. */
+  langfuseInput: unknown;
   /** `config.langfuse.debug === true` 的求值结果，透传避免流内重复读 config。 */
   langfuseDebug: boolean;
   /** buildRequestDebugMetadata 求值结果；debug=false 时为 {}。 */
@@ -1941,6 +1951,8 @@ interface AnthropicTapContext {
   gates?: import("../strategies/agent/types.js").StageGates;
   /** Online session trace for this call; null when it is not recorded. */
   sessionTurnCtx: SessionTurnContext | null;
+  /** Upstream HTTP status; a non-2xx stream is reported to Langfuse as a failure. */
+  upstreamStatus: number;
 }
 
 /**
@@ -1956,6 +1968,10 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
     let outputText = "";
     let toolUseCount = 0;
     let streamCompleted = false;
+    // Set when reading the stream failed or timed out: Langfuse gets level ERROR.
+    let readError: string | undefined;
+    // Head of the raw body, kept for the Langfuse failure report of a non-2xx stream.
+    let errorBodyHead = "";
     // 内部使用埋点用：按 index 累积每个 tool_use 块。
     // Anthropic SSE 协议：
     //   1. content_block_start(type=tool_use)  → 拿到 index + name（此时 input 是空 {}）
@@ -1963,11 +1979,13 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
     //   3. content_block_stop → 该块结束
     // 之前的实现只读了 (1) 里的 input（永远空）—— 现在按 index 累加 (2) 里的 partial_json。
     const toolUseAcc = new Map<number, { id: string; name: string; inputJson: string }>();
-    const replyAssembler = ctx.sessionTurnCtx ? new AnthropicMessageAssembler() : null;
+    // Always built: Langfuse needs the full reply; the session trace only takes it when recorded.
+    const replyAssembler = new AnthropicMessageAssembler();
 
     const timeoutHandle = setTimeout(() => {
       if (!streamCompleted) {
         pipe.error("STREAM_TIMEOUT", "Anthropic stream reading exceeded 5 minutes");
+        readError = "stream read timed out after 5 minutes";
         // completeStream 是 async；这里 fire-and-forget（timeout 里已经无法 await）
         void completeStream().catch((err) => pipe.error("STREAM_TIMEOUT_COMPLETE", err));
       }
@@ -1978,7 +1996,8 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
       streamCompleted = true;
       clearTimeout(timeoutHandle);
 
-      if (replyAssembler) submitSessionTurn(ctx.sessionTurnCtx, replyAssembler.result(), modelId);
+      const reply = replyAssembler.result();
+      if (ctx.sessionTurnCtx) submitSessionTurn(ctx.sessionTurnCtx, reply, modelId);
 
       const endTime = new Date().toISOString();
 
@@ -2004,45 +2023,72 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
           usage, retried, upstreamUrl,
           // anthropic 老行为: 只 create span, 不 updateTrace, 无 "stream" tag
         });
+      }
 
-        // Langfuse: report this LLM call as a generation under the turn trace
-        // 流式无完整原生 assistant content 数组可用（tool_use 块在 SSE 里是分片
-        // 增量事件），debug 时把 tool_use_count 与 stop_reason 塞进 metadata 兜底。
-        try {
+      // Langfuse: report this LLM call as a generation under the turn trace,
+      // also when no usage arrived (a stream cut or failed before message_start).
+      // Output is the message the assembler rebuilt from the SSE events (all
+      // blocks incl. thinking, signature and parsed tool_use input, plus stop_reason).
+      try {
+        if (ctx.upstreamStatus >= 400) {
+          // A non-2xx reply (e.g. 529 Overloaded, or a retried 4xx) is a failed
+          // call, not a cut assistant message.
+          langfuseReportFailure({
+            lf,
+            model: modelId,
+            startTime,
+            endTime,
+            input: ctx.langfuseInput,
+            status: ctx.upstreamStatus,
+            statusMessage: errorBodyHead.slice(0, 500),
+            extraTags: ["error"],
+            observationMetadata: { stage: "upstream", stream: true, retried, ...ctx.debugMetadata },
+          });
+        } else {
+          const langfuseOutput = langfuseOutputFromReply(reply, "anthropic");
           const streamDebugExtra = ctx.langfuseDebug
             ? {
                 stream_tool_use_count: toolUseCount,
                 stream_output_text_len: outputText.length,
               }
             : {};
+          const replyStatus = readError === undefined
+            ? langfuseReplyStatus(reply)
+            : {
+                level: "ERROR" as const,
+                statusMessage: `stream incomplete: stream read failed ${readError}`.slice(0, 500),
+                metadata: { stream_incomplete: true, stream_incomplete_reason: "stream read failed" },
+              };
           langfuseReportGeneration({
             traceId: lf.traceId,
             name: modelId,
             model: modelId,
             startTime,
             endTime,
-            input: buildLangfuseInput(inputMessages, system, ctx.langfuseDebug),
-            output: outputText ? { role: "assistant", content: outputText } : undefined,
-            usage,
+            input: ctx.langfuseInput,
+            output: langfuseOutput,
+            level: replyStatus.level,
+            statusMessage: replyStatus.statusMessage,
+            usage: Object.keys(usage).length > 0 ? usage : undefined,
             traceName: lf.traceName,
             userId: lf.userId,
             sessionId: lf.sessionId,
             instanceId: lf.instanceId,
             tags: lf.tags,
             traceInput: lf.userQuery || undefined,
-            traceOutput: outputText ? { role: "assistant", content: outputText } : undefined,
+            traceOutput: langfuseOutput,
             traceMetadata: {
               stream: true, retried, upstreamUrl, ...logMeta,
               ...ctx.debugMetadata, ...streamDebugExtra,
             },
             observationMetadata: {
               retried, ...logMeta,
-              ...ctx.debugMetadata, ...streamDebugExtra,
+              ...ctx.debugMetadata, ...streamDebugExtra, ...replyStatus.metadata,
             },
           });
-        } catch (langfuseErr: unknown) {
-          pipe.error("LANGFUSE_SPAN", langfuseErr);
         }
+      } catch (langfuseErr: unknown) {
+        pipe.error("LANGFUSE_SPAN", langfuseErr);
       }
 
       // CC 分流：FORK/SIDEQUERY 不是真实对话轮，跳过 L0/skill。Credit 仍上报。
@@ -2159,7 +2205,11 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
         const { done, value } = await reader.read();
         if (done) break;
 
-        sseBuf += decoder.decode(value, { stream: true });
+        const chunk = decoder.decode(value, { stream: true });
+        if (ctx.upstreamStatus >= 400 && errorBodyHead.length < 500) {
+          errorBodyHead += chunk.slice(0, 500 - errorBodyHead.length);
+        }
+        sseBuf += chunk;
 
         const parts = sseBuf.split("\n\n");
         sseBuf = parts.pop() ?? "";
@@ -2180,7 +2230,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
           try {
             const evt = JSON.parse(dataStr) as Record<string, unknown>;
             const evtType = evt.type as string;
-            replyAssembler?.push(evt);
+            replyAssembler.push(evt);
 
             if (evtType === "message_start") {
               const message = evt.message as Record<string, unknown> | undefined;
@@ -2240,7 +2290,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
         if (dataStr && dataStr !== "[DONE]") {
           try {
             const evt = JSON.parse(dataStr) as Record<string, unknown>;
-            replyAssembler?.push(evt);
+            replyAssembler.push(evt);
             if (evt.type === "message_delta" && evt.usage) {
               Object.assign(usage, evt.usage as Record<string, unknown>);
             }
@@ -2251,6 +2301,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
       }
     } catch (err: unknown) {
       pipe.error("STREAM", err);
+      readError = err instanceof Error ? err.message : String(err);
     }
 
     await completeStream();

@@ -113,9 +113,4 @@ export const anthropicProtocol: ProtocolStrategy = {
       { status, headers: { "content-type": "application/json" } },
     );
   },
-
-  buildLangfuseInput(body): unknown {
-    // Phase 4: 用 flattenAnthropicMessagesForOpik (anthropicHandler.ts 有)
-    return { system: body.system, messages: body.messages };
-  },
 };

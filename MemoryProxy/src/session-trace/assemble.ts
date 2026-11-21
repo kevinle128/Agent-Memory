@@ -14,6 +14,29 @@ export interface ModelReply {
   stopReason: string | null;
   /** Client-executed tool calls the reply asks for. */
   toolCallCount: number;
+  /**
+   * Set only when a stream was cut or failed: an `error` event, a failed or
+   * incomplete Responses status, a stream that ended before its stop event, or
+   * a tool call whose arguments were cut. Plain JSON replies never set it.
+   */
+  incomplete?: StreamIncomplete;
+}
+
+export interface StreamIncomplete {
+  /** ERROR: the upstream reported a failure. WARNING: the stream just stopped short. */
+  level: "WARNING" | "ERROR";
+  reason: string;
+  /** The error object the upstream sent, as is. */
+  error?: unknown;
+}
+
+function isJsonText(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 type Json = Record<string, unknown>;
@@ -72,8 +95,10 @@ export class OpenAIChatAssembler {
   private readonly toolCalls = new Map<number, OpenAIToolCall>();
   private role = "assistant";
   private finishReason: string | null = null;
+  private error: unknown;
 
   push(event: Json): void {
+    if (event.error !== undefined && event.error !== null) this.error = event.error;
     if (!Array.isArray(event.choices)) return;
     for (const c of event.choices) {
       if (!isRecord(c) || (typeof c.index === "number" && c.index !== 0)) continue;
@@ -120,7 +145,21 @@ export class OpenAIChatAssembler {
     if (this.toolCalls.size > 0) {
       output.tool_calls = [...this.toolCalls.entries()].sort(([a], [b]) => a - b).map(([, tc]) => tc);
     }
-    return { output, stopReason: this.finishReason, toolCallCount: this.toolCalls.size };
+    const reply: ModelReply = { output, stopReason: this.finishReason, toolCallCount: this.toolCalls.size };
+    const incomplete = this.incomplete();
+    if (incomplete) reply.incomplete = incomplete;
+    return reply;
+  }
+
+  private incomplete(): StreamIncomplete | undefined {
+    if (this.error !== undefined) return { level: "ERROR", reason: "error chunk in the stream", error: this.error };
+    if (this.finishReason === null) return { level: "WARNING", reason: "stream ended before finish_reason" };
+    for (const tc of this.toolCalls.values()) {
+      if (tc.function.arguments !== "" && !isJsonText(tc.function.arguments)) {
+        return { level: "WARNING", reason: `tool call ${tc.function.name || tc.id} was cut` };
+      }
+    }
+    return undefined;
   }
 }
 
@@ -149,9 +188,13 @@ export class AnthropicMessageAssembler {
   private readonly partialJson = new Map<number, string>();
   private role = "assistant";
   private stopReason: string | null = null;
+  private error: unknown;
 
   push(event: Json): void {
     switch (event.type) {
+      case "error":
+        this.error = event.error ?? event;
+        break;
       case "message_start":
         if (isRecord(event.message) && typeof event.message.role === "string") this.role = event.message.role;
         break;
@@ -211,11 +254,26 @@ export class AnthropicMessageAssembler {
         return { ...block, input: raw };
       }
     });
-    return {
+    const reply: ModelReply = {
       output: { role: this.role, content },
       stopReason: this.stopReason,
       toolCallCount: countToolUse(content),
     };
+    const incomplete = this.incomplete();
+    if (incomplete) reply.incomplete = incomplete;
+    return reply;
+  }
+
+  private incomplete(): StreamIncomplete | undefined {
+    if (this.error !== undefined) return { level: "ERROR", reason: "error event in the stream", error: this.error };
+    if (this.stopReason === null) return { level: "WARNING", reason: "stream ended before stop_reason" };
+    for (const [index, raw] of this.partialJson) {
+      if (raw !== "" && !isJsonText(raw)) {
+        const name = this.blocks.get(index)?.name;
+        return { level: "WARNING", reason: `tool call ${typeof name === "string" ? name : index} was cut` };
+      }
+    }
+    return undefined;
   }
 }
 
@@ -251,9 +309,16 @@ export class ResponsesAssembler {
   private readonly items = new Map<number, unknown>();
   private finalOutput: unknown[] | null = null;
   private status: string | null = null;
+  private error: unknown;
+  private incompleteReason: string | undefined;
 
   push(event: Json): void {
     const type = typeof event.type === "string" ? event.type : "";
+    if (type === "error") {
+      const { type: _type, ...rest } = event;
+      this.error = isRecord(event.error) ? event.error : rest;
+      return;
+    }
     if (type === "response.output_item.done") {
       const index = typeof event.output_index === "number" ? event.output_index : this.items.size;
       if (event.item !== undefined) this.items.set(index, event.item);
@@ -264,16 +329,34 @@ export class ResponsesAssembler {
     const resp = isRecord(event.response) ? event.response : {};
     this.status = typeof resp.status === "string" ? resp.status : finalStatus;
     if (Array.isArray(resp.output)) this.finalOutput = resp.output;
+    if (resp.error !== undefined && resp.error !== null) this.error = resp.error;
+    if (isRecord(resp.incomplete_details) && typeof resp.incomplete_details.reason === "string") {
+      this.incompleteReason = resp.incomplete_details.reason;
+    }
   }
 
   result(): ModelReply {
     const output = this.finalOutput && this.finalOutput.length > 0
       ? this.finalOutput
       : [...this.items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
-    return {
+    const reply: ModelReply = {
       output: { output },
       stopReason: this.status,
       toolCallCount: countResponsesToolCalls(output),
     };
+    const incomplete = this.incomplete();
+    if (incomplete) reply.incomplete = incomplete;
+    return reply;
+  }
+
+  private incomplete(): StreamIncomplete | undefined {
+    if (this.error !== undefined || this.status === "failed") {
+      return { level: "ERROR", reason: this.status === "failed" ? "response failed" : "error event in the stream", error: this.error };
+    }
+    if (this.status === null) return { level: "WARNING", reason: "stream ended before the final response event" };
+    if (this.status === "incomplete") {
+      return { level: "WARNING", reason: `response incomplete${this.incompleteReason ? `: ${this.incompleteReason}` : ""}` };
+    }
+    return undefined;
   }
 }
