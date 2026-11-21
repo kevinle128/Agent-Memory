@@ -32,11 +32,11 @@ const RULE_MINOR = "------------------------------------------------";
 
 /** 4 个 stage 的标题（不含步骤号，步骤号动态拼）。 */
 const STAGE_TITLES: Record<FormStage, string> = {
-  asset_confirm: "是否关联团队资产？",
-  team: "选择 Team",
-  agent_select: "选择 Agent",
-  task_select: "选择 Task",
-  agent_task: "选择 Agent 与 Task", // legacy, 文字模式不常用（WB 走 CC 拆分路径）
+  asset_confirm: "Associate team assets?",
+  team: "Select Team",
+  agent_select: "Select Agent",
+  task_select: "Select Task",
+  agent_task: "Select Agent & Task", // legacy, text mode uses split stages
 };
 
 /** 4 个 stage 的步骤号（用于"步骤 N/4"提示）。 */
@@ -62,7 +62,7 @@ export const TEXT_ASSET_CONFIRM_NO_LABEL = "否，本次不关联";
  * 文字模式 content 里首行标记，用于回显时识别（未来若 injector 层想剔除自己
  * 上一轮发的初始化文本，可以通过这个前缀识别）。
  */
-export const TEXT_FORM_MARKER = "[会话初始化]";
+export const TEXT_FORM_MARKER = "[Session Init]";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -84,11 +84,11 @@ export function renderAssetConfirmText(retry?: RetryContext): string {
   const header = renderHeader("asset_confirm", null, retry);
   const body = [
     "",
-    "   1.  是，关联团队资产",
-    "   2.  否，本次不关联",
+    "   1.  Yes, associate team assets",
+    "   2.  No, skip for this session",
     "",
     RULE_MINOR,
-    "  回复方式：请输入 yes 或 no",
+    "  How to reply: enter yes or no",
     "",
   ].join("\n");
   return header + body;
@@ -150,8 +150,8 @@ export function renderTaskText(
   const header = renderHeader("task_select", p, retry);
   const body = renderOptionList(p.currentPageItems, p.offset, (t) => ({
     primary: t.task_name ?? t.task_id,
-    secondary: t.task_id || "(无 task-id)",
-    tertiary: t.isDefault ? "默认任务" : undefined,
+    secondary: t.task_id || "(no task-id)",
+    tertiary: t.isDefault ? "Default task" : undefined,
   }));
   const footer = renderFooter(p, "task", tasks.length);
   return header + "\n" + body + "\n" + footer;
@@ -165,13 +165,13 @@ export function renderTaskText(
 export function renderBypassNotice(): string {
   return [
     RULE_MAJOR,
-    `  ${TEXT_FORM_MARKER} 已跳过团队资产关联`,
+    `  ${TEXT_FORM_MARKER} Team asset association skipped`,
     RULE_MAJOR,
     "",
-    "  尝试 3 次仍未识别选择，本次会话将不关联团队资产，",
-    "  直接放行后续对话。",
+    "  Could not recognize your selection after 3 attempts. This session will",
+    "  continue without team assets.",
     "",
-    "  如需重新初始化，请发送 `mem:session-reset`。",
+    "  To re-initialize, send `mem:session-reset`.",
     "",
   ].join("\n");
 }
@@ -362,26 +362,26 @@ function renderHeader(stage: FormStage, pagination: ReturnType<typeof computeTex
   lines.push(RULE_MAJOR);
 
   if (isRetry) {
-    // Retry 标题：突出"未能识别"
+    // Retry header: highlight unrecognized reply
     const preview = truncatePreview(retry?.userReplyPreview);
-    lines.push(`  ${TEXT_FORM_MARKER} 未能识别你的回复${preview ? ` "${preview}"` : ""}`);
+    lines.push(`  ${TEXT_FORM_MARKER} Could not recognize your reply${preview ? ` "${preview}"` : ""}`);
     if (typeof retry?.attemptCount === "number") {
       const left = retry.attemptsLeft;
       const leftPart = typeof left === "number" && left > 0
-        ? `，再 ${left} 次未识别将自动跳过`
+        ? `, ${left} more unrecognized attempt${left === 1 ? "" : "s"} before auto-skip`
         : "";
-      lines.push(`  第 ${retry.attemptCount} 次尝试${leftPart}`);
+      lines.push(`  Attempt ${retry.attemptCount}${leftPart}`);
     }
     lines.push(RULE_MAJOR);
     lines.push("");
-    lines.push(`  ${TEXT_FORM_MARKER} 步骤 ${step}/${TOTAL_STEPS}：${title}`);
+    lines.push(`  ${TEXT_FORM_MARKER} Step ${step}/${TOTAL_STEPS}: ${title}`);
     if (pagination && !pagination.isEmpty) {
-      lines.push(`  第 ${pagination.currentPageIndex + 1} 页 / 共 ${pagination.totalPages} 页`);
+      lines.push(`  Page ${pagination.currentPageIndex + 1} / ${pagination.totalPages}`);
     }
   } else {
-    lines.push(`  ${TEXT_FORM_MARKER} 步骤 ${step}/${TOTAL_STEPS}：${title}`);
+    lines.push(`  ${TEXT_FORM_MARKER} Step ${step}/${TOTAL_STEPS}: ${title}`);
     if (pagination && !pagination.isEmpty) {
-      lines.push(`  第 ${pagination.currentPageIndex + 1} 页 / 共 ${pagination.totalPages} 页`);
+      lines.push(`  Page ${pagination.currentPageIndex + 1} / ${pagination.totalPages}`);
     }
     lines.push(RULE_MAJOR);
   }
@@ -406,7 +406,7 @@ function renderOptionList<T>(
   extract: (item: T) => OptionLine,
 ): string {
   if (items.length === 0) {
-    return "\n```plaintext\n  (当前列表为空)\n```\n";
+    return "\n```plaintext\n  (empty list)\n```\n";
   }
 
   const lines: string[] = ["", "```plaintext"];
@@ -440,18 +440,18 @@ function renderFooter(
 ): string {
   const lines: string[] = [];
   lines.push(RULE_MINOR);
-  lines.push("  回复方式：");
+  lines.push("  How to reply:");
   const pageRange = pagination.isEmpty
-    ? "(空)"
+    ? "(empty)"
     : `1..${totalItems}`;
-  lines.push(`    - 数字（如 ${pagination.isEmpty ? "1" : "2"}，范围 ${pageRange}）`);
+  lines.push(`    - Number (e.g. ${pagination.isEmpty ? "1" : "2"}, range ${pageRange})`);
   if (pagination.hasNext) {
-    lines.push("    - next / 下一页  —— 查看更多");
+    lines.push("    - next  -- next page");
   }
   if (pagination.hasPrev) {
-    lines.push("    - prev / 上一页  —— 返回上一页");
+    lines.push("    - prev  -- previous page");
   }
-  lines.push("    - skip / 跳过    —— 不关联团队资产");
+  lines.push("    - skip  -- do not associate team assets");
   lines.push("");
   return lines.join("\n");
 }

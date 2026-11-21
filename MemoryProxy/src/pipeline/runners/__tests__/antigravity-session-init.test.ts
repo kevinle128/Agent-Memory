@@ -269,7 +269,7 @@ describe("agy wrapped user text", () => {
     const question = await questionText(await post([user(wrapped("fix the bug"))]));
     expect(question).toContain("yes");
     const next = await questionText(await post([user(wrapped("fix the bug")), model(question), user(wrapped("yes"))]));
-    expect(next).not.toContain("未能识别");
+    expect(next).not.toContain("Could not recognize");
     expect(next).toContain("Alpha");
     expect(getSessionStore().get(`antigravity:${SESSION}`)).toMatchObject({ status: "pending_team_select" });
   });
@@ -313,14 +313,14 @@ describe("agy system notices between and after typed turns", () => {
 
     // Turns 1-4: a notice follows the reply "yes"; the answer is the typed "yes", so the team question comes next.
     const q2 = await questionText(await post([first, model(q1), user(wrapped("yes")), notice()]));
-    expect(q2).not.toContain("未能识别");
+    expect(q2).not.toContain("Could not recognize");
     expect(q2).toContain("Alpha");
     expect(modelCalls()).toHaveLength(0);
 
     // A reply that is not an option gets the question again with the retry notice.
     const again = await questionText(await post([first, model(q1), user(wrapped("yes")), notice(), model(q2), user(wrapped("zzz")), notice()]));
     expect(again.startsWith(SESSION_INIT_MARKER)).toBe(true);
-    expect(again).toContain("未能识别");
+    expect(again).toContain("Could not recognize");
 
     // A valid number registers; the upstream request holds the original prompt only.
     const done = await post([first, model(q1), user(wrapped("yes")), notice(), model(q2), user(wrapped("2")), notice()]);
