@@ -70,6 +70,9 @@ import { runOmpHookGate, stripOmpGateTurns } from "../../session/omp/hook-gate.j
 import { resolveProxyOrigin } from "../../session/hook-gate-core.js";
 import { resolveConversationId, resolveOmpSessionId } from "../../session/session-key.js";
 import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
+import {
+  gateModelAfterTeam, reselectModelSource, settledUpstreamKind, teamMayChangeInInit,
+} from "../stages/model-after-team.js";
 import type { ModelSourceResolution } from "../stages/model-source.js";
 import {
   DEFAULT_GATE_PREFIX,
@@ -357,16 +360,18 @@ export async function runCodexPipeline(
   // no team pool serves this client; the request then runs as before.
   const spaceIdForTeam = extractSpaceIdFromPath(path) ?? "";
   const teamSession = sessionId ? { keyId: `${agent}:${sessionId}`, agentSource: agent, sessionId } : null;
+  const sessionInitMayRun = config.sessionInit?.enabled === true && sessionId !== null && !isAuxiliary;
   const requestTeam = isLegacyProxyPath(path) ? null : await resolveRequestTeam({
     config, spaceId: spaceIdForTeam, userId, userKey: apiKey, agentSource: agent, session: teamSession,
-    lcHeaders: headers, model: body.model,
-    sessionInitMayRun: config.sessionInit?.enabled === true && sessionId !== null && !isAuxiliary,
+    lcHeaders: headers, model: body.model, sessionInitMayRun,
   });
   const requestTeamError = immediateTeamError(requestTeam);
   if (requestTeamError) return teamErrorResponse(c, "anthropic", requestTeamError);
 
   // `<source>/<model>` of a multi-source agent. Returns `none` before any other work for every
   // other agent, so the pool-service and main-model steps below run unchanged for them.
+  // The name that the client sent is kept: the settled team can find its source again.
+  const originalModel = body.model;
   const modelSource = await stageModelSource({
     config, agent, spaceId: spaceIdForTeam,
     format: "openai-responses", model: body.model, servesPool: true, teamId: teamIdOf(requestTeam),
@@ -380,7 +385,7 @@ export async function runCodexPipeline(
     if (poolRejection) return c.json(poolRejection, 400);
   }
   // A pool request goes to the ChatGPT backend, which only knows the client's own model name.
-  const clientModel = typeof body.model === "string" ? body.model : "";
+  let clientModel = typeof body.model === "string" ? body.model : "";
   if (!matchedSource) applyMainModel(body);
   const presetResolution = matchedSource?.resolution;
 
@@ -414,7 +419,7 @@ export async function runCodexPipeline(
   // 从 codex P1 接入首帧就存在，之前 codex 未接 langfuse 没被发现——接入后
   // Langfuse trace name / observation name 都成了 " / usr-xxx" 空串前缀。
   // 对齐 handler.ts:482 / anthropicHandler.ts 的调用姿势。
-  const requestedModel = typeof body.model === "string" ? body.model : "";
+  let requestedModel = typeof body.model === "string" ? body.model : "";
 
   // ── Model gate + alias (bug B8 fix: 老 codex 完全不检查 pricing table) ──
   // 由 agent.stageGates.modelGate 门控 (codex 现走 full preset, 恒 true)。
@@ -427,6 +432,7 @@ export async function runCodexPipeline(
   // alias rewrite, the client's model name goes upstream unchanged. Auxiliary requests use the
   // pool too, so the pool check does not depend on the gate being skipped for them.
   let _codexIsPool = false;
+  const gateDeferred = teamMayChangeInInit(requestTeam, sessionInitMayRun);
   if (codexAgent.stageGates.modelGate) {
     try {
       const { getInstanceUpstreamConfigs, resolveForAgent, shouldOverride } =
@@ -439,7 +445,9 @@ export async function runCodexPipeline(
       _codexIsCustomUpstream = false;
       _codexIsPool = false;
     }
-    if (!isAuxiliary && !_codexIsCustomUpstream) {
+    // While session init can still change the team, the pool of the final team is not known: the
+    // gate runs after the team settles. Until then the model gets the alias only.
+    if (!isAuxiliary && !_codexIsCustomUpstream && !gateDeferred) {
       const gateResult = stageModelGate(requestedModel, config, false);
       if (!gateResult.ok) {
         return c.json({
@@ -452,7 +460,7 @@ export async function runCodexPipeline(
   }
 
   if (_codexIsPool && clientModel) body.model = clientModel;
-  const modelId = _codexIsPool || matchedSource
+  let modelId = _codexIsPool || matchedSource
     ? (clientModel || requestedModel)
     : resolveModelId(config.creditPricing, requestedModel);
   // 对外展示名只用于客户端请求；TokenHub 只接受价目表中登记的真实服务 ID。
@@ -975,27 +983,35 @@ export async function runCodexPipeline(
   });
   if (settledTeam.error) return teamErrorResponse(c, "anthropic", settledTeam.error);
   let lateSource = presetResolution;
-  if (settledTeam.changed) {
-    // A pool source is the pool of one team, so a source request finds its source again.
-    if (matchedSource && matchedSource.resolution.kind === "pool") {
-      const again = await stageModelSource({
-        config, agent, spaceId: spaceIdForTeam, format: "openai-responses",
-        model: matchedSource.clientModel, servesPool: true, teamId: settledTeam.teamId,
+  if (settledTeam.changed || gateDeferred) {
+    // A pool source is the pool of one team, so the settled team can match a source that the first
+    // team did not have, or lose the one that it had.
+    let sourceNow = matchedSource;
+    if (settledTeam.changed) {
+      const again = await reselectModelSource({
+        c, config, body, agent, spaceId: spaceIdForTeam, format: "openai-responses", teamId: settledTeam.teamId,
+        originalModel, previous: matchedSource, errorEnvelope: "anthropic",
       });
-      if (again.kind === "error") return modelSourceErrorResponse(c, "anthropic", again);
-      lateSource = again.kind === "matched" ? again.resolution : undefined;
-      if (again.kind !== "matched") body.model = matchedSource.clientModel;
+      if (again.kind === "error") return again.response;
+      sourceNow = again.matched;
+      lateSource = sourceNow?.resolution;
+      if (sourceNow) clientModel = sourceNow.upstreamModel;
+      if (again.lost && typeof originalModel === "string") {
+        clientModel = originalModel;
+        requestedModel = originalModel;
+      }
     }
     // The model name was chosen for the first team: a pool takes the client's own name, any other
     // upstream takes the name of the pricing table. Choose again for the settled team.
-    if (!matchedSource) {
-      const { getInstanceUpstreamConfigs, resolveForAgent } = await import("../../instance-upstream-cache.js");
-      const rows = await getInstanceUpstreamConfigs(config.coreSkill, spaceIdForTeam, config.instanceUpstream);
-      const nowPool = resolveForAgent(rows, agent, settledTeam.teamId).kind === "pool";
-      if (nowPool !== _codexIsPool && typeof body.model === "string") {
-        body.model = nowPool ? (clientModel || requestedModel) : resolveModelId(config.creditPricing, requestedModel);
-      }
+    const kind = await settledUpstreamKind(config, agent, spaceIdForTeam, settledTeam.teamId, lateSource);
+    if (codexAgent.stageGates.modelGate && !(kind.isOverride || kind.isPool)) {
+      const gate = gateModelAfterTeam(c, config, requestedModel, false);
+      if (!gate.ok) return gate.response;
     }
+    modelId = kind.isPool || sourceNow
+      ? (clientModel || requestedModel)
+      : resolveModelId(config.creditPricing, requestedModel);
+    if (typeof body.model === "string") body.model = modelId;
   }
 
   // ── 11. Forward to upstream ────────────────────────────────────────────────

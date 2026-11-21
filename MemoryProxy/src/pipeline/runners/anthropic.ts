@@ -65,6 +65,7 @@ import { stageModelSource, applyModelSource, modelSourceErrorResponse, type Mode
 import { withClaudeCodeIdentity } from "../../subscription-pool/claude-identity.js";
 import { applyPromptCacheTtl } from "../../subscription-pool/prompt-cache-ttl.js";
 import { stageModelGate } from "../stages/model-gate.js";
+import { gateModelAfterTeam, reselectModelSource, teamMayChangeInInit } from "../stages/model-after-team.js";
 import {
   stageWriteUsageLog,
   stageRecordTokenUsage,
@@ -532,10 +533,10 @@ export async function runAnthropicPipeline(
   const teamSession = conversationId
     ? { keyId: `${_agentSourceEarly}:${conversationId}`, agentSource: _agentSourceEarly, sessionId: conversationId }
     : null;
+  const sessionInitMayRun = config.sessionInit?.enabled === true && conversationId !== null && !memoryGates.skipSessionInit;
   const requestTeam = legacyProxy ? null : await resolveRequestTeam({
     config, spaceId: earlySpaceId, userId: earlyVerify.userId, userKey: teamUserKey,
-    agentSource: _agentSourceEarly, session: teamSession, lcHeaders, model: body.model,
-    sessionInitMayRun: config.sessionInit?.enabled === true && conversationId !== null && !memoryGates.skipSessionInit,
+    agentSource: _agentSourceEarly, session: teamSession, lcHeaders, model: body.model, sessionInitMayRun,
   });
   const requestTeamError = immediateTeamError(requestTeam);
   if (requestTeamError) return teamErrorResponse(c, "anthropic", requestTeamError);
@@ -543,6 +544,8 @@ export async function runAnthropicPipeline(
   // `<source>/<model>` of a multi-source agent: returns `none` before any other work for every
   // other agent, so the model-pool and main-model steps below run unchanged for them.
   const sourceAgent = c.req.path.split("/").filter(Boolean)[0];
+  // The name that the client sent is kept: the settled team can find its source again.
+  const originalModel = body.model;
   const modelSource = await stageModelSource({
     config, agent: sourceAgent, spaceId: earlySpaceId,
     format: "anthropic-messages", model: body.model, servesPool: true, teamId: teamIdOf(requestTeam),
@@ -555,7 +558,7 @@ export async function runAnthropicPipeline(
     ? { routed: false, clientFacingModel: null }
     : applyPoolService(config, body);
   if (poolService.clientFacingModel) c.set("clientFacingModel", poolService.clientFacingModel);
-  const mainModelFrom = modelSource.kind === "matched" || poolService.routed ? null : applyMainModel(body);
+  let mainModelFrom = modelSource.kind === "matched" || poolService.routed ? null : applyMainModel(body);
 
   // ── Model gate: reject requests whose `model` is not a registered display name ──
   // 价目表已配置时，客户端 `model` 必须匹配某条 entry 的 `modelName`（展示名，
@@ -565,7 +568,7 @@ export async function runAnthropicPipeline(
   // 内部/外部用户一视同仁 —— internal callers must also request by
   // `modelName`, ensuring upstream ids and billing/observability keys align
   // across all traffic.
-  const requestedModel = typeof body.model === "string" ? body.model : "unknown";
+  let requestedModel = typeof body.model === "string" ? body.model : "unknown";
 
   // ── Early instance config fetch (needed before pricing gate) ──────────
   // Custom upstream (Option 2/3) may use models not in our pricing table,
@@ -589,7 +592,12 @@ export async function runAnthropicPipeline(
   const _earlyConvResolution = earlyResult.earlyConvResolution;
   const _earlyExtractRow = earlyResult.earlyExtractRow;
   const _earlySysMatch = earlyResult.earlySysMatch;
-  const _isCustomUpstream = earlyResult.isCustomUpstream;
+  let _isCustomUpstream = earlyResult.isCustomUpstream;
+  // While session init can still change the team, the pool of the final team is not known: the
+  // gate runs after the team settles, and until then the model gets the alias only. A system user
+  // never runs session init and leaves the pipeline right after this gate.
+  const gateDeferred = teamMayChangeInInit(requestTeam, sessionInitMayRun)
+    && !(_gates.systemUser && _earlySysMatch !== null);
 
   // ── Model gate + alias (via shared stageModelGate, anthropic envelope) ──
   // modelGate 关闭 (codex/wb bootstrap 状态) → 跳过 400 gate 但仍执行 alias 解析,
@@ -599,7 +607,7 @@ export async function runAnthropicPipeline(
   if (poolService.routed) {
     // The pool primary is an upstream id, not a pricing entry; the router re-targets it.
     modelId = requestedModel;
-  } else if (_gates.modelGate) {
+  } else if (_gates.modelGate && !gateDeferred) {
     const gateResult = stageModelGate(requestedModel, config, _isCustomUpstream);
     if (!gateResult.ok) {
       return c.json(
@@ -1088,32 +1096,53 @@ export async function runAnthropicPipeline(
   });
   if (settledTeam.error) return teamErrorResponse(c, "anthropic", settledTeam.error);
   let convResolution: Resolution = _earlyConvResolution;
-  if (settledTeam.changed) {
-    // A pool source is the pool of one team, so a source request finds its source again.
+  if (settledTeam.changed || gateDeferred) {
     let lateSource: ModelSourceResolution | undefined = modelSource.kind === "matched" ? modelSource.resolution : undefined;
-    if (modelSource.kind === "matched" && modelSource.resolution.kind === "pool") {
-      const again = await stageModelSource({
-        config, agent: sourceAgent, spaceId: earlySpaceId, format: "anthropic-messages",
-        model: modelSource.clientModel, servesPool: true, teamId: settledTeam.teamId,
+    let customNow = _isCustomUpstream;
+    if (settledTeam.changed) {
+      // A pool source is the pool of one team, so the settled team can match a source that the
+      // first team did not have, or lose the one that it had.
+      const again = await reselectModelSource({
+        c, config, body, agent: sourceAgent ?? "", spaceId: earlySpaceId, format: "anthropic-messages",
+        teamId: settledTeam.teamId, originalModel, previous: modelSource.kind === "matched" ? modelSource : null,
+        errorEnvelope: "anthropic",
       });
-      if (again.kind === "error") return modelSourceErrorResponse(c, "anthropic", again);
-      lateSource = again.kind === "matched" ? again.resolution : undefined;
-      // A known team without that pool runs as if no pool existed: the client's model name stays.
-      if (again.kind !== "matched") body.model = modelSource.clientModel;
+      if (again.kind === "error") return again.response;
+      lateSource = again.matched?.resolution;
+      if (again.matched || again.lost) {
+        // The body holds the model of the source, or the name of the client again.
+        if (typeof body.model === "string") requestedModel = body.model;
+        if (again.matched) mainModelFrom = null;
+      }
+      const lateEarly = await stageInstanceUpstreamEarly({
+        c, config, spaceId: earlySpaceId, earlyUserId: earlyVerify.userId,
+        errorEnvelope: "anthropic", teamId: settledTeam.teamId,
+        ...(lateSource ? { presetResolution: lateSource } : {}),
+      });
+      if (lateEarly.blockedResp) return lateEarly.blockedResp;
+      convResolution = lateEarly.earlyConvResolution;
+      customNow = lateEarly.isCustomUpstream;
+      // The model gate and the alias ran for the first team. An override group of the new team
+      // would need its own model handling, so this one turn uses the official target.
+      if (convResolution.kind === "override" && _earlyConvResolution.kind !== "override") {
+        console.log(`[subscription-pool] team changed during session init; official target this turn`);
+        convResolution = { kind: "official", row: null };
+        customNow = false;
+      }
     }
-    const lateEarly = await stageInstanceUpstreamEarly({
-      c, config, spaceId: earlySpaceId, earlyUserId: earlyVerify.userId,
-      errorEnvelope: "anthropic", teamId: settledTeam.teamId,
-      ...(lateSource ? { presetResolution: lateSource } : {}),
-    });
-    if (lateEarly.blockedResp) return lateEarly.blockedResp;
-    convResolution = lateEarly.earlyConvResolution;
-    // The model gate and the alias ran for the first team. An override group of the new team
-    // would need its own model handling, so this one turn uses the official target.
-    if (convResolution.kind === "override" && _earlyConvResolution.kind !== "override") {
-      console.log(`[subscription-pool] team changed during session init; official target this turn`);
-      convResolution = { kind: "official", row: null };
+    // Gate and alias for the settled upstream. The model name goes back to the name of the client
+    // when the settled upstream is custom or a pool.
+    if (!poolService.routed) {
+      if (_gates.modelGate) {
+        const gate = gateModelAfterTeam(c, config, requestedModel, customNow);
+        if (!gate.ok) return gate.response;
+        modelId = gate.gate.modelId;
+      } else {
+        modelId = resolveModelId(config.creditPricing, requestedModel);
+      }
+      if (typeof body.model === "string") body.model = modelId;
     }
+    _isCustomUpstream = customNow;
   }
 
   // ── Cost guard: resolve forward target (opaque — no routing logic here) ──

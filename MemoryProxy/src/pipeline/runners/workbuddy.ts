@@ -63,6 +63,9 @@ import { stageCredit } from "../stages/credit.js";
 import { resolveModelId } from "../../pricing.js";
 import { stageIdentity } from "../stages/identity.js";
 import { stageModelGate } from "../stages/model-gate.js";
+import {
+  gateModelAfterTeam, reselectModelSource, settledUpstreamKind, teamMayChangeInInit,
+} from "../stages/model-after-team.js";
 import { resolveAgentStrategy } from "../strategies/agent/index.js";
 import { enforceRateLimit, isRateLimitExceededError } from "../../rate-limit/guard.js";
 import { workbuddyAdapter } from "../../agent-adapters/workbuddy.js";
@@ -1246,16 +1249,18 @@ export async function runWorkbuddyPipeline(
   // keeps its state under the `codex:` key (the state machine of Codex is reused).
   const spaceIdForTeam = extractSpaceIdFromPath(path) ?? "";
   const teamSession = sessionId ? { keyId: `codex:${sessionId}`, agentSource: "codex", sessionId } : null;
+  const sessionInitMayRun = config.sessionInit?.enabled === true && sessionId !== null && !isAuxiliary;
   const requestTeam = await resolveRequestTeam({
     config, spaceId: spaceIdForTeam, userId, userKey: apiKey, agentSource: "workbuddy", session: teamSession,
-    lcHeaders: headers, model: body.model,
-    sessionInitMayRun: config.sessionInit?.enabled === true && sessionId !== null && !isAuxiliary,
+    lcHeaders: headers, model: body.model, sessionInitMayRun,
   });
   const requestTeamError = immediateTeamError(requestTeam);
   if (requestTeamError) return teamErrorResponse(c, "anthropic", requestTeamError);
 
   // `<source>/<model>`: returns `none` unless modelSources is on and the model carries a source
   // prefix, so every other request keeps the checks below unchanged.
+  // The name that the client sent is kept: the settled team can find its source again.
+  const originalModel = body.model;
   const modelSource = await stageModelSource({
     config, agent: "workbuddy", spaceId: spaceIdForTeam,
     format: "openai-responses", model: body.model, servesPool: true, teamId: teamIdOf(requestTeam),
@@ -1277,11 +1282,14 @@ export async function runWorkbuddyPipeline(
   }
 
 
-  const requestedModel = typeof body.model === "string" ? body.model : "";
+  let requestedModel = typeof body.model === "string" ? body.model : "";
 
   // ── Model gate (bug B8 fix, gated by stageGates.modelGate) ──
   const _wbSpaceIdForGate = extractSpaceIdFromPath(path) ?? "";
   let _wbIsCustomUpstream = false;
+  // While session init can still change the team, the pool of the final team is not known: the
+  // gate runs after the team settles. Until then the model gets the alias only.
+  const gateDeferred = teamMayChangeInInit(requestTeam, sessionInitMayRun);
   if (wbAgent.stageGates.modelGate && !isAuxiliary) {
     try {
       const { getInstanceUpstreamConfigs, resolveForAgent, shouldOverride } =
@@ -1291,7 +1299,7 @@ export async function runWorkbuddyPipeline(
     } catch {
       _wbIsCustomUpstream = false;
     }
-    if (!_wbIsCustomUpstream) {
+    if (!_wbIsCustomUpstream && !gateDeferred) {
       const gateResult = stageModelGate(requestedModel, config, false);
       if (!gateResult.ok) {
         return c.json({
@@ -1304,7 +1312,7 @@ export async function runWorkbuddyPipeline(
   }
 
   // A source model id is the upstream's own name, never a pricing-table alias.
-  const modelId = matchedSource ? requestedModel : resolveModelId(config.creditPricing, requestedModel);
+  let modelId = matchedSource ? requestedModel : resolveModelId(config.creditPricing, requestedModel);
   // 对外展示名只用于客户端请求；TokenHub 只接受价目表中登记的真实服务 ID。
   if (typeof body.model === "string" && modelId !== requestedModel) {
     body.model = modelId;
@@ -1804,15 +1812,30 @@ export async function runWorkbuddyPipeline(
   });
   if (settledTeam.error) return teamErrorResponse(c, "anthropic", settledTeam.error);
   let lateSource = presetResolution;
-  if (settledTeam.changed && matchedSource && matchedSource.resolution.kind === "pool") {
-    // A pool source is the pool of one team, so a source request finds its source again.
-    const again = await stageModelSource({
-      config, agent: "workbuddy", spaceId: spaceIdForTeam, format: "openai-responses",
-      model: matchedSource.clientModel, servesPool: true, teamId: settledTeam.teamId,
-    });
-    if (again.kind === "error") return modelSourceErrorResponse(c, "anthropic", again);
-    lateSource = again.kind === "matched" ? again.resolution : undefined;
-    if (again.kind !== "matched") body.model = matchedSource.clientModel;
+  if (settledTeam.changed || gateDeferred) {
+    // A pool source is the pool of one team, so the settled team can match a source that the first
+    // team did not have, or lose the one that it had.
+    let sourceNow = matchedSource;
+    if (settledTeam.changed) {
+      const again = await reselectModelSource({
+        c, config, body, agent: "workbuddy", spaceId: spaceIdForTeam, format: "openai-responses",
+        teamId: settledTeam.teamId, originalModel, previous: matchedSource, errorEnvelope: "anthropic",
+      });
+      if (again.kind === "error") return again.response;
+      sourceNow = again.matched;
+      lateSource = sourceNow?.resolution;
+      // The body holds the model of the source, or the name of the client again.
+      if ((again.matched || again.lost) && typeof body.model === "string") requestedModel = body.model;
+    }
+    // Same rule as the early gate: only an override group skips the pricing table.
+    const kind = await settledUpstreamKind(config, "workbuddy", spaceIdForTeam, settledTeam.teamId, lateSource);
+    if (wbAgent.stageGates.modelGate && !kind.isOverride) {
+      const gate = gateModelAfterTeam(c, config, requestedModel, false);
+      if (!gate.ok) return gate.response;
+    }
+    // A source model id is the upstream's own name, never a pricing-table alias.
+    modelId = sourceNow ? requestedModel : resolveModelId(config.creditPricing, requestedModel);
+    if (typeof body.model === "string") body.model = modelId;
   }
   return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, lf, archiveCtx, {
     seed: sessionTurnSeed,
