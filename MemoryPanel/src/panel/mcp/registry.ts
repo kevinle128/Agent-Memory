@@ -11,8 +11,7 @@ import { helpTool } from './tools/help.js';
 import { knowledgeTools } from './tools/knowledge.js';
 
 /**
- * Same shape as the tool definitions of the stdio knowledge MCP (`name`, `description`,
- * `inputSchema`, `endpoint`), so those definitions register here without reshaping.
+ * Shape of a tool definition: `name`, `description`, `inputSchema` and `endpoint`.
  */
 export interface McpToolDef {
   name: string;

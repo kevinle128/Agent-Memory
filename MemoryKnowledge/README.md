@@ -33,7 +33,6 @@ MemoryKnowledge/
 │   │   └── code/           # CodeGraph bridge
 │   ├── store/              # SQLite（Drizzle）+ 构建队列 + llm_binding
 │   ├── source-fetcher/     # Git 拉取
-│   ├── mcp/                # MCP stdio（转发到本机 HTTP API）
 │   ├── db/                 # schema / client
 │   └── middleware/
 ├── docs/                   # 设计与 API 细节
@@ -90,11 +89,12 @@ KNOWLEDGE_SERVICE_URL=http://127.0.0.1:8421
 
 ```bash
 pnpm dev          # HTTP API（tsx 热更）
-pnpm dev:mcp      # MCP stdio（另开终端；需 HTTP 已起）
 pnpm typecheck
 pnpm test
 pnpm build        # tsdown → dist/
 ```
+
+MCP：本服务不再提供 stdio MCP；由 Panel 通过 HTTP 提供，端点 `POST /api/v1/mcp`。
 
 ## 可选：ClickHouse 工具调用埋点
 
