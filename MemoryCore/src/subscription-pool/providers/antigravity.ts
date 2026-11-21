@@ -205,7 +205,7 @@ export function parseAntigravityQuotaSummary(summary: unknown, models: unknown, 
         resets_at: parseResetTime(bucket.resetTime, now),
         observed_at: now,
         source: "usage_api",
-        ...(groupLabel ? { group_label: groupLabel } : {}),
+        group_label: groupLabel || key,
         shared_models: modelIds.filter((id) => id.toLowerCase().includes("gemini") === geminiGroup),
       });
     }
@@ -370,10 +370,13 @@ export function createAntigravityAdapter(
       };
     },
     async fetchUsage(accessToken: string, _providerAccountId: string, usageOptions: FetchUsageOptions = {}) {
-      const models = await availableModels(accessToken, usageOptions.projectId);
       // The quota summary has the groups with weekly and 5h limits. When it fails or has no group,
-      // the per-model fractions of `fetchAvailableModels` still give a usable reading.
-      const summary = await quotaSummary(accessToken, usageOptions.projectId).catch(() => null);
+      // the per-model fractions of `fetchAvailableModels` still give a usable reading. The two calls
+      // are independent, so they run together to keep a Check now inside the retry deadline.
+      const [models, summary] = await Promise.all([
+        availableModels(accessToken, usageOptions.projectId),
+        quotaSummary(accessToken, usageOptions.projectId).catch(() => null),
+      ]);
       const grouped = summary ? parseAntigravityQuotaSummary(summary, models) : [];
       return { windows: grouped.length > 0 ? grouped : parseAntigravityUsage(models), resetCredits: null };
     },

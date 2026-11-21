@@ -19,9 +19,22 @@ export interface PoolQuotaWindow {
   shared_models?: string[];
 }
 
-/** True when the window limits a request for `model`: a shared window, the model's own, or a group that lists it. */
+/**
+ * True when the window limits a request for `model`: a shared window, the model's own, or a group
+ * that covers it. A group lists only the models this account reported, so a model it does not list
+ * (offered by another account, released after the last sweep, or filtered out) still falls under
+ * the AntiGravity rule: an id with `gemini` belongs to the Gemini group, any other id to `3p`.
+ */
 export function windowAppliesToModel(window: Pick<PoolQuotaWindow, "model_scope" | "shared_models">, model: string): boolean {
-  if (window.shared_models) return window.shared_models.includes(model);
+  if (window.shared_models) {
+    if (!model) return false;
+    if (window.shared_models.includes(model)) return true;
+    const scope = (window.model_scope ?? "").toLowerCase();
+    if (scope.includes("gemini") || scope === "3p") {
+      return model.toLowerCase().includes("gemini") === scope.includes("gemini");
+    }
+    return false;
+  }
   return !window.model_scope || window.model_scope === model;
 }
 

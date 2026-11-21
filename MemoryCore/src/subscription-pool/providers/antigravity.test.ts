@@ -331,6 +331,11 @@ describe("parseAntigravityQuotaSummary", () => {
     expect(windows[3]).toMatchObject({ name: "5h", model_scope: "3p", used_pct: 100 });
   });
 
+  it("labels a group without displayName with its group key", () => {
+    const summary = { groups: [{ buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 0.5 }] }] };
+    expect(parseAntigravityQuotaSummary(summary, models, NOW)[0]).toMatchObject({ model_scope: "gemini", group_label: "gemini" });
+  });
+
   it("returns no window for a payload without groups", () => {
     expect(parseAntigravityQuotaSummary({}, models, NOW)).toEqual([]);
     expect(parseAntigravityQuotaSummary(null, models, NOW)).toEqual([]);
