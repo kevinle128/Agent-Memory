@@ -481,8 +481,14 @@ export class SessionStore {
 
     // Step 3.1: bypassed outcome → construct bypass state
     if (binding.outcome === "bypassed") {
-      // The chosen team of a bypassed session comes back only for the user that chose it.
-      const sameUser = !binding.userId || !identity.userId || binding.userId === identity.userId;
+      // A bypass binding of another user does not apply to this caller (same policy as doRebuild):
+      // drop it so session init runs for this user and the old owner's team is not overwritten.
+      if (binding.userId && identity.userId && binding.userId !== identity.userId) {
+        console.log(`[session-recover] ${keyId} bypass user mismatch (bound=${binding.userId}, current=${identity.userId}), invalidating`);
+        await this.bindingRepo.deleteBinding(spaceOf(identity), identity.sessionId);
+        return undefined;
+      }
+      const userId = binding.userId || identity.userId;
       const state: SessionInitState = {
         status: "initialized",
         keyId,
@@ -492,8 +498,8 @@ export class SessionStore {
         sessionInfo: null,
         agentDetail: null,
         taskDetail: null,
-        ...(sameUser && binding.userId ? { userId: binding.userId } : {}),
-        ...(sameUser && binding.teamId ? { selectedTeamId: binding.teamId } : {}),
+        ...(userId ? { userId } : {}),
+        ...(binding.teamId ? { selectedTeamId: binding.teamId } : {}),
       };
       await this.set(keyId, state);
       return this.tagRecoverySource(state, "l2b");

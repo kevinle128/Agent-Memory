@@ -323,6 +323,11 @@ export const DEFAULT_METADATA_QUOTA_LIMITS: MetadataQuotaLimits = {
   maxTeamsPerInstance: 100,
 };
 
+/** Lock key that serializes the lookup-or-create of the pool group of one team and provider. */
+function poolGroupLockKey(teamId: string, provider: SubscriptionProvider): string {
+  return `pool-group:${teamId}:${provider}`;
+}
+
 export class MetadataService {
   private readonly quota: MetadataQuotaLimits;
   private readonly memorySystemUser?: MemorySystemUserConfig;
@@ -2564,41 +2569,45 @@ export class MetadataService {
     const id = this.requirePoolTeamId(teamId);
     this.subscriptionAdapter(provider);
     await this.store.ensureDefaultSeeded(supportedAgents);
-    const pool = await this.teamPoolGroup(id, provider, supportedAgents);
-    const fixed = poolSourceFields(provider);
-    if (!pool?.source_name && (await this.takenSourceNames(id, pool?.group_id)).has(fixed.source_name)) {
-      throw new MetadataError("SOURCE_NAME_TAKEN", `source name is already used by another group: ${fixed.source_name}`);
-    }
-    try {
-      if (!pool) {
-        const row = await this.store.createInstanceUpstreamGroup({
-          group_type: "custom",
-          team_id: id,
-          name: this.subscriptionPoolName(provider),
-          agents: [],
-          enabled: true,
-          mode: "subscription_pool",
-          base_url: "",
-          api_key: "",
-          model_id: "",
-          description: `${provider} subscription accounts`,
-          ...fixed,
-        });
-        this.notifySourceAttached(null, row);
-        return this.toPublicGroup(row);
+    // Same lock as the pool group creation of `completeSubscriptionOAuth`: the MongoDB store has no
+    // unique index on the group name, so the lookup and the insert must not interleave.
+    return withAccountLock(poolGroupLockKey(id, provider), async () => {
+      const pool = await this.teamPoolGroup(id, provider, supportedAgents);
+      const fixed = poolSourceFields(provider);
+      if (!pool?.source_name && (await this.takenSourceNames(id, pool?.group_id)).has(fixed.source_name)) {
+        throw new MetadataError("SOURCE_NAME_TAKEN", `source name is already used by another group: ${fixed.source_name}`);
       }
-      if (pool.enabled && pool.source_name) return this.toPublicGroup(pool);
-      const row = await this.store.updateInstanceUpstreamGroup({
-        group_id: pool.group_id,
-        expected_group_type: "custom",
-        enabled: true,
-        ...(pool.source_name ? {} : fixed),
-      });
-      this.notifySourceAttached(pool, row);
-      return this.toPublicGroup(row);
-    } catch (e) {
-      throw this.translateUpstreamConflict(e);
-    }
+      try {
+        if (!pool) {
+          const row = await this.store.createInstanceUpstreamGroup({
+            group_type: "custom",
+            team_id: id,
+            name: this.subscriptionPoolName(provider),
+            agents: [],
+            enabled: true,
+            mode: "subscription_pool",
+            base_url: "",
+            api_key: "",
+            model_id: "",
+            description: `${provider} subscription accounts`,
+            ...fixed,
+          });
+          this.notifySourceAttached(null, row);
+          return this.toPublicGroup(row);
+        }
+        if (pool.enabled && pool.source_name) return this.toPublicGroup(pool);
+        const row = await this.store.updateInstanceUpstreamGroup({
+          group_id: pool.group_id,
+          expected_group_type: "custom",
+          enabled: true,
+          ...(pool.source_name ? {} : fixed),
+        });
+        this.notifySourceAttached(pool, row);
+        return this.toPublicGroup(row);
+      } catch (e) {
+        throw this.translateUpstreamConflict(e);
+      }
+    });
   }
 
   async disableSubscriptionPool(teamId: string, provider: SubscriptionProvider, supportedAgents: SupportedAgent[]): Promise<Record<string, unknown>> {
@@ -2812,30 +2821,35 @@ export class MetadataService {
     }
     // Accounts can be added before the pool is turned on: the pool group then starts switched off
     // and without clients, so the proxy does not see its accounts until `enable` switches it on.
-    let group = await this.teamPoolGroup(teamId, input.provider);
-    if (!group) {
-      try {
-        group = await this.store.createInstanceUpstreamGroup({
-          group_type: "custom",
-          team_id: teamId,
-          name: this.subscriptionPoolName(input.provider),
-          agents: [],
-          enabled: false,
-          mode: "subscription_pool",
-          base_url: "",
-          api_key: "",
-          model_id: "",
-          description: `${input.provider} subscription accounts`,
-        });
-      } catch (e) {
-        // Another login or `enable` of the same team created the pool group first: use that group.
-        const raced = e instanceof InstanceUpstreamWriteConflictError && e.reason === "name_duplicate"
-          ? await this.teamPoolGroup(teamId, input.provider)
-          : undefined;
-        if (!raced) throw this.translateUpstreamConflict(e);
-        group = raced;
+    // The lookup and the insert run under one lock per team and provider (shared with `enable`),
+    // because the MongoDB store does not reject a second group of the same name on its own.
+    const group = await withAccountLock(poolGroupLockKey(teamId, input.provider), async () => {
+      let found = await this.teamPoolGroup(teamId, input.provider);
+      if (!found) {
+        try {
+          found = await this.store.createInstanceUpstreamGroup({
+            group_type: "custom",
+            team_id: teamId,
+            name: this.subscriptionPoolName(input.provider),
+            agents: [],
+            enabled: false,
+            mode: "subscription_pool",
+            base_url: "",
+            api_key: "",
+            model_id: "",
+            description: `${input.provider} subscription accounts`,
+          });
+        } catch (e) {
+          // Another login or `enable` of the same team created the pool group first: use that group.
+          const raced = e instanceof InstanceUpstreamWriteConflictError && e.reason === "name_duplicate"
+            ? await this.teamPoolGroup(teamId, input.provider)
+            : undefined;
+          if (!raced) throw this.translateUpstreamConflict(e);
+          found = raced;
+        }
       }
-    }
+      return found;
+    });
 
     // A code works once, so the login is used up whatever the exchange result is.
     this.subscriptionOAuthPending.delete(pending.state);

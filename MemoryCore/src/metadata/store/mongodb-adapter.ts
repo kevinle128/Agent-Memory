@@ -1020,25 +1020,17 @@ export class MongoMetadataStore implements IMetadataStore {
   }
 
   async deleteTeams(teamIds: string[]): Promise<DeleteTeamsResult> {
-    const result = await this.batchDelete("meta_teams", "team_id", teamIds);
+    // MongoDB has no foreign keys and the deletes below may run without a transaction. The pools,
+    // their accounts and the child rows go first and the team row last, so a failure part way
+    // leaves the team in place and a retry through the team delete route (which looks the team
+    // up first) can still finish the cleanup.
+    const ids = teamIds.filter((id) => id !== "");
     let deletedPoolAccountIds: string[] = [];
-    if (result.deleted_ids.length > 0) {
-      await this.col("meta_team_members").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
-      await this.col("meta_agents").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
-      await this.col("meta_tasks").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
-      await this.col("meta_assets").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
-    }
-    // The team row is gone before the pool cleanup runs. A team that is already gone (an earlier
-    // call failed after deleting it) still gets its pools removed, so a retry cleans them up.
-    const goneTeamIds = [
-      ...result.deleted_ids,
-      ...result.failed.filter((f) => f.reason === "not_found").map((f) => f.id),
-    ].filter((id) => id !== "");
-    if (goneTeamIds.length > 0) {
+    if (ids.length > 0) {
       deletedPoolAccountIds = await this.withTx(async (session) => {
         const cfg = this.col("meta_instance_upstream_config");
         const groupIds = (await cfg
-          .find({ mode: "subscription_pool", team_id: { $in: goneTeamIds } } as Document, {
+          .find({ mode: "subscription_pool", team_id: { $in: ids } } as Document, {
             projection: { _id: 0, group_id: 1 },
             session,
           })
@@ -1048,13 +1040,18 @@ export class MongoMetadataStore implements IMetadataStore {
         const accountIds = (await accounts
           .find({ group_id: { $in: groupIds } } as Document, { projection: { _id: 0, account_id: 1 }, session })
           .toArray()).map((d) => String((d as Document).account_id)).sort();
-        // MongoDB has no foreign keys. Delete the accounts first, so a failure between the two
-        // deletes leaves an empty group and never an account without a group.
+        // Delete the accounts first, so a failure between the two deletes leaves an empty group
+        // and never an account without a group.
         await accounts.deleteMany({ group_id: { $in: groupIds } } as Document, { session });
         await cfg.deleteMany({ group_id: { $in: groupIds } } as Document, { session });
         return accountIds;
       });
+      await this.col("meta_team_members").deleteMany({ team_id: { $in: ids } } as Document);
+      await this.col("meta_agents").deleteMany({ team_id: { $in: ids } } as Document);
+      await this.col("meta_tasks").deleteMany({ team_id: { $in: ids } } as Document);
+      await this.col("meta_assets").deleteMany({ team_id: { $in: ids } } as Document);
     }
+    const result = await this.batchDelete("meta_teams", "team_id", teamIds);
     return { ...result, deleted_pool_account_ids: deletedPoolAccountIds };
   }
 

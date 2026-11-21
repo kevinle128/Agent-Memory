@@ -159,3 +159,23 @@ describe("SessionStore.peekForTeam", () => {
     expect(await store.peekForTeam(KEY, IDENTITY)).toEqual({ state: "none" });
   });
 });
+
+describe("SessionStore.getOrRecover bypassed L2b binding", () => {
+  it("restores the chosen team for the user that owns the binding", async () => {
+    const bindings = fakeBindings({ outcome: "bypassed", userId: "u1", teamId: "team-c", agentSource: "claude-code" });
+    const store = new SessionStore(TTL, fakeRepo(null), bindings);
+    const state = await store.getOrRecover(KEY, IDENTITY, {});
+    expect(state).toMatchObject({ status: "initialized", bypassed: true, userId: "u1", selectedTeamId: "team-c" });
+  });
+
+  it("drops a binding of another user and writes no state for the caller", async () => {
+    const repo = fakeRepo(null);
+    const bindings = fakeBindings({ outcome: "bypassed", userId: "u2", teamId: "team-c", agentSource: "claude-code" });
+    const store = new SessionStore(TTL, repo, bindings);
+    expect(await store.getOrRecover(KEY, IDENTITY, {})).toBeUndefined();
+    expect(bindings.deleteBinding).toHaveBeenCalledWith("sp", "s1");
+    expect(bindings.putBinding).not.toHaveBeenCalled();
+    expect(repo.upsert).not.toHaveBeenCalled();
+    expect(store.get(KEY)).toBeUndefined();
+  });
+});
