@@ -173,15 +173,12 @@ export interface LangfuseConfig {
   /** Langfuse secret key（sk-lf-...）。 */
   secretKey: string;
   /**
-   * Debug 模式：上报 generation 时保留原始 Anthropic body 结构
-   * （含 `cache_control` marker / `thinking` block / tool_use 原生形态），
-   * 而不是走 `flattenAnthropicMessagesForOpik` 压平。
+   * Debug 模式：只额外写入"请求指纹"类 metadata（body 顶层字段、tools 摘要、
+   * cache_control 位置、白名单 header、流式 tool_use 计数），用于排查请求分类
+   * （Fork vs SideQuery vs Main）、客户端逆向。
    *
-   * 用途：排查请求分类（Fork vs SideQuery vs Main）、cache 命中率、
-   *      thinking 签名合法性等需要看原生结构才能判断的问题。
-   *
-   * 代价：上报体积增大 2-5x（cache_control block、thinking block 全带过去），
-   *      Langfuse 存储成本增加。**线上默认关闭**，只在排障时打开。
+   * 不影响 generation 的 input / output：无论 debug 与否，所有 runner 都上报完整
+   * 原生请求与完整原生回复（见 common/langfuse-payload.ts）。默认关闭。
    */
   debug?: boolean;
 

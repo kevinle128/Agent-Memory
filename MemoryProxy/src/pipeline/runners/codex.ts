@@ -81,6 +81,7 @@ import {
   langfuseTurnTraceId,
   type LangfuseTurnContext,
 } from "../../langfuse.js";
+import { buildLangfuseRequestInput, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
 import { TdaiClient, buildTdaiClientForRequest } from "../../tdai/client.js";
 import { deriveTdaiIdentity } from "../../tdai/identity.js";
 import { stripAgentMessages } from "../../tdai/recorder.js";
@@ -1319,7 +1320,7 @@ async function forwardToUpstream(
           model: modelId,
           startTime,
           endTime: new Date().toISOString(),
-          input: buildCodexLangfuseInput(body),
+          input: buildLangfuseRequestInput(body),
           statusMessage: `forward error: ${err instanceof Error ? err.message : String(err)}`.slice(0, 500),
           extraTags: ["error"],
           observationMetadata: { stage: "forward", stream: true, upstreamUrl },
@@ -1360,7 +1361,7 @@ async function forwardToUpstream(
           model: modelId,
           startTime,
           endTime: new Date().toISOString(),
-          input: buildCodexLangfuseInput(body),
+          input: buildLangfuseRequestInput(body),
           status: upstreamResp.status,
           statusMessage: errText.slice(0, 500),
           extraTags: ["error"],
@@ -1536,20 +1537,6 @@ async function forwardToUpstream(
 // 保留别名 export 供 backward-compat (老测试还 import 这个名字)。
 export { countHumanTurnsResponses as countHumanTurnsCodex } from "../../turnSeq.js";
 
-/**
- * 构造送 langfuse 的 input —— codex 的 input[] 已经是结构化的对话历史，
- * 直接原样透传即可（跟 anthropic 的 buildLangfuseInput 目的一致：让
- * langfuse UI 上能看清"这一次调用的输入是啥"）。instructions 段单独带上,
- * 补齐上下文（codex 的 system prompt 在 body.instructions 而非 input）。
- */
-function buildCodexLangfuseInput(body: Record<string, unknown>): unknown {
-  const out: Record<string, unknown> = { input: body.input };
-  if (typeof body.instructions === "string" && body.instructions.length > 0) {
-    out.instructions = body.instructions;
-  }
-  return out;
-}
-
 export interface CodexTapContext {
   /**
    * langfuse trace context; null 表示 aux 场景不上报 langfuse 但可能仍需
@@ -1618,7 +1605,8 @@ export function consumeCodexStream(stream: ReadableStream<Uint8Array>, ctx: Code
     let toolCalls: UpstreamToolCall[] = [];
     let stopReason: string | undefined;
     let streamCompleted = false;
-    const replyAssembler = ctx.sessionTurnCtx ? new ResponsesAssembler() : null;
+    // Always built: Langfuse needs the full reply; the session trace only takes it when recorded.
+    const replyAssembler = new ResponsesAssembler();
     // 5 分钟兜底：客户端断开可能让上游流卡住，这里超时也强制收尾一次。
     const timeoutHandle = setTimeout(() => {
       if (!streamCompleted) {
@@ -1632,10 +1620,9 @@ export function consumeCodexStream(stream: ReadableStream<Uint8Array>, ctx: Code
       streamCompleted = true;
       clearTimeout(timeoutHandle);
 
-      if (replyAssembler) {
-        parseSseData(sseBuf).forEach((evt) => replyAssembler.push(evt));
-        submitSessionTurn(ctx.sessionTurnCtx, replyAssembler.result(), modelId);
-      }
+      parseSseData(sseBuf).forEach((evt) => replyAssembler.push(evt));
+      const reply = replyAssembler.result();
+      if (ctx.sessionTurnCtx) submitSessionTurn(ctx.sessionTurnCtx, reply, modelId);
 
       const endTime = new Date().toISOString();
       if (ctx.config && lf) {
@@ -1690,19 +1677,20 @@ export function consumeCodexStream(stream: ReadableStream<Uint8Array>, ctx: Code
       }
       if (lf) {
         try {
-          const output = outputText
-            ? { role: "assistant", content: outputText }
-            : toolUseCount > 0
-              ? { role: "assistant", content: `[${toolUseCount} tool call(s)]` }
-              : undefined;
+          // Full Responses output (message, reasoning and function_call items)
+          // plus status, instead of a text-only summary.
+          const output = langfuseOutputFromReply(reply, "responses");
+          const replyStatus = langfuseReplyStatus(reply);
           langfuseReportGeneration({
             traceId: lf.traceId,
             name: modelId,
             model: modelId,
             startTime,
             endTime,
-            input: buildCodexLangfuseInput(inputBody),
+            input: buildLangfuseRequestInput(inputBody),
             output,
+            level: replyStatus.level,
+            statusMessage: replyStatus.statusMessage,
             usage: Object.keys(usage).length > 0 ? usage : undefined,
             traceName: lf.traceName,
             userId: lf.userId,
@@ -1721,6 +1709,7 @@ export function consumeCodexStream(stream: ReadableStream<Uint8Array>, ctx: Code
               stream: true,
               stop_reason: stopReason,
               tool_use_count: toolUseCount,
+              ...replyStatus.metadata,
             },
           });
         } catch (lfErr: unknown) {
@@ -1816,7 +1805,7 @@ export function consumeCodexStream(stream: ReadableStream<Uint8Array>, ctx: Code
           try {
             const evt = JSON.parse(dataStr) as Record<string, unknown>;
             const evtType = evt.type as string | undefined;
-            replyAssembler?.push(evt);
+            replyAssembler.push(evt);
 
             if (evtType === "response.output_text.delta") {
               const delta = evt.delta;

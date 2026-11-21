@@ -59,6 +59,13 @@ import {
   langfuseTurnTraceId,
 } from "./langfuse.js";
 import type { ProxyConfig } from "./types.js";
+import { langfuseOutputFromReply, langfuseReplyStatus, redactRequestPayload, type LangfuseReplyStatus, type ReplyKind } from "./common/langfuse-payload.js";
+import {
+  AnthropicMessageAssembler,
+  OpenAIChatAssembler,
+  ResponsesAssembler,
+  parseSseData,
+} from "./session-trace/assemble.js";
 import type { SystemUserMatch } from "./systemUser.js";
 import {
   getInstanceUpstreamConfigs,
@@ -188,6 +195,13 @@ async function recordTracesAndUsage(params: {
   traceId: string;
   requestPayload: unknown; // parsed body OR raw string
   responsePayload: unknown; // parsed body OR raw string
+  /**
+   * Langfuse output when it differs from `responsePayload`: the assistant
+   * message rebuilt from a stream. Opik keeps the raw SSE text.
+   */
+  langfuseOutput?: unknown;
+  /** Level and metadata of a stream that was cut or failed. */
+  langfuseStatus?: LangfuseReplyStatus;
   usage: Record<string, unknown> | null;
   upstreamRequestId?: string;
   status: number;
@@ -203,6 +217,12 @@ async function recordTracesAndUsage(params: {
     traceId, requestPayload, responsePayload, usage, upstreamRequestId, status,
     isCustomExtraction,
   } = params;
+  const langfuseResponse = params.langfuseOutput ?? responsePayload;
+  const langfuseStatus = params.langfuseStatus ?? { metadata: {} };
+  // Both sinks get the request with credentials redacted: top-level credential keys dropped,
+  // known nested ones (MCP tokens, tool headers) replaced, and an unparsable body replaced by a
+  // placeholder. The upstream request is not touched.
+  const safeRequest = redactRequestPayload(requestPayload);
 
   const spaceId = extractSpaceIdFromPath(path) ?? "";
   const attributionKey = match.userId; // keyId column in ClickHouse
@@ -282,7 +302,7 @@ async function recordTracesAndUsage(params: {
   // parsed object with a `messages` array (matches the shape the main
   // handler produces for OpenAI/Anthropic requests), otherwise we just
   // stringify — opik accepts `input` as an arbitrary object.
-  const opikInput = normaliseForOpikInput(requestPayload);
+  const opikInput = normaliseForOpikInput(safeRequest);
   const forkTraceId = opikCreateTrace(config, {
     traceId,
     projectName: attributionKey,
@@ -324,7 +344,7 @@ async function recordTracesAndUsage(params: {
       name: modelId,
       startTime,
       endTime,
-      inputMessages: opikSpanInputMessages(requestPayload),
+      inputMessages: opikSpanInputMessages(safeRequest),
       outputMessage: opikSpanOutputMessage(responsePayload),
       model: modelId,
       usage: usageForTrace,
@@ -361,8 +381,10 @@ async function recordTracesAndUsage(params: {
         model: modelId,
         startTime,
         endTime,
-        input: requestPayload ?? null,
-        output: responsePayload ?? null,
+        input: safeRequest,
+        output: langfuseResponse ?? null,
+        level: langfuseStatus.level,
+        statusMessage: langfuseStatus.statusMessage,
         usage: usage ?? undefined,
         traceName: `${modelId} / ${match.name}`,
         userId: attributionKey,
@@ -371,8 +393,8 @@ async function recordTracesAndUsage(params: {
         // 内部变量仍叫 spaceId（与 CH/credit 命名一致），只有 Langfuse 这层改名。
         instanceId: spaceId || undefined,
         tags: traceTags,
-        traceInput: requestPayload ?? undefined,
-        traceOutput: responsePayload ?? undefined,
+        traceInput: safeRequest,
+        traceOutput: langfuseResponse ?? undefined,
         traceMetadata: {
           stream,
           upstreamUrl,
@@ -382,6 +404,7 @@ async function recordTracesAndUsage(params: {
           stream,
           upstreamRequestId,
           status,
+          ...langfuseStatus.metadata,
         },
       });
     } else {
@@ -400,7 +423,7 @@ async function recordTracesAndUsage(params: {
         model: modelId,
         startTime,
         endTime,
-        input: requestPayload ?? null,
+        input: safeRequest,
         status,
         statusMessage: `upstream returned ${status}`,
         observationMetadata: { stream, upstreamRequestId, systemUser: match.name },
@@ -634,15 +657,18 @@ export async function handleSystemUserPassthrough(
 
     if (tapStream) {
       consumeStream(tapStream, path)
-        .then(({ usage, rawText }) => {
+        .then(({ usage, rawText, reply, langfuseStatus }) => {
           const endTime = new Date().toISOString();
           return recordTracesAndUsage({
             config, match, path, upstreamUrl, modelId,
             startTime, endTime, stream: true, traceId,
             requestPayload,
-            // For streams we hand the raw SSE text through — opik/langfuse
-            // will store it as a string blob under `{raw: ...}`.
+            // Opik gets the raw SSE text (capped). Langfuse gets the assistant
+            // message rebuilt from the events; the raw text is its fallback
+            // when no event could be assembled.
             responsePayload: rawText,
+            langfuseOutput: reply ?? rawText,
+            langfuseStatus,
             usage,
             upstreamRequestId,
             status,
@@ -686,24 +712,39 @@ export async function handleSystemUserPassthrough(
 }
 
 /**
- * Consume a stream and return both the raw text (for trace payload) and
- * extracted usage (Anthropic message_start/delta OR OpenAI final usage).
+ * Consume a stream and return the raw text (for the Opik payload), the
+ * extracted usage (Anthropic message_start/delta OR OpenAI final usage) and
+ * the full assistant message rebuilt from every SSE event (for Langfuse).
  *
- * Text is capped at 512 KiB — enough to see the shape of a response in
- * dashboards without unbounded memory growth. Usage extraction always
- * uses the full stream regardless of the cap.
+ * Raw text is capped at 512 KiB — enough to see the shape of a response
+ * without unbounded memory growth. Usage extraction and the rebuilt message
+ * always use the full stream regardless of the cap.
  */
 async function consumeStream(
   stream: ReadableStream<Uint8Array>,
   path: string,
-): Promise<{ usage: Record<string, unknown> | null; rawText: string }> {
+): Promise<{
+  usage: Record<string, unknown> | null;
+  rawText: string;
+  reply: Record<string, unknown> | undefined;
+  langfuseStatus: LangfuseReplyStatus;
+}> {
   const RAW_CAP = 512 * 1024;
   const isAnthropic = /\/v1\/messages(?:$|[/?])/.test(path);
+  const kind: ReplyKind = isAnthropic ? "anthropic" : /\/responses(?:$|[/?])/.test(path) ? "responses" : "openai";
+  const assembler = kind === "anthropic"
+    ? new AnthropicMessageAssembler()
+    : kind === "responses" ? new ResponsesAssembler() : new OpenAIChatAssembler();
+  let sseBuf = "";
+  const pushEvents = (block: string): void => {
+    for (const evt of parseSseData(block)) assembler.push(evt);
+  };
   const decoder = new TextDecoder();
   const reader = stream.getReader();
   let buf = "";
   let rawText = "";
   const anthropicUsage: Record<string, unknown> = {};
+  let readError: string | undefined;
 
   try {
     while (true) {
@@ -713,6 +754,10 @@ async function consumeStream(
       if (rawText.length < RAW_CAP) {
         rawText += chunk.slice(0, RAW_CAP - rawText.length);
       }
+      sseBuf += chunk;
+      const blocks = sseBuf.split("\n\n");
+      sseBuf = blocks.pop() ?? "";
+      for (const block of blocks) pushEvents(block);
 
       if (isAnthropic) {
         buf += chunk;
@@ -725,18 +770,36 @@ async function consumeStream(
         buf += chunk;
       }
     }
-    if (isAnthropic && buf.trim()) {
-      mergeAnthropicUsageFromEvent(buf, anthropicUsage);
-    }
+  } catch (err: unknown) {
+    // An upstream reset, abort or timeout mid-stream: keep what arrived so the
+    // cut stream is still reported, with the read error as its status.
+    readError = err instanceof Error ? err.message : String(err);
+    log.warn("systemUser.stream_read_failed", { path, error: readError });
   } finally {
     try { reader.releaseLock(); } catch { /* ignore */ }
   }
+  if (isAnthropic && buf.trim()) {
+    mergeAnthropicUsageFromEvent(buf, anthropicUsage);
+  }
+  if (sseBuf.trim()) pushEvents(sseBuf);
 
   const usage = isAnthropic
     ? (Object.keys(anthropicUsage).length > 0 ? anthropicUsage : null)
     : extractSseUsage(buf);
 
-  return { usage, rawText };
+  const assembled = assembler.result();
+  return {
+    usage,
+    rawText,
+    reply: langfuseOutputFromReply(assembled, kind),
+    langfuseStatus: readError === undefined
+      ? langfuseReplyStatus(assembled)
+      : {
+          level: "ERROR",
+          statusMessage: `stream incomplete: stream read failed ${readError}`.slice(0, 500),
+          metadata: { stream_incomplete: true, stream_incomplete_reason: "stream read failed" },
+        },
+  };
 }
 
 /** Merge Anthropic SSE `message_start` / `message_delta` usage into `sink`. */
