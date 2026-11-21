@@ -4,7 +4,7 @@
 Usage: deploy-revision.py <stack> <revision-variable> <revision>
 
 The stack environment reads the image tag from the Komodo Variable named
-<revision-variable> (MEMORY_BUILD_REVISION=[[AGENT_MEMORY_BUILD_REVISION]]), so
+<revision-variable> (MEMORY_BUILD_REVISION=[[AGENT_MEMORY_MEMORY_BUILD_REVISION]]), so
 this script sets that Variable, runs DeployStack, waits for the Komodo update to
 finish, and then waits until every container of the compose project runs the
 new tag and reports healthy.
