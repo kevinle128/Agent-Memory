@@ -28,6 +28,10 @@ services:
       TDAI_LLM_BASE_URL: ${MEMORY_LLM_BASE_URL:-https://api.openai.com/v1}
       TDAI_LLM_API_KEY: ${MEMORY_LLM_API_KEY:-}
       TDAI_LLM_MODEL: ${MEMORY_LLM_MODEL:-}
+      # Set to true when the LLM upstream answers with SSE even for a request
+      # without "stream" (9Router does this for AntiGravity models); generateText
+      # then fails with "Invalid JSON response" and every L1 extraction fails.
+      TDAI_LLM_STREAM: ${MEMORY_LLM_STREAM:-false}
     # Optional server-only file with LANGFUSE_ENABLED, LANGFUSE_HOST,
     # LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY, so Core LLM calls are traced.
     # It is not in git; without it Langfuse stays off.
