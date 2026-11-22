@@ -21,6 +21,8 @@ const failures: LangfuseFailureReport[] = [];
 let reporterThrows = false;
 /** Body overrides the mocked cost guard hands to every forward target. */
 let bodyOverrides: Record<string, unknown> | null = null;
+/** Retry target the mocked cost guard hands to every forward target. */
+let retryTargetMock: { url: string; model: string; authHeaders: null } | null = null;
 
 vi.mock("../../../langfuse.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../langfuse.js")>()),
@@ -49,7 +51,7 @@ vi.mock("../../../guard-adapter.js", async (importOriginal) => {
     ...actual,
     resolveForwardTarget: async (...args: Parameters<typeof actual.resolveForwardTarget>) => {
       const target = await actual.resolveForwardTarget(...args);
-      return bodyOverrides ? { ...target, bodyOverrides } : target;
+      return { ...target, ...(bodyOverrides ? { bodyOverrides } : {}), ...(retryTargetMock ? { retryTarget: retryTargetMock } : {}) };
     },
   };
 });
@@ -79,6 +81,7 @@ beforeEach(() => {
   failures.length = 0;
   reporterThrows = false;
   bodyOverrides = null;
+  retryTargetMock = null;
   opikInputs.length = 0;
 });
 
@@ -421,6 +424,16 @@ describe("system user passthrough Langfuse payload", () => {
       content: [{ type: "tool_use", id: "t", name: "extract", input: { facts: [1] } }],
       stop_reason: "tool_use",
     });
+  });
+
+  it("keeps the Anthropic request-id header as upstream_request_id", async () => {
+    installFetch(() => jsonResponse({
+      id: "m", type: "message", role: "assistant", content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 },
+    }, 200, { "request-id": "req_sys_1" }));
+    const g = await run("/system/default/v1/messages", { model: "m", system: "s", messages: [{ role: "user", content: "x" }] });
+    expect(g.observationMetadata).toMatchObject({ upstream_request_id: "req_sys_1" });
+    expect(g.observationMetadata).not.toHaveProperty("upstreamRequestId");
   });
 
   it("rebuilds a streamed chat-completions reply", async () => {
@@ -864,5 +877,118 @@ describe("a cut or failed stream does not look like a normal generation", () => 
     expect(g.level).toBe("WARNING");
     expect(g.observationMetadata).toMatchObject({ stream_incomplete: true });
     expect(g.output).toMatchObject({ content: "par" });
+  });
+});
+
+describe("reply fidelity and failure reports", () => {
+  const thinkingReply = {
+    id: "m", type: "message", role: "assistant", model: "claude-opus-4-8",
+    content: [{ type: "thinking", thinking: null }, { type: "text", text: "ok" }],
+    stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 },
+  };
+
+  it("anthropic non-stream: Langfuse keeps a thinking block as the provider sent it, the client gets the patched one", async () => {
+    installFetch(() => jsonResponse(thinkingReply));
+    const { text } = await send("/claude-code/default/v1/messages", { ...anthropicBody, stream: false }, anthropicHeaders);
+    await vi.waitFor(() => expect(generations).toHaveLength(1));
+
+    expect(generations[0]!.output).toEqual(thinkingReply);
+    expect(JSON.parse(text).content[0]).toEqual({ type: "thinking", thinking: "" });
+  });
+
+  it("anthropic non-stream: a 200 reply without a content array is still reported as received", async () => {
+    const reply = { type: "error", error: { type: "overloaded_error", message: "busy" } };
+    installFetch(() => jsonResponse(reply));
+    await send("/claude-code/default/v1/messages", { ...anthropicBody, stream: false }, anthropicHeaders);
+    await vi.waitFor(() => expect(generations).toHaveLength(1));
+    expect(generations[0]!.output).toEqual(reply);
+  });
+
+  it("anthropic: a retry that throws reports the retry body and model", async () => {
+    retryTargetMock = { url: "http://retry-upstream.test/v1/messages", model: "retry-model", authHeaders: null };
+    const { upstreamCalls } = installFetch((call) => {
+      if (call.url.startsWith("http://retry-upstream.test")) throw new Error("connect refused");
+      return jsonResponse({ error: { message: "bad" } }, 400);
+    });
+    bodyOverrides = { max_tokens: 111 };
+    const { res } = await send("/claude-code/default/v1/messages", { ...anthropicBody, stream: false }, anthropicHeaders);
+    expect(res.status).toBe(502);
+    await vi.waitFor(() => expect(failures).toHaveLength(1));
+
+    const retryCall = upstreamCalls.find((c) => c.url.startsWith("http://retry-upstream.test"))!;
+    expect(failures[0]!.input).toEqual(JSON.parse(retryCall.body));
+    expect((failures[0]!.input as Record<string, unknown>).max_tokens).toBe(anthropicBody.max_tokens);
+    expect(failures[0]!.model).toBe("retry-model");
+  });
+
+  it("openai-chat: a retry that throws reports the retry body and model", async () => {
+    retryTargetMock = { url: "http://retry-upstream.test/v1/chat/completions", model: "retry-model", authHeaders: null };
+    const { upstreamCalls } = installFetch((call) => {
+      if (call.url.startsWith("http://retry-upstream.test")) throw new Error("connect refused");
+      return jsonResponse({ error: { message: "bad" } }, 400);
+    });
+    bodyOverrides = { temperature: 0.1 };
+    const { res } = await send("/codebuddy/default/v1/chat/completions", { ...openaiBody, stream: false }, openaiHeaders);
+    expect(res.status).toBe(502);
+    await vi.waitFor(() => expect(failures).toHaveLength(1));
+
+    const retryCall = upstreamCalls.find((c) => c.url.startsWith("http://retry-upstream.test"))!;
+    expect(failures[0]!.input).toEqual(JSON.parse(retryCall.body));
+    expect(failures[0]!.model).toBe("retry-model");
+  });
+
+  const rid = { "request-id": "req_fail_1" };
+
+  it("anthropic: failure reports carry the request id (request-id, empty header falls back)", async () => {
+    installFetch(() => jsonResponse({ error: { message: "overloaded" } }, 529, rid));
+    await send("/claude-code/default/v1/messages", { ...anthropicBody, stream: false }, anthropicHeaders);
+    await vi.waitFor(() => expect(failures).toHaveLength(1));
+    expect(failures[0]!.observationMetadata).toMatchObject({ upstream_request_id: "req_fail_1" });
+
+    failures.length = 0;
+    installFetch(() => jsonResponse({ error: { message: "overloaded" } }, 529, { "request-id": "", "x-request-id": "xr-1" }));
+    await send("/claude-code/default/v1/messages", { ...anthropicBody, stream: false }, anthropicHeaders);
+    await vi.waitFor(() => expect(failures).toHaveLength(1));
+    expect(failures[0]!.observationMetadata).toMatchObject({ upstream_request_id: "xr-1" });
+  });
+
+  it("anthropic stream: a 4xx reply carries the request id", async () => {
+    installFetch(() => jsonResponse({ error: { message: "bad" } }, 400, rid));
+    await send("/claude-code/default/v1/messages", { ...anthropicBody, stream: true }, anthropicHeaders);
+    await vi.waitFor(() => expect(failures).toHaveLength(1));
+    expect(failures[0]!.observationMetadata).toMatchObject({ upstream_request_id: "req_fail_1" });
+  });
+
+  it("openai-chat: stream and non-stream failures carry the request id", async () => {
+    for (const stream of [false, true]) {
+      failures.length = 0;
+      installFetch(() => jsonResponse({ error: { message: "bad" } }, 400, { "x-request-id": "oa-1" }));
+      await send("/codebuddy/default/v1/chat/completions", { ...openaiBody, stream }, openaiHeaders);
+      await vi.waitFor(() => expect(failures).toHaveLength(1));
+      expect(failures[0]!.observationMetadata).toMatchObject({ upstream_request_id: "oa-1" });
+    }
+  });
+
+  it("codex: an upstream 4xx carries the request id", async () => {
+    installFetch(() => jsonResponse({ error: { message: "bad" } }, 400, { "x-request-id": "cx-1" }));
+    await post("/codex/default/v1/responses", {
+      model: "gpt-5-codex", stream: true, instructions: "i",
+      input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "run ls" }] }],
+    }, { authorization: "Bearer sk-codex-secret", "session-id": SESSION });
+    expect(failures[0]!.observationMetadata).toMatchObject({ upstream_request_id: "cx-1" });
+  });
+
+  it("workbuddy: an upstream 4xx carries the request id", async () => {
+    installFetch(() => jsonResponse({ error: { message: "bad" } }, 400, { "x-request-id": "wb-1" }));
+    const app = new Hono();
+    app.post("/workbuddy/:spaceId/v1/responses", (c) => runWorkbuddyPipeline(c, config()));
+    const res = await app.request("/workbuddy/default/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer sk-wb-secret", "session-id": SESSION },
+      body: JSON.stringify({ model: "gpt-5", stream: true, input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }] }),
+    });
+    await res.text();
+    await vi.waitFor(() => expect(failures.length).toBeGreaterThan(0));
+    expect(failures[0]!.observationMetadata).toMatchObject({ upstream_request_id: "wb-1" });
   });
 });

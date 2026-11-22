@@ -333,6 +333,7 @@ async function forwardWithRetry(
   forwardTimeoutMs: number,
   sessionKeyForDebug?: string,
   rateLimitContext?: { config: ProxyConfig; instanceId?: string },
+  onAttempt?: (attempt: { body: Record<string, unknown>; model: string }) => void,
 ): Promise<{ resp: Response; retried: boolean }> {
   // ── Optional full-body dump (dev only) ── PROXY_DEBUG_DUMP_BODY=/tmp/xxx
   if (process.env.PROXY_DEBUG_DUMP_BODY) {
@@ -374,6 +375,7 @@ async function forwardWithRetry(
     protocol: "openai",
     timeoutBehavior: "gated",
     buildRetryBody: (orig, retryModel) => ({ ...orig, model: retryModel }),
+    onAttempt,
   });
 }
 
@@ -1289,6 +1291,7 @@ export async function runOpenaiChatPipeline(
   // (after injection, preparation, body overrides and stream_options). A retry
   // sends the client body instead, so the input is rebuilt from it below.
   let langfuseInput = buildLangfuseRequestInput(upstreamBody);
+  let sentModel = target.model;
 
   // ── Forward to upstream (with automatic retry if configured) ──────────────
   // forwardTimeout gate 关闭 → 传 0 使 stageForwardWithRetry 的 timeoutBehavior='gated' 分支不设 AbortSignal
@@ -1311,15 +1314,14 @@ export async function runOpenaiChatPipeline(
       pipe, forwardTimeoutMs,
       sessionKey,
       rateLimitContext,
+      (attempt) => {
+        // The retry sends the client body with the retry target's model (buildRetryBody).
+        if (attempt.body !== upstreamBody) langfuseInput = buildLangfuseRequestInput(attempt.body);
+        sentModel = attempt.model;
+      },
     );
     upstreamResp = result.resp;
     retried = result.retried;
-    // The retry sends the client body with the retry target's model (buildRetryBody).
-    if (retried) {
-      langfuseInput = buildLangfuseRequestInput(
-        target.retryTarget ? { ...body, model: target.retryTarget.model } : body,
-      );
-    }
   } catch (err: unknown) {
     if (isRateLimitExceededError(err)) {
       pipe.info("RATE_LIMIT", "TPM/QPM exceeded");
@@ -1328,7 +1330,7 @@ export async function runOpenaiChatPipeline(
     try {
       langfuseReportFailure({
         lf,
-        model: target.model,
+        model: sentModel,
         startTime,
         endTime: new Date().toISOString(),
         input: langfuseInput,
@@ -1401,7 +1403,7 @@ export async function runOpenaiChatPipeline(
           status: upstreamResp.status,
           statusMessage: errText.slice(0, 500),
           extraTags: ["error"],
-          observationMetadata: { stage: "upstream", stream: true, ...debugMetadata },
+          observationMetadata: { stage: "upstream", stream: true, ...debugMetadata, ...(upstreamRequestId ? { upstream_request_id: upstreamRequestId } : {}) },
         });
       } catch (langfuseErr: unknown) {
         pipe.error("LANGFUSE_SPAN", langfuseErr);
@@ -1684,7 +1686,7 @@ export async function runOpenaiChatPipeline(
         status: upstreamResp.status,
         statusMessage: respText.slice(0, 500),
         extraTags: ["error"],
-        observationMetadata: { stage: "upstream", stream: false, ...debugMetadata },
+        observationMetadata: { stage: "upstream", stream: false, ...debugMetadata, ...(upstreamRequestId ? { upstream_request_id: upstreamRequestId } : {}) },
       });
     } catch (langfuseErr: unknown) {
       pipe.error("LANGFUSE_SPAN", langfuseErr);

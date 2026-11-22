@@ -406,6 +406,7 @@ async function forwardWithRetry(
   forwardTimeoutMs: number,
   sessionKeyForDebug?: string,
   rateLimitContext?: { config: ProxyConfig; instanceId?: string },
+  onAttempt?: (attempt: { body: Record<string, unknown>; model: string }) => void,
 ): Promise<{ resp: Response; retried: boolean }> {
   // ── anthropic 独有 md5 debug (cache_control anchor + sys 双 md5) ──
   // 用于观测 KV cache 命中: cache 前缀 bytes 一致才命中。
@@ -446,6 +447,7 @@ async function forwardWithRetry(
     protocol: "anthropic",
     timeoutBehavior: "always",
     buildRetryBody: (orig, _retryModel) => orig, // anthropic 不覆写 model
+    onAttempt,
   });
 }
 
@@ -1363,6 +1365,7 @@ export async function runAnthropicPipeline(
   // `sentBody` follows the body of the attempt that is actually sent: a retry
   // and the cache TTL upgrade of a subscription account change it below.
   let sentBody: Record<string, unknown> = upstreamBody;
+  let sentModel = target.model;
   let langfuseInput = buildLangfuseRequestInput(upstreamBody);
   if (sanitizedCount > 0) {
     pipe.info(
@@ -1439,10 +1442,13 @@ export async function runAnthropicPipeline(
         pipe, forwardTimeoutMs,
         sessionKey,
         rateLimitContext,
+        (attempt) => {
+          sentBody = attempt.body;
+          sentModel = attempt.model;
+        },
       );
       upstreamResp = result.resp;
       retried = result.retried;
-      if (retried) sentBody = retryBody;
     }
     // The reported input is the body of the attempt that went out.
     if (sentBody !== upstreamBody) langfuseInput = buildLangfuseRequestInput(sentBody);
@@ -1456,7 +1462,7 @@ export async function runAnthropicPipeline(
     try {
       langfuseReportFailure({
         lf,
-        model: target.model,
+        model: sentModel,
         startTime,
         endTime: new Date().toISOString(),
         input: langfuseInput,
@@ -1486,7 +1492,7 @@ export async function runAnthropicPipeline(
   // `x-request-id`). Used for cross-system tracing/audit.
   const upstreamRequestId = upstreamResp.headers.get("x-request-id") ?? "";
   // Anthropic names its request id header `request-id`. Only Langfuse reads this value.
-  const providerRequestId = upstreamResp.headers.get("request-id") ?? upstreamRequestId;
+  const providerRequestId = upstreamResp.headers.get("request-id") || upstreamRequestId;
 
   const effectiveModel = retried && target.retryTarget
     ? target.retryTarget.model
@@ -1538,7 +1544,7 @@ export async function runAnthropicPipeline(
           status: upstreamResp.status,
           statusMessage: errText.slice(0, 500),
           extraTags: ["error"],
-          observationMetadata: { stage: "upstream", stream: true, ...debugMetadata },
+          observationMetadata: { stage: "upstream", stream: true, ...debugMetadata, ...(providerRequestId ? { upstream_request_id: providerRequestId } : {}) },
         });
       } catch (langfuseErr: unknown) {
         pipe.error("LANGFUSE_SPAN", langfuseErr);
@@ -1616,7 +1622,7 @@ export async function runAnthropicPipeline(
   let langfuseRawReply: Record<string, unknown> | undefined;
   try {
     const respJson = JSON.parse(respText) as Record<string, unknown>;
-    // Set before the thinking fix below: it patches the shared `content` blocks in place.
+    // Kept as the provider sent it; the thinking fix below works on copies.
     langfuseRawReply = langfuseOutputFromRawReply(respJson);
     if (upstreamResp.ok) {
       submitSessionTurn(sessionTurnCtx, anthropicReplyFromJson(respJson), effectiveModel || requestedModel);
@@ -1624,28 +1630,26 @@ export async function runAnthropicPipeline(
     if (respJson.usage && typeof respJson.usage === "object") {
       usage = respJson.usage as Record<string, unknown>;
     }
-    const content = respJson.content;
-    if (Array.isArray(content)) {
+    const rawContent = respJson.content;
+    if (Array.isArray(rawContent)) {
       const textParts: string[] = [];
       let thinkingPatched = false;
-      for (const block of content as Record<string, unknown>[]) {
+      // The patch below is for the client only. It works on copies of the blocks it changes,
+      // so the JSON kept for Langfuse (which shares these blocks) stays as the provider sent it.
+      const content = (rawContent as Record<string, unknown>[]).map((block) => {
         if (block.type === "text") textParts.push(block.text as string);
         // Fix thinking blocks with missing/null `thinking` field.
         // Some models (e.g. DeepSeek) emit `type: "thinking"` blocks
         // without a valid `thinking` string, causing Claude Code to crash
         // with "undefined is not an object (evaluating 's.thinking.length')".
-        if (block.type === "thinking") {
-          if (block.thinking === undefined || block.thinking === null) {
-            block.thinking = "";
-            thinkingPatched = true;
-          } else if (typeof block.thinking !== "string") {
-            block.thinking = String(block.thinking);
-            thinkingPatched = true;
-          }
+        if (block.type === "thinking" && typeof block.thinking !== "string") {
+          thinkingPatched = true;
+          return { ...block, thinking: block.thinking === undefined || block.thinking === null ? "" : String(block.thinking) };
         }
-      }
+        return block;
+      });
       if (thinkingPatched) {
-        respText = JSON.stringify(respJson);
+        respText = JSON.stringify({ ...respJson, content });
         pipe.info("NONSTREAM_THINKING_FIX", "patched thinking block(s) with missing 'thinking' field");
       }
       outputContent = textParts.join("\n");
@@ -1805,7 +1809,7 @@ export async function runAnthropicPipeline(
         status: upstreamResp.status,
         statusMessage: respText.slice(0, 500),
         extraTags: ["error"],
-        observationMetadata: { stage: "upstream", stream: false, ...debugMetadata },
+        observationMetadata: { stage: "upstream", stream: false, ...debugMetadata, ...(providerRequestId ? { upstream_request_id: providerRequestId } : {}) },
       });
     } catch (langfuseErr: unknown) {
       pipe.error("LANGFUSE_SPAN", langfuseErr);
@@ -2148,7 +2152,10 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
             status: ctx.upstreamStatus,
             statusMessage: errorBodyHead.slice(0, 500),
             extraTags: ["error"],
-            observationMetadata: { stage: "upstream", stream: true, retried, ...ctx.debugMetadata },
+            observationMetadata: {
+              stage: "upstream", stream: true, retried, ...ctx.debugMetadata,
+              ...(ctx.providerRequestId ? { upstream_request_id: ctx.providerRequestId } : {}),
+            },
           });
         } else {
           const langfuseOutput = langfuseOutputFromReply(reply, "anthropic");
