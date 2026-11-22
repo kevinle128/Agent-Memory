@@ -102,7 +102,6 @@ import {
   logSubscriptionPoolTeamBackfill,
   parseStoredThresholdPct,
   pickDefaultTeam,
-  pickDefaultTeamById,
   sameUpstreamScope,
   upstreamGroupScope,
   type PoolTeamBackfillOutcome,
@@ -158,8 +157,6 @@ export interface MongoMetadataStoreOptions {
    * (env TDAI_METADATA_DEFAULT_TEAM_NAME). Unset: the team named `default`, else `default-team`.
    */
   defaultTeamName?: string;
-  /** Team id that gets the pool groups without a team (env TDAI_METADATA_DEFAULT_TEAM_ID). Wins over the name. */
-  defaultTeamId?: string;
 }
 
 export class MongoMetadataStore implements IMetadataStore {
@@ -168,7 +165,6 @@ export class MongoMetadataStore implements IMetadataStore {
   private readonly useTransactions: boolean;
   private readonly ownsClient: boolean;
   private readonly defaultTeamName: string | undefined;
-  private readonly defaultTeamId: string | undefined;
   /**
    * v1→v2 legacy sweep 一次性标记。true 表示本进程已在 list 路径上做过 index/文档
    * 清理,后续 list 直接跳过 —— sweep 是历史迁移动作 (dropIndex + deleteMany),
@@ -189,7 +185,6 @@ export class MongoMetadataStore implements IMetadataStore {
     this.useTransactions = opts.useTransactions ?? true;
     this.ownsClient = opts.ownsClient ?? true;
     this.defaultTeamName = opts.defaultTeamName;
-    this.defaultTeamId = opts.defaultTeamId?.trim() || undefined;
     if (!this.useTransactions) {
       console.warn(
         "[META-STORE] WARNING: MongoDB transactions disabled (useTransactions=false). " +
@@ -460,22 +455,14 @@ export class MongoMetadataStore implements IMetadataStore {
       );
       if (unassigned === 0) return { restored, unassigned, pick: null, assigned: 0, sourceClash: false };
 
-      let pick;
-      if (this.defaultTeamId) {
+      const candidates = [];
+      for (const name of defaultTeamSearchNames(this.defaultTeamName)) {
         const teams = await this.col("meta_teams")
-          .find({ team_id: this.defaultTeamId, status: "active" } as Document, { projection: { _id: 0, team_id: 1 }, session })
+          .find({ name, status: "active" } as Document, { projection: { _id: 0, team_id: 1 }, session })
           .toArray();
-        pick = pickDefaultTeamById(this.defaultTeamId, teams.map((t) => String((t as Document).team_id)));
-      } else {
-        const candidates = [];
-        for (const name of defaultTeamSearchNames(this.defaultTeamName)) {
-          const teams = await this.col("meta_teams")
-            .find({ name, status: "active" } as Document, { projection: { _id: 0, team_id: 1 }, session })
-            .toArray();
-          candidates.push({ name, team_ids: teams.map((t) => String((t as Document).team_id)) });
-        }
-        pick = pickDefaultTeam(candidates);
+        candidates.push({ name, team_ids: teams.map((t) => String((t as Document).team_id)) });
       }
+      const pick = pickDefaultTeam(candidates);
       if (pick.status !== "found") return { restored, unassigned, pick, assigned: 0, sourceClash: false };
 
       // A clash on the team source name index would stop the update half way; leave the groups instead.

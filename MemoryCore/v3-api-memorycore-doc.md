@@ -1360,14 +1360,13 @@ An older database has pool rows without a team. On each start, Core gives every 
 
 The default team is found by name with one rule for SQLite and MongoDB:
 
-1. When the optional variable `TDAI_METADATA_DEFAULT_TEAM_ID` is set, only the active team with that id counts, and the name rules below are not used. A missing or inactive team gives no team: the pool rows stay unassigned and Core logs one error line (`reason=configured_team_not_active`) on each start. Use the id on a deployment where any user can create a team, because a team name is not unique and a user can pick any name.
-2. When the optional variable `TDAI_METADATA_DEFAULT_TEAM_NAME` is set (and the id is not), only a team with that name matches.
-3. When neither is set, a team named `default` matches. Only when no team has that name, a team named `default-team` (the name that a new install creates) matches.
-4. A name that matches exactly one active team wins. A name that matches two or more teams stops the rule at once; Core does not try the next name. No match gives no team.
+1. When the optional variable `TDAI_METADATA_DEFAULT_TEAM_NAME` is set, only a team with that name matches.
+2. When it is not set, a team named `default` matches. Only when no team has that name, a team named `default-team` (the name that a new install creates) matches.
+3. A name that matches exactly one active team wins. A name that matches two or more teams stops the rule at once; Core does not try the next name. No match gives no team.
 
-On success Core logs one line: `[subscription-pool] team backfill team=<team_id> groups=<count> agents_restored=<agents>`. When Core finds no single team, the pool rows stay at `team_id = ''`: no team uses them, every client runs on its instance group, and Core logs an error with the `candidates=` team ids on each start. Set `TDAI_METADATA_DEFAULT_TEAM_ID` (or `TDAI_METADATA_DEFAULT_TEAM_NAME`, or fix the team name) and restart Core to give the rows to the team. A database that has one team named `default` needs no setting.
+On success Core logs one line: `[subscription-pool] team backfill team=<team_id> groups=<count> agents_restored=<agents>`. When Core finds no single team, the pool rows stay at `team_id = ''`: no team uses them, every client runs on its instance group, and Core logs an error with the `candidates=` team ids on each start. Set `TDAI_METADATA_DEFAULT_TEAM_NAME` (or fix the team name) and restart Core to give the rows to the team. A database that has one team named `default` needs no setting.
 
-Core reads `TDAI_METADATA_DEFAULT_TEAM_ID` and `TDAI_METADATA_DEFAULT_TEAM_NAME` from its own process environment, next to the other `TDAI_METADATA_*` variables. A blank value counts as not set. `compose.yaml` and `deploy/global-images/start-memory-core.sh` pass both variables to the container when the deploy environment (the Komodo stack environment or the `.env` file) sets them.
+Core reads `TDAI_METADATA_DEFAULT_TEAM_NAME` from its own process environment, next to the other `TDAI_METADATA_*` variables. A blank value counts as not set. `compose.yaml` and `deploy/global-images/start-memory-core.sh` pass the variable to the container when the deploy environment (the Komodo stack environment or the `.env` file) sets it.
 
 ### POST /v3/internal/meta/upstream/supported-agents
 

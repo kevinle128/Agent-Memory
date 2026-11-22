@@ -86,13 +86,12 @@ if (!mongodPath) {
     }
   }
 
-  async function open(dbName: string, options?: { defaultTeamName?: string; defaultTeamId?: string }): Promise<MongoMetadataStore> {
+  async function open(dbName: string, options?: { defaultTeamName?: string }): Promise<MongoMetadataStore> {
     // A standalone server has no transactions, so the store runs without them.
     const store = new MongoMetadataStore(client, dbName, {
       useTransactions: false,
       ownsClient: false,
       defaultTeamName: options?.defaultTeamName,
-      defaultTeamId: options?.defaultTeamId,
     });
     await store.init();
     return store;
