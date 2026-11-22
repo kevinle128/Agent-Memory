@@ -15,6 +15,7 @@ import {
   rememberBody,
   rememberMessage,
   rememberedBody,
+  requestBody,
   messageUnchanged,
   messageWire,
   preservedBlock,
@@ -86,7 +87,7 @@ export class AnthropicAdapter implements ProtocolAdapter {
 
   serialize(ctx: AgentContext): Record<string, unknown> {
     const original = rememberedBody(ctx);
-    const body: Record<string, unknown> = original ? { ...original } : { ...ctx.requestParams };
+    const body = requestBody(ctx, ["messages", "system", "tools"]);
 
     // Separate system message from conversation messages
     // Claude Code 2.1.277+ sends AGENTS.md as a role:"system" message while

@@ -232,4 +232,50 @@ describe("client content blocks stay intact", () => {
     expect(system.client_tag).toBe("msg");
     expect(system.content).toEqual([first, second, { type: "text", text: "INJECT" }]);
   });
+
+  it("keeps OpenAI tools without parameters and non-function tools after injection", async () => {
+    const ping = { type: "function", strict: true, function: { name: "ping" } };
+    const custom = { type: "custom", custom: { name: "apply_patch", description: "patch" } };
+    const body = {
+      messages: [{ role: "system", content: "base" }, { role: "user", content: "." }],
+      tools: [ping, custom],
+    };
+    const out = await pipeline("openai", suffixHook("INJECT")).process(body, openaiMeta);
+
+    expect(out.tools).toEqual([ping, custom]);
+  });
+});
+
+describe("serialize after context edits", () => {
+  it("serializes a block whose type changed as a new block", () => {
+    const adapter = new AnthropicAdapter();
+    const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } };
+    const ctx = adapter.parse({ messages: [{ role: "user", content: [image] }] }, anthropicMeta);
+    const block = ctx.messages[0].blocks[0];
+    block.type = "text";
+    block.content = "described";
+    block.metadata = {};
+    const out = adapter.serialize(ctx);
+
+    expect((out.messages as Array<Record<string, unknown>>)[0].content).toEqual([{ type: "text", text: "described" }]);
+  });
+
+  it("applies requestParams edits and keeps the client key order", () => {
+    for (const [adapter, meta] of [
+      [new AnthropicAdapter(), anthropicMeta],
+      [new OpenAIAdapter(), openaiMeta],
+    ] as const) {
+      const ctx = adapter.parse(
+        { model: "m", messages: [{ role: "user", content: "." }], temperature: 1, top_p: 0.5 },
+        meta,
+      );
+      ctx.requestParams.temperature = 0;
+      delete ctx.requestParams.top_p;
+      ctx.requestParams.max_tokens = 10;
+      const out = adapter.serialize(ctx);
+
+      expect(Object.keys(out)).toEqual(["model", "messages", "temperature", "max_tokens"]);
+      expect(out.temperature).toBe(0);
+    }
+  });
 });

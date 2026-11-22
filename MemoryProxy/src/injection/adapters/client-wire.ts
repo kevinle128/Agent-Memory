@@ -53,6 +53,23 @@ export function rememberedBody(ctx: AgentContext): Record<string, unknown> | und
   return bodies.get(ctx);
 }
 
+/**
+ * The request body to serialize into: the client body in its key order, with
+ * the current `ctx.requestParams` applied. Keys in `owned` are left to the adapter.
+ */
+export function requestBody(ctx: AgentContext, owned: readonly string[]): Record<string, unknown> {
+  const original = bodies.get(ctx);
+  if (!original) return { ...ctx.requestParams };
+  const body: Record<string, unknown> = { ...original };
+  for (const key of Object.keys(body)) {
+    if (!owned.includes(key) && !Object.prototype.hasOwnProperty.call(ctx.requestParams, key)) delete body[key];
+  }
+  for (const [key, value] of Object.entries(ctx.requestParams)) {
+    if (!owned.includes(key)) body[key] = value;
+  }
+  return body;
+}
+
 export function rememberMessage(
   message: ContextMessage,
   wire: Pick<MessageWire, "raw" | "contentShape" | "blockCount">,
@@ -85,7 +102,8 @@ export function rememberBlock(
 }
 
 export function blockWire(block: ContextBlock): { raw: Record<string, unknown>; originalText: string } | undefined {
-  return blockWires.get(block);
+  const src = blockWires.get(block);
+  return src && src.type === block.type ? src : undefined;
 }
 
 /** True when type, content, or a metadata field that serialize writes has changed. */

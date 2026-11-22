@@ -20,6 +20,7 @@ import {
   rememberBody,
   rememberMessage,
   rememberedBody,
+  requestBody,
   sameBlocks,
   type ContentShape,
 } from "./client-wire.js";
@@ -72,7 +73,7 @@ export class OpenAIAdapter implements ProtocolAdapter {
 
   serialize(ctx: AgentContext): Record<string, unknown> {
     const original = rememberedBody(ctx);
-    const body: Record<string, unknown> = original ? { ...original } : { ...ctx.requestParams };
+    const body = requestBody(ctx, ["messages", "tools"]);
     body.messages = ctx.messages.map((m) => this.serializeMessage(m));
 
     if (ctx.tools && (ctx.tools.length > 0 || (original !== undefined && "tools" in original))) {
@@ -321,13 +322,16 @@ export class OpenAIAdapter implements ProtocolAdapter {
         function: { name: tool.name, description: tool.description, parameters: tool.parameters },
       };
     }
+    // Hosted and custom tools (for example `type: "custom"`) have no function schema.
+    if (typeof original.type === "string" && original.type !== "function") return original;
     const fn = original.function as Record<string, unknown> | undefined;
     const name = (fn?.name as string) ?? (original.name as string) ?? "unknown";
     const description = (fn?.description as string) ?? (original.description as string) ?? "";
-    const parameters = (fn?.parameters as Record<string, unknown>)
-      ?? (original.parameters as Record<string, unknown>)
-      ?? {};
-    if (name === tool.name && description === tool.description && parameters === tool.parameters) {
+    const parameters = (fn?.parameters as Record<string, unknown> | undefined)
+      ?? (original.parameters as Record<string, unknown> | undefined);
+    const sameParameters = parameters === tool.parameters
+      || (parameters === undefined && Object.keys(tool.parameters).length === 0);
+    if (name === tool.name && description === tool.description && sameParameters) {
       return original;
     }
     if (fn) {
