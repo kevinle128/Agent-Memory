@@ -356,18 +356,20 @@ export class InjectionPipeline {
       if (sysMsg) {
         const key = hook.anchor.rawKey
           ?? (hook.anchor.slot ? profile.resolveSlot(hook.anchor.slot) : null);
-        const currentText = getMessageText(sysMsg);
-        const segments = profile.parse(currentText);
-        if (key && segments.some((s) => s.key === key)) {
-          const newSegments = profile.applyAnchor(
-            segments,
-            { key, relation: hook.anchor.relation },
-            text,
-          );
-          // The system message text is authoritative — replace its blocks with
-          // the rebuilt prompt so later hooks see the updated text.
-          sysMsg.blocks = [{ type: "text", content: profile.rebuild(newSegments) }];
-          return; // anchor hit — done
+        // Edit only the text block that holds the anchor. Replacing every
+        // block drops sibling text and cache_control (billing header, identity).
+        if (key) {
+          for (const block of sysMsg.blocks) {
+            if (block.type !== "text") continue;
+            const segments = profile.parse(block.content);
+            if (!segments.some((segment) => segment.key === key)) continue;
+            block.content = profile.rebuild(profile.applyAnchor(
+              segments,
+              { key, relation: hook.anchor.relation },
+              text,
+            ));
+            return; // anchor hit — done
+          }
         }
         // Slot unresolved / structure missing → fall through to `point` (warn).
         console.warn(
