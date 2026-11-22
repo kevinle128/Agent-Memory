@@ -9,7 +9,6 @@ import { planAccountTimers, REFRESH_LEAD_MS } from "./timer-plan.js";
 /** The part of `MetadataService` the scheduler uses. Routes and timers share these methods. */
 export interface SubscriptionPoolSchedulerTarget {
   listSubscriptionAccountEntities(): Promise<SubscriptionAccountEntity[]>;
-  subscriptionThreshold(): Promise<number>;
   runSubscriptionUsageCheck(accountId: string, options?: { refreshModels?: boolean }): Promise<unknown>;
   /** Reads the model list of each given pool group once. Called after a pass that checked its accounts. */
   refreshPoolModelsOfGroups?(groupIds: Iterable<string>): Promise<void>;
@@ -85,7 +84,8 @@ export class SubscriptionPoolScheduler {
       this.queue.removeAccount(instanceId, accountId);
       return;
     }
-    const plan = planAccountTimers(account, change.thresholdPct, Date.now());
+    // Each account has its own threshold, so the reset-check timer follows the account row.
+    const plan = planAccountTimers(account, account.threshold_pct, Date.now());
     for (const kind of PLANNED_KINDS) {
       const timer = plan.find((item) => item.kind === kind);
       if (timer) this.upsert(instanceId, accountId, kind, timer.at);
@@ -134,8 +134,7 @@ export class SubscriptionPoolScheduler {
       svc = await this.options.getService(instanceId);
       accounts = await svc.listSubscriptionAccountEntities();
       if (armFromSnapshot) {
-        const thresholdPct = await svc.subscriptionThreshold();
-        for (const account of accounts) this.syncAccount(instanceId, { accountId: account.account_id, account, thresholdPct });
+        for (const account of accounts) this.syncAccount(instanceId, { accountId: account.account_id, account });
       }
     } catch (error) {
       this.options.logger.warn?.(`[subscription-pool] pass failed instance=${instanceId} error=${errorCode(error)}`);

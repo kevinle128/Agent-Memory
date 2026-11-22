@@ -1,5 +1,5 @@
 /**
- * ResetCreditsDialog — lists every reset credit of one account. A System Admin can redeem one
+ * ResetCreditsDialog — lists every reset credit of one account. A team admin or a System Admin can redeem one
  * credit after a confirmation. The request id is made once per confirmed click, so a retry of
  * the same click cannot spend a second credit.
  */
@@ -13,7 +13,7 @@ import { describeCreditExpiry, supportsResetCredits, type PoolResetCredit } from
 interface Props {
   account: SubscriptionAccount;
   now: number;
-  /** Only a System Admin can redeem. */
+  /** Only a team admin or a System Admin can redeem. */
   canRedeem: boolean;
   /** Credit id that has a running redeem call, or null. */
   busyCreditId: string | null;

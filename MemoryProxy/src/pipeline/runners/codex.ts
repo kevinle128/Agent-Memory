@@ -51,6 +51,9 @@ import { isLegacyProxyPath } from "../../routes/whitelist.js";
 import { verifyUserKey } from "../../auth.js";
 import { stageAuth, extractApiKeyFromContext } from "../stages/auth.js";
 import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-request.js";
+import {
+  immediateTeamError, resolveRequestTeam, settleRequestTeam, teamErrorResponse, teamIdOf,
+} from "../../subscription-pool/pool-team.js";
 import { stageParseBody } from "../stages/parse-body.js";
 import { stageSessionResetPreHook } from "../stages/session-reset-pre-hook.js";
 import { stageSessionResetConfirmation } from "../stages/session-reset-confirmation.js";
@@ -67,6 +70,9 @@ import { runOmpHookGate, stripOmpGateTurns } from "../../session/omp/hook-gate.j
 import { resolveProxyOrigin } from "../../session/hook-gate-core.js";
 import { resolveConversationId, resolveOmpSessionId } from "../../session/session-key.js";
 import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
+import {
+  gateModelAfterTeam, reselectModelSource, settledUpstreamKind, teamMayChangeInInit,
+} from "../stages/model-after-team.js";
 import type { ModelSourceResolution } from "../stages/model-source.js";
 import {
   DEFAULT_GATE_PREFIX,
@@ -335,11 +341,40 @@ export async function runCodexPipeline(
   }
   // Codex-only branches below stay behind `agent === "codex"`; the other agents share the rest.
   const agent = resolveCodexRunnerAgent(path);
+
+  // ── 3. Headers, request class and session id (pure, so the team lookup below can use them) ──
+  const headers: Record<string, string> = {};
+  for (const [k, v] of c.req.raw.headers.entries()) {
+    headers[k.toLowerCase()] = v;
+  }
+  const requestKind = classifyCodexRequest(body, path, headers);
+  const isAuxiliary = requestKind === "auxiliary";
+  // omp, hermes and openclaw send the shared conversation headers; omp also sends the id as
+  // `prompt_cache_key`. Codex keeps its own lookup.
+  const sessionId = agent === "codex"
+    ? extractCodexSessionId(headers, body)
+    : resolveConversationId(c) ?? (agent === "omp" ? resolveOmpSessionId(c, body) : null);
+
+  // ── Team of the request ──
+  // A pool belongs to one team, so the team is known before any stage can pick a pool. Null when
+  // no team pool serves this client; the request then runs as before.
+  const spaceIdForTeam = extractSpaceIdFromPath(path) ?? "";
+  const teamSession = sessionId ? { keyId: `${agent}:${sessionId}`, agentSource: agent, sessionId } : null;
+  const sessionInitMayRun = config.sessionInit?.enabled === true && sessionId !== null && !isAuxiliary;
+  const requestTeam = isLegacyProxyPath(path) ? null : await resolveRequestTeam({
+    config, spaceId: spaceIdForTeam, userId, userKey: apiKey, agentSource: agent, session: teamSession,
+    lcHeaders: headers, model: body.model, sessionInitMayRun,
+  });
+  const requestTeamError = immediateTeamError(requestTeam);
+  if (requestTeamError) return teamErrorResponse(c, "anthropic", requestTeamError);
+
   // `<source>/<model>` of a multi-source agent. Returns `none` before any other work for every
   // other agent, so the pool-service and main-model steps below run unchanged for them.
+  // The name that the client sent is kept: the settled team can find its source again.
+  const originalModel = body.model;
   const modelSource = await stageModelSource({
-    config, agent, spaceId: extractSpaceIdFromPath(path) ?? "",
-    format: "openai-responses", model: body.model, servesPool: true,
+    config, agent, spaceId: spaceIdForTeam,
+    format: "openai-responses", model: body.model, servesPool: true, teamId: teamIdOf(requestTeam),
   });
   // Responses clients read `error.type` and `error.message`, which the Anthropic envelope carries.
   if (modelSource.kind === "error") return modelSourceErrorResponse(c, "anthropic", modelSource);
@@ -350,15 +385,9 @@ export async function runCodexPipeline(
     if (poolRejection) return c.json(poolRejection, 400);
   }
   // A pool request goes to the ChatGPT backend, which only knows the client's own model name.
-  const clientModel = typeof body.model === "string" ? body.model : "";
+  let clientModel = typeof body.model === "string" ? body.model : "";
   if (!matchedSource) applyMainModel(body);
   const presetResolution = matchedSource?.resolution;
-
-  // ── 3. Extract headers as plain object ─────────────────────────────────────
-  const headers: Record<string, string> = {};
-  for (const [k, v] of c.req.raw.headers.entries()) {
-    headers[k.toLowerCase()] = v;
-  }
 
   // ── Identity埋点 (bug B5 fix: 老 codex 不调 inspectAndRecord) ────────────
   // 由 agent.stageGates.identityRecord 门控 (codex 现走 full preset, 恒 true)。
@@ -385,15 +414,12 @@ export async function runCodexPipeline(
     }
   } catch {}
 
-  // ── 4. Classify request ────────────────────────────────────────────────────
-  const requestKind = classifyCodexRequest(body, path, headers);
-  const isAuxiliary = requestKind === "auxiliary";
   // 调用签名是 resolveModelId(creditPricingConfig, requestedModel) —— 之前
   // 错把 body 当第一参数（漏传 config）导致返回值是整个 body 对象。这个 bug
   // 从 codex P1 接入首帧就存在，之前 codex 未接 langfuse 没被发现——接入后
   // Langfuse trace name / observation name 都成了 " / usr-xxx" 空串前缀。
   // 对齐 handler.ts:482 / anthropicHandler.ts 的调用姿势。
-  const requestedModel = typeof body.model === "string" ? body.model : "";
+  let requestedModel = typeof body.model === "string" ? body.model : "";
 
   // ── Model gate + alias (bug B8 fix: 老 codex 完全不检查 pricing table) ──
   // 由 agent.stageGates.modelGate 门控 (codex 现走 full preset, 恒 true)。
@@ -406,19 +432,22 @@ export async function runCodexPipeline(
   // alias rewrite, the client's model name goes upstream unchanged. Auxiliary requests use the
   // pool too, so the pool check does not depend on the gate being skipped for them.
   let _codexIsPool = false;
+  const gateDeferred = teamMayChangeInInit(requestTeam, sessionInitMayRun);
   if (codexAgent.stageGates.modelGate) {
     try {
       const { getInstanceUpstreamConfigs, resolveForAgent, shouldOverride } =
         await import("../../instance-upstream-cache.js");
       const cfgs = await getInstanceUpstreamConfigs(config.coreSkill, _spaceIdForGate, config.instanceUpstream);
-      const _codexResolution = presetResolution ?? resolveForAgent(cfgs, agent);
+      const _codexResolution = presetResolution ?? resolveForAgent(cfgs, agent, teamIdOf(requestTeam));
       _codexIsPool = _codexResolution.kind === "pool";
       _codexIsCustomUpstream = !isAuxiliary && (shouldOverride(_codexResolution) || _codexIsPool);
     } catch {
       _codexIsCustomUpstream = false;
       _codexIsPool = false;
     }
-    if (!isAuxiliary && !_codexIsCustomUpstream) {
+    // While session init can still change the team, the pool of the final team is not known: the
+    // gate runs after the team settles. Until then the model gets the alias only.
+    if (!isAuxiliary && !_codexIsCustomUpstream && !gateDeferred) {
       const gateResult = stageModelGate(requestedModel, config, false);
       if (!gateResult.ok) {
         return c.json({
@@ -431,7 +460,7 @@ export async function runCodexPipeline(
   }
 
   if (_codexIsPool && clientModel) body.model = clientModel;
-  const modelId = _codexIsPool || matchedSource
+  let modelId = _codexIsPool || matchedSource
     ? (clientModel || requestedModel)
     : resolveModelId(config.creditPricing, requestedModel);
   // 对外展示名只用于客户端请求；TokenHub 只接受价目表中登记的真实服务 ID。
@@ -446,15 +475,10 @@ export async function runCodexPipeline(
     pipe.info("CODEX_AUX", `auxiliary request → passthrough (path=${path})`);
     // aux 不上报 langfuse（跟 CC/CB 对齐——sidequery/fork 类 aux 不算真对话轮）
     // A compaction request carries the whole history, so it must not carry the hook gate items.
-    return forwardToUpstream(c, config, agent === "omp" ? stripOmpGateTurns(body, "openai-responses") : stripCodexGateTurns(body), traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null, null, presetResolution);
+    return forwardToUpstream(c, config, agent === "omp" ? stripOmpGateTurns(body, "openai-responses") : stripCodexGateTurns(body), traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null, null, presetResolution, teamIdOf(requestTeam));
   }
 
   // ── 6. Session ID extraction ───────────────────────────────────────────────
-  // omp, hermes and openclaw send the shared conversation headers; omp also sends the id as
-  // `prompt_cache_key`. Codex keeps its own lookup.
-  const sessionId = agent === "codex"
-    ? extractCodexSessionId(headers, body)
-    : resolveConversationId(c) ?? (agent === "omp" ? resolveOmpSessionId(c, body) : null);
   const sessionKey = sessionId ?? `${keyId}:${traceId}`;
   const agentSource = agent;
   const isStream = body.stream !== false;
@@ -547,7 +571,7 @@ export async function runCodexPipeline(
     return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, lf, null, {
       seed: sessionTurnSeed,
       authUserId: userId,
-    }, presetResolution);
+    }, presetResolution, null);
   }
 
   // ── 7. Session-init state machine ──────────────────────────────────────────
@@ -949,12 +973,53 @@ export async function runCodexPipeline(
     if (resp) return resp;
   }
 
+  // ── 10b. Settle the team after session init ──
+  // Init may have registered the session in a team that differs from the first answer (a fallback
+  // or a predicted team), or it may have left the session without a team. This runs right before
+  // the upstream is chosen, so a mem command or a form that needs no upstream never gets a team
+  // error. A team error that waited for init is answered here, before any upstream call.
+  const settledTeam = await settleRequestTeam({
+    config, spaceId: spaceIdForTeam, userId, userKey: apiKey, first: requestTeam, session: teamSession,
+  });
+  if (settledTeam.error) return teamErrorResponse(c, "anthropic", settledTeam.error);
+  let lateSource = presetResolution;
+  if (settledTeam.changed || gateDeferred) {
+    // A pool source is the pool of one team, so the settled team can match a source that the first
+    // team did not have, or lose the one that it had.
+    let sourceNow = matchedSource;
+    if (settledTeam.changed) {
+      const again = await reselectModelSource({
+        c, config, body, agent, spaceId: spaceIdForTeam, format: "openai-responses", teamId: settledTeam.teamId,
+        originalModel, previous: matchedSource, errorEnvelope: "anthropic",
+      });
+      if (again.kind === "error") return again.response;
+      sourceNow = again.matched;
+      lateSource = sourceNow?.resolution;
+      if (sourceNow) clientModel = sourceNow.upstreamModel;
+      if (again.lost && typeof originalModel === "string") {
+        clientModel = originalModel;
+        requestedModel = originalModel;
+      }
+    }
+    // The model name was chosen for the first team: a pool takes the client's own name, any other
+    // upstream takes the name of the pricing table. Choose again for the settled team.
+    const kind = await settledUpstreamKind(config, agent, spaceIdForTeam, settledTeam.teamId, lateSource);
+    if (codexAgent.stageGates.modelGate && !(kind.isOverride || kind.isPool)) {
+      const gate = gateModelAfterTeam(c, config, requestedModel, false);
+      if (!gate.ok) return gate.response;
+    }
+    modelId = kind.isPool || sourceNow
+      ? (clientModel || requestedModel)
+      : resolveModelId(config.creditPricing, requestedModel);
+    if (typeof body.model === "string") body.model = modelId;
+  }
+
   // ── 11. Forward to upstream ────────────────────────────────────────────────
   return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, lf, archiveCtx, {
     seed: sessionTurnSeed,
     sessionInfo,
     authUserId: userId,
-  }, presetResolution);
+  }, lateSource, settledTeam.teamId);
 }
 
 // ── Archive context (skill/conversation/add + TDAI L0 write) ─────────────────
@@ -1113,7 +1178,8 @@ async function forwardToUpstream(
   lf: LangfuseTurnContext | null,
   archiveCtx: CodexArchiveCtx | null = null,
   sessionTurn: PendingSessionTurn | null = null,
-  presetResolution?: ModelSourceResolution,
+  presetResolution: ModelSourceResolution | undefined,
+  teamId: string | null,
 ): Promise<Response> {
   const agent = resolveCodexRunnerAgent(c.req.path);
   // Per-agent upstream override (upstream.agents.codex.url) 优先于全局 url。
@@ -1149,6 +1215,7 @@ async function forwardToUpstream(
     forceOfficial: isLegacyProxyPath(c.req.path),
     poolSupported: true,
     presetResolution,
+    teamId,
   });
   if (isInstanceUpstreamBlocked(_upstreamResolve)) {
     return c.json(_upstreamResolve.errorBody, 400);

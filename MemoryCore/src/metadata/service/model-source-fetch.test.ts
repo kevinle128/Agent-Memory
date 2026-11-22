@@ -3,13 +3,13 @@ import { SqliteMetadataStore } from "../store/sqlite-adapter.js";
 import { MetadataService } from "./metadata-service.js";
 import type { InstanceUpstreamConfigEntity, SourceModelEntry, SupportedAgent } from "../types.js";
 import { SubscriptionProviderError } from "../../subscription-pool/providers/types.js";
-import { fakeAdapter, tokens } from "../../subscription-pool/test-support.js";
+import { fakeAdapter, tokens, POOL_TEAM_ID, POOL_USER_ID } from "../../subscription-pool/test-support.js";
 
 const AGENTS: SupportedAgent[] = [
   { agent_source: "claude-code", protocol: "anthropic", display_name: "Claude Code" },
   { agent_source: "codex", protocol: "openai-responses", display_name: "Codex" },
   { agent_source: "cursor", protocol: "openai-chat", display_name: "Cursor" },
-  { agent_source: "omp", protocol: "openai-chat", display_name: "oh-my-pi", multi_source: true },
+  { agent_source: "omp", protocol: "openai-chat", display_name: "oh-my-pi", multi_source: true, formats: ["anthropic-messages", "openai-responses", "openai-chat"] },
 ];
 
 const API_KEY = "sk-provider-secret-1234";
@@ -69,9 +69,9 @@ describe("model list fetch on a source", () => {
   }
 
   async function codexPool(): Promise<{ group_id: string }> {
-    await svc.enableSubscriptionPool("codex", AGENTS);
+    await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
     const pool = (await store.listInstanceUpstreamGroups()).find((g) => g.mode === "subscription_pool")!;
-    await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_name: "sub-openai", source_agents: ["omp"] }, AGENTS);
+    await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", ["omp"], AGENTS);
     return { group_id: pool.group_id };
   }
 
@@ -281,10 +281,8 @@ describe("model list fetch on a source", () => {
       await addAccount(pool.group_id);
       const adapter = fakeAdapter({ fetchModels: async () => [{ id: "g", display_name: "g" }] });
       svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
-      await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: [] }, AGENTS);
-      const def = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).find((g) => g.group_type === "default")!;
-      await store.moveAgentBetweenUpstreamGroups({ agent: "codex", from: [{ group_id: pool.group_id }], to: { group_id: def.group_id } });
-      await svc.disableSubscriptionPool("codex", AGENTS);
+      await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", [], AGENTS);
+      await svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
       await expect(svc.refreshSourceModels({ group_id: pool.group_id })).rejects.toMatchObject({ code: "SOURCE_DISABLED" });
       await svc.refreshAllSourceModels();
       expect(adapter.fetchModels).not.toHaveBeenCalled();

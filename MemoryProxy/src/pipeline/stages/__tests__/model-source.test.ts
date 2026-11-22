@@ -30,7 +30,7 @@ const apiSource: InstanceUpstreamRow = {
 
 const poolSource: InstanceUpstreamRow = {
   group_id: "grp-pool", group_type: "custom", name: "claude pool", agents: [], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
   source_name: "sub-claude", source_provider: "claude", source_formats: ["anthropic-messages"],
   source_agents: ["hermes"],
   source_models: [{ id: "claude-sonnet", enabled: true, available: true }],
@@ -48,6 +48,7 @@ function input(overrides: Partial<ModelSourceInput> = {}): ModelSourceInput {
     format: "openai-chat",
     model: "api-deepseek/deepseek-chat",
     servesPool: false,
+    teamId: "team-a",
     ...overrides,
   } as ModelSourceInput;
 }
@@ -179,7 +180,47 @@ describe("stageModelSource", () => {
     const withoutSources = [defaultRow];
     const withSources = [defaultRow, apiSource, poolSource];
     for (const { agent_source } of DEFAULT_SUPPORTED_AGENTS) {
-      expect(resolveForAgent(withSources, agent_source)).toEqual(resolveForAgent(withoutSources, agent_source));
+      expect(resolveForAgent(withSources, agent_source, null)).toEqual(resolveForAgent(withoutSources, agent_source, null));
     }
+  });
+
+  describe("pool sources of teams", () => {
+    const poolOfTeamB: InstanceUpstreamRow = { ...poolSource, group_id: "grp-pool-b", team_id: "team-b" };
+    const hermes = (teamId: string | null) => input({
+      agent: "hermes", format: "anthropic-messages", model: "sub-claude/claude-sonnet", servesPool: true, teamId,
+    });
+
+    beforeEach(() => {
+      __primeCacheForTests(SPACE, [defaultRow, apiSource, poolSource, poolOfTeamB]);
+    });
+
+    it("a pool prefix of another team is not found", async () => {
+      __primeCacheForTests(SPACE, [defaultRow, apiSource, poolSource]);
+      expect(await stageModelSource(hermes("team-b"))).toEqual({ kind: "none" });
+    });
+
+    it("two teams with the same prefix each reach their own row", async () => {
+      const a = await stageModelSource(hermes("team-a"));
+      const b = await stageModelSource(hermes("team-b"));
+      expect(a.kind === "matched" && a.groupId).toBe("grp-pool");
+      expect(b.kind === "matched" && b.groupId).toBe("grp-pool-b");
+    });
+
+    it("a null team does not find a pool source", async () => {
+      expect(await stageModelSource(hermes(null))).toEqual({ kind: "none" });
+      expect(await stageModelSource(hermes(""))).toEqual({ kind: "none" });
+    });
+
+    it("an API source does not depend on the team", async () => {
+      const result = await stageModelSource(input({ teamId: null }));
+      expect(result.kind).toBe("matched");
+    });
+
+    it("a runner without a pool branch answers the format error whichever team asks", async () => {
+      for (const teamId of ["team-a", "team-b", null]) {
+        const result = await stageModelSource({ ...hermes(teamId), servesPool: false });
+        expect(result).toMatchObject({ kind: "error", code: "model_format_mismatch" });
+      }
+    });
   });
 });

@@ -39,7 +39,7 @@ const defaultRow: InstanceUpstreamRow = {
 };
 const poolRow: InstanceUpstreamRow = {
   group_id: "pool-agy", group_type: "custom", name: "AGY pool", agents: ["antigravity"], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
 };
 const account: PoolAccount = {
   account_id: "a", group_id: "pool-agy", provider: "antigravity", provider_account_id: "g-a", project_id: "proj-a",

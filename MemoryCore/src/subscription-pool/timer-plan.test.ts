@@ -11,7 +11,7 @@ function account(partial: Partial<SubscriptionAccountEntity> = {}): Subscription
     enabled: true, status: "active", access_token: "x", refresh_token: "y",
     token_expires_at: NOW + 60 * MIN, provider_account_id: "p", usage: { windows: [] },
     reset_credits: null, usage_updated_at: null, exhausted_until: null, usage_fail_count: 0, refresh_fail_count: 0,
-    last_error: null, active_sessions: 0, version: 1, created_at: "", updated_at: "",
+    last_error: null, active_sessions: 0, threshold_pct: 95, version: 1, created_at: "", updated_at: "",
     ...partial,
   };
 }
@@ -48,6 +48,12 @@ describe("planAccountTimers", () => {
   it("checks an exhaustion that a Core restart missed at once", () => {
     const plan = planAccountTimers(account({ status: "exhausted", exhausted_until: NOW - 60 * MIN, token_expires_at: null }), 95, NOW);
     expect(plan).toEqual([{ kind: "reset-check", at: NOW }]);
+  });
+
+  it("reads the threshold that the caller passes, so two accounts can differ", () => {
+    const usage = { windows: [win(80, NOW + 20 * MIN)] };
+    expect(planAccountTimers(account({ usage, token_expires_at: null }), 70, NOW)).toEqual([{ kind: "reset-check", at: NOW + 20 * MIN + 30_000 }]);
+    expect(planAccountTimers(account({ usage, token_expires_at: null }), 95, NOW)).toEqual([]);
   });
 
   it("checks a near-limit account at the earliest reset of a window at or above the threshold", () => {

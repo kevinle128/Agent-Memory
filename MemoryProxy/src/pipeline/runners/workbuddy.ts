@@ -48,6 +48,9 @@ import { stageAuth, extractApiKeyFromContext } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
 import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-request.js";
 import {
+  immediateTeamError, resolveRequestTeam, settleRequestTeam, teamErrorResponse, teamIdOf,
+} from "../../subscription-pool/pool-team.js";
+import {
   stageModelSource,
   applyModelSource,
   modelSourceErrorResponse,
@@ -60,6 +63,9 @@ import { stageCredit } from "../stages/credit.js";
 import { resolveModelId } from "../../pricing.js";
 import { stageIdentity } from "../stages/identity.js";
 import { stageModelGate } from "../stages/model-gate.js";
+import {
+  gateModelAfterTeam, reselectModelSource, settledUpstreamKind, teamMayChangeInInit,
+} from "../stages/model-after-team.js";
 import { resolveAgentStrategy } from "../strategies/agent/index.js";
 import { enforceRateLimit, isRateLimitExceededError } from "../../rate-limit/guard.js";
 import { workbuddyAdapter } from "../../agent-adapters/workbuddy.js";
@@ -461,7 +467,8 @@ async function forwardToUpstream(
   lf: LangfuseTurnContext | null,
   archiveCtx: WorkbuddyArchiveCtx | null = null,
   sessionTurn: PendingSessionTurn | null = null,
-  presetResolution?: ModelSourceResolution,
+  presetResolution: ModelSourceResolution | undefined,
+  teamId: string | null,
 ): Promise<Response> {
   // ── Per-agent upstream override ──
   // 对齐 codexHandler: 支持 config.upstream.agents?.workbuddy 单独指 URL/apiKey，
@@ -492,6 +499,7 @@ async function forwardToUpstream(
     pathForOverride: upstreamPath,
     presetResolution,
     poolSupported: true,
+    teamId,
   });
   if (isInstanceUpstreamBlocked(_upstreamResolve)) {
     return c.json(_upstreamResolve.errorBody, 400);
@@ -1218,11 +1226,44 @@ export async function runWorkbuddyPipeline(
     if (wecomIdentity.kind !== "resolved") return wecomIdentity.response;
     wecomName = wecomIdentity.name;
   }
+  // ── 3. Headers, request class and session id (pure, so the team lookup below can use them) ──
+  const headers: Record<string, string> = {};
+  for (const [k, v] of c.req.raw.headers.entries()) {
+    headers[k.toLowerCase()] = v;
+  }
+
+  // ── 4. Classify request ──
+  // 关闭 workbuddyRequestRouting.enabled 时强制视为 main，走完全等价 aux 分流
+  // 未启用的老链路。运维回滚保险；默认启用。对齐 CC 的 ccRequestRouting.enabled
+  // 语义，但默认相反（CC 默认 false 是灰度上线；WB 默认 true 是保守回滚）。
+  const wbRoutingEnabled = config.workbuddyRequestRouting?.enabled !== false;
+  const requestKind = wbRoutingEnabled
+    ? classifyWorkbuddyRequest(body, path, headers)
+    : "main";
+  const isAuxiliary = requestKind === "auxiliary";
+  const sessionId = extractWorkbuddySessionId(headers, body);
+
+  // ── Team of the request ──
+  // A pool belongs to one team, so the team is known before any stage can pick a pool. Null when
+  // no team pool serves this client; the request then runs as before. Session init of this runner
+  // keeps its state under the `codex:` key (the state machine of Codex is reused).
+  const spaceIdForTeam = extractSpaceIdFromPath(path) ?? "";
+  const teamSession = sessionId ? { keyId: `codex:${sessionId}`, agentSource: "codex", sessionId } : null;
+  const sessionInitMayRun = config.sessionInit?.enabled === true && sessionId !== null && !isAuxiliary;
+  const requestTeam = await resolveRequestTeam({
+    config, spaceId: spaceIdForTeam, userId, userKey: apiKey, agentSource: "workbuddy", session: teamSession,
+    lcHeaders: headers, model: body.model, sessionInitMayRun,
+  });
+  const requestTeamError = immediateTeamError(requestTeam);
+  if (requestTeamError) return teamErrorResponse(c, "anthropic", requestTeamError);
+
   // `<source>/<model>`: returns `none` unless modelSources is on and the model carries a source
   // prefix, so every other request keeps the checks below unchanged.
+  // The name that the client sent is kept: the settled team can find its source again.
+  const originalModel = body.model;
   const modelSource = await stageModelSource({
-    config, agent: "workbuddy", spaceId: extractSpaceIdFromPath(path) ?? "",
-    format: "openai-responses", model: body.model, servesPool: true,
+    config, agent: "workbuddy", spaceId: spaceIdForTeam,
+    format: "openai-responses", model: body.model, servesPool: true, teamId: teamIdOf(requestTeam),
   });
   // Responses clients read `error.type` and `error.message`, which the Anthropic envelope carries.
   if (modelSource.kind === "error") return modelSourceErrorResponse(c, "anthropic", modelSource);
@@ -1234,43 +1275,31 @@ export async function runWorkbuddyPipeline(
   }
   const presetResolution = matchedSource?.resolution;
 
-  // ── 3. Extract headers ───────────────────────────────────────────────────
-  const headers: Record<string, string> = {};
-  for (const [k, v] of c.req.raw.headers.entries()) {
-    headers[k.toLowerCase()] = v;
-  }
-
   // ── Identity 埋点 (bug B5 fix, gated by stageGates.identityRecord) ──
   const wbAgent = resolveAgentStrategy("workbuddy");
   if (wbAgent.stageGates.identityRecord) {
     stageIdentity(c, body, "workbuddy");
   }
 
-  // ── 4. Classify request ──────────────────────────────────────────────────
-  // 关闭 workbuddyRequestRouting.enabled 时强制视为 main，走完全等价 aux 分流
-  // 未启用的老链路。运维回滚保险；默认启用。对齐 CC 的 ccRequestRouting.enabled
-  // 语义，但默认相反（CC 默认 false 是灰度上线；WB 默认 true 是保守回滚）。
-  const wbRoutingEnabled = config.workbuddyRequestRouting?.enabled !== false;
-  const requestKind = wbRoutingEnabled
-    ? classifyWorkbuddyRequest(body, path, headers)
-    : "main";
-  const isAuxiliary = requestKind === "auxiliary";
 
-  const requestedModel = typeof body.model === "string" ? body.model : "";
+  let requestedModel = typeof body.model === "string" ? body.model : "";
 
   // ── Model gate (bug B8 fix, gated by stageGates.modelGate) ──
   const _wbSpaceIdForGate = extractSpaceIdFromPath(path) ?? "";
   let _wbIsCustomUpstream = false;
+  // While session init can still change the team, the pool of the final team is not known: the
+  // gate runs after the team settles. Until then the model gets the alias only.
+  const gateDeferred = teamMayChangeInInit(requestTeam, sessionInitMayRun);
   if (wbAgent.stageGates.modelGate && !isAuxiliary) {
     try {
       const { getInstanceUpstreamConfigs, resolveForAgent, shouldOverride } =
         await import("../../instance-upstream-cache.js");
       const cfgs = await getInstanceUpstreamConfigs(config.coreSkill, _wbSpaceIdForGate, config.instanceUpstream);
-      _wbIsCustomUpstream = shouldOverride(presetResolution ?? resolveForAgent(cfgs, "workbuddy"));
+      _wbIsCustomUpstream = shouldOverride(presetResolution ?? resolveForAgent(cfgs, "workbuddy", teamIdOf(requestTeam)));
     } catch {
       _wbIsCustomUpstream = false;
     }
-    if (!_wbIsCustomUpstream) {
+    if (!_wbIsCustomUpstream && !gateDeferred) {
       const gateResult = stageModelGate(requestedModel, config, false);
       if (!gateResult.ok) {
         return c.json({
@@ -1283,7 +1312,7 @@ export async function runWorkbuddyPipeline(
   }
 
   // A source model id is the upstream's own name, never a pricing-table alias.
-  const modelId = matchedSource ? requestedModel : resolveModelId(config.creditPricing, requestedModel);
+  let modelId = matchedSource ? requestedModel : resolveModelId(config.creditPricing, requestedModel);
   // 对外展示名只用于客户端请求；TokenHub 只接受价目表中登记的真实服务 ID。
   if (typeof body.model === "string" && modelId !== requestedModel) {
     body.model = modelId;
@@ -1293,11 +1322,10 @@ export async function runWorkbuddyPipeline(
   // ── 5. Aux passthrough ───────────────────────────────────────────────────
   if (isAuxiliary) {
     pipe.info("WORKBUDDY_AUX", `auxiliary request → passthrough (path=${path})`);
-    return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null, null, presetResolution);
+    return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, null, null, null, presetResolution, teamIdOf(requestTeam));
   }
 
   // ── 6. Session ID + langfuse turn ctx ────────────────────────────────────
-  const sessionId = extractWorkbuddySessionId(headers, body);
   const sessionKey = sessionId ?? `${keyId}:${traceId}`;
   const agentSource = "workbuddy";
   const isStream = body.stream !== false;
@@ -1773,9 +1801,45 @@ export async function runWorkbuddyPipeline(
     callerUserKey,
     assetCapabilities,
   });
+
+  // ── Settle the team after session init ──
+  // Init may have registered the session in a team that differs from the first answer (a fallback
+  // or a predicted team), or it may have left the session without a team. This runs right before
+  // the upstream is chosen, so a mem command or a form that needs no upstream never gets a team
+  // error. A team error that waited for init is answered here, before any upstream call.
+  const settledTeam = await settleRequestTeam({
+    config, spaceId: spaceIdForTeam, userId, userKey: apiKey, first: requestTeam, session: teamSession,
+  });
+  if (settledTeam.error) return teamErrorResponse(c, "anthropic", settledTeam.error);
+  let lateSource = presetResolution;
+  if (settledTeam.changed || gateDeferred) {
+    // A pool source is the pool of one team, so the settled team can match a source that the first
+    // team did not have, or lose the one that it had.
+    let sourceNow = matchedSource;
+    if (settledTeam.changed) {
+      const again = await reselectModelSource({
+        c, config, body, agent: "workbuddy", spaceId: spaceIdForTeam, format: "openai-responses",
+        teamId: settledTeam.teamId, originalModel, previous: matchedSource, errorEnvelope: "anthropic",
+      });
+      if (again.kind === "error") return again.response;
+      sourceNow = again.matched;
+      lateSource = sourceNow?.resolution;
+      // The body holds the model of the source, or the name of the client again.
+      if ((again.matched || again.lost) && typeof body.model === "string") requestedModel = body.model;
+    }
+    // Same rule as the early gate: only an override group skips the pricing table.
+    const kind = await settledUpstreamKind(config, "workbuddy", spaceIdForTeam, settledTeam.teamId, lateSource);
+    if (wbAgent.stageGates.modelGate && !kind.isOverride) {
+      const gate = gateModelAfterTeam(c, config, requestedModel, false);
+      if (!gate.ok) return gate.response;
+    }
+    // A source model id is the upstream's own name, never a pricing-table alias.
+    modelId = sourceNow ? requestedModel : resolveModelId(config.creditPricing, requestedModel);
+    if (typeof body.model === "string") body.model = modelId;
+  }
   return forwardToUpstream(c, config, body, traceId, startTime, keyId, wecomName || keyId, modelId, pipe, lf, archiveCtx, {
     seed: sessionTurnSeed,
     sessionInfo,
     authUserId: userId,
-  }, presetResolution);
+  }, lateSource, settledTeam.teamId);
 }

@@ -1290,6 +1290,8 @@ export interface UsageLogEntry {
   upstreamRequestId?: string;
   /** Subscription pool account that served the request. Absent outside a pool. */
   subscriptionAccountId?: string;
+  /** Team of the subscription pool that served the request. Absent outside a pool. */
+  subscriptionTeamId?: string;
 }
 
 /**

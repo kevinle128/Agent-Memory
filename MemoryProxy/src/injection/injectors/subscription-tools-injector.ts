@@ -113,7 +113,9 @@ export class SubscriptionToolsInjector implements InjectionHook {
     const session = custom?.session as Record<string, unknown> | undefined;
     const userId = identity?.userId ?? ctx.metadata.userId;
     const spaceId = typeof session?.space_id === "string" ? session.space_id : ctx.metadata.spaceId;
-    return this.renderBlocks(identity?.sessionId, spaceId, userId, ctx.metadata.agentSource);
+    const teamId = typeof session?.team_id === "string" ? session.team_id : "";
+    const userKey = typeof session?.user_key === "string" ? session.user_key : "";
+    return this.renderBlocks(identity?.sessionId, spaceId, userId, ctx.metadata.agentSource, teamId, userKey);
   }
 
   async prewarm(input: PrewarmInput): Promise<ContextBlock[]> {
@@ -122,6 +124,8 @@ export class SubscriptionToolsInjector implements InjectionHook {
       input.spaceId ?? input.sessionInfo.space_id,
       input.userId,
       input.agentSource,
+      input.sessionInfo.team_id ?? "",
+      input.sessionInfo.user_key ?? "",
     );
   }
 
@@ -130,9 +134,11 @@ export class SubscriptionToolsInjector implements InjectionHook {
     spaceId: string | undefined,
     userId: string | undefined,
     agentSource: string,
+    teamId: string,
+    userKey: string,
   ): Promise<ContextBlock[]> {
     if (!sessionId || !spaceId || !userId) return [];
-    if (!(await this.shouldOffer(spaceId, userId, agentSource))) return [];
+    if (!(await this.shouldOffer(spaceId, userId, agentSource, teamId, userKey))) return [];
     return [{
       type: "text",
       content: renderSubscriptionToolsBlock(this.cfg.proxyBaseUrl, sessionId, spaceId, agentSource),
@@ -144,8 +150,11 @@ export class SubscriptionToolsInjector implements InjectionHook {
     }];
   }
 
-  private async shouldOffer(spaceId: string, userId: string, agentSource: string): Promise<boolean> {
+  private async shouldOffer(
+    spaceId: string, userId: string, agentSource: string, teamId: string, userKey: string,
+  ): Promise<boolean> {
     if (!(await canUseAccountSwitch(this.cfg.config, { spaceId, userId }))) return false;
-    return (await resolveSwitchPool(this.cfg.config, spaceId, agentSource)) !== null;
+    // The pool of the team of the session, the same one the bridge lists.
+    return (await resolveSwitchPool(this.cfg.config, spaceId, agentSource, { userId, userKey, teamId })) !== null;
   }
 }

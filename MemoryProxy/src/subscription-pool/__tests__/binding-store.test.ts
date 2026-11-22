@@ -83,11 +83,26 @@ describe("binding store", () => {
     expect(await storage.exists(sessionBindingKey("sp1", "codex", "old"))).toBe(false);
   });
 
-  it("stores the round-robin cursor per instance and provider", async () => {
+  it("stores the round-robin cursor per instance, provider and pool group", async () => {
     const storage = new MemoryStorage();
-    expect(await getCursor(storage, "sp1", "codex")).toBe(0);
-    await setCursor(storage, "sp1", "codex", 3);
-    expect(await getCursor(storage, "sp1", "codex")).toBe(3);
-    expect(await getCursor(storage, "sp2", "codex")).toBe(0);
+    expect(await getCursor(storage, "sp1", "codex", "g1")).toBe(0);
+    await setCursor(storage, "sp1", "codex", "g1", 3);
+    expect(await getCursor(storage, "sp1", "codex", "g1")).toBe(3);
+    expect(await getCursor(storage, "sp1", "codex", "g2")).toBe(0);
+    expect(await getCursor(storage, "sp2", "codex", "g1")).toBe(0);
+    expect(await getCursor(storage, "sp1", "claude", "g1")).toBe(0);
+  });
+
+  it("keeps one cursor per pool group", async () => {
+    const storage = new MemoryStorage();
+    await setCursor(storage, "sp1", "claude", "team-a-group", 2);
+    await setCursor(storage, "sp1", "claude", "team-b-group", 5);
+    expect(await getCursor(storage, "sp1", "claude", "team-a-group")).toBe(2);
+    expect(await getCursor(storage, "sp1", "claude", "team-b-group")).toBe(5);
+  });
+
+  it("keeps the binding key of a session free of the pool group", () => {
+    const key = sessionBindingKey("sp1", "claude", "session:abc");
+    expect(key).toMatch(/^nottl\/sp1\/pool-binding\/claude\/[0-9a-f]{32}$/);
   });
 });

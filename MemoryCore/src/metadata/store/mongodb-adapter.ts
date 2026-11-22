@@ -52,6 +52,7 @@ import type {
   TaskFilter,
   AssetFilter,
   BatchDeleteResult,
+  DeleteTeamsResult,
   ListPage,
   PaginationParams,
   InstanceUserListFilter,
@@ -94,6 +95,19 @@ import { DEFAULT_PAGINATION } from "../pagination.js";
 import { buildChatMemoryAssetId } from "../utils/chat-memory-asset.js";
 import { DuplicateUserKeyError } from "./interface.js";
 import { parseStoredResetCredits } from "./reset-credits-codec.js";
+import {
+  DEFAULT_ACCOUNT_THRESHOLD_PCT,
+  INSTANCE_UPSTREAM_SCOPE,
+  defaultTeamSearchNames,
+  logSubscriptionPoolTeamBackfill,
+  parseStoredThresholdPct,
+  pickDefaultTeam,
+  pickDefaultTeamById,
+  sameUpstreamScope,
+  upstreamGroupScope,
+  type PoolTeamBackfillOutcome,
+  type UpstreamGroupScope,
+} from "./pool-team-scope.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -139,6 +153,13 @@ export interface MongoMetadataStoreOptions {
   useTransactions?: boolean;
   /** false 时 close() 不关闭 client（MetadataStorePool 共享连接）。 */
   ownsClient?: boolean;
+  /**
+   * Name of the team that gets the pool groups without a team at start
+   * (env TDAI_METADATA_DEFAULT_TEAM_NAME). Unset: the team named `default`, else `default-team`.
+   */
+  defaultTeamName?: string;
+  /** Team id that gets the pool groups without a team (env TDAI_METADATA_DEFAULT_TEAM_ID). Wins over the name. */
+  defaultTeamId?: string;
 }
 
 export class MongoMetadataStore implements IMetadataStore {
@@ -146,6 +167,8 @@ export class MongoMetadataStore implements IMetadataStore {
   private readonly db: Db;
   private readonly useTransactions: boolean;
   private readonly ownsClient: boolean;
+  private readonly defaultTeamName: string | undefined;
+  private readonly defaultTeamId: string | undefined;
   /**
    * v1→v2 legacy sweep 一次性标记。true 表示本进程已在 list 路径上做过 index/文档
    * 清理,后续 list 直接跳过 —— sweep 是历史迁移动作 (dropIndex + deleteMany),
@@ -165,6 +188,8 @@ export class MongoMetadataStore implements IMetadataStore {
     this.db = client.db(dbName);
     this.useTransactions = opts.useTransactions ?? true;
     this.ownsClient = opts.ownsClient ?? true;
+    this.defaultTeamName = opts.defaultTeamName;
+    this.defaultTeamId = opts.defaultTeamId?.trim() || undefined;
     if (!this.useTransactions) {
       console.warn(
         "[META-STORE] WARNING: MongoDB transactions disabled (useTransactions=false). " +
@@ -223,6 +248,9 @@ export class MongoMetadataStore implements IMetadataStore {
   }
 
   async init(): Promise<void> {
+    // These steps change data or drop an index, so they run before the parallel index block.
+    await this.migrateSubscriptionPoolTeam();
+
     // 25 个 ensureIndex 全部并行:createIndex 幂等,不同 collection/index 互不冲突,
     // 服务器侧原来就是各自 create,唯一开销是 RTT。串行 25 × ~70ms ≈ 1.8s,
     // 并行 max(独立 RTT) ≈ 100~300ms(空库首建更贵些)。
@@ -353,11 +381,12 @@ export class MongoMetadataStore implements IMetadataStore {
         { unique: true, partialFilterExpression: { group_type: "extraction" }, name: "ux_group_type_extraction" },
       ),
 
-      // A source name is unique among the groups that have one. The filter uses $gt because
-      // a partial index does not support $ne.
+      // A source name is unique among the groups of one team_id that have one. The filter uses
+      // $gt because a partial index does not support $ne. The index has a new name: an index with
+      // the old name and other keys fails with an options conflict.
       this.ensureIndex("meta_instance_upstream_config",
-        { source_name: 1 },
-        { unique: true, partialFilterExpression: { source_name: { $gt: "" } }, name: "ux_source_name" },
+        { team_id: 1, source_name: 1 },
+        { unique: true, partialFilterExpression: { source_name: { $gt: "" } }, name: "ux_team_source_name" },
       ),
 
       // ── meta_upstream_subscription_account ──
@@ -376,6 +405,139 @@ export class MongoMetadataStore implements IMetadataStore {
     ]);
 
     await this.migrateLegacyUserKeys();
+  }
+
+  /**
+   * Bring the pool data up to date for team-scoped pools. Each step is idempotent and runs on
+   * each start:
+   *   1. a group without the `team_id` field gets `''`;
+   *   2. an account without `threshold_pct` gets the global value (else 95). Only accounts made
+   *      before the field existed lack it, because every insert writes it;
+   *   3. the old index on the source name alone is dropped: pool groups of two teams use the
+   *      same fixed source names;
+   *   4. the pool groups without a team go to the default team (see backfillSubscriptionPoolTeam).
+   */
+  private async migrateSubscriptionPoolTeam(): Promise<void> {
+    await this.col("meta_instance_upstream_config").updateMany(
+      { team_id: { $exists: false } } as Document,
+      { $set: { team_id: "" } },
+    );
+    const globalThreshold = await this.getConfigParam("global", null, "subscription_pool", "threshold_pct");
+    await this.col(SUBSCRIPTION_ACCOUNT_COLLECTION).updateMany(
+      { threshold_pct: { $exists: false } } as Document,
+      { $set: { threshold_pct: parseStoredThresholdPct(globalThreshold?.param_value) } },
+    );
+    try {
+      await this.col("meta_instance_upstream_config").dropIndex("ux_source_name");
+    } catch (err) {
+      const code = (err as { code?: number })?.code;
+      // 27 = IndexNotFound, 26 = NamespaceNotFound (a new database has no collection yet).
+      if (code !== 27 && code !== 26) {
+        // Same rule as ensureIndex: the start continues, but the line tells why a second team
+        // cannot use a fixed pool source name while the old index stays.
+        console.error(
+          `[mongodb-adapter] dropIndex ux_source_name failed (code=${code}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    await this.backfillSubscriptionPoolTeam();
+  }
+
+  /**
+   * Give the pool groups without a team to the default team. Same rule as the SQLite store:
+   * first each pooled agent that is in no instance group goes back to the default group (always),
+   * then the default team is found by name; when there is not exactly one, the groups stay
+   * without a team and an error line gives the candidate team ids.
+   */
+  private async backfillSubscriptionPoolTeam(): Promise<void> {
+    const cfg = this.col("meta_instance_upstream_config");
+    const outcome = await this.withTx(async (session): Promise<PoolTeamBackfillOutcome> => {
+      const now = nowIso();
+      const restored = await this.restorePooledAgentsToDefaultGroup(now, session);
+      const unassigned = await cfg.countDocuments(
+        { mode: "subscription_pool", team_id: "" } as Document,
+        { session },
+      );
+      if (unassigned === 0) return { restored, unassigned, pick: null, assigned: 0, sourceClash: false };
+
+      let pick;
+      if (this.defaultTeamId) {
+        const teams = await this.col("meta_teams")
+          .find({ team_id: this.defaultTeamId, status: "active" } as Document, { projection: { _id: 0, team_id: 1 }, session })
+          .toArray();
+        pick = pickDefaultTeamById(this.defaultTeamId, teams.map((t) => String((t as Document).team_id)));
+      } else {
+        const candidates = [];
+        for (const name of defaultTeamSearchNames(this.defaultTeamName)) {
+          const teams = await this.col("meta_teams")
+            .find({ name, status: "active" } as Document, { projection: { _id: 0, team_id: 1 }, session })
+            .toArray();
+          candidates.push({ name, team_ids: teams.map((t) => String((t as Document).team_id)) });
+        }
+        pick = pickDefaultTeam(candidates);
+      }
+      if (pick.status !== "found") return { restored, unassigned, pick, assigned: 0, sourceClash: false };
+
+      // A clash on the team source name index would stop the update half way; leave the groups instead.
+      const names = (await cfg
+        .find({ mode: "subscription_pool", team_id: "", source_name: { $gt: "" } } as Document, {
+          projection: { _id: 0, source_name: 1 },
+          session,
+        })
+        .toArray()).map((d) => String((d as Document).source_name));
+      if (names.length > 0) {
+        const clash = await cfg.findOne(
+          { team_id: pick.team_id, source_name: { $in: names } } as Document,
+          { projection: { _id: 1 }, session },
+        );
+        if (clash) return { restored, unassigned, pick, assigned: 0, sourceClash: true };
+      }
+
+      const result = await cfg.updateMany(
+        { mode: "subscription_pool", team_id: "" } as Document,
+        { $set: { team_id: pick.team_id, updated_at: now }, $inc: { version: 1 } },
+        { session },
+      );
+      return { restored, unassigned, pick, assigned: result.modifiedCount ?? 0, sourceClash: false };
+    });
+    logSubscriptionPoolTeamBackfill(outcome);
+  }
+
+  /** Add to the default group each pooled agent that no instance group holds. Returns those agents. */
+  private async restorePooledAgentsToDefaultGroup(now: string, session?: ClientSession): Promise<string[]> {
+    const cfg = this.col("meta_instance_upstream_config");
+    const defaultDoc = await cfg.findOne(
+      { group_type: "default" } as Document,
+      { projection: { _id: 0, group_id: 1 }, session },
+    );
+    if (!defaultDoc) return [];
+    const homed = new Set<string>();
+    const homes = await cfg
+      .find(
+        { group_type: { $in: ["default", "custom"] }, mode: { $ne: "subscription_pool" } } as Document,
+        { projection: { _id: 0, agents: 1 }, session },
+      )
+      .toArray();
+    for (const d of homes) {
+      for (const a of Array.isArray((d as Document).agents) ? ((d as Document).agents as string[]) : []) homed.add(a);
+    }
+    const missing: string[] = [];
+    const pools = await cfg
+      .find({ mode: "subscription_pool" } as Document, { projection: { _id: 0, agents: 1 }, session })
+      .sort({ id: 1 })
+      .toArray();
+    for (const d of pools) {
+      for (const a of Array.isArray((d as Document).agents) ? ((d as Document).agents as string[]) : []) {
+        if (!homed.has(a) && !missing.includes(a)) missing.push(a);
+      }
+    }
+    if (missing.length === 0) return [];
+    await cfg.updateOne(
+      { group_id: String((defaultDoc as Document).group_id) } as Document,
+      { $addToSet: { agents: { $each: missing } }, $set: { updated_at: now }, $inc: { version: 1 } },
+      { session },
+    );
+    return missing;
   }
 
   /**
@@ -857,15 +1019,42 @@ export class MongoMetadataStore implements IMetadataStore {
     return this.getTeamById(teamId);
   }
 
-  async deleteTeams(teamIds: string[]): Promise<BatchDeleteResult> {
-    const result = await this.batchDelete("meta_teams", "team_id", teamIds);
-    if (result.deleted_ids.length > 0) {
-      await this.col("meta_team_members").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
-      await this.col("meta_agents").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
-      await this.col("meta_tasks").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
-      await this.col("meta_assets").deleteMany({ team_id: { $in: result.deleted_ids } } as Document);
-    }
-    return result;
+  async deleteTeams(teamIds: string[]): Promise<DeleteTeamsResult> {
+    // MongoDB has no foreign keys. With transactions the whole delete is atomic; without them the
+    // pools, their accounts and the child rows go first, then the members and the team row last,
+    // so a failure part way leaves the team and its admins in place and a retry through the team
+    // delete route (which looks the team and the caller's membership up first) can finish the cleanup.
+    const ids = teamIds.filter((id) => id !== "");
+    return this.withTx(async (session) => {
+      let deletedPoolAccountIds: string[] = [];
+      if (ids.length > 0) {
+        const cfg = this.col("meta_instance_upstream_config");
+        const groupIds = (await cfg
+          .find({ mode: "subscription_pool", team_id: { $in: ids } } as Document, {
+            projection: { _id: 0, group_id: 1 },
+            session,
+          })
+          .toArray()).map((d) => String((d as Document).group_id));
+        if (groupIds.length > 0) {
+          const accounts = this.col(SUBSCRIPTION_ACCOUNT_COLLECTION);
+          deletedPoolAccountIds = (await accounts
+            .find({ group_id: { $in: groupIds } } as Document, { projection: { _id: 0, account_id: 1 }, session })
+            .toArray()).map((d) => String((d as Document).account_id)).sort();
+          // Delete the accounts first, so a failure between the two deletes leaves an empty group
+          // and never an account without a group.
+          await accounts.deleteMany({ group_id: { $in: groupIds } } as Document, { session });
+          await cfg.deleteMany({ group_id: { $in: groupIds } } as Document, { session });
+        }
+        await this.col("meta_agents").deleteMany({ team_id: { $in: ids } } as Document, { session });
+        await this.col("meta_tasks").deleteMany({ team_id: { $in: ids } } as Document, { session });
+        await this.col("meta_assets").deleteMany({ team_id: { $in: ids } } as Document, { session });
+        // Members go last before the team row: the team admin check reads them, so a failed
+        // non-transactional run must leave them for the retry.
+        await this.col("meta_team_members").deleteMany({ team_id: { $in: ids } } as Document, { session });
+      }
+      const result = await this.batchDelete("meta_teams", "team_id", teamIds, session);
+      return { ...result, deleted_pool_account_ids: deletedPoolAccountIds };
+    });
   }
 
   async listTeamsByUser(userId: string, pagination?: PaginationParams | null, filter?: { name?: string }): Promise<ListPage<TeamEntity>> {
@@ -1489,10 +1678,10 @@ export class MongoMetadataStore implements IMetadataStore {
     await this.col(collection).updateOne(filter, { $set: set });
   }
 
-  private async batchDelete(collection: string, pkCol: string, ids: string[]): Promise<BatchDeleteResult> {
+  private async batchDelete(collection: string, pkCol: string, ids: string[], session?: ClientSession): Promise<BatchDeleteResult> {
     const result: BatchDeleteResult = { deleted_ids: [], failed: [] };
     for (const id of ids) {
-      const res = await this.col(collection).deleteOne({ [pkCol]: id });
+      const res = await this.col(collection).deleteOne({ [pkCol]: id }, { session });
       if (res.deletedCount && res.deletedCount > 0) result.deleted_ids.push(id);
       else result.failed.push({ id, reason: "not_found" });
     }
@@ -1719,6 +1908,8 @@ export class MongoMetadataStore implements IMetadataStore {
 
     const query: Document = {};
     if (filter?.group_type) query.group_type = filter.group_type;
+    if (filter?.team_id !== undefined) query.team_id = filter.team_id;
+    if (filter?.mode) query.mode = filter.mode;
     const docs = await this.col("meta_instance_upstream_config")
       .find(query, PROJECT_NO_ID)
       .toArray();
@@ -1754,6 +1945,7 @@ export class MongoMetadataStore implements IMetadataStore {
         id,
         group_id: this.newGroupId("default"),
         group_type: "default",
+        team_id: "",
         name: DEFAULT_GROUP_NAME,
         agents: agentsList,
         enabled: true,
@@ -1778,6 +1970,11 @@ export class MongoMetadataStore implements IMetadataStore {
     input: CreateInstanceUpstreamGroupInput,
   ): Promise<InstanceUpstreamConfigEntity> {
     const agents = input.agents ?? [];
+    const teamId = input.mode === "subscription_pool" ? (input.team_id ?? "").trim() : "";
+    if (input.mode === "subscription_pool" && !teamId) {
+      throw new InstanceUpstreamWriteConflictError("team_required", "a subscription pool group needs a team");
+    }
+    const scope = upstreamGroupScope({ mode: input.mode, team_id: teamId });
 
     // 1. 单例约束
     if (input.group_type === "default" || input.group_type === "extraction") {
@@ -1795,13 +1992,13 @@ export class MongoMetadataStore implements IMetadataStore {
 
     // 2. agents 全域唯一
     if (input.group_type !== "extraction") {
-      await this.assertAgentsNotOverlapMongo(agents, null);
+      await this.assertAgentsNotOverlapMongo(agents, null, scope);
     }
 
     // 2b. 组名全域唯一(仅 custom;default/extraction 走 seed 固定名不触发)
     //     历史脏数据不清理,只拦新写入 —— 参考设计文档 §5.3(v2.8)。
     if (input.group_type === "custom") {
-      await this.assertGroupNameUniqueMongo(input.name ?? "", null);
+      await this.assertGroupNameUniqueMongo(input.name ?? "", null, scope);
     }
 
     const now = nowIso();
@@ -1812,6 +2009,7 @@ export class MongoMetadataStore implements IMetadataStore {
         id,
         group_id: groupId,
         group_type: input.group_type,
+        team_id: teamId,
         name: input.name ?? "",
         agents,
         enabled: input.enabled === false ? false : true,
@@ -1839,7 +2037,7 @@ export class MongoMetadataStore implements IMetadataStore {
       if (code === 11000 && keyPattern && "source_name" in keyPattern) {
         throw new InstanceUpstreamWriteConflictError(
           "source_name_duplicate",
-          "source name is already used by another group",
+          "source name is already used by another group of this team",
         );
       }
       if (code === 11000 && keyPattern && "group_type" in keyPattern) {
@@ -1881,9 +2079,20 @@ export class MongoMetadataStore implements IMetadataStore {
           { expected: input.expected_version, actual: current.version },
         );
       }
+      // A group never gets a team through an update, so it cannot become a pool group here.
+      // A group that leaves the pool mode loses its team and joins the instance scope.
+      const nextMode = input.mode ?? current.mode;
+      if (nextMode === "subscription_pool" && current.mode !== "subscription_pool") {
+        throw new InstanceUpstreamWriteConflictError("team_required", "a group without a team cannot become a subscription pool group");
+      }
+      const nextTeamId = nextMode === "subscription_pool" ? current.team_id : "";
+      const scope = upstreamGroupScope({ mode: nextMode, team_id: nextTeamId });
+
       const nextAgents = input.agents ?? current.agents;
-      if (input.agents !== undefined && current.group_type !== "extraction") {
-        await this.assertAgentsNotOverlapMongo(nextAgents, current.group_id);
+      // A group that changes scope must also fit the agent rule of its new scope.
+      const scopeChanged = !sameUpstreamScope(upstreamGroupScope(current), scope);
+      if ((input.agents !== undefined || scopeChanged) && current.group_type !== "extraction") {
+        await this.assertAgentsNotOverlapMongo(nextAgents, current.group_id, scope);
       }
 
       // name 变更 → 校验全域唯一(仅 custom;default/extraction 由 service 层拦掉,这里兜底)
@@ -1895,11 +2104,12 @@ export class MongoMetadataStore implements IMetadataStore {
         && current.group_type === "custom"
         && (input.name ?? "").trim() !== (current.name ?? "").trim()
       ) {
-        await this.assertGroupNameUniqueMongo(input.name, current.group_id);
+        await this.assertGroupNameUniqueMongo(input.name, current.group_id, scope);
       }
 
       const now = nowIso();
       const setDoc: Document = { updated_at: now };
+      if (nextTeamId !== current.team_id) setDoc.team_id = nextTeamId;
       if (input.name !== undefined) setDoc.name = input.name;
       if (input.agents !== undefined) setDoc.agents = input.agents;
       if (input.enabled !== undefined) setDoc.enabled = input.enabled;
@@ -1928,7 +2138,7 @@ export class MongoMetadataStore implements IMetadataStore {
         if ((err as { code?: number })?.code === 11000 && keyPattern && "source_name" in keyPattern) {
           throw new InstanceUpstreamWriteConflictError(
             "source_name_duplicate",
-            "source name is already used by another group",
+            "source name is already used by another group of this team",
           );
         }
         throw err;
@@ -2032,9 +2242,11 @@ export class MongoMetadataStore implements IMetadataStore {
           throw new InstanceUpstreamWriteConflictError("group_not_found", `group not found: ${id}`);
         }
       }
+      const scope = this.assertMoveInOneScope(input, [...fromIds, ...(toId ? [toId] : [])].map((id) => byId.get(id)!));
 
       // The agent may stay only in the groups of this move.
       const conflicts = groups
+        .filter((g) => sameUpstreamScope(upstreamGroupScope(g), scope))
         .filter((g) => g.agents.includes(input.agent) && !fromIds.has(g.group_id) && g.group_id !== toId)
         .map((g) => ({
           group_id: g.group_id,
@@ -2088,8 +2300,9 @@ export class MongoMetadataStore implements IMetadataStore {
         const create = input.to.create;
         const candidate = (create.name ?? "").trim();
         if (candidate) {
+          // A created target is in the instance scope, so only instance groups count.
           const names = await cfg
-            .find({} as Document, { projection: { _id: 0, group_id: 1, group_type: 1, name: 1 }, session })
+            .find(this.scopeFilter(INSTANCE_UPSTREAM_SCOPE), { projection: { _id: 0, group_id: 1, group_type: 1, name: 1 }, session })
             .toArray();
           const clash = names.find((d) => String((d as Document).name ?? "").trim() === candidate);
           if (clash) {
@@ -2111,6 +2324,7 @@ export class MongoMetadataStore implements IMetadataStore {
           id: await this.nextInstanceUpstreamConfigId(),
           group_id: targetId,
           group_type: "custom",
+          team_id: "",
           name: create.name ?? "",
           agents: [input.agent],
           enabled: create.enabled !== false,
@@ -2153,11 +2367,12 @@ export class MongoMetadataStore implements IMetadataStore {
   private async assertAgentsNotOverlapMongo(
     candidate: string[],
     selfGroupId: string | null,
+    scope: UpstreamGroupScope,
   ): Promise<void> {
     if (candidate.length === 0) return;
     const candidateSet = new Set(candidate);
     const rows = await this.col("meta_instance_upstream_config")
-      .find({ group_type: { $in: ["default", "custom"] } } as Document, {
+      .find({ group_type: { $in: ["default", "custom"] }, ...this.scopeFilter(scope) } as Document, {
         projection: { _id: 0, group_id: 1, group_type: 1, name: 1, agents: 1 },
       })
       .toArray();
@@ -2194,11 +2409,12 @@ export class MongoMetadataStore implements IMetadataStore {
   private async assertGroupNameUniqueMongo(
     candidateName: string,
     selfGroupId: string | null,
+    scope: UpstreamGroupScope,
   ): Promise<void> {
     const candidate = (candidateName ?? "").trim();
     if (!candidate) return;
     const rows = await this.col("meta_instance_upstream_config")
-      .find({} as Document, {
+      .find(this.scopeFilter(scope), {
         projection: { _id: 0, group_id: 1, group_type: 1, name: 1 },
       })
       .toArray();
@@ -2314,8 +2530,10 @@ export class MongoMetadataStore implements IMetadataStore {
     // 计算新 agents,排除已被 custom 组占用的
     const nextAgents = [...currentAgents];
     if (newAgents.length > 0) {
+      // Pool groups are a team layer over the instance groups: an agent in a pool still needs
+      // its instance home, so pool agents do not count as used.
       const customDocs = await this.col("meta_instance_upstream_config")
-        .find({ group_type: "custom" } as Document, { projection: { _id: 0, agents: 1 } })
+        .find({ group_type: "custom", mode: { $ne: "subscription_pool" } } as Document, { projection: { _id: 0, agents: 1 } })
         .toArray();
       const customUsed = new Set<string>();
       for (const c of customDocs) {
@@ -2345,11 +2563,44 @@ export class MongoMetadataStore implements IMetadataStore {
     return generateId(prefix);
   }
 
+  /** Query filter that selects the groups of one scope (see upstreamGroupScope). */
+  private scopeFilter(scope: UpstreamGroupScope): Document {
+    return scope.pool
+      ? { mode: "subscription_pool", team_id: scope.team_id }
+      : { mode: { $ne: "subscription_pool" } };
+  }
+
+  /**
+   * The groups of one move must be in one scope, so an agent never moves between the instance
+   * groups and the pools of a team, or between the pools of two teams. A created target is in the
+   * instance scope. Returns the scope of the move.
+   */
+  private assertMoveInOneScope(
+    input: MoveAgentBetweenUpstreamGroupsInput,
+    groups: InstanceUpstreamConfigEntity[],
+  ): UpstreamGroupScope {
+    const creates = "create" in input.to;
+    if ("create" in input.to && input.to.create.mode === "subscription_pool") {
+      throw new InstanceUpstreamWriteConflictError("team_required", "an agent move cannot create a subscription pool group");
+    }
+    const scope = creates || groups.length === 0 ? INSTANCE_UPSTREAM_SCOPE : upstreamGroupScope(groups[0]!);
+    for (const g of groups) {
+      if (!sameUpstreamScope(upstreamGroupScope(g), scope)) {
+        throw new InstanceUpstreamWriteConflictError(
+          "group_not_found",
+          `group ${g.group_id} is not in the scope of this move`,
+        );
+      }
+    }
+    return scope;
+  }
+
   private mapMongoGroup(doc: Document): InstanceUpstreamConfigEntity {
     return {
       id: Number(doc.id),
       group_id: String(doc.group_id),
       group_type: String(doc.group_type) as GroupType,
+      team_id: String(doc.team_id ?? ""),
       name: String(doc.name ?? ""),
       agents: Array.isArray(doc.agents) ? (doc.agents as string[]) : [],
       enabled: Boolean(doc.enabled),
@@ -2474,6 +2725,8 @@ export class MongoMetadataStore implements IMetadataStore {
         refresh_fail_count: 0,
         last_error: null,
         active_sessions: 0,
+        // Always written, so the start-up copy of the global value never touches a new account.
+        threshold_pct: input.threshold_pct ?? DEFAULT_ACCOUNT_THRESHOLD_PCT,
         version: 1,
         created_at: now,
         updated_at: now,
@@ -2529,7 +2782,7 @@ export class MongoMetadataStore implements IMetadataStore {
       const fields: Array<keyof UpdateSubscriptionAccountPatch> = [
         "display_name", "account_label", "enabled", "status", "access_token", "refresh_token",
         "token_expires_at", "usage", "reset_credits", "usage_updated_at", "exhausted_until", "usage_fail_count",
-        "refresh_fail_count", "last_error", "active_sessions",
+        "refresh_fail_count", "last_error", "active_sessions", "threshold_pct",
       ];
       for (const field of fields) {
         if (patch[field] !== undefined) setDoc[field] = patch[field];
@@ -2601,6 +2854,7 @@ export class MongoMetadataStore implements IMetadataStore {
       refresh_fail_count: Number(doc.refresh_fail_count ?? 0),
       last_error: doc.last_error == null ? null : String(doc.last_error),
       active_sessions: Number(doc.active_sessions ?? 0),
+      threshold_pct: doc.threshold_pct == null ? DEFAULT_ACCOUNT_THRESHOLD_PCT : Number(doc.threshold_pct),
       version: Number(doc.version ?? 1),
       created_at: String(doc.created_at),
       updated_at: String(doc.updated_at),

@@ -38,6 +38,11 @@ export interface InstanceUpstreamResponsesInput {
    */
   poolSupported?: boolean;
   /**
+   * Team of the request, from the request team helper. Null when no pool serves the client: the
+   * resolution is then the instance layer only.
+   */
+  teamId: string | null;
+  /**
    * Resolution chosen by the model-source stage. When set it replaces `resolveForAgent`, as it
    * does in the early stage of the chat and Anthropic runners. Omitted = derived from the agent.
    */
@@ -88,7 +93,7 @@ export async function stageInstanceUpstreamResponses(
 
   const resolution: Resolution = forceOfficial
     ? { kind: "official" as const, row: null }
-    : input.presetResolution ?? resolveForAgent(instanceConfigs, agent);
+    : input.presetResolution ?? resolveForAgent(instanceConfigs, agent, input.teamId);
 
   if (resolution.kind === "blocked") {
     return {

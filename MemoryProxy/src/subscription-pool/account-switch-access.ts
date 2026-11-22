@@ -14,6 +14,7 @@
 import { getInstanceUpstreamConfigs, resolveForAgent, type InstanceUpstreamRow } from "../instance-upstream-cache.js";
 import type { InstanceUpstreamConfig } from "../types.js";
 import { callInternalMeta, type PoolCoreConfig } from "./core-client.js";
+import { listMemberTeamIds } from "./pool-team.js";
 
 const TAG = "[account-switch-access]";
 const ALLOW_TTL_MS = 5 * 60_000;
@@ -95,22 +96,37 @@ function remember(key: string, allowed: boolean): void {
   cache.set(key, { allowed, expiresAt: Date.now() + (allowed ? ALLOW_TTL_MS : DENY_TTL_MS) });
 }
 
+/** The registered session whose pool the Account Switch looks up. */
+export interface SwitchSession {
+  userId: string;
+  /** Key of the user that registered the session. Core reads the team list with it. */
+  userKey: string;
+  /** Team of the registered session. */
+  teamId: string;
+}
+
 /**
- * The Subscription Pool that serves `agentSource` in `spaceId`, or null when the agent has no
- * Account Switch support or is not served by an enabled pool group.
+ * The Subscription Pool that serves `agentSource` for a registered session, or null when the agent
+ * has no Account Switch support, the session has no team, the user left the team, or the team has
+ * no enabled pool for the agent. Only the pool of the team of the session is ever returned, so a
+ * switch never lists the accounts of another team. A team list that cannot be read gives null.
  */
 export async function resolveSwitchPool(
   config: AccessConfig,
   spaceId: string,
   agentSource: string,
+  session: SwitchSession,
 ): Promise<{ provider: "claude" | "codex" | "antigravity"; row: InstanceUpstreamRow } | null> {
   const provider = agentSource === "claude-code" ? "claude"
     : agentSource === "codex" ? "codex"
       : agentSource === "antigravity" ? "antigravity" : null;
-  if (!provider) return null;
+  if (!provider || !session.teamId || !session.userKey) return null;
+  const teamIds = await listMemberTeamIds(config, spaceId, session.userId, session.userKey);
+  if (!teamIds?.includes(session.teamId)) return null;
   const resolution = resolveForAgent(
     await getInstanceUpstreamConfigs(config.coreSkill, spaceId, config.instanceUpstream),
     agentSource,
+    session.teamId,
   );
   if (resolution.kind !== "pool") return null;
   return { provider, row: resolution.row };

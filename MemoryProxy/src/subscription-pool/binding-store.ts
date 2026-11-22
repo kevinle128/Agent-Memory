@@ -25,16 +25,25 @@ function bindingPrefix(spaceId: string, provider: string): string {
   return `nottl/${spaceId}/pool-binding/${provider}/`;
 }
 
-/** The raw session id can hold any character, so the key uses its hash. */
+/**
+ * The raw session id can hold any character, so the key uses its hash.
+ *
+ * The key has no group or team part on purpose. The account list of a request is cut to the
+ * group of its pool row, and that cut is the isolation boundary: a binding to an account outside
+ * the list falls through to round robin and is rewritten. A key that stays stable keeps every
+ * live binding, and so the prompt cache of its session, over a change of the pool layout.
+ */
 export function sessionBindingKey(spaceId: string, provider: string, sessionKey: string): string {
   const digest = createHash("sha256").update(sessionKey).digest("hex").slice(0, 32);
   return `${bindingPrefix(spaceId, provider)}${digest}`;
 }
 
-function cursorKey(spaceId: string, provider: string): string {
+/** Each pool group has its own round-robin cursor, so the pools of two teams do not skew each other. */
+function cursorKey(spaceId: string, provider: string, groupId: string): string {
   assertKeySegment("spaceId", spaceId);
   assertKeySegment("provider", provider);
-  return `nottl/${spaceId}/pool-cursor/${provider}`;
+  assertKeySegment("groupId", groupId);
+  return `nottl/${spaceId}/pool-cursor/${provider}/${groupId}`;
 }
 
 function isExpired(binding: SessionBinding, now: number): boolean {
@@ -107,11 +116,17 @@ export async function countSessionsByAccount(
   return counts;
 }
 
-export async function getCursor(storage: ProxyStorage, spaceId: string, provider: string): Promise<number> {
-  const stored = await storage.getJSON<{ cursor: number }>(cursorKey(spaceId, provider));
+export async function getCursor(storage: ProxyStorage, spaceId: string, provider: string, groupId: string): Promise<number> {
+  const stored = await storage.getJSON<{ cursor: number }>(cursorKey(spaceId, provider, groupId));
   return stored && Number.isInteger(stored.cursor) && stored.cursor >= 0 ? stored.cursor : 0;
 }
 
-export async function setCursor(storage: ProxyStorage, spaceId: string, provider: string, cursor: number): Promise<void> {
-  await storage.putJSON(cursorKey(spaceId, provider), { cursor });
+export async function setCursor(
+  storage: ProxyStorage,
+  spaceId: string,
+  provider: string,
+  groupId: string,
+  cursor: number,
+): Promise<void> {
+  await storage.putJSON(cursorKey(spaceId, provider, groupId), { cursor });
 }

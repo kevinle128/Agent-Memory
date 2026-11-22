@@ -8,6 +8,9 @@ import { runSubscriptionAccountContract } from "./subscription-account.contract.
 
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 
+/** A pool group needs a team. The store does not check that the team exists. */
+const POOL_TEAM_ID = "team-pool-test";
+
 runSubscriptionAccountContract(
   "sqlite",
   async () => new SqliteMetadataStore(":memory:"),
@@ -124,6 +127,7 @@ describe("SqliteMetadataStore subscription pool migration", () => {
         name: "claude pool",
         agents: ["claude-code-pool"],
         mode: "subscription_pool",
+        team_id: POOL_TEAM_ID,
       });
       expect(pool.mode).toBe("subscription_pool");
       expect(pool.id).toBeGreaterThan(12);
@@ -162,6 +166,7 @@ describe("SqliteMetadataStore subscription pool migration", () => {
         name: "claude pool",
         agents: ["claude-code-pool"],
         mode: "subscription_pool",
+        team_id: POOL_TEAM_ID,
       });
       const updated = store.updateInstanceUpstreamGroup({
         group_id: pool.group_id,
@@ -192,6 +197,7 @@ describe("SqliteMetadataStore subscription pool migration", () => {
       name: "claude pool",
       agents: ["claude-code-pool"],
       mode: "subscription_pool",
+      team_id: POOL_TEAM_ID,
     });
     first.close();
 
@@ -330,7 +336,7 @@ describe("SqliteMetadataStore subscription pool migration", () => {
   it("runs the account table migration only once and leaves no rebuild table behind", () => {
     const first = new SqliteMetadataStore(dbPath);
     first.init();
-    const group = first.createInstanceUpstreamGroup({ group_type: "custom", name: "antigravity pool", agents: [], mode: "subscription_pool" });
+    const group = first.createInstanceUpstreamGroup({ group_type: "custom", name: "antigravity pool", agents: [], mode: "subscription_pool", team_id: POOL_TEAM_ID });
     const { account } = first.upsertSubscriptionAccountByProviderId({
       group_id: group.group_id, provider: "antigravity", provider_account_id: "p@example.com", display_name: "P",
       access_token: "a", refresh_token: "r", token_expires_at: null, project_id: "proj-1",
@@ -358,6 +364,7 @@ describe("SqliteMetadataStore subscription pool migration", () => {
       name: "claude pool",
       agents: ["claude-code"],
       mode: "subscription_pool",
+      team_id: POOL_TEAM_ID,
     });
     const { account } = first.upsertSubscriptionAccountByProviderId({
       group_id: group.group_id,
@@ -398,7 +405,7 @@ describe("sqlite subscription account table from an earlier build", () => {
       store.init();
       try {
         const group = await store.createInstanceUpstreamGroup({
-          group_type: "custom", name: "pool", agents: ["codex"], mode: "subscription_pool",
+          group_type: "custom", name: "pool", agents: ["codex"], mode: "subscription_pool", team_id: POOL_TEAM_ID,
         });
         const { account } = await store.upsertSubscriptionAccountByProviderId({
           group_id: group.group_id, provider: "codex", provider_account_id: "acct-1", display_name: "One",

@@ -3,7 +3,7 @@ import type { SourceModelEntry } from "../types.js";
 import { mergeSourceModels } from "../../subscription-pool/model-catalog.js";
 import { SubscriptionPoolScheduler } from "../../subscription-pool/pool-scheduler.js";
 import { SubscriptionProviderError } from "../../subscription-pool/providers/types.js";
-import { createPoolFixture, fakeAdapter, tokens, type PoolFixture } from "../../subscription-pool/test-support.js";
+import { createPoolFixture, fakeAdapter, tokens, type PoolFixture, POOL_TEAM_ID, POOL_USER_ID } from "../../subscription-pool/test-support.js";
 
 type Listed = { id: string; display_name: string };
 
@@ -32,12 +32,12 @@ describe("pool model catalog refresh after an account check", () => {
   afterEach(() => fx.store.close?.());
 
   it("reads the models right after an account is added through the login", async () => {
-    const started = fx.svc.startSubscriptionOAuth("codex");
-    await fx.svc.completeSubscriptionOAuth({
+    const started = fx.svc.startSubscriptionOAuth(POOL_TEAM_ID, "codex", POOL_USER_ID);
+    await fx.svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID,
       provider: "codex",
       state: started.state,
       redirect_url: `http://localhost:1455/auth/callback?code=c&state=${started.state}`,
-    });
+    }, POOL_USER_ID);
     expect(adapter.fetchModels).toHaveBeenCalledTimes(1);
     expect(await catalog()).toEqual([["m1", true, true], ["m2", true, true]]);
   });
@@ -82,18 +82,18 @@ describe("pool model catalog refresh after an account check", () => {
 
   it("does not fail the login when the model call fails", async () => {
     adapter.fetchModels.mockRejectedValue(new Error("boom"));
-    const started = fx.svc.startSubscriptionOAuth("codex");
-    const account = await fx.svc.completeSubscriptionOAuth({
+    const started = fx.svc.startSubscriptionOAuth(POOL_TEAM_ID, "codex", POOL_USER_ID);
+    const account = await fx.svc.completeSubscriptionOAuth({ team_id: POOL_TEAM_ID,
       provider: "codex",
       state: started.state,
       redirect_url: `http://localhost:1455/auth/callback?code=c&state=${started.state}`,
-    });
+    }, POOL_USER_ID);
     expect(account).toMatchObject({ provider_account_id: "acct-login", created: true });
   });
 
   it("leaves a pool that is off alone", async () => {
     const account = await fx.addAccount();
-    await fx.svc.disableSubscriptionPool("codex", [{ agent_source: "codex", protocol: "openai-responses", display_name: "Codex" }]);
+    await fx.svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", [{ agent_source: "codex", protocol: "openai-responses", display_name: "Codex" }]);
     await fx.svc.checkSubscriptionAccountUsage(account.account_id);
     expect(adapter.fetchModels).not.toHaveBeenCalled();
   });

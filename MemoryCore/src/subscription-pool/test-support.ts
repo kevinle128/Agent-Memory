@@ -4,6 +4,10 @@ import { MetadataService } from "../metadata/service/metadata-service.js";
 import type { SubscriptionAccountEntity, SubscriptionQuotaWindow, SubscriptionResetCredits, SupportedAgent, UpsertSubscriptionAccountInput } from "../metadata/types.js";
 import type { ExchangedSubscriptionTokens, SubscriptionProviderAdapter, SubscriptionUsageReading } from "./providers/types.js";
 
+/** Team and caller of the pool tests that call the service directly. */
+export const POOL_TEAM_ID = "team-pool";
+export const POOL_USER_ID = "user-pool";
+
 export const POOL_AGENTS: SupportedAgent[] = [
   { agent_source: "claude-code", protocol: "anthropic", display_name: "Claude Code" },
   { agent_source: "codex", protocol: "openai-responses", display_name: "Codex" },
@@ -21,7 +25,7 @@ export async function createPoolFixture(): Promise<PoolFixture> {
   const store = new SqliteMetadataStore(":memory:");
   store.init();
   const svc = new MetadataService(store, "default");
-  await svc.enableSubscriptionPool("codex", POOL_AGENTS);
+  await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", POOL_AGENTS);
   const groupId = (await store.listInstanceUpstreamGroups()).find((group) => group.mode === "subscription_pool")!.group_id;
   let n = 0;
   return {

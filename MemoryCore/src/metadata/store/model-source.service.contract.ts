@@ -8,13 +8,14 @@ import type { IMetadataStore } from "./interface.js";
 import { MetadataService } from "../service/metadata-service.js";
 import { handleV3MetaRoute } from "../router/v3-meta-router.js";
 import type { SourceModelEntry, SupportedAgent } from "../types.js";
+import { POOL_TEAM_ID, POOL_USER_ID } from "../../subscription-pool/test-support.js";
 
 const AGENTS: SupportedAgent[] = [
   { agent_source: "claude-code", protocol: "anthropic", display_name: "Claude Code" },
   { agent_source: "codex", protocol: "openai-responses", display_name: "Codex" },
   { agent_source: "codebuddy", protocol: "openai-chat", display_name: "CodeBuddy" },
   { agent_source: "cursor", protocol: "openai-chat", display_name: "Cursor" },
-  { agent_source: "omp", protocol: "openai-chat", display_name: "oh-my-pi", multi_source: true },
+  { agent_source: "omp", protocol: "openai-chat", display_name: "oh-my-pi", multi_source: true, formats: ["anthropic-messages", "openai-responses", "openai-chat"] },
   { agent_source: "hermes", protocol: "anthropic", display_name: "Hermes", multi_source: true },
   { agent_source: "openclaw", protocol: "anthropic", display_name: "OpenClaw", multi_source: true },
 ];
@@ -258,63 +259,58 @@ export function runModelSourceServiceContract(
 
     describe("subscription pool sources", () => {
       async function codexPool(): Promise<{ group_id: string }> {
-        return await svc.enableSubscriptionPool("codex", AGENTS) as { group_id: string };
+        return await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS) as { group_id: string };
       }
-      /** Takes codex out of the pool, as choosing another source does, so the pool can be switched off. */
-      async function releaseCodex(): Promise<void> {
-        const groups = await store.listInstanceUpstreamGroups(undefined, AGENTS);
-        const pool = groups.find((g) => g.mode === "subscription_pool")!;
-        const def = groups.find((g) => g.group_type === "default")!;
-        await store.moveAgentBetweenUpstreamGroups({ agent: "codex", from: [{ group_id: pool.group_id }], to: { group_id: def.group_id } });
-      }
-      const attach = (group_id: string, extra: Record<string, unknown> = {}) =>
-        svc.updateInstanceUpstreamGroup({ group_id, group_type: "custom", source_name: "sub-openai", source_agents: ["omp"], ...extra }, AGENTS);
+      const clients = (agents: string[]) => svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", agents, AGENTS);
 
-      it("fixes provider and format by the pool provider", async () => {
+      it("fixes provider and format by the pool provider, and keeps them out of the generic group call", async () => {
         const pool = await codexPool();
-        const attached = await attach(pool.group_id, { source_provider: "whatever", source_formats: ["openai-chat"] });
-        expect(attached).toMatchObject({ source_name: "sub-openai", source_provider: "openai", source_formats: ["openai-responses"], agents: [] });
+        expect(await store.getInstanceUpstreamGroup(pool.group_id)).toMatchObject({
+          source_name: "sub-openai", source_provider: "openai", source_formats: ["openai-responses"], agents: [], team_id: POOL_TEAM_ID,
+        });
+        await expect(svc.updateInstanceUpstreamGroup(
+          { group_id: pool.group_id, group_type: "custom", source_provider: "whatever", source_formats: ["openai-chat"] }, AGENTS,
+        )).rejects.toMatchObject({ code: "POOL_GROUP_TEAM_SCOPED" });
+        expect(await store.getInstanceUpstreamGroup(pool.group_id)).toMatchObject({ source_provider: "openai", source_formats: ["openai-responses"] });
       });
 
-      it("rejects source_enabled on a pool", async () => {
+      it("keeps source_enabled off a pool: the pool follows its own switch", async () => {
         const pool = await codexPool();
-        await expect(attach(pool.group_id, { source_enabled: true })).rejects.toMatchObject({ code: "SOURCE_ENABLED_NOT_ALLOWED" });
-        await expect(attach(pool.group_id, { source_enabled: false })).rejects.toMatchObject({ code: "SOURCE_ENABLED_NOT_ALLOWED" });
+        for (const source_enabled of [true, false]) {
+          await expect(svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_enabled }, AGENTS))
+            .rejects.toMatchObject({ code: "POOL_GROUP_TEAM_SCOPED" });
+        }
       });
 
       it("keeps the source through a pool off/on cycle and reports source_active", async () => {
-        const pool = await codexPool();
-        await attach(pool.group_id);
+        await codexPool();
+        await clients(["omp"]);
         const status = async () => {
-          const result = await svc.getSubscriptionPoolStatus("codex") as { providers: { source: Record<string, unknown> | null }[] };
+          const result = await svc.getSubscriptionPoolStatus(POOL_TEAM_ID, "codex") as { providers: { source: Record<string, unknown> | null }[] };
           return result.providers[0].source;
         };
-        expect(await status()).toMatchObject({ source_name: "sub-openai", source_active: true });
-        await expect(svc.disableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
-        await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: [] }, AGENTS);
-        await releaseCodex();
-        await svc.disableSubscriptionPool("codex", AGENTS);
-        await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: ["omp"] }, AGENTS);
-        expect(await status()).toMatchObject({ source_name: "sub-openai", source_agents: ["omp"], source_active: false });
-        await svc.enableSubscriptionPool("codex", AGENTS);
-        expect(await status()).toMatchObject({ source_name: "sub-openai", source_agents: ["omp"], source_formats: ["openai-responses"], source_active: true });
+        expect(await status()).toMatchObject({ source_name: "sub-openai", source_agents: ["omp"], source_active: true });
+        await expect(svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
+        await clients([]);
+        await svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
+        expect(await status()).toMatchObject({ source_name: "sub-openai", source_agents: [], source_active: false });
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
+        expect(await status()).toMatchObject({ source_name: "sub-openai", source_formats: ["openai-responses"], source_active: true });
       });
 
-      it("lets a disabled pool keep its source agents and still change them", async () => {
-        const pool = await codexPool();
-        await attach(pool.group_id, { source_agents: [] });
-        await releaseCodex();
-        await svc.disableSubscriptionPool("codex", AGENTS);
-        await expect(svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: ["omp", "hermes"] }, AGENTS))
-          .resolves.toMatchObject({ source_agents: ["omp", "hermes"], agents: [] });
+      it("gives a disabled pool no new client, and still lets the admin clear its clients", async () => {
+        await codexPool();
+        await svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
+        await expect(clients(["omp"])).rejects.toMatchObject({ code: "SOURCE_DISABLED" });
+        await expect(clients([])).resolves.toMatchObject({ clients: [] });
       });
 
       it("has no source block before the pool group exists", async () => {
-        const result = await svc.getSubscriptionPoolStatus("claude") as { providers: { source: unknown }[] };
+        const result = await svc.getSubscriptionPoolStatus(POOL_TEAM_ID, "claude") as { providers: { source: unknown }[] };
         expect(result.providers[0].source).toBeNull();
       });
 
-      it("sends the proxy the same account list with and without a source, pool on and off", async () => {
+      it("sends the proxy the same account list with and without a client, pool on and off", async () => {
         const pool = await codexPool();
         await store.upsertSubscriptionAccountByProviderId({
           group_id: pool.group_id, provider: "codex", provider_account_id: "acct-1", display_name: "Plus",
@@ -323,18 +319,15 @@ export function runModelSourceServiceContract(
         const accounts = async () => JSON.stringify(await svc.listSubscriptionAccountsInternal());
 
         const onWithout = await accounts();
-        await attach(pool.group_id);
+        await clients(["omp"]);
         expect(await accounts()).toBe(onWithout);
 
-        await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: [] }, AGENTS);
-        await releaseCodex();
-        await svc.disableSubscriptionPool("codex", AGENTS);
-        const offWith = await accounts();
-        expect(JSON.parse(offWith).accounts).toEqual([]);
-        await svc.updateInstanceUpstreamGroup({ group_id: pool.group_id, group_type: "custom", source_agents: ["hermes"] }, AGENTS);
-        expect(await accounts()).toBe(offWith);
+        await clients([]);
+        await svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
+        const off = await accounts();
+        expect(JSON.parse(off).accounts).toEqual([]);
 
-        await svc.enableSubscriptionPool("codex", AGENTS);
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
         expect(await accounts()).toBe(onWithout);
       });
     });
@@ -377,7 +370,7 @@ export function runModelSourceServiceContract(
 
       it("shows custom groups without any key field to a member, and leaves out pools", async () => {
         await source("api-view", { source_models: [model("m1")] });
-        await svc.enableSubscriptionPool("codex", AGENTS);
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
         const res = await post("member-key", "groups/view", {});
         expect(res.status).toBe(200);
         const text = JSON.stringify(res.body);

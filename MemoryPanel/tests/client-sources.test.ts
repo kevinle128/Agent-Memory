@@ -5,10 +5,12 @@ import {
   exposedModelCount,
   filterOptions,
   parseSourceInUse,
+  poolClientCandidates,
   selectedSources,
   sourceOptions,
   toggleSource,
 } from '../web/src/lib/client-sources';
+import { POOL_SOURCE_NAMES } from '../web/src/lib/subscription-pool-display';
 import type { ClientSource, ClientSourceAgent } from '../web/src/lib/api/client-sources';
 
 function source(over: Partial<ClientSource> = {}): ClientSource {
@@ -29,8 +31,8 @@ function agent(over: Partial<ClientSourceAgent> = {}): ClientSourceAgent {
 }
 
 const SOURCES: ClientSource[] = [
-  source({ source_name: 'sub-claude', source_type: 'subscription', provider: 'claude', formats: ['anthropic-messages'], models_on: 14, models_total: 14 }),
-  source({ source_name: 'sub-openai', source_type: 'subscription', provider: 'openai', formats: ['openai-responses'], models_on: 7, models_total: 7 }),
+  source({ source_name: 'api-claude', provider: 'claude', formats: ['anthropic-messages'], models_on: 14, models_total: 14 }),
+  source({ source_name: 'api-openai', provider: 'openai', formats: ['openai-responses'], models_on: 7, models_total: 7 }),
   source({ source_name: 'api-deepseek', formats: ['openai-chat', 'anthropic-messages'] }),
   source({ source_name: 'api-off', provider: 'openrouter', formats: ['openai-chat'], enabled: false }),
 ];
@@ -38,9 +40,9 @@ const SOURCES: ClientSource[] = [
 describe('sourceOptions', () => {
   it('lists only on sources of the single client format', () => {
     const claude = agent({ agent: 'claude-code', mode: 'single', format: 'anthropic-messages' });
-    expect(sourceOptions(claude, SOURCES).map((s) => s.source_name)).toEqual(['sub-claude', 'api-deepseek']);
+    expect(sourceOptions(claude, SOURCES).map((s) => s.source_name)).toEqual(['api-claude', 'api-deepseek']);
     const codex = agent({ agent: 'codex', mode: 'single', format: 'openai-responses' });
-    expect(sourceOptions(codex, SOURCES).map((s) => s.source_name)).toEqual(['sub-openai']);
+    expect(sourceOptions(codex, SOURCES).map((s) => s.source_name)).toEqual(['api-openai']);
   });
 
   it('lists sources that share one format with a multi-source client', () => {
@@ -50,7 +52,15 @@ describe('sourceOptions', () => {
 
   it('treats a client without formats as speaking all three', () => {
     expect(agentFormats(agent())).toHaveLength(3);
-    expect(sourceOptions(agent(), SOURCES).map((s) => s.source_name)).toEqual(['sub-claude', 'sub-openai', 'api-deepseek']);
+    expect(sourceOptions(agent(), SOURCES).map((s) => s.source_name)).toEqual(['api-claude', 'api-openai', 'api-deepseek']);
+  });
+
+  it('the client source catalog has no pool sources', () => {
+    // Core lists pool sources only through the pool status of each team, never in this catalog.
+    const names = sourceOptions(agent(), SOURCES).map((s) => s.source_name);
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.filter((n) => POOL_SOURCE_NAMES.includes(n))).toEqual([]);
+    expect(SOURCES.some((s) => s.source_type === 'subscription')).toBe(false);
   });
 
   it('never offers a source that is off', () => {
@@ -58,14 +68,33 @@ describe('sourceOptions', () => {
   });
 });
 
+describe('poolClientCandidates', () => {
+  const agents = [
+    agent({ agent: 'claude-code', mode: 'single', format: 'anthropic-messages' }),
+    agent({ agent: 'codex', mode: 'single', format: 'openai-responses' }),
+    agent({ agent: 'omp', mode: 'multi', formats: ['anthropic-messages', 'openai-responses', 'openai-chat'] }),
+    agent({ agent: 'dsh', mode: 'multi', formats: ['openai-chat'] }),
+  ];
+
+  it('lists the single client of the provider and the multi-source clients with the same format', () => {
+    expect(poolClientCandidates(agents, 'claude').map((a) => a.agent)).toEqual(['claude-code', 'omp']);
+    expect(poolClientCandidates(agents, 'codex').map((a) => a.agent)).toEqual(['codex', 'omp']);
+  });
+
+  it('lists no client when none speaks the pool format', () => {
+    expect(poolClientCandidates(agents, 'antigravity')).toEqual([]);
+    expect(poolClientCandidates([agent({ agent: 'ag', mode: 'single', format: 'gemini' as never })], 'antigravity').map((a) => a.agent)).toEqual(['ag']);
+  });
+});
+
 describe('selection helpers', () => {
   it('keeps the order of the client and skips names that are gone', () => {
-    const a = agent({ selected: ['api-deepseek', 'ghost', 'sub-claude'] });
-    expect(selectedSources(a, SOURCES).map((s) => s.source_name)).toEqual(['api-deepseek', 'sub-claude']);
+    const a = agent({ selected: ['api-deepseek', 'ghost', 'api-claude'] });
+    expect(selectedSources(a, SOURCES).map((s) => s.source_name)).toEqual(['api-deepseek', 'api-claude']);
   });
 
   it('counts ticked models of the selected sources that are on', () => {
-    const chosen = selectedSources(agent({ selected: ['sub-claude', 'api-deepseek', 'api-off'] }), SOURCES);
+    const chosen = selectedSources(agent({ selected: ['api-claude', 'api-deepseek', 'api-off'] }), SOURCES);
     expect(exposedModelCount(chosen)).toBe(17);
   });
 
@@ -75,8 +104,8 @@ describe('selection helpers', () => {
   });
 
   it('names the clients that hold a source', () => {
-    const agents = [agent({ agent: 'omp', selected: ['sub-claude'] }), agent({ agent: 'dsh', selected: [] })];
-    expect(clientsUsing(agents, 'sub-claude').map((a) => a.agent)).toEqual(['omp']);
+    const agents = [agent({ agent: 'omp', selected: ['api-claude'] }), agent({ agent: 'dsh', selected: [] })];
+    expect(clientsUsing(agents, 'api-claude').map((a) => a.agent)).toEqual(['omp']);
     expect(clientsUsing(agents, 'api-deepseek')).toEqual([]);
   });
 

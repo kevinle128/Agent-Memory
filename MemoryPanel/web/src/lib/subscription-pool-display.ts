@@ -23,6 +23,49 @@ export interface PoolWindow {
   shared_models?: string[];
 }
 
+/** Fixed source names of the team pools. Core reserves them, so no other group may use one. */
+export const POOL_SOURCE_NAMES: readonly string[] = ['sub-claude', 'sub-openai', 'sub-antigravity'];
+
+/** Wire format that the pool of each provider serves. A client needs this format to use the pool. */
+export const POOL_FORMAT: Record<PoolProvider, string> = {
+  claude: 'anthropic-messages',
+  codex: 'openai-responses',
+  antigravity: 'gemini',
+};
+
+/** Allowed range of the usage threshold, in percent. Core checks the same range. */
+export const MIN_THRESHOLD_PCT = 50;
+export const MAX_THRESHOLD_PCT = 100;
+
+export function isValidThreshold(value: number): boolean {
+  return Number.isInteger(value) && value >= MIN_THRESHOLD_PCT && value <= MAX_THRESHOLD_PCT;
+}
+
+/**
+ * What the signed-in user may do on the pool page of the active team. These rules only decide what
+ * the page shows; Core checks the role again on every call.
+ * A team admin and a System Admin manage the team pool. A team member only views it.
+ * Only a System Admin sets the start threshold that new accounts get.
+ */
+export function poolPermissions(input: { isGlobalAdmin: boolean; teamRole: string | null }): {
+  canManage: boolean;
+  canSetStartThreshold: boolean;
+} {
+  return {
+    canManage: input.isGlobalAdmin || input.teamRole === 'admin',
+    canSetStartThreshold: input.isGlobalAdmin,
+  };
+}
+
+/** Text of the thresholds of a pool: one value, a range, or null when there is no account. */
+export function describeThresholds(accounts: ReadonlyArray<{ threshold_pct: number }>): string | null {
+  if (accounts.length === 0) return null;
+  const values = accounts.map((a) => a.threshold_pct);
+  const low = Math.min(...values);
+  const high = Math.max(...values);
+  return low === high ? `${low}%` : `${low}-${high}%`;
+}
+
 /** AntiGravity accounts have no reset credits, so the credits column and the redeem action are hidden for them. */
 export function supportsResetCredits(provider: PoolProvider): boolean {
   return provider !== 'antigravity';

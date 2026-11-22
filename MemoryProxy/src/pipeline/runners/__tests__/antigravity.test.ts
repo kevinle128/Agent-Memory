@@ -13,7 +13,8 @@ import { SessionWorkspaceStore, setSessionWorkspaceStore } from "../../../projec
 import { resetHookGateCache } from "../../../session/hook-gate-core.js";
 import { resetPoolRetryForTests } from "../../../subscription-pool/retry.js";
 import {
-  CORE_URL, installFetch, jsonResponse, makeConfig, resetPoolState, type RecordedCall,
+  CORE_URL, installFetch, jsonResponse, makeConfig, registerPoolTestSession, resetPoolState, setPoolTestTeams,
+  useRealSessionTeams, type RecordedCall,
 } from "../../../subscription-pool/__tests__/test-harness.js";
 import {
   ANTIGRAVITY_USER_AGENT, createSseUnwrapStream, extractUserMessage, geminiModelList, maskKeyedPath,
@@ -53,7 +54,7 @@ const defaultRow: InstanceUpstreamRow = {
 };
 const poolRow: InstanceUpstreamRow = {
   group_id: "pool-agy", group_type: "custom", name: "AGY pool", agents: ["antigravity"], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
 };
 
 function acct(id: string, partial: Partial<PoolAccount> = {}): PoolAccount {
@@ -677,3 +678,84 @@ describe("supported agent entry", () => {
 });
 
 export type { RecordedCall };
+
+describe("antigravity teams", () => {
+  const teamPool = (team: string): InstanceUpstreamRow => ({ ...poolRow, group_id: `pool-agy-${team}`, name: `AGY pool ${team}`, team_id: team });
+  const teamAcct = (team: string, partial: Partial<PoolAccount> = {}): PoolAccount =>
+    acct(team, { group_id: `pool-agy-${team}`, ...partial });
+  const primeTeams = (accounts: PoolAccount[], teams: string[] = ["team-a", "team-b"]): void => {
+    __primeCacheForTests(SPACE, [defaultRow, ...teams.map(teamPool)]);
+    __primeAccountCacheForTests(SPACE, { thresholdPct: 95, accounts });
+  };
+
+  beforeEach(() => {
+    useRealSessionTeams();
+    setPoolTestTeams(["team-b", "team-a"]);
+  });
+
+  it("sends a team B session to its own account and never to team A", async () => {
+    primeTeams([teamAcct("team-a"), teamAcct("team-b")]);
+    await registerPoolTestSession("antigravity", SESSION, "team-b", "usr-1");
+    const { upstreamCalls } = installFetch(() => sse());
+    await (await post(streamPath(), agyBody())).text();
+    expect(upstreamCalls).toHaveLength(1);
+    expect(upstreamCalls[0]!.headers["authorization"]).toBe("Bearer secret-token-team-b");
+    expect(JSON.stringify(upstreamCalls[0]!.headers)).not.toContain("team-a");
+  });
+
+  it("answers the 400 of an unconfigured pool for a known team without an AntiGravity pool", async () => {
+    setPoolTestTeams(["team-a", "team-c"]);
+    primeTeams([teamAcct("team-a")], ["team-a"]);
+    await registerPoolTestSession("antigravity", SESSION, "team-c", "usr-1");
+    const { upstreamCalls } = installFetch(() => sse());
+    const res = await post(streamPath(), agyBody());
+    expect(res.status).toBe(400);
+    expect(upstreamCalls).toHaveLength(0);
+  });
+
+  it("takes the first team in Core order that has a usable account when the session has no team", async () => {
+    primeTeams([teamAcct("team-b", { status: "exhausted", exhausted_until: NOW + 3_600_000 }), teamAcct("team-a")]);
+    const { upstreamCalls } = installFetch(() => sse());
+    sessionInit.mockResolvedValue({
+      proceed: true, response: null, wentThroughStateMachine: false,
+      initResult: { intercepted: false, bypassed: true, justRegistered: false, sessionInfo: null },
+    });
+    await (await post(streamPath(), agyBody())).text();
+    expect(upstreamCalls[0]!.headers["authorization"]).toBe("Bearer secret-token-team-a");
+  });
+
+  it("answers 429 when no team has a usable account, and calls no upstream", async () => {
+    const out = { status: "exhausted" as const, exhausted_until: NOW + 3_600_000 };
+    primeTeams([teamAcct("team-b", out), teamAcct("team-a", out)]);
+    const { upstreamCalls } = installFetch(() => sse());
+    const res = await post(streamPath(), agyBody(), {});
+    expect(res.status).toBe(429);
+    expect(upstreamCalls).toHaveLength(0);
+  });
+
+  it("answers 403 for a user with no team, and calls no upstream", async () => {
+    setPoolTestTeams([]);
+    primeTeams([teamAcct("team-a")]);
+    const { upstreamCalls } = installFetch(() => sse());
+    const res = await post(streamPath(), agyBody());
+    expect(res.status).toBe(403);
+    expect(upstreamCalls).toHaveLength(0);
+  });
+
+  it("lists the model catalog through the first team with a usable account, in Core order", async () => {
+    primeTeams([teamAcct("team-b", { status: "exhausted", exhausted_until: NOW + 3_600_000 }), teamAcct("team-a")]);
+    const { upstreamCalls } = installFetch(() => jsonResponse({ models: { "gemini-3.8-flash-medium": { displayName: "Flash" } } }));
+    const res = await app.request(`/antigravity/${SPACE}/${KEY}/v1beta/models`);
+    expect(res.status).toBe(200);
+    expect(upstreamCalls[0]!.headers["authorization"]).toBe("Bearer secret-token-team-a");
+  });
+
+  it("answers the 400 of an unconfigured pool on the model list when no team of the user has a pool", async () => {
+    setPoolTestTeams(["team-x"]);
+    primeTeams([teamAcct("team-a")]);
+    const { upstreamCalls } = installFetch(() => jsonResponse({ models: {} }));
+    const res = await app.request(`/antigravity/${SPACE}/${KEY}/v1beta/models`);
+    expect(res.status).toBe(400);
+    expect(upstreamCalls).toHaveLength(0);
+  });
+});

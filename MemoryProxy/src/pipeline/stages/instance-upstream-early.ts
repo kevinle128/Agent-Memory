@@ -35,6 +35,11 @@ export interface InstanceUpstreamEarlyInput {
    *  - anthropic: {type:"error", error:{type,message}, detail} */
   errorEnvelope: "openai" | "anthropic";
   /**
+   * Team of the request, from the request team helper. Null when no pool serves the client: the
+   * resolution is then the instance layer only.
+   */
+  teamId: string | null;
+  /**
    * Resolution chosen by the model-source stage. When set it replaces `resolveForAgent` for the
    * conversation request and the request skips the pricing gate like a custom upstream.
    * Omitted = the resolution is derived from the agent exactly as before.
@@ -66,7 +71,7 @@ export async function stageInstanceUpstreamEarly(
   const earlyConvResolution: Resolution = input.presetResolution
     ?? (legacyProxy
       ? { kind: "official", row: null }
-      : resolveForAgent(instanceConfigs, agent ?? ""));
+      : resolveForAgent(instanceConfigs, agent ?? "", input.teamId));
   const earlyExtractRow = resolveExtraction(instanceConfigs);
   const earlySysMatch = hasSystemUsers() ? matchSystemUserByUserId(earlyUserId) : null;
 

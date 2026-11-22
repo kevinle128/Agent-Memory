@@ -1,6 +1,7 @@
 /**
  * SourceInUseModal — tells an admin why a source cannot be turned off or deleted: clients still
- * use it. Lists those clients and links to the API Key page, where the selection is changed.
+ * use it. Lists those clients. For an API source it links to the API Key page, where the selection
+ * is changed. A team pool has its clients on the Subscription Pool page, so there it only explains.
  */
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -45,18 +46,20 @@ export function SourceInUseModal({ inUse, action, onClose }: Props) {
             <li key={c}>{names.get(c) ?? c}</li>
           ))}
         </ul>
-        <p className="_memory-ms-weak">{t('modelSource.inUse.hint')}</p>
+        <p className="_memory-ms-weak">{t(action === 'pool' ? 'modelSource.inUse.hint.pool' : 'modelSource.inUse.hint')}</p>
       </Modal.Body>
       <Modal.Footer>
-        <Button
-          type="primary"
-          onClick={() => {
-            onClose();
-            navigate('/team/api-keys');
-          }}
-        >
-          {t('modelSource.inUse.go')}
-        </Button>
+        {action !== 'pool' && (
+          <Button
+            type="primary"
+            onClick={() => {
+              onClose();
+              navigate('/team/api-keys');
+            }}
+          >
+            {t('modelSource.inUse.go')}
+          </Button>
+        )}
         <Button onClick={onClose}>{t('modelSource.inUse.close')}</Button>
       </Modal.Footer>
     </Modal>

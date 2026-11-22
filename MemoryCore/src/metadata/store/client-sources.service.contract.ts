@@ -8,6 +8,7 @@ import type { IMetadataStore } from "./interface.js";
 import { MetadataService } from "../service/metadata-service.js";
 import { handleV3MetaRoute } from "../router/v3-meta-router.js";
 import type { SupportedAgent } from "../types.js";
+import { POOL_TEAM_ID, POOL_USER_ID } from "../../subscription-pool/test-support.js";
 
 const AGENTS: SupportedAgent[] = [
   { agent_source: "claude-code", protocol: "anthropic", display_name: "Claude Code" },
@@ -66,12 +67,13 @@ export function runClientSourcesServiceContract(
       it("returns every agent with its mode, format and selected sources, and every source", async () => {
         await apiSource("api-chat", { source_models: [model("a", true), model("b")] });
         await apiSource("api-off", { source_enabled: false });
-        await svc.enableSubscriptionPool("claude", AGENTS);
-        await update("claude-code", ["sub-claude"]);
+        // A team pool is set on the pool row, not in this catalog.
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS);
+        await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "claude", ["claude-code"], AGENTS);
         await update("omp", ["api-chat"]);
         const res = await svc.listClientSources(AGENTS);
         expect(res.agents).toEqual([
-          { agent: "claude-code", display_name: "Claude Code", mode: "single", format: "anthropic-messages", formats: ["anthropic-messages"], selected: ["sub-claude"] },
+          { agent: "claude-code", display_name: "Claude Code", mode: "single", format: "anthropic-messages", formats: ["anthropic-messages"], selected: [] },
           { agent: "codex", display_name: "Codex", mode: "single", format: "openai-responses", formats: ["openai-responses"], selected: [] },
           { agent: "codebuddy", display_name: "CodeBuddy", mode: "multi", formats: ["openai-chat"], selected: [] },
           { agent: "omp", display_name: "oh-my-pi", mode: "multi", formats: ["anthropic-messages", "openai-responses", "openai-chat"], selected: ["api-chat"] },
@@ -80,7 +82,6 @@ export function runClientSourcesServiceContract(
         expect(res.sources).toEqual([
           { source_name: "api-chat", source_type: "api", provider: "deepseek", formats: ["openai-chat"], enabled: true, models_on: 1, models_total: 2 },
           { source_name: "api-off", source_type: "api", provider: "deepseek", formats: ["openai-chat"], enabled: false, models_on: 0, models_total: 0 },
-          expect.objectContaining({ source_name: "sub-claude", source_type: "subscription", provider: "claude", formats: ["anthropic-messages"], enabled: true }),
         ]);
         expect(JSON.stringify(res)).not.toContain(API_KEY);
       });
@@ -115,19 +116,18 @@ export function runClientSourcesServiceContract(
     });
 
     describe("update for a single-source client", () => {
-      it("moves claude-code from the pool to an Anthropic source and back", async () => {
+      it("keeps the pool clients of a team apart from the instance source of claude-code", async () => {
         await apiSource("api-anthropic", { source_formats: ["anthropic-messages"] });
-        await svc.enableSubscriptionPool("claude", AGENTS);
-        await expect(update("claude-code", ["sub-claude"])).resolves.toMatchObject({ selected: ["sub-claude"] });
-        expect((await groupOf("claude-code")).mode).toBe("subscription_pool");
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS);
+        await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "claude", ["claude-code"], AGENTS);
+        // A pool is not in the instance catalog, so its name is not a source a client can choose here.
+        await expect(update("claude-code", ["sub-claude"])).rejects.toMatchObject({ code: "SOURCE_NOT_FOUND" });
+        expect((await groupOf("claude-code")).group_type).toBe("default");
 
         await expect(update("claude-code", ["api-anthropic"])).resolves.toMatchObject({ selected: ["api-anthropic"] });
         expect((await groupOf("claude-code")).source_name).toBe("api-anthropic");
         const pool = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).find((g) => g.mode === "subscription_pool")!;
-        expect(pool.agents).toEqual([]);
-
-        await expect(update("claude-code", ["sub-claude"])).resolves.toMatchObject({ selected: ["sub-claude"] });
-        expect((await groupOf("claude-code")).mode).toBe("subscription_pool");
+        expect(pool.agents).toEqual(["claude-code"]);
       });
 
       it("moves codex from the official group to a Responses source", async () => {
@@ -191,26 +191,28 @@ export function runClientSourcesServiceContract(
       });
 
       it("refuses to disable a pool that claude-code or a multi-source client uses", async () => {
-        await svc.enableSubscriptionPool("claude", AGENTS);
-        await update("claude-code", ["sub-claude"]);
-        await expect(svc.disableSubscriptionPool("claude", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["claude-code"] } });
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS);
+        await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "claude", ["claude-code", "omp"], AGENTS);
+        await expect(svc.disableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["omp", "claude-code"] } });
+        // The generic group calls refuse a pool row, so a pool changes only through the pool calls.
         const pool = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).find((g) => g.mode === "subscription_pool")!;
-        await expect(svc.toggleInstanceUpstreamGroup({ group_id: pool.group_id, enabled: false }, AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
-        await expect(svc.deleteInstanceUpstreamGroup({ group_id: pool.group_id }, AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE" });
+        await expect(svc.toggleInstanceUpstreamGroup({ group_id: pool.group_id, enabled: false }, AGENTS)).rejects.toMatchObject({ code: "POOL_GROUP_TEAM_SCOPED" });
+        await expect(svc.deleteInstanceUpstreamGroup({ group_id: pool.group_id }, AGENTS)).rejects.toMatchObject({ code: "POOL_GROUP_TEAM_SCOPED" });
+        expect((await store.getInstanceUpstreamGroup(pool.group_id))?.enabled).toBe(true);
       });
 
       it("disables a pool nobody uses", async () => {
-        await svc.enableSubscriptionPool("codex", AGENTS);
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
         await apiSource("api-resp", { source_formats: ["openai-responses"] });
         await update("codex", ["api-resp"]);
-        await update("omp", ["sub-openai"]);
-        await expect(svc.disableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["omp"] } });
-        await update("omp", []);
-        await expect(svc.disableSubscriptionPool("codex", AGENTS)).resolves.toMatchObject({ disabled: true });
+        await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", ["omp"], AGENTS);
+        await expect(svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS)).rejects.toMatchObject({ code: "SOURCE_IN_USE", detail: { clients: ["omp"] } });
+        await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", [], AGENTS);
+        await expect(svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS)).resolves.toMatchObject({ disabled: true });
         const pool = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).find((g) => g.mode === "subscription_pool")!;
         expect(pool.enabled).toBe(false);
-        await expect(update("codex", ["sub-openai"])).rejects.toMatchObject({ code: "SOURCE_DISABLED" });
-        await expect(svc.disableSubscriptionPool("codex", AGENTS)).rejects.toMatchObject({ code: "POOL_NOT_ENABLED" });
+        await expect(svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", ["codex"], AGENTS)).rejects.toMatchObject({ code: "SOURCE_DISABLED" });
+        await expect(svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS)).rejects.toMatchObject({ code: "POOL_NOT_ENABLED" });
       });
     });
 
@@ -234,22 +236,22 @@ export function runClientSourcesServiceContract(
 
     describe("pool as a source", () => {
       it("turns the pool on without moving the agent and reports the pool switch", async () => {
-        await svc.enableSubscriptionPool("claude", AGENTS);
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS);
         await apiSource("api-anthropic", { source_formats: ["anthropic-messages"] });
         await update("claude-code", ["api-anthropic"]);
-        await update("omp", ["sub-claude"]);
-        const status = await svc.getSubscriptionPoolStatus("claude") as { providers: { enabled: boolean }[] };
+        await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "claude", ["omp"], AGENTS);
+        const status = await svc.getSubscriptionPoolStatus(POOL_TEAM_ID, "claude") as { providers: { enabled: boolean }[] };
         expect(status.providers[0].enabled).toBe(true);
-        await expect(svc.enableSubscriptionPool("claude", AGENTS)).resolves.toMatchObject({ enabled: true, source_name: "sub-claude" });
+        await expect(svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS)).resolves.toMatchObject({ enabled: true, source_name: "sub-claude" });
         expect((await groupOf("claude-code")).source_name).toBe("api-anthropic");
       });
 
       it("turns the pool on again after it was switched off", async () => {
-        await svc.enableSubscriptionPool("codex", AGENTS);
-        await update("omp", ["sub-openai"]);
-        await update("omp", []);
-        await svc.disableSubscriptionPool("codex", AGENTS);
-        const again = await svc.enableSubscriptionPool("codex", AGENTS);
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
+        await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", ["omp"], AGENTS);
+        await svc.updateSubscriptionPoolClients(POOL_TEAM_ID, "codex", [], AGENTS);
+        await svc.disableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
+        const again = await svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS);
         expect(again).toMatchObject({ enabled: true, source_name: "sub-openai" });
       });
 
@@ -279,21 +281,24 @@ export function runClientSourcesServiceContract(
       });
 
       it("gives the pool groups their fixed source names", async () => {
-        await expect(svc.enableSubscriptionPool("claude", AGENTS)).resolves.toMatchObject({
+        await expect(svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS)).resolves.toMatchObject({
           source_name: "sub-claude", source_provider: "claude", source_formats: ["anthropic-messages"],
         });
-        await expect(svc.enableSubscriptionPool("codex", AGENTS)).resolves.toMatchObject({
+        await expect(svc.enableSubscriptionPool(POOL_TEAM_ID, "codex", AGENTS)).resolves.toMatchObject({
           source_name: "sub-openai", source_provider: "openai", source_formats: ["openai-responses"],
         });
-        await svc.enableSubscriptionPool("claude", AGENTS);
+        await svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS);
         const names = (await store.listInstanceUpstreamGroups(undefined, AGENTS)).map((g) => g.source_name).filter(Boolean).sort();
         expect(names).toEqual(["sub-claude", "sub-openai"]);
       });
 
-      it("does not take over a source name another group holds", async () => {
-        await apiSource("sub-claude");
-        await expect(svc.enableSubscriptionPool("claude", AGENTS)).rejects.toMatchObject({ code: "SOURCE_NAME_TAKEN" });
+      it("keeps the fixed pool names for pool rows: an api source cannot take one", async () => {
+        for (const name of ["sub-claude", "sub-openai", "sub-antigravity"]) {
+          await expect(apiSource(name)).rejects.toMatchObject({ code: "SOURCE_NAME_RESERVED" });
+        }
+        await expect(svc.enableSubscriptionPool(POOL_TEAM_ID, "claude", AGENTS)).resolves.toMatchObject({ source_name: "sub-claude" });
         expect((await groupOf("claude-code")).group_type).toBe("default");
+        expect((await store.listInstanceUpstreamGroups(undefined, AGENTS)).filter((g) => g.mode !== "subscription_pool" && g.source_name)).toEqual([]);
       });
     });
 

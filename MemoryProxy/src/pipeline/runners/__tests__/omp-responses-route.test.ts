@@ -34,7 +34,7 @@ const apiSource: InstanceUpstreamRow = {
 };
 const poolSource: InstanceUpstreamRow = {
   group_id: "pool-src", group_type: "custom", name: "codex pool", agents: [], enabled: true,
-  mode: "subscription_pool", base_url: "", api_key: "", model_id: "",
+  mode: "subscription_pool", team_id: "team-a", base_url: "", api_key: "", model_id: "",
   source_name: "sub-openai", source_provider: "codex", source_formats: ["openai-responses"],
   source_agents: ["omp"],
   source_models: [{ id: "gpt-6-astra", enabled: true, available: true }],
