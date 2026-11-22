@@ -203,6 +203,13 @@ describe("anthropic runner Langfuse payload", () => {
     });
   });
 
+  it("reports a 2xx non-stream reply without a content array as received", async () => {
+    installFetch(() => jsonResponse({ id: "m", type: "message", usage: { input_tokens: 1, output_tokens: 0 } }));
+    await post("/claude-code/default/v1/messages", { ...anthropicBody, stream: false }, anthropicHeaders);
+
+    expect(generations[0]!.output).toEqual({ id: "m", type: "message", usage: { input_tokens: 1, output_tokens: 0 } });
+  });
+
   it("adds the provider request-id header to the observation metadata", async () => {
     installFetch(() => new Response(JSON.stringify({
       id: "m", type: "message", role: "assistant", content: [{ type: "text", text: "ok" }],

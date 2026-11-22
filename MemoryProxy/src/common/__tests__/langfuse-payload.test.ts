@@ -4,6 +4,7 @@ import { startObservation } from "@langfuse/tracing";
 
 import {
   buildLangfuseRequestInput,
+  langfuseOutputFromRawReply,
   langfuseOutputFromReply,
   langfuseReplyStatus,
   redactRequestPayload,
@@ -163,6 +164,32 @@ describe("langfuseOutputFromReply keeps the provider fields", () => {
     expect(langfuseOutputFromReply(r.result(), "responses")).toEqual({
       id: "resp_1", model: "m", status: "completed", output: [{ type: "message" }], usage: { input_tokens: 1 },
     });
+  });
+
+  it("scrubs credentials of tools echoed in a Responses envelope", () => {
+    const r = new ResponsesAssembler();
+    feed(r, [{ type: "response.completed", response: {
+      id: "resp_2", status: "completed", output: [{ type: "message" }],
+      tools: [{ type: "mcp", server_label: "s", authorization: "tok", headers: { "X-Key": "k" } }],
+    } }]);
+    const out = langfuseOutputFromReply(r.result(), "responses");
+    expect(out?.tools).toEqual([{ type: "mcp", server_label: "s", authorization: "[redacted]", headers: { "X-Key": "[redacted]" } }]);
+    expect(JSON.stringify(out)).not.toContain("tok");
+  });
+});
+
+describe("langfuseOutputFromRawReply", () => {
+  it("keeps a reply object as is and scrubs echoed credentials", () => {
+    const reply = { id: "x", tools: [{ type: "mcp", authorization: "tok" }], usage: { a: 1 } };
+    expect(langfuseOutputFromRawReply({ id: "y" })).toEqual({ id: "y" });
+    expect(langfuseOutputFromRawReply(reply)).toEqual({ id: "x", tools: [{ type: "mcp", authorization: "[redacted]" }], usage: { a: 1 } });
+    expect(reply.tools[0].authorization).toBe("tok");
+  });
+
+  it("gives undefined for JSON that is not an object", () => {
+    expect(langfuseOutputFromRawReply(null)).toBeUndefined();
+    expect(langfuseOutputFromRawReply([1])).toBeUndefined();
+    expect(langfuseOutputFromRawReply("text")).toBeUndefined();
   });
 });
 

@@ -21,7 +21,7 @@ import {
   type LangfuseTurnContext,
 } from "../../langfuse.js";
 import { buildRequestDebugMetadata } from "../../common/langfuse-debug.js";
-import { buildLangfuseRequestInput, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
+import { buildLangfuseRequestInput, langfuseOutputFromRawReply, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
 import { countHumanTurns, resolveMonotonicTurnSeq, turnTraceScope } from "../../turnSeq.js";
 import type { ProxyConfig } from "../../types.js";
 import {
@@ -1473,7 +1473,7 @@ export async function runOpenaiChatPipeline(
   let langfuseRawReply: Record<string, unknown> | undefined;
   try {
     const respJson = JSON.parse(respText) as Record<string, unknown>;
-    langfuseRawReply = respJson;
+    langfuseRawReply = langfuseOutputFromRawReply(respJson);
     if (respJson.usage && typeof respJson.usage === "object") {
       usage = respJson.usage as Record<string, unknown>;
     }

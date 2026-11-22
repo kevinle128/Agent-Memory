@@ -113,7 +113,7 @@ import { isExtractionAllowed, logExtractionSkipped } from "../../extraction-gate
 import type { CcRequestKind } from "../../common/cc-request-classifier.js";
 import { MEMORY_MODE_HEADER, resolveMemoryGates } from "../../common/memory-mode.js";
 import { buildRequestDebugMetadata } from "../../common/langfuse-debug.js";
-import { buildLangfuseRequestInput, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
+import { buildLangfuseRequestInput, langfuseOutputFromRawReply, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
 import { resolveAgentAdapter } from "../../agent-adapters/index.js";
 import { resolveAgentStrategy } from "../strategies/agent/index.js";
 import {
@@ -1616,6 +1616,8 @@ export async function runAnthropicPipeline(
   let langfuseRawReply: Record<string, unknown> | undefined;
   try {
     const respJson = JSON.parse(respText) as Record<string, unknown>;
+    // Set before the thinking fix below: it patches the shared `content` blocks in place.
+    langfuseRawReply = langfuseOutputFromRawReply(respJson);
     if (upstreamResp.ok) {
       submitSessionTurn(sessionTurnCtx, anthropicReplyFromJson(respJson), effectiveModel || requestedModel);
     }
@@ -1649,7 +1651,6 @@ export async function runAnthropicPipeline(
       outputContent = textParts.join("\n");
       // Preserve full content array (incl. tool_use blocks) for skill trigger.
       assistantMessage = { role: "assistant", content };
-      langfuseRawReply = respJson;
 
       // Report the completed response to the extension (same signal the
       // streaming path emits). Fire-and-forget.

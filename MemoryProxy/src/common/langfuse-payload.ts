@@ -156,7 +156,16 @@ export function langfuseOutputFromReply(reply: ModelReply | null | undefined, ki
   const out: Json = { ...reply.envelope, ...reply.output };
   if (reply.stopReason !== null) out[STOP_KEY[kind]] = reply.stopReason;
   if (reply.incomplete?.error !== undefined) out.error = reply.incomplete.error;
-  return out;
+  // A Responses envelope echoes the request `tools`; scrub any echoed credentials.
+  return scrubRequestCredentials(out);
+}
+
+/**
+ * The Langfuse `output` of a non-stream reply: the parsed JSON as received, with echoed
+ * tool / MCP credentials scrubbed. Anything that is not a JSON object gives `undefined`.
+ */
+export function langfuseOutputFromRawReply(json: unknown): Json | undefined {
+  return isRecord(json) ? scrubRequestCredentials(json) : undefined;
 }
 
 /** Longest error text that goes into a Langfuse status message. */
