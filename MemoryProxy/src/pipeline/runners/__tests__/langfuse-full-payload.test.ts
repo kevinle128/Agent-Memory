@@ -139,9 +139,9 @@ const anthropicHeaders = { "x-api-key": "sk-ant-secret", "x-claude-code-session-
 
 function expectNativeAnthropicInput(input: unknown): void {
   const i = input as Record<string, unknown>;
-  const messages = i.messages as Array<Record<string, unknown>>;
-  expect(messages[0]).toEqual({ role: "system", content: anthropicBody.system });
-  expect(messages.slice(1)).toEqual(anthropicBody.messages);
+  // `system` stays a top-level field as sent; no system message is added to `messages`.
+  expect(i.system).toEqual(anthropicBody.system);
+  expect(i.messages).toEqual(anthropicBody.messages);
   expect(i.tools).toEqual(tools);
   expect(i).toMatchObject({
     model: "claude-opus-4-8", max_tokens: 4096, temperature: 0.2,
@@ -171,7 +171,9 @@ describe("anthropic runner Langfuse payload", () => {
     const g = generations[0]!;
     expectNativeAnthropicInput(g.input);
     expect(g.output).toEqual({
+      id: "m",
       role: "assistant",
+      usage: { input_tokens: 5, output_tokens: 9 },
       content: [
         { type: "thinking", thinking: "need to read", signature: "sig-1" },
         { type: "tool_use", id: "tu_2", name: "Bash", input: { command: "pwd" } },
@@ -195,7 +197,20 @@ describe("anthropic runner Langfuse payload", () => {
 
     const g = generations[0]!;
     expectNativeAnthropicInput(g.input);
-    expect(g.output).toEqual({ role: "assistant", content, stop_reason: "tool_use" });
+    expect(g.output).toEqual({
+      id: "m", type: "message", role: "assistant", model: "claude-opus-4-8", content,
+      stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 },
+    });
+  });
+
+  it("adds the provider request-id header to the observation metadata", async () => {
+    installFetch(() => new Response(JSON.stringify({
+      id: "m", type: "message", role: "assistant", content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 },
+    }), { status: 200, headers: { "content-type": "application/json", "request-id": "req_abc123" } }));
+    await post("/claude-code/default/v1/messages", { ...anthropicBody, stream: false }, anthropicHeaders);
+
+    expect(generations[0]!.observationMetadata).toMatchObject({ upstream_request_id: "req_abc123" });
   });
 
   it("redacts mcp_servers authorization_token in a failure report", async () => {
@@ -263,6 +278,10 @@ describe("openai-chat runner Langfuse payload", () => {
     const g = generations[0]!;
     expectNativeOpenaiInput(g.input);
     expect(g.output).toEqual({
+      id: "c",
+      object: "chat.completion.chunk",
+      model: "gpt-x",
+      usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 },
       role: "assistant",
       content: null,
       reasoning_content: "think hard",
@@ -272,21 +291,22 @@ describe("openai-chat runner Langfuse payload", () => {
     expect(g.traceOutput).toEqual(g.output);
   });
 
-  it("reports the full non-stream message and finish_reason", async () => {
+  it("reports the non-stream reply JSON as received, choices included", async () => {
     const message = {
       role: "assistant", content: null,
       tool_calls: [{ id: "c9", type: "function", function: { name: "get_weather", arguments: "{\"city\":\"Hue\"}" } }],
     };
-    installFetch(() => jsonResponse({
+    const reply = {
       id: "c", object: "chat.completion", model: "gpt-x",
-      choices: [{ index: 0, finish_reason: "tool_calls", message }],
+      choices: [{ index: 0, finish_reason: "tool_calls", logprobs: null, message }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-    }));
+    };
+    installFetch(() => jsonResponse(reply));
     await post("/codebuddy/default/v1/chat/completions", { ...openaiBody, stream: false }, openaiHeaders);
 
     const g = generations[0]!;
     expectNativeOpenaiInput(g.input);
-    expect(g.output).toEqual({ ...message, finish_reason: "tool_calls" });
+    expect(g.output).toEqual(reply);
   });
 
   it("gives a failed upstream call the full request", async () => {
@@ -323,7 +343,9 @@ describe("codex runner Langfuse payload", () => {
       tool_choice: "auto", reasoning: { effort: "high" }, input: codexBody.input,
     });
     expect(JSON.stringify(g.input)).not.toContain("sk-codex-secret");
-    expect(g.output).toEqual({ output: [call], status: "completed" });
+    expect(g.output).toEqual({
+      id: "r", output: [call], status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    });
   });
 });
 
@@ -353,7 +375,9 @@ describe("workbuddy runner Langfuse payload", () => {
     const g = generations[0]!;
     expect(g.input).toMatchObject({ model: "gpt-5", instructions: "Be brief.", tools, tool_choice: "auto" });
     expect(JSON.stringify(g.input)).not.toContain("sk-wb-secret");
-    expect(g.output).toEqual({ output: [item], status: "completed" });
+    expect(g.output).toEqual({
+      id: "r", output: [item], status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+    });
   });
 });
 
@@ -386,6 +410,7 @@ describe("system user passthrough Langfuse payload", () => {
     expect(g.input).toEqual(body);
     expect(g.output).toEqual({
       role: "assistant",
+      usage: { input_tokens: 2, output_tokens: 3 },
       content: [{ type: "tool_use", id: "t", name: "extract", input: { facts: [1] } }],
       stop_reason: "tool_use",
     });
@@ -397,7 +422,10 @@ describe("system user passthrough Langfuse payload", () => {
       ["", { choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }],
     ]));
     const g = await run("/system/default/v1/chat/completions", { model: "m", stream: true, messages: [{ role: "user", content: "x" }] });
-    expect(g.output).toEqual({ role: "assistant", content: "ok", finish_reason: "stop" });
+    expect(g.output).toEqual({
+      role: "assistant", content: "ok", finish_reason: "stop",
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    });
   });
 
   it("redacts known nested credentials in the Langfuse input only", async () => {
@@ -475,13 +503,10 @@ async function send(path: string, body: unknown, headers: Record<string, string>
   return { res, text };
 }
 
-/** The reported input must be the forwarded body: same parameters, same messages, system first. */
+/** The reported input must be the forwarded body: the same keys, in the same order, with the same values. */
 function expectInputMatchesUpstream(input: unknown, upstreamJson: Record<string, unknown>): void {
-  const { messages, system, ...rest } = upstreamJson;
-  const { messages: reported, ...restInput } = input as Record<string, unknown>;
-  const systemMessages = system !== undefined && system !== "" ? [{ role: "system", content: system }] : [];
-  expect(reported).toEqual([...systemMessages, ...(messages as unknown[])]);
-  expect(restInput).toEqual(rest);
+  expect(input).toEqual(upstreamJson);
+  expect(Object.keys(input as object)).toEqual(Object.keys(upstreamJson));
 }
 
 describe("the reported input is the body sent upstream", () => {

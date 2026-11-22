@@ -15,6 +15,12 @@ export interface ModelReply {
   /** Client-executed tool calls the reply asks for. */
   toolCallCount: number;
   /**
+   * Set by the stream assemblers only: the provider's own top-level fields that are not
+   * part of `output` (`id`, `model`, `usage`, `stop_sequence`, `created`, ...), merged from
+   * the events. Only the Langfuse payload reads it; `output` stays the turn record.
+   */
+  envelope?: Record<string, unknown>;
+  /**
    * Set only when a stream was cut or failed: an `error` event, a failed or
    * incomplete Responses status, a stream that ended before its stop event, or
    * a tool call whose arguments were cut. Plain JSON replies never set it.
@@ -96,9 +102,13 @@ export class OpenAIChatAssembler {
   private role = "assistant";
   private finishReason: string | null = null;
   private error: unknown;
+  private readonly envelope: Json = {};
 
   push(event: Json): void {
     if (event.error !== undefined && event.error !== null) this.error = event.error;
+    for (const [key, value] of Object.entries(event)) {
+      if (key !== "choices" && key !== "error" && value !== undefined && value !== null) this.envelope[key] = value;
+    }
     if (!Array.isArray(event.choices)) return;
     for (const c of event.choices) {
       if (!isRecord(c) || (typeof c.index === "number" && c.index !== 0)) continue;
@@ -145,7 +155,12 @@ export class OpenAIChatAssembler {
     if (this.toolCalls.size > 0) {
       output.tool_calls = [...this.toolCalls.entries()].sort(([a], [b]) => a - b).map(([, tc]) => tc);
     }
-    const reply: ModelReply = { output, stopReason: this.finishReason, toolCallCount: this.toolCalls.size };
+    const reply: ModelReply = {
+      output,
+      envelope: { ...this.envelope },
+      stopReason: this.finishReason,
+      toolCallCount: this.toolCalls.size,
+    };
     const incomplete = this.incomplete();
     if (incomplete) reply.incomplete = incomplete;
     return reply;
@@ -189,6 +204,7 @@ export class AnthropicMessageAssembler {
   private role = "assistant";
   private stopReason: string | null = null;
   private error: unknown;
+  private envelope: Json = {};
 
   push(event: Json): void {
     switch (event.type) {
@@ -196,7 +212,11 @@ export class AnthropicMessageAssembler {
         this.error = event.error ?? event;
         break;
       case "message_start":
-        if (isRecord(event.message) && typeof event.message.role === "string") this.role = event.message.role;
+        if (isRecord(event.message)) {
+          if (typeof event.message.role === "string") this.role = event.message.role;
+          const { content: _content, ...start } = event.message;
+          this.envelope = { ...this.envelope, ...start };
+        }
         break;
       case "content_block_start":
         if (typeof event.index === "number" && isRecord(event.content_block)) {
@@ -209,6 +229,11 @@ export class AnthropicMessageAssembler {
       case "message_delta":
         if (isRecord(event.delta) && typeof event.delta.stop_reason === "string") {
           this.stopReason = event.delta.stop_reason;
+        }
+        if (isRecord(event.delta) && "stop_sequence" in event.delta) this.envelope.stop_sequence = event.delta.stop_sequence;
+        // `message_delta.usage` carries the final counts and overrides the ones of `message_start`.
+        if (isRecord(event.usage)) {
+          this.envelope.usage = { ...(isRecord(this.envelope.usage) ? this.envelope.usage : {}), ...event.usage };
         }
         break;
     }
@@ -256,6 +281,7 @@ export class AnthropicMessageAssembler {
     });
     const reply: ModelReply = {
       output: { role: this.role, content },
+      envelope: { ...this.envelope },
       stopReason: this.stopReason,
       toolCallCount: countToolUse(content),
     };
@@ -311,6 +337,7 @@ export class ResponsesAssembler {
   private status: string | null = null;
   private error: unknown;
   private incompleteReason: string | undefined;
+  private envelope: Json = {};
 
   push(event: Json): void {
     const type = typeof event.type === "string" ? event.type : "";
@@ -329,6 +356,8 @@ export class ResponsesAssembler {
     const resp = isRecord(event.response) ? event.response : {};
     this.status = typeof resp.status === "string" ? resp.status : finalStatus;
     if (Array.isArray(resp.output)) this.finalOutput = resp.output;
+    const { output: _output, ...envelope } = resp;
+    this.envelope = envelope;
     if (resp.error !== undefined && resp.error !== null) this.error = resp.error;
     if (isRecord(resp.incomplete_details) && typeof resp.incomplete_details.reason === "string") {
       this.incompleteReason = resp.incomplete_details.reason;
@@ -341,6 +370,7 @@ export class ResponsesAssembler {
       : [...this.items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
     const reply: ModelReply = {
       output: { output },
+      envelope: { ...this.envelope },
       stopReason: this.status,
       toolCallCount: countResponsesToolCalls(output),
     };

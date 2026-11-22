@@ -1103,6 +1103,7 @@ async function consumeWorkbuddyStream(
         upstreamUrl: ctx.upstreamUrl,
         tool_use_count: toolUseCount,
         ...replyStatus.metadata,
+        ...(ctx.upstreamRequestId ? { upstream_request_id: ctx.upstreamRequestId } : {}),
       },
     });
     } catch (err) {

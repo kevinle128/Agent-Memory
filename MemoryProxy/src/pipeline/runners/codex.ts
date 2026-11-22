@@ -1777,6 +1777,7 @@ export function consumeCodexStream(stream: ReadableStream<Uint8Array>, ctx: Code
               stop_reason: stopReason,
               tool_use_count: toolUseCount,
               ...replyStatus.metadata,
+              ...(ctx.upstreamRequestId ? { upstream_request_id: ctx.upstreamRequestId } : {}),
             },
           });
         } catch (lfErr: unknown) {
