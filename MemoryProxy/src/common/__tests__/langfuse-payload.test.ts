@@ -4,6 +4,7 @@ import { startObservation } from "@langfuse/tracing";
 
 import {
   buildLangfuseRequestInput,
+  langfuseOutputFromRawReply,
   langfuseOutputFromReply,
   langfuseReplyStatus,
   redactRequestPayload,
@@ -16,32 +17,41 @@ import {
 } from "../../session-trace/assemble.js";
 
 describe("buildLangfuseRequestInput", () => {
-  it("keeps native blocks, puts the system prompt first and carries tools and parameters", () => {
+  const messages = [
+    { role: "assistant", content: [{ type: "thinking", thinking: "x".repeat(500), signature: "sig" }] },
+    { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD" } }] },
+  ];
+  const tools = [{ name: "Bash", input_schema: { type: "object" } }];
+
+  it("keeps an Anthropic system block array with cache_control as a top-level field", () => {
     const system = [{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }];
-    const messages = [
-      { role: "assistant", content: [{ type: "thinking", thinking: "x".repeat(500), signature: "sig" }] },
-      { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD" } }] },
-    ];
-    const tools = [{ name: "Bash", input_schema: { type: "object" } }];
-    const input = buildLangfuseRequestInput(
-      { model: "m", system, messages, tools, tool_choice: { type: "auto" }, max_tokens: 10, stream: true },
-    );
-    expect(input.messages).toEqual([{ role: "system", content: system }, ...messages]);
-    expect(input).toMatchObject({ model: "m", tools, tool_choice: { type: "auto" }, max_tokens: 10, stream: true });
-    expect(input).not.toHaveProperty("system");
+    const body = { model: "m", system, messages, tools, tool_choice: { type: "auto" }, max_tokens: 10, stream: true };
+    const input = buildLangfuseRequestInput(body);
+    expect(input).toEqual(body);
+    expect(input.system).toEqual(system);
+    expect(input.messages).toEqual(messages);
+    expect(Object.keys(input)).toEqual(Object.keys(body));
   });
 
-  it("uses the messages the caller holds instead of body.messages", () => {
-    const injected = [{ role: "user", content: "with memory" }];
-    const input = buildLangfuseRequestInput({ model: "m", messages: [{ role: "user", content: "raw" }] }, { messages: injected });
-    expect(input.messages).toEqual(injected);
+  it("keeps a string system as a string and adds no system message", () => {
+    const body = { model: "m", system: "Be brief.", messages: [{ role: "user", content: "hi" }] };
+    const input = buildLangfuseRequestInput(body);
+    expect(input.system).toBe("Be brief.");
+    expect(input.messages).toEqual(body.messages);
+    expect((input.messages as Array<{ role: string }>).some((m) => m.role === "system")).toBe(false);
   });
 
-  it("adds no system message for an empty system", () => {
-    for (const system of [undefined, "", []]) {
-      const input = buildLangfuseRequestInput({ messages: [{ role: "user", content: "hi" }] }, { system });
-      expect(input.messages).toEqual([{ role: "user", content: "hi" }]);
-    }
+  it("does not add or drop an empty or missing system", () => {
+    const withEmpty = { system: [], messages: [{ role: "user", content: "hi" }] };
+    expect(buildLangfuseRequestInput(withEmpty)).toEqual(withEmpty);
+    const without = { messages: [{ role: "user", content: "hi" }] };
+    expect(buildLangfuseRequestInput(without)).toEqual(without);
+    expect(buildLangfuseRequestInput(without)).not.toHaveProperty("system");
+  });
+
+  it("keeps a real system message inside messages next to a top-level system", () => {
+    const body = { system: "top", messages: [{ role: "system", content: "inner" }, { role: "user", content: "hi" }] };
+    expect(buildLangfuseRequestInput(body)).toEqual(body);
   });
 
   it("passes a Responses body through whole", () => {
@@ -114,6 +124,72 @@ describe("nested credential scrub", () => {
   it("leaves conversation content untouched", () => {
     const input = buildLangfuseRequestInput({ messages: conversation, mcp_servers: [{ authorization_token: "t" }] });
     expect(input.messages).toEqual(conversation);
+  });
+});
+
+describe("langfuseOutputFromReply keeps the provider fields", () => {
+  const feed = (assembler: { push(e: Record<string, unknown>): void }, events: Array<Record<string, unknown>>) => {
+    for (const e of events) assembler.push(e);
+  };
+
+  it("merges the id, model and full usage of an Anthropic stream", () => {
+    const a = new AnthropicMessageAssembler();
+    feed(a, [
+      { type: "message_start", message: { id: "msg_2", type: "message", role: "assistant", model: "claude-x", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 1 } } },
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } },
+      { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 9 } },
+    ]);
+    expect(langfuseOutputFromReply(a.result(), "anthropic")).toEqual({
+      id: "msg_2", type: "message", role: "assistant", model: "claude-x",
+      content: [{ type: "text", text: "ok" }],
+      stop_reason: "end_turn", stop_sequence: null,
+      usage: { input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 9 },
+    });
+  });
+
+  it("keeps the id, model and usage of OpenAI chat and Responses replies", () => {
+    const o = new OpenAIChatAssembler();
+    feed(o, [
+      { id: "c1", object: "chat.completion.chunk", model: "m", created: 1, choices: [{ index: 0, delta: { role: "assistant", content: "hi" }, finish_reason: "stop" }] },
+      { id: "c1", choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } },
+    ]);
+    expect(langfuseOutputFromReply(o.result(), "openai")).toMatchObject({
+      id: "c1", model: "m", created: 1, role: "assistant", content: "hi", finish_reason: "stop",
+      usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 },
+    });
+
+    const r = new ResponsesAssembler();
+    feed(r, [{ type: "response.completed", response: { id: "resp_1", model: "m", status: "completed", output: [{ type: "message" }], usage: { input_tokens: 1 } } }]);
+    expect(langfuseOutputFromReply(r.result(), "responses")).toEqual({
+      id: "resp_1", model: "m", status: "completed", output: [{ type: "message" }], usage: { input_tokens: 1 },
+    });
+  });
+
+  it("scrubs credentials of tools echoed in a Responses envelope", () => {
+    const r = new ResponsesAssembler();
+    feed(r, [{ type: "response.completed", response: {
+      id: "resp_2", status: "completed", output: [{ type: "message" }],
+      tools: [{ type: "mcp", server_label: "s", authorization: "tok", headers: { "X-Key": "k" } }],
+    } }]);
+    const out = langfuseOutputFromReply(r.result(), "responses");
+    expect(out?.tools).toEqual([{ type: "mcp", server_label: "s", authorization: "[redacted]", headers: { "X-Key": "[redacted]" } }]);
+    expect(JSON.stringify(out)).not.toContain("tok");
+  });
+});
+
+describe("langfuseOutputFromRawReply", () => {
+  it("keeps a reply object as is and scrubs echoed credentials", () => {
+    const reply = { id: "x", tools: [{ type: "mcp", authorization: "tok" }], usage: { a: 1 } };
+    expect(langfuseOutputFromRawReply({ id: "y" })).toEqual({ id: "y" });
+    expect(langfuseOutputFromRawReply(reply)).toEqual({ id: "x", tools: [{ type: "mcp", authorization: "[redacted]" }], usage: { a: 1 } });
+    expect(reply.tools[0].authorization).toBe("tok");
+  });
+
+  it("gives undefined for JSON that is not an object", () => {
+    expect(langfuseOutputFromRawReply(null)).toBeUndefined();
+    expect(langfuseOutputFromRawReply([1])).toBeUndefined();
+    expect(langfuseOutputFromRawReply("text")).toBeUndefined();
   });
 });
 

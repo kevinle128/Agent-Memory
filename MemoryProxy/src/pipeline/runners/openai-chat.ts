@@ -21,7 +21,7 @@ import {
   type LangfuseTurnContext,
 } from "../../langfuse.js";
 import { buildRequestDebugMetadata } from "../../common/langfuse-debug.js";
-import { buildLangfuseRequestInput, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
+import { buildLangfuseRequestInput, langfuseOutputFromRawReply, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
 import { countHumanTurns, resolveMonotonicTurnSeq, turnTraceScope } from "../../turnSeq.js";
 import type { ProxyConfig } from "../../types.js";
 import {
@@ -1469,10 +1469,11 @@ export async function runOpenaiChatPipeline(
 
   let usage: Record<string, unknown> | null = null;
   let assistantMessage: Record<string, unknown> | null = null;
-  let langfuseReply: ModelReply | null = null;
+  // The reply JSON as the provider sent it, for Langfuse.
+  let langfuseRawReply: Record<string, unknown> | undefined;
   try {
     const respJson = JSON.parse(respText) as Record<string, unknown>;
-    langfuseReply = openaiReplyFromJson(respJson);
+    langfuseRawReply = langfuseOutputFromRawReply(respJson);
     if (respJson.usage && typeof respJson.usage === "object") {
       usage = respJson.usage as Record<string, unknown>;
     }
@@ -1646,9 +1647,8 @@ export async function runOpenaiChatPipeline(
     }
 
     // Langfuse: report this LLM call as a generation under the turn trace.
-    // Output is the full native message (content, tool_calls, reasoning fields)
-    // plus finish_reason.
-    const langfuseOutput = langfuseOutputFromReply(langfuseReply, "openai");
+    // Output is the reply JSON as the provider sent it.
+    const langfuseOutput = langfuseRawReply;
     try {
       langfuseReportGeneration({
         traceId: lf.traceId,
@@ -1667,7 +1667,7 @@ export async function runOpenaiChatPipeline(
         traceInput: lf.userQuery || undefined,
         traceOutput: langfuseOutput,
         traceMetadata: { stream: false, retried, upstreamUrl: target.url, ...logMeta, ...debugMetadata },
-        observationMetadata: { retried, ...logMeta, ...debugMetadata },
+        observationMetadata: { retried, ...logMeta, ...debugMetadata, ...(upstreamRequestId ? { upstream_request_id: upstreamRequestId } : {}) },
       });
     } catch (langfuseErr: unknown) {
       pipe.error("LANGFUSE_SPAN", langfuseErr);
@@ -1977,6 +1977,7 @@ function createUsageTapTransform(ctx: TapContext): TransformStream<Uint8Array, U
         observationMetadata: {
           retried, ...logMeta,
           ...ctx.debugMetadata, ...streamDebugExtra, ...replyStatus.metadata,
+          ...(upstreamRequestId ? { upstream_request_id: upstreamRequestId } : {}),
         },
       });
     } catch (langfuseErr: unknown) {

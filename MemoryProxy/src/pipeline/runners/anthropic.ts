@@ -113,7 +113,7 @@ import { isExtractionAllowed, logExtractionSkipped } from "../../extraction-gate
 import type { CcRequestKind } from "../../common/cc-request-classifier.js";
 import { MEMORY_MODE_HEADER, resolveMemoryGates } from "../../common/memory-mode.js";
 import { buildRequestDebugMetadata } from "../../common/langfuse-debug.js";
-import { buildLangfuseRequestInput, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
+import { buildLangfuseRequestInput, langfuseOutputFromRawReply, langfuseOutputFromReply, langfuseReplyStatus } from "../../common/langfuse-payload.js";
 import { resolveAgentAdapter } from "../../agent-adapters/index.js";
 import { resolveAgentStrategy } from "../strategies/agent/index.js";
 import {
@@ -1485,6 +1485,8 @@ export async function runAnthropicPipeline(
   // Upstream request id from response header (tokenhub / Anthropic set
   // `x-request-id`). Used for cross-system tracing/audit.
   const upstreamRequestId = upstreamResp.headers.get("x-request-id") ?? "";
+  // Anthropic names its request id header `request-id`. Only Langfuse reads this value.
+  const providerRequestId = upstreamResp.headers.get("request-id") ?? upstreamRequestId;
 
   const effectiveModel = retried && target.retryTarget
     ? target.retryTarget.model
@@ -1577,6 +1579,7 @@ export async function runAnthropicPipeline(
       lf,
       spaceId,
       upstreamRequestId,
+      providerRequestId,
       requestKind,
       memoryTurn,
       langfuseInput,
@@ -1609,9 +1612,12 @@ export async function runAnthropicPipeline(
   let usage: Record<string, unknown> | null = null;
   let outputContent: string | null = null;
   let assistantMessage: Record<string, unknown> | null = null;
-  let langfuseReply: ModelReply | null = null;
+  // The reply JSON as the provider sent it, for Langfuse.
+  let langfuseRawReply: Record<string, unknown> | undefined;
   try {
     const respJson = JSON.parse(respText) as Record<string, unknown>;
+    // Set before the thinking fix below: it patches the shared `content` blocks in place.
+    langfuseRawReply = langfuseOutputFromRawReply(respJson);
     if (upstreamResp.ok) {
       submitSessionTurn(sessionTurnCtx, anthropicReplyFromJson(respJson), effectiveModel || requestedModel);
     }
@@ -1645,8 +1651,6 @@ export async function runAnthropicPipeline(
       outputContent = textParts.join("\n");
       // Preserve full content array (incl. tool_use blocks) for skill trigger.
       assistantMessage = { role: "assistant", content };
-      // Full native reply (all blocks + stop_reason) for Langfuse.
-      langfuseReply = anthropicReplyFromJson(respJson);
 
       // Report the completed response to the extension (same signal the
       // streaming path emits). Fire-and-forget.
@@ -1764,9 +1768,8 @@ export async function runAnthropicPipeline(
   if (usage || upstreamResp.ok) {
     // Langfuse: report this LLM call as a generation under the turn trace,
     // also when a 2xx reply carries no usage.
-    // Output is the full native assistant message: every content block
-    // (text, thinking, tool_use) plus stop_reason.
-    const langfuseOutput = langfuseOutputFromReply(langfuseReply, "anthropic");
+    // Output is the reply JSON as the provider sent it.
+    const langfuseOutput = langfuseRawReply;
     try {
       langfuseReportGeneration({
         traceId: lf.traceId,
@@ -1785,7 +1788,7 @@ export async function runAnthropicPipeline(
         traceInput: lf.userQuery || undefined,
         traceOutput: langfuseOutput,
         traceMetadata: { stream: false, retried, upstreamUrl: target.url, ...logMeta, ...debugMetadata },
-        observationMetadata: { retried, ...logMeta, ...debugMetadata },
+        observationMetadata: { retried, ...logMeta, ...debugMetadata, ...(providerRequestId ? { upstream_request_id: providerRequestId } : {}) },
       });
     } catch (langfuseErr: unknown) {
       pipe.error("LANGFUSE_SPAN", langfuseErr);
@@ -2032,6 +2035,8 @@ interface AnthropicTapContext {
   spaceId?: string;
   /** Upstream response header `x-request-id` (empty when not returned). */
   upstreamRequestId?: string;
+  /** `request-id` (or `x-request-id`) of the provider reply, for the Langfuse metadata only. */
+  providerRequestId?: string;
   /** CC 请求分流类别，决定 stream 完成后是否触发 skill/L0 副作用。 */
   requestKind: CcRequestKind;
   /** The turn may touch memory (main kind, not legacy route, no `x-memory-mode: off`); gates L0 and skill. */
@@ -2185,6 +2190,7 @@ function consumeAnthropicStream(stream: ReadableStream<Uint8Array>, ctx: Anthrop
             observationMetadata: {
               retried, ...logMeta,
               ...ctx.debugMetadata, ...streamDebugExtra, ...replyStatus.metadata,
+              ...(ctx.providerRequestId ? { upstream_request_id: ctx.providerRequestId } : {}),
             },
           });
         }

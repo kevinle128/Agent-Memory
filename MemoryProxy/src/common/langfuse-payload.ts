@@ -3,31 +3,15 @@
  *
  * Every runner reports the same two things, whatever the protocol:
  *
- * - input  = the request body that goes upstream (build it after every rewrite:
- *            overrides, thinking cleanup, cache TTL), in its native shape (Anthropic, OpenAI chat or
- *            Responses), with nothing flattened, stringified or cut. Thinking
- *            blocks keep their full text and signature, `tool_use` and
- *            `tool_result` stay blocks, images stay as sent, and `cache_control`
- *            markers stay in place. The tool definitions and the request
- *            parameters (model, tool_choice, thinking, max_tokens, temperature, ...)
- *            travel with it.
- * - output = the full assistant message (see `langfuseOutputFromReply`).
- *
- * Why this input shape. Langfuse v4.82.0 reads it like this:
- *   - The OpenAI chat adapter claims any object `{messages: [...], tools?: [...]}`
- *     (loose schema: extra keys are allowed) and renders `messages` as a chat.
- *     It also attaches `tools` to the messages, so the UI shows a Tools section.
- *     A Responses body `{input, instructions, tools}` is claimed the same way.
- *   - Ingestion (`extractToolsBackend`) fills `toolDefinitions` from the top-level
- *     `tools` array. It accepts flat `{name, description}` tools. It reads the
- *     schema from `parameters`, `parameters_json_schema` or `inputSchema`, so an
- *     Anthropic `input_schema` is stored in the raw input but is not copied into
- *     the `toolDefinitions` column. Names and descriptions are.
- *   - Ingestion fills `toolCallNames` from `tool_use` content blocks, OpenAI
- *     `tool_calls` and Responses `function_call` items in the output.
- * The Anthropic `system` field has no place in that schema, so it becomes a
- * leading `{role: "system", content}` message. Its content stays native (a string
- * or the block array with `cache_control`).
+ * - input  = the exact request body that was given to `fetch` (build it after every
+ *            rewrite: overrides, thinking cleanup, cache TTL, retry), with every key
+ *            and its order kept. Nothing is moved, flattened, stringified or cut: the
+ *            Anthropic `system` stays a top-level field (string or block array with
+ *            `cache_control`), `messages` stay as sent, and tools and parameters stay
+ *            where the provider reads them.
+ * - output = the reply as received. A non-stream reply is the parsed JSON itself. A
+ *            stream is rebuilt from its events (see `langfuseOutputFromReply`): the
+ *            provider's own fields (`id`, `model`, `usage`, ...) plus the message.
  *
  * Credentials never travel with it. Top-level keys with a credential-like name
  * are dropped. Known nested credential fields are replaced with "[redacted]"
@@ -126,43 +110,14 @@ export function redactRequestPayload(payload: unknown): unknown {
   return `[unparsable request body: ${Buffer.byteLength(text)} bytes]`;
 }
 
-export interface LangfuseRequestParts {
-  /**
-   * Messages of the request when the caller holds a newer list than `body.messages`
-   * (the proxy replaces them after memory injection). Defaults to `body.messages`.
-   */
-  messages?: unknown[];
-  /** Anthropic top-level `system` (string or block array). Defaults to `body.system`. */
-  system?: unknown;
-}
-
-function hasSystem(system: unknown): boolean {
-  if (system === undefined || system === null || system === "") return false;
-  return !(Array.isArray(system) && system.length === 0);
-}
-
 /**
- * Build the Langfuse `input` of one request from its native body.
- *
- * - Chat protocols (`messages`): `{messages: [system?, ...messages], tools?, ...params}`.
- * - Responses protocol (`input`): the body as is (`input`, `instructions`, `tools`, ...).
+ * The Langfuse `input` of one request: the body that was sent upstream, as is.
+ * Every key stays, in its order, with no field added, moved or dropped; only
+ * credentials are redacted (`redactRequestBody`). The caller must pass the body
+ * that was given to `JSON.stringify` for the fetch.
  */
-export function buildLangfuseRequestInput(rawBody: Json, parts: LangfuseRequestParts = {}): Json {
-  const body = redactRequestBody(rawBody);
-  const messages = parts.messages ?? (Array.isArray(body.messages) ? body.messages : undefined);
-  const system = parts.system !== undefined ? parts.system : body.system;
-  const isChat = messages !== undefined;
-
-  const out: Json = {};
-  if (isChat) {
-    out.messages = hasSystem(system) ? [{ role: "system", content: system }, ...messages] : [...messages];
-  }
-  for (const [key, value] of Object.entries(body)) {
-    if (value === undefined) continue;
-    if (isChat && (key === "messages" || key === "system")) continue;
-    out[key] = value;
-  }
-  return out;
+export function buildLangfuseRequestInput(sentBody: Json): Json {
+  return redactRequestBody(sentBody);
 }
 
 export type ReplyKind = "anthropic" | "openai" | "responses";
@@ -186,7 +141,9 @@ function isEmptyReply(reply: ModelReply, kind: ReplyKind): boolean {
 }
 
 /**
- * Build the Langfuse `output` from a full model reply (streamed or not).
+ * Build the Langfuse `output` from a full model reply (streamed or not): the
+ * provider's top-level fields (`envelope`: id, model, usage, stop_sequence, ...) first,
+ * then the message itself.
  *
  * The reply keeps its native shape: an Anthropic message `{role, content: [blocks]}`
  * with `stop_reason`, an OpenAI message (`content`, `tool_calls`, reasoning fields)
@@ -196,10 +153,19 @@ function isEmptyReply(reply: ModelReply, kind: ReplyKind): boolean {
  */
 export function langfuseOutputFromReply(reply: ModelReply | null | undefined, kind: ReplyKind): Json | undefined {
   if (!reply || isEmptyReply(reply, kind)) return undefined;
-  const out: Json = { ...reply.output };
+  const out: Json = { ...reply.envelope, ...reply.output };
   if (reply.stopReason !== null) out[STOP_KEY[kind]] = reply.stopReason;
   if (reply.incomplete?.error !== undefined) out.error = reply.incomplete.error;
-  return out;
+  // A Responses envelope echoes the request `tools`; scrub any echoed credentials.
+  return scrubRequestCredentials(out);
+}
+
+/**
+ * The Langfuse `output` of a non-stream reply: the parsed JSON as received, with echoed
+ * tool / MCP credentials scrubbed. Anything that is not a JSON object gives `undefined`.
+ */
+export function langfuseOutputFromRawReply(json: unknown): Json | undefined {
+  return isRecord(json) ? scrubRequestCredentials(json) : undefined;
 }
 
 /** Longest error text that goes into a Langfuse status message. */
