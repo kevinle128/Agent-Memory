@@ -124,6 +124,11 @@ export class HookRecallLog {
   private readonly insertStmt: Database.Statement;
   private readonly cleanupStmt: Database.Statement;
 
+  /** Close the connection. Tests only (see `__resetHookRecallLogForTests`). */
+  close(): void {
+    this.db.close();
+  }
+
   constructor(private readonly db: Database.Database) {
     db.exec(SCHEMA_SQL);
     this.insertStmt = db.prepare(
@@ -205,6 +210,21 @@ let cleanupTimer: NodeJS.Timeout | null = null;
 export function recallLogDbPath(config: Pick<ProxyConfig, "storage">): string {
   const p = config.storage?.backend === "sqlite" ? config.storage.sqlite?.dbPath?.trim() : "";
   return p || resolveDbPath();
+}
+
+/** Close and forget the process-wide log and stop its cleanup timer. Tests only. */
+export function __resetHookRecallLogForTests(): void {
+  try {
+    instance?.close();
+  } catch {
+    /* already closed */
+  }
+  instance = null;
+  openFailed = false;
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer);
+    cleanupTimer = null;
+  }
 }
 
 /** The process-wide log, or null when SQLite cannot be opened. */
