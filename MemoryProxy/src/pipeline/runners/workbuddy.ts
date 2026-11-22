@@ -722,6 +722,7 @@ async function forwardToUpstream(
           upstreamUrl,
           keyId,
           content_type: contentType,
+          ...(upstreamRequestId ? { upstream_request_id: upstreamRequestId } : {}),
         },
       });
     } catch (lfErr: unknown) {

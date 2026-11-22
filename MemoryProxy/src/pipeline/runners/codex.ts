@@ -1419,6 +1419,7 @@ async function forwardToUpstream(
   // ── 上游 4xx/5xx：拷贝一份 body 文本用于 langfuse 错误上报；成功则 tap ──
   // codex Responses API 只有 SSE 流式响应，不区分 stream / non-stream 处理。
   if (upstreamResp.status >= 400) {
+    const failedRequestId = upstreamResp.headers.get("x-request-id") || "";
     // 4xx/5xx 通常返 JSON error（很小），完整读出来带进 langfuse 便于排查
     const errText = await upstreamResp.text();
     if (lf) {
@@ -1432,7 +1433,10 @@ async function forwardToUpstream(
           status: upstreamResp.status,
           statusMessage: errText.slice(0, 500),
           extraTags: ["error"],
-          observationMetadata: { stage: "upstream", stream: true, upstreamUrl },
+          observationMetadata: {
+            stage: "upstream", stream: true, upstreamUrl,
+            ...(failedRequestId ? { upstream_request_id: failedRequestId } : {}),
+          },
         });
       } catch (lfErr: unknown) {
         pipe.error("LANGFUSE_SPAN", lfErr);

@@ -40,6 +40,11 @@ export interface ForwardWithRetryInput {
    * anthropic 版本: originalBody 原样返回。
    */
   buildRetryBody: (originalBody: Record<string, unknown>, retryModel: string) => Record<string, unknown>;
+  /**
+   * Called just before each fetch with the body and model of that attempt, so a caller
+   * that reports a failure knows the last attempt that was really tried, also when it throws.
+   */
+  onAttempt?: (attempt: { body: Record<string, unknown>; model: string }) => void;
 }
 
 export interface ForwardWithRetryResult {
@@ -74,6 +79,7 @@ export async function stageForwardWithRetry(
     });
   }
 
+  input.onAttempt?.({ body: input.upstreamBody, model: input.target.model });
   const primaryFetchOpts: RequestInit = {
     method: "POST",
     headers: input.upstreamHeaders,
@@ -121,6 +127,7 @@ export async function stageForwardWithRetry(
           protocol: input.protocol,
         });
       }
+      input.onAttempt?.({ body: retryBody, model: retryTarget.model });
       const retryFetchOpts: RequestInit = {
         method: "POST",
         headers: retryHeaders,

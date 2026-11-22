@@ -402,7 +402,7 @@ async function recordTracesAndUsage(params: {
         },
         observationMetadata: {
           stream,
-          upstreamRequestId,
+          upstream_request_id: upstreamRequestId,
           status,
           ...langfuseStatus.metadata,
         },
@@ -426,7 +426,7 @@ async function recordTracesAndUsage(params: {
         input: safeRequest,
         status,
         statusMessage: `upstream returned ${status}`,
-        observationMetadata: { stream, upstreamRequestId, systemUser: match.name },
+        observationMetadata: { stream, upstream_request_id: upstreamRequestId, systemUser: match.name },
       });
     }
   } catch (err: unknown) {
@@ -632,7 +632,7 @@ export async function handleSystemUserPassthrough(
     return c.json({ error: "Upstream request failed", detail: message }, 502);
   }
 
-  const upstreamRequestId = upstreamResp.headers.get("x-request-id") ?? undefined;
+  const upstreamRequestId = upstreamResp.headers.get("request-id") || upstreamResp.headers.get("x-request-id") || undefined;
   const contentType = upstreamResp.headers.get("content-type") ?? "";
   const isStream = contentType.includes("event-stream");
   const status = upstreamResp.status;
