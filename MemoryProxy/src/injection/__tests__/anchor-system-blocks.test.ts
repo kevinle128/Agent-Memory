@@ -92,11 +92,19 @@ type SystemBlock = { type: string; text: string; cache_control?: { type: string 
 
 describe("anchored injection keeps sibling system blocks", () => {
   it.each([
-    ["before", "SKILL_BEFORE"],
-    ["inside_append", "SKILL_INSIDE_APPEND"],
-    ["inside_prepend", "SKILL_INSIDE_PREPEND"],
-    ["after", "SKILL_AFTER"],
-  ] as const)("relation %s edits only the block that holds the anchor", async (relation, injected) => {
+    ["before", "SKILL_BEFORE", "Follow the tool rules.\nSKILL_BEFORE\n# Session-specific guidance"],
+    [
+      "inside_append",
+      "SKILL_INSIDE_APPEND",
+      "Only use skills listed in the user-invocable skills section.\nSKILL_INSIDE_APPEND\n# Memory",
+    ],
+    [
+      "inside_prepend",
+      "SKILL_INSIDE_PREPEND",
+      "# Session-specific guidance\nSKILL_INSIDE_PREPEND\nOnly use skills listed",
+    ],
+    ["after", "SKILL_AFTER", "Only use skills listed in the user-invocable skills section.\nSKILL_AFTER\n# Memory"],
+  ] as const)("relation %s edits only the block that holds the anchor", async (relation, injected, expectedSlice) => {
     const out = await run(claudeCodeSystem(), [hook("skill-injector", relation, "skills", injected, 200)]);
     const system = out.system as SystemBlock[];
 
@@ -105,7 +113,7 @@ describe("anchored injection keeps sibling system blocks", () => {
     expect(system[0]).toEqual(billingBlock);
     expect(system[1]).toEqual(identityBlock);
     expect(system[2].cache_control).toEqual(CACHE);
-    expect(system[2].text).toContain(injected);
+    expect(system[2].text).toContain(expectedSlice);
     expect(withoutInjected(system[2].text, injected)).toBe(CORE);
     expect(out.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hi" }] }]);
   });
