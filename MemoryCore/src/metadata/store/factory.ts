@@ -29,12 +29,6 @@ export interface MetadataStoreConfig {
    * (env TDAI_METADATA_DEFAULT_TEAM_NAME). Unset: the team named `default`, else `default-team`.
    */
   defaultTeamName?: string;
-  /**
-   * Id of the team that gets the pool groups without a team at start (env
-   * TDAI_METADATA_DEFAULT_TEAM_ID). When set, only an active team with this id counts and the
-   * name rules are not used.
-   */
-  defaultTeamId?: string;
 }
 
 export interface PurgeMetadataResult {
@@ -95,11 +89,7 @@ export function loadStoreConfig(
 
   // Only set when configured, so a config without it keeps its old shape.
   const defaultTeamName = env.TDAI_METADATA_DEFAULT_TEAM_NAME?.trim();
-  const defaultTeamId = env.TDAI_METADATA_DEFAULT_TEAM_ID?.trim();
-  const teamName = {
-    ...(defaultTeamName ? { defaultTeamName } : {}),
-    ...(defaultTeamId ? { defaultTeamId } : {}),
-  };
+  const teamName = defaultTeamName ? { defaultTeamName } : {};
 
   if (mongoUri) {
     return {
@@ -162,7 +152,7 @@ export async function createMetadataStore(
     case "sqlite": {
       const baseDir = config.sqliteBaseDir ?? DEFAULT_SQLITE_BASE;
       const dbPath = resolveSqliteDbPath(baseDir, instanceId, config.mongoDbPrefix);
-      const store = new SqliteMetadataStore(dbPath, { defaultTeamName: config.defaultTeamName, defaultTeamId: config.defaultTeamId });
+      const store = new SqliteMetadataStore(dbPath, { defaultTeamName: config.defaultTeamName });
       await store.init();
       return store;
     }
@@ -179,7 +169,6 @@ export async function createMetadataStore(
         useTransactions: config.mongoTransactions ?? true,
         ownsClient: true,
         defaultTeamName: config.defaultTeamName,
-        defaultTeamId: config.defaultTeamId,
       });
       await store.init();
       return store;
@@ -268,7 +257,6 @@ export class MetadataStorePool {
         useTransactions: this.config.mongoTransactions ?? true,
         ownsClient: false,
         defaultTeamName: this.config.defaultTeamName,
-        defaultTeamId: this.config.defaultTeamId,
       });
       await store.init();
       const entry: CachedStore = { instanceId, store, mongoClient: client };

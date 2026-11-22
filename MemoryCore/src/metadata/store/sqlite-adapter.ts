@@ -99,7 +99,6 @@ import {
   logSubscriptionPoolTeamBackfill,
   parseStoredThresholdPct,
   pickDefaultTeam,
-  pickDefaultTeamById,
   sameUpstreamScope,
   upstreamGroupScope,
   type PoolTeamBackfillOutcome,
@@ -250,22 +249,18 @@ export interface SqliteMetadataStoreOptions {
    * (env TDAI_METADATA_DEFAULT_TEAM_NAME). Unset: the team named `default`, else `default-team`.
    */
   defaultTeamName?: string;
-  /** Team id that gets the pool groups without a team (env TDAI_METADATA_DEFAULT_TEAM_ID). Wins over the name. */
-  defaultTeamId?: string;
 }
 
 export class SqliteMetadataStore implements IMetadataStore {
   private db!: DatabaseSync;
   private readonly dbPath: string;
   private readonly defaultTeamName: string | undefined;
-  private readonly defaultTeamId: string | undefined;
   private initialized = false;
 
   /** @param dbPath 文件路径或 ":memory:"。 */
   constructor(dbPath: string, options: SqliteMetadataStoreOptions = {}) {
     this.dbPath = dbPath;
     this.defaultTeamName = options.defaultTeamName;
-    this.defaultTeamId = options.defaultTeamId?.trim() || undefined;
   }
 
   init(): void {
@@ -547,10 +542,10 @@ export class SqliteMetadataStore implements IMetadataStore {
    *
    * First, each agent of a pool group that is in no instance group goes back to the default group.
    * This step always runs: an agent in no instance group gets AGENT_NOT_CONFIGURED for every team
-   * that has no pool. Then the default team is found by the configured id or else by name (see pickDefaultTeam). When there is
+   * that has no pool. Then the default team is found by name (see pickDefaultTeam). When there is
    * not exactly one, the pool groups stay without a team, no team uses them, and an error line
    * gives the candidate team ids. The operator fixes the name or sets
-   * TDAI_METADATA_DEFAULT_TEAM_ID (or _NAME) and starts again.
+   * TDAI_METADATA_DEFAULT_TEAM_NAME and starts again.
    */
   private backfillSubscriptionPoolTeam(): void {
     const outcome = this.withImmediateTx((): PoolTeamBackfillOutcome => {
@@ -561,18 +556,13 @@ export class SqliteMetadataStore implements IMetadataStore {
       )?.c ?? 0);
       if (unassigned === 0) return { restored, unassigned, pick: null, assigned: 0, sourceClash: false };
 
-      const pick = this.defaultTeamId
-        ? pickDefaultTeamById(this.defaultTeamId, this.all<{ team_id: string }>(
-          "SELECT team_id FROM meta_teams WHERE team_id = ? AND status = 'active'",
-          this.defaultTeamId,
-        ).map((r) => String(r.team_id)))
-        : pickDefaultTeam(defaultTeamSearchNames(this.defaultTeamName).map((name) => ({
+      const pick = pickDefaultTeam(defaultTeamSearchNames(this.defaultTeamName).map((name) => ({
+        name,
+        team_ids: this.all<{ team_id: string }>(
+          "SELECT team_id FROM meta_teams WHERE name = ? AND status = 'active' ORDER BY team_id",
           name,
-          team_ids: this.all<{ team_id: string }>(
-            "SELECT team_id FROM meta_teams WHERE name = ? AND status = 'active' ORDER BY team_id",
-            name,
-          ).map((r) => String(r.team_id)),
-        })));
+        ).map((r) => String(r.team_id)),
+      })));
       if (pick.status !== "found") return { restored, unassigned, pick, assigned: 0, sourceClash: false };
 
       // A clash on the team source name index would fail the start; leave the groups instead.

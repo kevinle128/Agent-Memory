@@ -59,10 +59,8 @@ Subscription Account, token, usage and timer rules of ADR 0001 do not change.
   its group, and a binding to an account outside that list is replaced by the selector. The round
   robin cursor has the group id in its key, so teams do not move each other's cursor.
 - **Migration.** Core gives each pool row without a team to the default team on every start. The
-  default team is the active team with the id in `TDAI_METADATA_DEFAULT_TEAM_ID` when that variable
-  is set (a missing or inactive id gives no team and no name rule runs, because a team name is not
-  unique and any user can create a team with any name). Without an id, it is the one team with the
-  name in `TDAI_METADATA_DEFAULT_TEAM_NAME`; when that variable is not set either, the one team named `default`, and only when no team has that name, the one team named
+  default team is the one team with the name in `TDAI_METADATA_DEFAULT_TEAM_NAME`; when that
+  variable is not set, the one team named `default`, and only when no team has that name, the one team named
   `default-team`. A name step that finds two teams stops the rule. When no single team is found,
   the pool rows stay unassigned, no team uses them, every client runs on its instance group, and
   Core logs an error with the candidate team ids. Before this, the migration always gives each

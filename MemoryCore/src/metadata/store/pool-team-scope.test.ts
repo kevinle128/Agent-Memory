@@ -5,7 +5,6 @@ import {
   defaultTeamSearchNames,
   parseStoredThresholdPct,
   pickDefaultTeam,
-  pickDefaultTeamById,
   logSubscriptionPoolTeamBackfill,
   sameUpstreamScope,
   upstreamGroupScope,
@@ -50,34 +49,6 @@ describe("default team search", () => {
   it("counts a team id that is listed twice as one team", () => {
     expect(pickDefaultTeam([{ name: "default", team_ids: ["team-a", "team-a"] }]))
       .toEqual({ status: "found", name: "default", team_id: "team-a" });
-  });
-});
-
-describe("default team by id", () => {
-  it("finds the configured team when it is active", () => {
-    expect(pickDefaultTeamById("team-a", ["team-a"]))
-      .toEqual({ status: "found", name: "team-a", team_id: "team-a" });
-  });
-
-  it("finds no team when the configured id is not in the active list", () => {
-    expect(pickDefaultTeamById("team-a", [])).toEqual({ status: "not_found", reason: "configured_team_not_active" });
-    expect(pickDefaultTeamById("team-a", ["team-b"])).toEqual({ status: "not_found", reason: "configured_team_not_active" });
-  });
-
-  it("names the id variable in the error line when the configured team is not active", () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      logSubscriptionPoolTeamBackfill({
-        restored: [], unassigned: 2, assigned: 0, sourceClash: false,
-        pick: pickDefaultTeamById("team-a", []),
-      });
-      expect(error).toHaveBeenCalledTimes(1);
-      const line = String(error.mock.calls[0]![0]);
-      expect(line).toContain("reason=configured_team_not_active");
-      expect(line).toContain("TDAI_METADATA_DEFAULT_TEAM_ID");
-    } finally {
-      error.mockRestore();
-    }
   });
 });
 

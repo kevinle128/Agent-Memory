@@ -28,19 +28,6 @@ describe("default team name in the store config", () => {
     }).defaultTeamName).toBe("Main");
   });
 
-  it("reads TDAI_METADATA_DEFAULT_TEAM_ID for both backends and trims it", () => {
-    expect(loadStoreConfig({ TDAI_METADATA_DEFAULT_TEAM_ID: " team-main " }, "/tmp/x").defaultTeamId).toBe("team-main");
-    expect(loadStoreConfig({
-      TDAI_METADATA_MONGO_URI: "mongodb://localhost:27017",
-      TDAI_METADATA_DEFAULT_TEAM_ID: "team-main",
-    }).defaultTeamId).toBe("team-main");
-  });
-
-  it("leaves the id field out when the variable is unset or blank", () => {
-    expect("defaultTeamId" in loadStoreConfig({}, "/tmp/x")).toBe(false);
-    expect("defaultTeamId" in loadStoreConfig({ TDAI_METADATA_DEFAULT_TEAM_ID: "  " }, "/tmp/x")).toBe(false);
-  });
-
   it("leaves the field out when the variable is unset or blank", () => {
     expect("defaultTeamName" in loadStoreConfig({}, "/tmp/x")).toBe(false);
     expect("defaultTeamName" in loadStoreConfig({ TDAI_METADATA_DEFAULT_TEAM_NAME: "   " }, "/tmp/x")).toBe(false);
@@ -73,28 +60,6 @@ describe("default team name reaches the SQLite store", () => {
       expect((await store.getInstanceUpstreamGroup("grp-pool"))!.team_id).toBe("team-main");
     } finally {
       await store.close();
-    }
-  });
-
-  it("gives the pool groups to the configured team id through createMetadataStore", async () => {
-    seedInstance("inst-c");
-    const config = loadStoreConfig({ TDAI_METADATA_SQLITE_BASE_DIR: baseDir, TDAI_METADATA_DEFAULT_TEAM_ID: "team-main" });
-    const store = await createMetadataStore(config, "inst-c");
-    try {
-      expect((await store.getInstanceUpstreamGroup("grp-pool"))!.team_id).toBe("team-main");
-    } finally {
-      await store.close();
-    }
-  });
-
-  it("gives the pool groups to the configured team id through the store pool", async () => {
-    seedInstance("inst-d");
-    const pool = await createMetadataStorePool(loadStoreConfig({ TDAI_METADATA_SQLITE_BASE_DIR: baseDir, TDAI_METADATA_DEFAULT_TEAM_ID: "team-main" }));
-    try {
-      const store = await pool.getStore("inst-d");
-      expect((await store.getInstanceUpstreamGroup("grp-pool"))!.team_id).toBe("team-main");
-    } finally {
-      await pool.closeAll();
     }
   });
 

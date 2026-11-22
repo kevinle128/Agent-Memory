@@ -41,10 +41,9 @@ export interface LegacyPoolSeed {
   globalThresholdPct?: string;
 }
 
-/** Default team settings of a store (env TDAI_METADATA_DEFAULT_TEAM_NAME and _ID). */
+/** Default team settings of a store (env TDAI_METADATA_DEFAULT_TEAM_NAME). */
 export interface PoolMigrationOpenOptions {
   defaultTeamName?: string;
-  defaultTeamId?: string;
 }
 
 export interface PoolMigrationHarness {
@@ -164,36 +163,6 @@ export function runSubscriptionPoolMigrationContract(name: string, harness: Pool
 
       const second = await openStore(first.db, { defaultTeamName: "Main" });
       expect(await poolTeams(second)).toEqual(allPools("team-main"));
-    });
-
-    it("uses only the configured team id and ignores a team with the name default", async () => {
-      const teams = [team("team-def", "default"), team("team-main", "Main")];
-      const { store } = await migrated(legacySeed(teams), { defaultTeamId: "team-main" });
-      expect(await poolTeams(store)).toEqual(allPools("team-main"));
-    });
-
-    it("lets the configured team id win over the configured team name", async () => {
-      const teams = [team("team-def", "default"), team("team-main", "Main"), team("team-other", "Other")];
-      const { store } = await migrated(legacySeed(teams), { defaultTeamId: "team-other", defaultTeamName: "Main" });
-      expect(await poolTeams(store)).toEqual(allPools("team-other"));
-    });
-
-    it("assigns nothing and logs one error line when the configured team id is not an active team", async () => {
-      const error = vi.spyOn(console, "error").mockImplementation(() => {});
-      const missing = await migrated(legacySeed([team("team-def", "default")]), { defaultTeamId: "team-gone" });
-      expect(await poolTeams(missing.store)).toEqual(allPools(""));
-      const lines = error.mock.calls.map((c) => String(c[0])).filter((l) => l.includes("team backfill"));
-      expect(lines).toHaveLength(1);
-      expect(lines[0]).toContain("reason=configured_team_not_active");
-      expect(lines[0]).toContain("TDAI_METADATA_DEFAULT_TEAM_ID");
-      // The agents still go back to the default group, so no client gets AGENT_NOT_CONFIGURED.
-      expect((await missing.store.getInstanceUpstreamGroup("dflt-old"))!.agents).toEqual(["codebuddy", "claude-code", "codex"]);
-
-      const inactive = await migrated(
-        legacySeed([team("team-def", "default"), team("team-old", "Old", { status: "archived" })]),
-        { defaultTeamId: "team-old" },
-      );
-      expect(await poolTeams(inactive.store)).toEqual(allPools(""));
     });
 
     it("stops at two teams named default and does not try default-team", async () => {
