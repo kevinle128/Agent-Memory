@@ -358,19 +358,18 @@ export class InjectionPipeline {
           ?? (hook.anchor.slot ? profile.resolveSlot(hook.anchor.slot) : null);
         // Edit only the text block that holds the anchor. Replacing every
         // block drops sibling text and cache_control (billing header, identity).
-        const target = key
-          ? sysMsg.blocks.find((block) =>
-            block.type === "text"
-            && profile.parse(block.content).some((segment) => segment.key === key))
-          : undefined;
-        if (target && key) {
-          const newSegments = profile.applyAnchor(
-            profile.parse(target.content),
-            { key, relation: hook.anchor.relation },
-            text,
-          );
-          target.content = profile.rebuild(newSegments);
-          return; // anchor hit — done
+        if (key) {
+          for (const block of sysMsg.blocks) {
+            if (block.type !== "text") continue;
+            const segments = profile.parse(block.content);
+            if (!segments.some((segment) => segment.key === key)) continue;
+            block.content = profile.rebuild(profile.applyAnchor(
+              segments,
+              { key, relation: hook.anchor.relation },
+              text,
+            ));
+            return; // anchor hit — done
+          }
         }
         // Slot unresolved / structure missing → fall through to `point` (warn).
         console.warn(
