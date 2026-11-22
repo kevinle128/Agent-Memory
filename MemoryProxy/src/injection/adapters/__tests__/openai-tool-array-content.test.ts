@@ -37,7 +37,7 @@ describe("OpenAI tool message content", () => {
     );
     ctx.messages[0].blocks[0].content = "rewritten";
     expect(adapter.serialize(ctx).messages).toEqual([
-      { role: "tool", tool_call_id: "c", content: "rewritten" },
+      { role: "tool", tool_call_id: "c", content: [{ type: "text", text: "rewritten" }] },
     ]);
   });
 });

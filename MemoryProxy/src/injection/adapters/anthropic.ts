@@ -10,6 +10,18 @@
 
 import type { ProtocolAdapter } from "./interface.js";
 import { parseToolResultContent, serializeToolResultContent } from "./tool-result-content.js";
+import {
+  rememberBlock,
+  rememberBody,
+  rememberMessage,
+  rememberedBody,
+  requestBody,
+  messageUnchanged,
+  messageWire,
+  preservedBlock,
+  blockWire,
+  type ContentShape,
+} from "./client-wire.js";
 import type {
   AgentContext,
   AgentContextMetadata,
@@ -35,7 +47,16 @@ export class AnthropicAdapter implements ProtocolAdapter {
     // Anthropic has a top-level "system" field
     if (body.system != null) {
       const systemBlocks = this.parseSystemField(body.system);
-      messages.push({ role: "system", blocks: systemBlocks, metadata: { [TOP_LEVEL_SYSTEM]: true } });
+      const systemMessage: ContextMessage = {
+        role: "system",
+        blocks: systemBlocks,
+        metadata: { [TOP_LEVEL_SYSTEM]: true },
+      };
+      rememberMessage(systemMessage, {
+        contentShape: Array.isArray(body.system) ? "array" : "string",
+        blockCount: systemBlocks.length,
+      });
+      messages.push(systemMessage);
     }
 
     // Parse conversation messages
@@ -59,11 +80,14 @@ export class AnthropicAdapter implements ProtocolAdapter {
       }
     }
 
-    return { messages, tools, requestParams, metadata };
+    const ctx: AgentContext = { messages, tools, requestParams, metadata };
+    rememberBody(ctx, body);
+    return ctx;
   }
 
   serialize(ctx: AgentContext): Record<string, unknown> {
-    const body: Record<string, unknown> = { ...ctx.requestParams };
+    const original = rememberedBody(ctx);
+    const body = requestBody(ctx, ["messages", "system", "tools"]);
 
     // Separate system message from conversation messages
     // Claude Code 2.1.277+ sends AGENTS.md as a role:"system" message while
@@ -75,14 +99,18 @@ export class AnthropicAdapter implements ProtocolAdapter {
     // Serialize system as top-level field
     if (systemMsg) {
       body.system = this.serializeSystemMessage(systemMsg);
+    } else {
+      delete body.system;
     }
 
     // Serialize conversation messages
     body.messages = conversationMsgs.map((m) => this.serializeMessage(m));
 
     // Serialize tools
-    if (ctx.tools && ctx.tools.length > 0) {
+    if (ctx.tools && (ctx.tools.length > 0 || (original !== undefined && "tools" in original))) {
       body.tools = ctx.tools.map((t) => this.serializeTool(t));
+    } else {
+      delete body.tools;
     }
 
     return body;
@@ -92,7 +120,9 @@ export class AnthropicAdapter implements ProtocolAdapter {
 
   private parseSystemField(system: unknown): ContextBlock[] {
     if (typeof system === "string") {
-      return [{ type: "text", content: system }];
+      const block: ContextBlock = { type: "text", content: system };
+      rememberBlock(block, { type: "text", text: system }, system, "text");
+      return [block];
     }
     if (Array.isArray(system)) {
       return (system as Record<string, unknown>[]).map((block) => this.parseContentBlock(block));
@@ -104,21 +134,31 @@ export class AnthropicAdapter implements ProtocolAdapter {
     const role = m.role as ContextMessage["role"];
     const content = m.content;
     const blocks: ContextBlock[] = [];
+    let contentShape: ContentShape = "absent";
 
     if (typeof content === "string") {
-      blocks.push({ type: "text", content });
+      contentShape = "string";
+      const block: ContextBlock = { type: "text", content };
+      rememberBlock(block, { type: "text", text: content }, content, "text");
+      blocks.push(block);
     } else if (Array.isArray(content)) {
+      contentShape = "array";
       for (const block of content as Record<string, unknown>[]) {
         blocks.push(this.parseContentBlock(block));
       }
+    } else if (content === null) {
+      contentShape = "null";
     }
 
     const extra: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(m)) {
       if (key !== "role" && key !== "content") extra[key] = value;
     }
-    if (Object.keys(extra).length === 0) return { role, blocks };
-    return { role, blocks, metadata: { [MESSAGE_EXTRA_FIELDS]: extra } };
+    const message: ContextMessage = Object.keys(extra).length === 0
+      ? { role, blocks }
+      : { role, blocks, metadata: { [MESSAGE_EXTRA_FIELDS]: extra } };
+    rememberMessage(message, { raw: m, contentShape, blockCount: blocks.length });
+    return message;
   }
 
   private parseContentBlock(block: Record<string, unknown>): ContextBlock {
@@ -128,6 +168,8 @@ export class AnthropicAdapter implements ProtocolAdapter {
     if (block.cache_control !== undefined && parsed.type !== "custom") {
       parsed.metadata = { ...parsed.metadata, cache_control: block.cache_control };
     }
+    const textKey = type === "text" ? "text" : type === "thinking" ? "thinking" : undefined;
+    rememberBlock(parsed, block, parsed.content, textKey);
     return parsed;
   }
 
@@ -205,19 +247,91 @@ export class AnthropicAdapter implements ProtocolAdapter {
   // ── Private: serialize helpers ──────────────────────────────────────────────
 
   private serializeSystemMessage(msg: ContextMessage): unknown {
-    const textBlocks = msg.blocks.filter((b) => b.type === "text");
-    if (msg.blocks.length === 1 && textBlocks.length === 1
-      && textBlocks[0].metadata?.cache_control === undefined) {
-      return textBlocks[0].content;
+    const shape = messageWire(msg)?.contentShape;
+    // A client string stays a string while it is still one text block.
+    // A client array stays an array, including a single block with no cache marker.
+    if (shape === "string" && msg.blocks.length === 1 && msg.blocks[0].type === "text") {
+      return msg.blocks[0].content;
     }
-    // Multiple blocks or cache metadata require the array format.
-    return msg.blocks.map((b) => this.serializeContentBlock(b));
+    return msg.blocks.map((b) => this.emitBlock(b));
   }
 
   private serializeMessage(msg: ContextMessage): Record<string, unknown> {
-    const content = msg.blocks.map((b) => this.serializeContentBlock(b));
+    if (messageUnchanged(msg)) return messageWire(msg)!.raw!;
+    const wire = messageWire(msg);
+    const content = this.messageContent(msg, wire?.contentShape);
     const extra = msg.metadata?.[MESSAGE_EXTRA_FIELDS] as Record<string, unknown> | undefined;
+    if (wire?.raw) return { ...wire.raw, ...extra, role: msg.role, content };
     return { ...extra, role: msg.role, content };
+  }
+
+  private messageContent(msg: ContextMessage, shape: ContentShape | undefined): unknown {
+    if (shape === "string" && msg.blocks.length === 1 && msg.blocks[0].type === "text") {
+      return msg.blocks[0].content;
+    }
+    return msg.blocks.map((b) => this.emitBlock(b));
+  }
+
+  private emitBlock(block: ContextBlock): Record<string, unknown> {
+    const kept = preservedBlock(block);
+    if (kept) return kept;
+    const src = blockWire(block);
+    if (src && block.type === "tool_use") {
+      return this.overlayToolUse(block, src.raw);
+    }
+    if (src && block.type === "tool_result") {
+      return this.overlayToolResult(block, src.raw);
+    }
+    if (src && block.type === "image" && src.raw.source && typeof src.raw.source === "object") {
+      return this.overlayImage(block, src.raw);
+    }
+    if (src && block.type === "thinking") {
+      return {
+        ...src.raw,
+        thinking: block.content,
+        signature: block.metadata?.signature ?? src.raw.signature ?? "",
+      };
+    }
+    if (src && block.type === "text") {
+      const out: Record<string, unknown> = { ...src.raw, text: block.content };
+      if (block.metadata && "cache_control" in block.metadata) out.cache_control = block.metadata.cache_control;
+      return out;
+    }
+    return this.serializeContentBlock(block);
+  }
+
+  /** Keep every field on the client tool_result. Write the fields serialize owns. */
+  private overlayToolResult(block: ContextBlock, raw: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {
+      ...raw,
+      content: serializeToolResultContent(block),
+    };
+    if (block.metadata && "tool_use_id" in block.metadata) out.tool_use_id = block.metadata.tool_use_id;
+    if (block.metadata && "is_error" in block.metadata) out.is_error = block.metadata.is_error;
+    return out;
+  }
+
+  /** Keep every field on the client image. Write source data and source fields. */
+  private overlayImage(block: ContextBlock, raw: Record<string, unknown>): Record<string, unknown> {
+    const source: Record<string, unknown> = { ...(raw.source as Record<string, unknown>) };
+    if (block.content !== blockWire(block)?.originalText) source.data = block.content;
+    if (block.metadata && "media_type" in block.metadata) source.media_type = block.metadata.media_type;
+    if (block.metadata && "source_type" in block.metadata) source.type = block.metadata.source_type;
+    return { ...raw, source };
+  }
+
+  /** Keep every field on the client tool_use. Write only id, name, and input. */
+  private overlayToolUse(block: ContextBlock, raw: Record<string, unknown>): Record<string, unknown> {
+    const parsed = JSON.parse(block.content) as { name: string; arguments: string };
+    const input = typeof parsed.arguments === "string"
+      ? JSON.parse(parsed.arguments)
+      : parsed.arguments;
+    return {
+      ...raw,
+      id: block.metadata?.tool_id ?? raw.id ?? "",
+      name: parsed.name,
+      input,
+    };
   }
 
   private serializeContentBlock(block: ContextBlock): Record<string, unknown> {
@@ -292,7 +406,8 @@ export class AnthropicAdapter implements ProtocolAdapter {
   private serializeTool(tool: AgentTool): Record<string, unknown> {
     const original = this.toolDefinitions.get(tool);
     // Server tools (for example advisor) do not use a custom input schema.
-    if (original?.type && original.type !== "custom") return { ...original };
+    if (original?.type && original.type !== "custom") return original;
+    if (original && this.sameCustomTool(original, tool)) return original;
     const out: Record<string, unknown> = {
       ...original,
       name: tool.name,
@@ -303,5 +418,18 @@ export class AnthropicAdapter implements ProtocolAdapter {
       out.cache_control = tool.cacheControl;
     }
     return out;
+  }
+
+  private sameCustomTool(original: Record<string, unknown>, tool: AgentTool): boolean {
+    const description = (original.description as string) ?? "";
+    const schema = original.input_schema as Record<string, unknown> | undefined;
+    const sameSchema = schema === tool.parameters
+      || (schema === undefined && Object.keys(tool.parameters).length === 0);
+    const sameCache = original.cache_control === tool.cacheControl
+      || (original.cache_control === undefined && tool.cacheControl === undefined);
+    return original.name === tool.name
+      && description === tool.description
+      && sameSchema
+      && sameCache;
   }
 }

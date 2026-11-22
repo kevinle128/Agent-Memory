@@ -131,6 +131,13 @@ export class InjectionPipeline {
       // 3. Execute hooks at each injection point
       const hookResults: HookResult[] = await this.executeHooks(ctx);
 
+      // No hook produced a block. Return the client body unchanged.
+      if (!hookResults.some((result) => result.blockCount > 0)) {
+        const durationMs = Date.now() - pipelineStartMs;
+        safeCall(() => this.observer.onPipelineEnd(metadata, durationMs, hookResults));
+        return body;
+      }
+
       // 4. Serialize → modified body
       const result = adapter.serialize(ctx);
 

@@ -30,16 +30,31 @@ export function parseToolResultContent(content: unknown): ParsedToolResultConten
 }
 
 /**
- * Rebuild tool-result content. If no hook changed the text, return the
- * original array. If a hook changed the text, put the new text first and keep
- * the non-text parts.
+ * Rebuild tool-result content. Unchanged text returns the original array.
+ *
+ * Changed text is one flat string (`ContextBlock.content`). It is written
+ * into the first text part. Later text parts are removed, and their fields
+ * are dropped. Non-text parts stay where they were relative to that first
+ * text part. The new text is not split on newlines.
+ *
+ * When the array has no text part, the new text is a new part placed first.
+ * That is where the previous builder put rewritten text, so the new text is
+ * not dropped. Every original part then follows, in its original order.
  */
 export function serializeToolResultContent(block: ContextBlock | undefined): unknown {
   if (!block) return "";
   const raw = block.metadata?.raw_content as Part[] | undefined;
   if (!raw) return block.content;
   if (block.content === block.metadata?.parsed_text) return raw;
-  const nonText = raw.filter((c) => c.type !== "text");
-  if (nonText.length === 0) return block.content;
-  return block.content ? [{ type: "text", text: block.content }, ...nonText] : nonText;
+
+  const firstText = raw.findIndex((part) => part.type === "text");
+  if (firstText === -1) {
+    return [{ type: "text", text: block.content }, ...raw];
+  }
+  const after = raw.slice(firstText + 1).filter((part) => part.type !== "text");
+  return [
+    ...raw.slice(0, firstText),
+    { ...raw[firstText], text: block.content },
+    ...after,
+  ];
 }

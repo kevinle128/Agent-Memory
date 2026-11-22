@@ -140,7 +140,7 @@ describe("anchored injection keeps sibling system blocks", () => {
     expect(system[2].cache_control).toEqual(CACHE);
     expectAnchorPosition(system[2].text, relation, injected, heading, body);
     expect(withoutInjected(system[2].text, injected)).toBe(CORE);
-    expect(out.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hi" }] }]);
+    expect(out.messages).toEqual([{ role: "user", content: "hi" }]);
   });
 
   it("lands skills and memory in the core block and leaves the other blocks unchanged", async () => {
