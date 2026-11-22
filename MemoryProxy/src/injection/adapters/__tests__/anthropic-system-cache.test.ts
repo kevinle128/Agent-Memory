@@ -17,7 +17,7 @@ describe("Anthropic system prompt cache boundaries", () => {
     const out = await roundtrip(body);
     expect(out.system).toEqual(system);
     expect(out.model).toBe("fixture");
-    expect(out.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hello" }] }]);
+    expect(out.messages).toEqual([{ role: "user", content: "hello" }]);
   });
   it("preserves the simple string form", async () => {
     const out = await roundtrip({ system: "Instructions", messages: [] });

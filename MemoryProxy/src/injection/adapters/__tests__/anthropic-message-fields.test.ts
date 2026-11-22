@@ -18,9 +18,9 @@ describe("AnthropicAdapter message-level fields", () => {
 
     expect(out.system).toBe("top-level system");
     expect(out.messages).toEqual([
-      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "user", content: "hi" },
       { role: "system", content: [], output_config: { effort: "high" } },
-      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      { role: "assistant", content: "ok" },
     ]);
   });
 });
