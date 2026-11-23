@@ -9,6 +9,7 @@ import { DeviceStore, type DeviceFile } from './device/device-store.js';
 import { KeyIssuer } from './device/key-issuer.js';
 import { registerAdminRoutes } from './http/admin-routes.js';
 import { registerDeviceApiRoutes, registerDevicePageRoutes } from './http/device-routes.js';
+import { registerPublicUrlRedirect } from './http/public-url-redirect.js';
 import { registerSsoRoutes } from './http/sso-routes.js';
 import { NonceStore } from './sso/nonce-store.js';
 import { ReplayGuard } from './sso/replay-guard.js';
@@ -97,6 +98,11 @@ export const vtcExtension: PanelExtension<VtcConfig> = {
     ctx.web.advertise({ pages: [{ id: 'pending_users', visible_to: 'team_admin' }], loginMethodIds: ['vtc'] });
     // Last, so a failure above leaves no provider registered.
     ctx.auth.registerProvider(provider);
+    // Plain http stays local. An https public origin sends browser navigations that arrived
+    // on any other host (the published HTTP port) to that origin before a cookie is set.
+    if (new URL(config.publicBaseUrl).protocol === 'https:') {
+      ctx.http.beforePages((app) => registerPublicUrlRedirect(app, config.publicBaseUrl));
+    }
 
     let timer: NodeJS.Timeout | undefined;
     return {
