@@ -57,7 +57,12 @@ export interface ExtensionAuthPort {
    * `hadSessionCookie` tells whether the request carried the Panel session cookie at all.
    */
   destroySession(c: Context): { clearCookie: string; hadSessionCookie: boolean };
-  /** Panel headers (X-Tdai-Service-Id + X-Tdai-User-Key) or the Panel session cookie, then auth/verify, then user_type === 'system_admin'. */
+  /**
+   * Panel headers (X-Tdai-Service-Id + X-Tdai-User-Key) or the Panel session cookie, then auth/verify.
+   * `isSystemAdmin` is user_type === 'system_admin'. A normal user is still returned.
+   */
+  requireUser(c: Context): Promise<{ userId: string; instanceId: string; isSystemAdmin: boolean } | Response>;
+  /** Same credential path as requireUser, then refuses anyone who is not a system admin. */
   requireSystemAdmin(c: Context): Promise<{ userId: string; instanceId: string } | Response>;
 }
 export interface ExtensionInstancesPort {
@@ -84,7 +89,7 @@ export interface RateLimiter {
 }
 export interface ExtensionWebPage {
   id: string;
-  visible_to: 'system_admin' | 'all';
+  visible_to: 'system_admin' | 'team_admin' | 'all';
 }
 
 export type TeamRole = 'admin' | 'member' | 'reviewer';
@@ -135,9 +140,14 @@ export interface MetaFacade {
   };
   teams: {
     get(instanceId: string, teamId: string): Promise<{ team_id: string; name: string; owner_user_id: string } | null>;
+    /**
+     * One page of team/list. `total` is the full count, so a caller that needs every team
+     * repeats the call with a higher offset until the pages are exhausted.
+     */
     listForUser(
       instanceId: string,
       userId: string,
+      page?: { limit?: number; offset?: number },
     ): Promise<{ total: number; items: Array<{ team_id: string; name: string }> }>;
   };
   members: {

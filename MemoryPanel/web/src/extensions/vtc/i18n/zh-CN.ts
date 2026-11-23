@@ -4,7 +4,7 @@ export const zhCN: Record<string, string> = {
 
   'page.title': '待审批用户',
   'page.lead': '已用 VTC 邮箱登录但尚未加入任何团队的人员。请把每个人加入对应团队，或拒绝其申请。',
-  'page.adminNote': '仅系统管理员可见此页面，且仅在运维开启 VTC 扩展时显示。列表覆盖整个实例，不只是顶部所选的团队。',
+  'page.adminNote': '系统管理员和团队管理员可见此页面，且仅在运维开启 VTC 扩展时显示。列表覆盖整个实例，不只是顶部所选的团队。',
   'page.footnote': '时间为 Asia/Saigon（UTC+7）。来源 = 该人员首次使用 VTC 邮箱登录的位置。',
   'page.loadFailed': '无法加载列表。',
   'tab.pending': '待审批（{{count}}）',
@@ -81,6 +81,8 @@ export const zhCN: Record<string, string> = {
   'error.PENDING_NOT_REJECTED': '该申请不是已拒绝状态。',
   'error.APPROVAL_IN_PROGRESS': '该申请的另一个操作仍在进行，请稍后再试。',
   'error.TEAM_NOT_FOUND': '团队不存在。',
+  'error.NOT_TEAM_ADMIN': '只有团队管理员可以打开待处理用户。',
+  'error.TEAM_NOT_ALLOWED': '只能把人员批准加入你担任管理员的团队。',
   'error.USER_NOT_FOUND': '用户不存在。',
   'error.USER_NOT_LINKABLE': '该用户不能关联到 VTC 人员。',
   'error.USER_ALREADY_LINKED': '该用户已关联到另一个 VTC 账号。',

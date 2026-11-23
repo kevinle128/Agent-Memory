@@ -71,7 +71,7 @@ describe('pending users admin routes', () => {
 
       const normal = await post(app, '/pending/list', {}, { ...ADMIN_HEADERS, 'X-Tdai-User-Key': plainKey });
       expect(normal.status).toBe(403);
-      expect(normal.body.message).toBe('NOT_SYSTEM_ADMIN');
+      expect(normal.body.message).toBe('NOT_TEAM_ADMIN');
       const { 'X-Tdai-User-Key': _drop, ...noKey } = ADMIN_HEADERS;
       const anonymous = await post(app, '/pending/list', {}, noKey);
       expect(anonymous.status).toBe(401);
@@ -92,13 +92,244 @@ describe('pending users admin routes', () => {
       expect(viaCookie).toMatchObject({ status: 200, body: { code: 0, data: { pending_count: 0 } } });
     });
 
-    it('reaches every route only through the system admin check', async () => {
-      const { core, prepare } = seed({ extra: (c) => void c.seedUser({ username: 'plain' }) });
+    it('refuses every pending route when the caller administers no team', async () => {
+      const { core, team, prepare } = seed({ extra: (c) => void c.seedUser({ username: 'plain' }) });
+      const plain = core.findUser((u) => u.username === 'plain')!;
+      core.addMember(team.team_id, plain.user_id, 'member');
       const { app } = await buildVtcApp({ core, prepare });
-      const plainKey = core.keysOf(core.findUser((u) => u.username === 'plain')!.user_id)[0]!.key_value;
-      const headers = { ...ADMIN_HEADERS, 'X-Tdai-User-Key': plainKey };
-      for (const path of ['list', 'count', 'candidates', 'approve', 'reject', 'reset']) {
-        expect((await post(app, `/pending/${path}`, { pending_id: 'pnd_1' }, headers)).status, path).toBe(403);
+      const headers = { ...ADMIN_HEADERS, 'X-Tdai-User-Key': core.keysOf(plain.user_id)[0]!.key_value };
+      for (const path of ['list', 'count', 'candidates', 'approve', 'reject', 'reset', 'teams']) {
+        const reply = await post(app, `/pending/${path}`, { pending_id: 'pnd_1' }, headers);
+        expect(reply.status, path).toBe(403);
+        expect(reply.body.message, path).toBe('NOT_TEAM_ADMIN');
+      }
+    });
+  });
+
+  describe('team admin', () => {
+    function leadOf(ownName = 'Own') {
+      const core = createFakeCore();
+      const sys = core.seedAdmin();
+      const lead = core.seedUser({ username: 'lead' });
+      const own = core.seedTeam(ownName);
+      const other = core.seedTeam('Other');
+      core.addMember(own.team_id, lead.user_id, 'admin');
+      core.addMember(other.team_id, lead.user_id, 'member');
+      const headers = { ...ADMIN_HEADERS, 'X-Tdai-User-Key': lead.default_key_value };
+      return { core, sys, lead, own, other, headers };
+    }
+
+    it('lists, counts, rejects and resets any pending record', async () => {
+      const { core, headers } = leadOf();
+      const { app } = await buildVtcApp({
+        core,
+        prepare: (dir) => writeExtensionFile(dir, 'pending', { version: 1, records: [record()] }),
+      });
+      expect((await post(app, '/pending/count', {}, headers)).body.data).toEqual({ pending_count: 1 });
+      expect((await post(app, '/pending/list', {}, headers)).body.data.items).toEqual([
+        expect.objectContaining({ pending_id: 'pnd_1', status: 'pending' }),
+      ]);
+      expect(await post(app, '/pending/reject', { pending_id: 'pnd_1', reason: 'later' }, headers)).toMatchObject({
+        status: 200,
+        body: { data: { status: 'rejected' } },
+      });
+      expect(await post(app, '/pending/reset', { pending_id: 'pnd_1' }, headers)).toMatchObject({
+        status: 200,
+        body: { data: { status: 'pending' } },
+      });
+    });
+
+    it('approves into a team the caller administers and refuses another team', async () => {
+      const { core, own, other, headers } = leadOf();
+      const { app } = await buildVtcApp({
+        core,
+        prepare: (dir) =>
+          writeExtensionFile(dir, 'pending', {
+            version: 1,
+            records: [record(), record({ id: 'pnd_2', vtcUserId: '10483', email: 'second.person@vtc.vn' })],
+          }),
+      });
+      const intoOwn = await post(
+        app,
+        '/pending/approve',
+        { pending_id: 'pnd_1', team_id: own.team_id, role: 'member', mode: 'create' },
+        headers,
+      );
+      expect(intoOwn.status).toBe(200);
+      expect(intoOwn.body.data).toMatchObject({ mode: 'created', team_id: own.team_id });
+      const intoOther = await post(
+        app,
+        '/pending/approve',
+        { pending_id: 'pnd_2', team_id: other.team_id, role: 'member', mode: 'create' },
+        headers,
+      );
+      expect(intoOther).toMatchObject({ status: 403, body: { message: 'TEAM_NOT_ALLOWED' } });
+      expect(core.findUser((u) => u.external_id === '10483')).toBeUndefined();
+    });
+
+    it('links a member of an administered team and refuses a user of another team', async () => {
+      const { core, own, other, headers } = leadOf();
+      const inside = core.seedUser({ username: 'inside', email: 'inside@vtc.vn' });
+      const outside = core.seedUser({ username: 'outside', email: 'outside@vtc.vn' });
+      core.addMember(own.team_id, inside.user_id, 'member');
+      core.addMember(other.team_id, outside.user_id, 'member');
+      const { app } = await buildVtcApp({
+        core,
+        prepare: (dir) =>
+          writeExtensionFile(dir, 'pending', {
+            version: 1,
+            records: [record({ email: 'inside@vtc.vn' }), record({ id: 'pnd_2', vtcUserId: '10483', email: 'outside@vtc.vn' })],
+          }),
+      });
+      const linked = await post(
+        app,
+        '/pending/approve',
+        { pending_id: 'pnd_1', team_id: own.team_id, role: 'member', mode: 'link', link_user_id: inside.user_id },
+        headers,
+      );
+      expect(linked.status).toBe(200);
+      expect(linked.body.data).toMatchObject({ mode: 'linked', core_user_id: inside.user_id });
+      const refused = await post(
+        app,
+        '/pending/approve',
+        { pending_id: 'pnd_2', team_id: own.team_id, role: 'member', mode: 'link', link_user_id: outside.user_id },
+        headers,
+      );
+      expect(refused).toMatchObject({ status: 409, body: { message: 'USER_NOT_LINKABLE' } });
+    });
+
+    it('leaves users of other teams out of the candidate list', async () => {
+      const { core, own, other, headers } = leadOf();
+      const inside = core.seedUser({ username: 'quang', email: 'quang.le@vtc.vn' });
+      const outside = core.seedUser({ username: 'quang-le', email: 'else@vtc.vn' });
+      core.addMember(own.team_id, inside.user_id, 'member');
+      core.addMember(other.team_id, outside.user_id, 'member');
+      const { app } = await buildVtcApp({
+        core,
+        prepare: (dir) => writeExtensionFile(dir, 'pending', { version: 1, records: [record({ email: 'quang.le@vtc.vn' })] }),
+      });
+      const reply = await post(app, '/pending/candidates', { pending_id: 'pnd_1' }, headers);
+      expect(reply.body.data.candidates.map((c: { username: string }) => c.username)).toEqual(['quang']);
+      const asSystem = await post(app, '/pending/candidates', { pending_id: 'pnd_1' });
+      expect(asSystem.body.data.candidates.map((c: { username: string }) => c.username).sort()).toEqual(['quang', 'quang-le']);
+    });
+
+    it('returns only administered teams, and every membership for a system admin', async () => {
+      const { core, sys, own, other, headers } = leadOf();
+      const third = core.seedTeam('Third');
+      core.addMember(own.team_id, sys.user_id, 'admin');
+      core.addMember(other.team_id, sys.user_id, 'member');
+      const { app } = await buildVtcApp({ core, prepare: () => undefined });
+      const forLead = await post(app, '/pending/teams', {}, headers);
+      expect(forLead.body.data.teams).toEqual([{ team_id: own.team_id, name: own.name }]);
+      const forSystem = await post(app, '/pending/teams');
+      expect(forSystem.body.data.teams.map((t: { team_id: string }) => t.team_id).sort()).toEqual(
+        [own.team_id, other.team_id].sort(),
+      );
+      expect(forSystem.body.data.teams.map((t: { team_id: string }) => t.team_id)).not.toContain(third.team_id);
+    });
+
+    it('hides users of other teams in the create conflict, and creates when only they match', async () => {
+      const { core, own, other, headers } = leadOf();
+      const inside = core.seedUser({ username: 'quang', email: 'quang.le@vtc.vn' });
+      const outside = core.seedUser({ username: 'quang-le', email: 'else@vtc.vn' });
+      core.addMember(own.team_id, inside.user_id, 'member');
+      core.addMember(other.team_id, outside.user_id, 'member');
+      const onlyOutside = core.seedUser({ username: 'stranger', email: 'second.person@vtc.vn' });
+      core.addMember(other.team_id, onlyOutside.user_id, 'member');
+      const { app } = await buildVtcApp({
+        core,
+        prepare: (dir) =>
+          writeExtensionFile(dir, 'pending', {
+            version: 1,
+            records: [
+              record({ email: 'quang.le@vtc.vn' }),
+              record({ id: 'pnd_2', vtcUserId: '10483', email: 'second.person@vtc.vn' }),
+            ],
+          }),
+      });
+      const conflict = await post(
+        app,
+        '/pending/approve',
+        { pending_id: 'pnd_1', team_id: own.team_id, role: 'member', mode: 'create' },
+        headers,
+      );
+      expect(conflict.status).toBe(409);
+      expect(conflict.body.message).toBe('CANDIDATES_EXIST');
+      expect(conflict.body.data.candidates.map((c: { username: string }) => c.username)).toEqual(['quang']);
+      const created = await post(
+        app,
+        '/pending/approve',
+        { pending_id: 'pnd_2', team_id: own.team_id, role: 'member', mode: 'create' },
+        headers,
+      );
+      expect(created.status).toBe(200);
+      expect(created.body.data.mode).toBe('created');
+    });
+
+    it('refuses to finish an earlier link to a user outside the administered teams', async () => {
+      const { core, own, other, headers } = leadOf();
+      const outside = core.seedUser({ username: 'outside', email: 'outside@vtc.vn' });
+      core.addMember(other.team_id, outside.user_id, 'member');
+      const { app } = await buildVtcApp({
+        core,
+        prepare: (dir) => {
+          writeExtensionFile(dir, 'pending', { version: 1, records: [record()] });
+          writeExtensionFile(dir, 'links', {
+            version: 1,
+            links: [{ instanceId: 'default', vtcUserId: '10482', coreUserId: outside.user_id, mode: 'linked', linkedAt: 'x' }],
+          });
+        },
+      });
+      const body = { pending_id: 'pnd_1', team_id: own.team_id, role: 'member', mode: 'link', link_user_id: outside.user_id };
+      expect(await post(app, '/pending/approve', body, headers)).toMatchObject({
+        status: 409,
+        body: { message: 'USER_NOT_LINKABLE' },
+      });
+      expect(await post(app, '/pending/approve', body)).toMatchObject({
+        status: 200,
+        body: { data: { mode: 'existing', core_user_id: outside.user_id } },
+      });
+    });
+
+    it('allows an administered team that sits past the first page of the team list', async () => {
+      const core = createFakeCore();
+      core.seedAdmin();
+      const lead = core.seedUser({ username: 'lead' });
+      for (let i = 0; i < 100; i += 1) {
+        const filler = core.seedTeam(`Filler ${i}`);
+        core.addMember(filler.team_id, lead.user_id, 'member');
+      }
+      const far = core.seedTeam('Far');
+      core.addMember(far.team_id, lead.user_id, 'admin');
+      const headers = { ...ADMIN_HEADERS, 'X-Tdai-User-Key': lead.default_key_value };
+      const { app } = await buildVtcApp({
+        core,
+        prepare: (dir) => writeExtensionFile(dir, 'pending', { version: 1, records: [record()] }),
+      });
+      const reply = await post(
+        app,
+        '/pending/approve',
+        { pending_id: 'pnd_1', team_id: far.team_id, role: 'member', mode: 'create' },
+        headers,
+      );
+      expect(reply.status).toBe(200);
+      expect(reply.body.data).toMatchObject({ mode: 'created', team_id: far.team_id });
+    });
+
+    it('refuses a reviewer and an inactive admin', async () => {
+      const core = createFakeCore();
+      core.seedAdmin();
+      const reviewer = core.seedUser({ username: 'rev' });
+      const dormant = core.seedUser({ username: 'old-admin' });
+      const team = core.seedTeam('T');
+      core.addMember(team.team_id, reviewer.user_id, 'reviewer');
+      core.addMember(team.team_id, dormant.user_id, 'admin', 'removed');
+      const { app } = await buildVtcApp({ core, prepare: () => undefined });
+      for (const user of [reviewer, dormant]) {
+        const headers = { ...ADMIN_HEADERS, 'X-Tdai-User-Key': user.default_key_value };
+        const reply = await post(app, '/pending/list', {}, headers);
+        expect(reply, user.user_id).toMatchObject({ status: 403, body: { message: 'NOT_TEAM_ADMIN' } });
       }
     });
   });

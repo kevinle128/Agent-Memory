@@ -5,7 +5,7 @@ export const enUS: Record<string, string> = {
   'page.title': 'Pending users',
   'page.lead': 'People who logged in with VTC Mail but are not in a team yet. Add each person to a team, or reject the request.',
   'page.adminNote':
-    'Only System Admins see this page, and only when the operator turns on the VTC extension. The list covers the whole instance, not only the team that is selected in the header.',
+    'System admins and team admins see this page, and only when the operator turns on the VTC extension. The list covers the whole instance, not only the team that is selected in the header.',
   'page.footnote': 'Times are in Asia/Saigon (UTC+7). Source = the place where the person first logged in with VTC Mail.',
   'page.loadFailed': 'The list could not be loaded.',
   'tab.pending': 'Pending ({{count}})',
@@ -82,6 +82,8 @@ export const enUS: Record<string, string> = {
   'error.PENDING_NOT_REJECTED': 'This request is not rejected.',
   'error.APPROVAL_IN_PROGRESS': 'Another action on this request is still running. Try again in a moment.',
   'error.TEAM_NOT_FOUND': 'The team does not exist.',
+  'error.NOT_TEAM_ADMIN': 'Only an admin of a team can open pending users.',
+  'error.TEAM_NOT_ALLOWED': 'You can approve people only into a team you administer.',
   'error.USER_NOT_FOUND': 'The user does not exist.',
   'error.USER_NOT_LINKABLE': 'This user can not be linked to a VTC person.',
   'error.USER_ALREADY_LINKED': 'This user is already linked to another VTC account.',

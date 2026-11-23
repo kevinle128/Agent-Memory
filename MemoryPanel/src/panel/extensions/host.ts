@@ -135,7 +135,9 @@ export function createExtensionHost(input: {
     return runtime;
   }
 
-  async function requireSystemAdmin(c: Context): Promise<{ userId: string; instanceId: string } | Response> {
+  async function requireUser(
+    c: Context,
+  ): Promise<{ userId: string; instanceId: string; isSystemAdmin: boolean } | Response> {
     const instanceId = c.req.header(META_HEADER_SERVICE_ID)?.trim();
     if (!instanceId) return respondControlError(c, 400, 'MISSING_INSTANCE_ID');
     let entry;
@@ -157,8 +159,18 @@ export function createExtensionHost(input: {
       return respondControlError(c, 503, 'CORE_UNAVAILABLE');
     }
     if (!user) return respondControlError(c, 401, 'INVALID_USER_KEY');
-    if (user.user_type !== 'system_admin') return respondControlError(c, 403, 'NOT_SYSTEM_ADMIN');
-    return { userId: user.user_id, instanceId: entry.instance_id };
+    return {
+      userId: user.user_id,
+      instanceId: entry.instance_id,
+      isSystemAdmin: user.user_type === 'system_admin',
+    };
+  }
+
+  async function requireSystemAdmin(c: Context): Promise<{ userId: string; instanceId: string } | Response> {
+    const user = await requireUser(c);
+    if (user instanceof Response) return user;
+    if (!user.isSystemAdmin) return respondControlError(c, 403, 'NOT_SYSTEM_ADMIN');
+    return { userId: user.userId, instanceId: user.instanceId };
   }
 
   function createAuthPort(staged: AuthProvider[]): ExtensionAuthPort {
@@ -180,6 +192,7 @@ export function createExtensionHost(input: {
         deps.auth.destroySession(token);
         return { clearCookie: buildExpiredSessionCookie(sessionCookieName, sessionSecure), hadSessionCookie: !!token };
       },
+      requireUser,
       requireSystemAdmin,
     };
   }

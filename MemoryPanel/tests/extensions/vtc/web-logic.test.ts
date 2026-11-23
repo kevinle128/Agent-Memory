@@ -167,7 +167,7 @@ describe('vtc web extension', () => {
     for (const code of VTC_ERROR_CODES) expect(enUS[`error.${code}`], code).toBeTruthy();
   });
 
-  it('declares the Pending users page for system admins under Members', () => {
+  it('declares the Pending users page for team admins under Members', () => {
     expect(vtcWebExtension.id).toBe('vtc');
     expect(vtcWebExtension.namespace).toBe('ext-vtc');
     expect(Object.keys(vtcWebExtension.i18n).sort()).toEqual(['en-US', 'vi-VN', 'zh-CN']);
@@ -177,7 +177,7 @@ describe('vtc web extension', () => {
     expect(page!.group).toBe('organization');
     expect(page!.order).toBeGreaterThan(0);
     expect(page!.order).toBeLessThan(1);
-    expect(page!.visibleTo).toBe('system_admin');
+    expect(page!.visibleTo).toBe('team_admin');
     expect((page!.Component as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.lazy'));
     expect((page!.Badge as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.lazy'));
     expect(enUS[page!.labelKey]).toBeTruthy();

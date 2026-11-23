@@ -2,6 +2,7 @@ import { Suspense, type ReactNode } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
 import { isGlobalAdmin } from '@/services/permissions';
+import { useCurrentRole } from '@/services/useCurrentRole';
 import { WEB_EXTENSIONS, useEnabledExtensions } from './registry';
 
 /** Renders its page only when the extension is on and the user may see it; otherwise goes to the workbench. */
@@ -11,14 +12,19 @@ export function ExtensionRoute({
   children,
 }: {
   extensionId: string;
-  visibleTo: 'system_admin' | 'all';
+  visibleTo: 'system_admin' | 'team_admin' | 'all';
   children: ReactNode;
 }): JSX.Element | null {
   const enabled = useEnabledExtensions();
   const { auth } = useAuthStore();
+  // Same rule as the menu: a system admin, or an admin of the team that is open.
+  const role = useCurrentRole();
   if (enabled === null) return null;
   if (!enabled.includes(extensionId)) return <Navigate to="/" replace />;
   if (visibleTo === 'system_admin' && !(auth && isGlobalAdmin(auth.user, auth.isAdmin))) {
+    return <Navigate to="/" replace />;
+  }
+  if (visibleTo === 'team_admin' && !(auth && (isGlobalAdmin(auth.user, auth.isAdmin) || role === 'admin'))) {
     return <Navigate to="/" replace />;
   }
   return <>{children}</>;

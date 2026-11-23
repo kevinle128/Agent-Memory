@@ -94,7 +94,7 @@ export const vtcExtension: PanelExtension<VtcConfig> = {
       audit: ctx.audit,
       logger: ctx.logger,
     });
-    ctx.web.advertise({ pages: [{ id: 'pending_users', visible_to: 'system_admin' }], loginMethodIds: ['vtc'] });
+    ctx.web.advertise({ pages: [{ id: 'pending_users', visible_to: 'team_admin' }], loginMethodIds: ['vtc'] });
     // Last, so a failure above leaves no provider registered.
     ctx.auth.registerProvider(provider);
 

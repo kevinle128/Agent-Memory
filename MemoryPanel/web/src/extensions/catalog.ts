@@ -9,7 +9,7 @@ export interface CatalogEntry {
   order: number;
   path: string;
   affix?: boolean;
-  visibleTo?: 'system_admin' | 'all';
+  visibleTo?: 'system_admin' | 'team_admin' | 'all';
   extensionId?: string;
 }
 
@@ -57,6 +57,8 @@ export function buildCatalog(
 function entryVisible(entry: CatalogEntry, ctx: MenuVisibilityContext): boolean {
   if (!entry.extensionId) return coreVisible(entry.id, ctx);
   // A team admin is not a system admin: a system_admin page never shows for one.
+  // team_admin follows the active team: userRole is that team's role, and a system admin is always included.
+  if (entry.visibleTo === 'team_admin') return ctx.isSystemAdmin || ctx.userRole === 'admin';
   return entry.visibleTo === 'all' || ctx.isSystemAdmin;
 }
 

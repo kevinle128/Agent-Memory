@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Checkbox, Form, Input, Modal, Radio, Select, Tag } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { usersApi } from '@/lib/api/users';
-import { teamsApi } from '@/lib/api/teams';
-import type { Team } from '@/lib/api/types';
+import { membersApi, teamsApi } from '@/lib/api/teams';
 import { tea } from '@/lib/tea-bridge';
+import { isGlobalAdmin } from '@/services/permissions';
+import { useAuthStore } from '@/stores/auth';
 import { invalidateBackendCache, readActiveTeamId } from '@/services';
 import { PENDING_CHANGED_EVENT, candidatesFromConflict, vtcApi } from '../api';
 import {
@@ -33,7 +34,9 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
   const [notice, setNotice] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const [teams, setTeams] = useState<Team[] | null>(null);
+  const [teams, setTeams] = useState<Array<{ team_id: string; name: string }> | null>(null);
+  const { auth } = useAuthStore();
+  const canCreateTeam = !!auth && isGlobalAdmin(auth.user, auth.isAdmin);
   const [teamId, setTeamId] = useState<string | null>(null);
   const [role, setRole] = useState<TeamRoleChoice>('member');
   const [creatingTeam, setCreatingTeam] = useState(false);
@@ -53,14 +56,14 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
 
   useEffect(() => {
     let alive = true;
-    teamsApi
-      .list()
-      .then((list) => {
+    vtcApi
+      .teams()
+      .then((result) => {
         if (!alive) return;
-        setTeams(list);
+        setTeams(result.teams);
         // Preselect the team shown in the header when the admin belongs to it, so the usual case is one click.
         const active = readActiveTeamId();
-        if (active && list.some((team) => team.team_id === active)) setTeamId(active);
+        if (active && result.teams.some((team) => team.team_id === active)) setTeamId(active);
       })
       .catch((err) => {
         if (!alive) return;
@@ -94,9 +97,9 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
   const teamOptions = useMemo(
     () => [
       ...(teams ?? []).map((team) => ({ value: team.team_id, text: team.name })),
-      { value: CREATE_TEAM, text: t('approve.team.create') },
+      ...(canCreateTeam ? [{ value: CREATE_TEAM, text: t('approve.team.create') }] : []),
     ],
-    [teams, t],
+    [teams, t, canCreateTeam],
   );
 
   async function createTeam() {
@@ -123,12 +126,24 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
     setSearchBusy(true);
     try {
       const found = await usersApi.list({ username });
-      if (found.length === 0) {
+      // A team admin may only be shown people who already belong to a team they administer.
+      // The approve route still refuses anyone else.
+      let visible = found;
+      if (!canCreateTeam) {
+        const allowed = new Set<string>();
+        for (const team of teams ?? []) {
+          for (const member of await membersApi.list(team.team_id)) {
+            if (member.status === 'active') allowed.add(member.user_id);
+          }
+        }
+        visible = found.filter((user) => allowed.has(user.user_id));
+      }
+      if (visible.length === 0) {
         tea.notify.warning(t('approve.search.none'));
         return;
       }
       // The server checks again that the account may be linked; this only fills the list.
-      const extra: Candidate[] = found.map((user) => ({
+      const extra: Candidate[] = visible.map((user) => ({
         user_id: user.user_id,
         username: user.username,
         display_name: user.display_name ?? null,
@@ -308,7 +323,7 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
               {teams !== null && teams.length === 0 && !creatingTeam && (
                 <div className="_memory-field-hint">{t('approve.team.empty')}</div>
               )}
-              {creatingTeam && (
+              {canCreateTeam && creatingTeam && (
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <Input
                     autoFocus

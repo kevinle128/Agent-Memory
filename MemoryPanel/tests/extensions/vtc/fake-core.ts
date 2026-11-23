@@ -212,8 +212,10 @@ export function createFakeCore(options: { now?: () => Date } = {}) {
       }
       case 'team/list': {
         const ids = new Set(members.filter((m) => m.user_id === body.user_id && m.status === 'active').map((m) => m.team_id));
-        const items = [...teams.values()].filter((t) => ids.has(t.team_id));
-        return { items, total: items.length };
+        const all = [...teams.values()].filter((t) => ids.has(t.team_id));
+        const offset = typeof body.offset === 'number' && body.offset > 0 ? Math.floor(body.offset) : 0;
+        const limit = typeof body.limit === 'number' && body.limit >= 0 ? Math.floor(body.limit) : all.length;
+        return { items: all.slice(offset, offset + limit), total: all.length };
       }
       case 'team-member/get': {
         const member = members.find((m) => m.team_id === body.team_id && m.user_id === body.user_id);
@@ -313,8 +315,8 @@ export function createFakeCore(options: { now?: () => Date } = {}) {
       const key = newKey(user.user_id, 'default', null, true);
       return { user_id: user.user_id, default_key_value: key.key_value };
     },
-    addMember(teamId: string, userId: string, role = 'member'): void {
-      members.push({ team_id: teamId, user_id: userId, role, status: 'active' });
+    addMember(teamId: string, userId: string, role = 'member', status = 'active'): void {
+      members.push({ team_id: teamId, user_id: userId, role, status });
     },
     /** Adds active untracked keys, for example to reach Core's cap. */
     addKeys(userId: string, count: number): void {
