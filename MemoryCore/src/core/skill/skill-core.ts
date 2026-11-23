@@ -37,6 +37,12 @@ import type { ListProposalsOptions, SkillChangeProposal, SkillProposalStatus, Sk
 import type { MemoryPromptMode } from "../../config.js";
 import { SkillResourceStore, type SkillResourcePayload } from "./skill-resource-store.js";
 import type { ISkillStore, SkillSearchResult } from "./skill-store.interface.js";
+import {
+  asLocalSkillInventoryStore,
+  type ListLocalSkillInventoryInput,
+  type LocalSkillInventoryRow,
+  type ReplaceLocalSkillInventoryInput,
+} from "./local-skill-inventory.js";
 import { SkillVersioning } from "./skill-versioning.js";
 import { randomBase62 } from "../../utils/short-id.js";
 import { strToU8, zipSync } from "fflate";
@@ -947,6 +953,23 @@ export class SkillCore {
     if (skill.is_head) return false;
     if (!this.versionTtlSeconds) return false;
     return this.now() - skill.created_at_ms > this.versionTtlSeconds * 1000;
+  }
+
+  /**
+   * Save one machine snapshot. The user id comes from the caller, not from the row.
+   * A store that is not sqlite cannot keep this table.
+   */
+  replaceLocalSkillInventory(input: ReplaceLocalSkillInventoryInput): { machine_id: string; count: number } {
+    const store = asLocalSkillInventoryStore(this.store);
+    if (!store) throw new Error("LOCAL_SKILL_INVENTORY_UNSUPPORTED");
+    return store.replaceLocalSkillInventory(input);
+  }
+
+  /** Rows for this user only. Hidden rows (present=0) are not returned. */
+  listLocalSkillInventory(input: ListLocalSkillInventoryInput): LocalSkillInventoryRow[] {
+    const store = asLocalSkillInventoryStore(this.store);
+    if (!store) throw new Error("LOCAL_SKILL_INVENTORY_UNSUPPORTED");
+    return store.listLocalSkillInventory(input);
   }
 
   private assertVersionNotExpired(skill: Skill, headVersion: number): void {

@@ -54,8 +54,11 @@ import {
   versionsDiffRequestSchema,
   proposalsListRequestSchema,
   proposalDecisionRequestSchema,
+  localInventoryReplaceSchema,
+  localInventoryListSchema,
 } from "./skill-schemas.js";
 import type { ApiResponseEnvelope, V2AuthContext } from "./v2-schemas.js";
+import { authenticateV3 } from "../metadata/router/auth.js";
 import { SkillApprovalRequiredError, SkillCoreError, type SkillCore } from "../core/skill/skill-core.js";
 import type { SkillChangeProposal } from "../core/skill/skill-proposal-types.js";
 import type { SkillExtractor } from "../core/skill/skill-extractor.js";
@@ -1900,6 +1903,110 @@ export async function handleForceArchive(
 }
 
 // ═════════════════════════════════════════════════════════════════════
+//  Local folder report
+//  The user id comes from the same user-key check as /v3/meta/auth/verify.
+//  The body must not choose the user id and must not carry file bytes.
+// ═════════════════════════════════════════════════════════════════════
+
+async function resolveInventoryCaller(
+  userKey: string,
+  auth: V2AuthContext,
+  deps: SkillRouterDeps,
+  requestId: string,
+): Promise<{ ok: true; userId: string } | { ok: false; envelope: ApiResponseEnvelope }> {
+  if (!deps.getMetadataService) {
+    return { ok: false, envelope: errorEnvelope(401, "invalid_user_key", requestId) };
+  }
+  const meta = await deps.getMetadataService(auth.serviceId);
+  const result = await authenticateV3(userKey, meta);
+  if (!result.ok || !result.ctx?.userId) {
+    return { ok: false, envelope: errorEnvelope(401, "invalid_user_key", requestId) };
+  }
+  return { ok: true, userId: result.ctx.userId };
+}
+
+async function resolveInventoryCore(
+  auth: V2AuthContext,
+  deps: SkillRouterDeps,
+  requestId: string,
+): Promise<{ ok: true; core: SkillCore } | { ok: false; envelope: ApiResponseEnvelope }> {
+  let core: SkillCore | undefined;
+  if (deps.resolveSkillCore) core = await deps.resolveSkillCore(auth.serviceId);
+  if (!core) core = deps.getSkillCore();
+  if (!core) return { ok: false, envelope: errorEnvelope(404, "Skill module not enabled", requestId) };
+  return { ok: true, core };
+}
+
+function inventoryFailure(e: unknown, requestId: string, deps: SkillRouterDeps): ApiResponseEnvelope {
+  if (e instanceof Error && e.message === "LOCAL_SKILL_INVENTORY_UNSUPPORTED") {
+    return errorEnvelope(50301, "local skill inventory requires the sqlite skill store", requestId);
+  }
+  if (e instanceof Error && e.message === "LOCAL_SKILL_PATH_REJECTED") {
+    return errorEnvelope(40001, "relative_path is not allowed", requestId);
+  }
+  deps.logger.warn(`${TAG} local skill inventory failed: ${(e as Error).message} req_id=${requestId}`);
+  return errorEnvelope(50001, (e as Error).message ?? "internal error", requestId);
+}
+
+/** `POST /v3/skill/local-inventory/replace` — full snapshot for one machine. */
+export async function handleLocalInventoryReplace(
+  body: unknown,
+  auth: V2AuthContext,
+  requestId: string,
+  deps: SkillRouterDeps,
+): Promise<ApiResponseEnvelope> {
+  const parsed = localInventoryReplaceSchema.safeParse(body);
+  if (!parsed.success) return errorEnvelope(40001, formatZodErr(parsed.error), requestId);
+  const caller = await resolveInventoryCaller(parsed.data.user_key, auth, deps, requestId);
+  if (!caller.ok) return caller.envelope;
+  const loaded = await resolveInventoryCore(auth, deps, requestId);
+  if (!loaded.ok) return loaded.envelope;
+  try {
+    const result = loaded.core.replaceLocalSkillInventory({
+      user_id: caller.userId,
+      machine_id: parsed.data.machine_id,
+      items: parsed.data.items.map((item) => ({
+        ...item,
+        content_hash: item.content_hash.toLowerCase(),
+      })),
+    });
+    obsLogger.info("skill.handleLocalInventoryReplace.done", {
+      req_id: requestId, code: 0, user_id: caller.userId, machine_id: result.machine_id, count: result.count,
+    });
+    return successEnvelope(result, requestId);
+  } catch (e) {
+    return inventoryFailure(e, requestId, deps);
+  }
+}
+
+/** `POST /v3/skill/local-inventory/list` — this user's present rows only. */
+export async function handleLocalInventoryList(
+  body: unknown,
+  auth: V2AuthContext,
+  requestId: string,
+  deps: SkillRouterDeps,
+): Promise<ApiResponseEnvelope> {
+  const parsed = localInventoryListSchema.safeParse(body);
+  if (!parsed.success) return errorEnvelope(40001, formatZodErr(parsed.error), requestId);
+  const caller = await resolveInventoryCaller(parsed.data.user_key, auth, deps, requestId);
+  if (!caller.ok) return caller.envelope;
+  const loaded = await resolveInventoryCore(auth, deps, requestId);
+  if (!loaded.ok) return loaded.envelope;
+  try {
+    const items = loaded.core.listLocalSkillInventory({
+      user_id: caller.userId,
+      machine_id: parsed.data.machine_id,
+    });
+    obsLogger.info("skill.handleLocalInventoryList.done", {
+      req_id: requestId, code: 0, user_id: caller.userId, count: items.length,
+    });
+    return successEnvelope({ items }, requestId);
+  } catch (e) {
+    return inventoryFailure(e, requestId, deps);
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════
 //  Route table
 // ═════════════════════════════════════════════════════════════════════
 
@@ -1937,5 +2044,7 @@ export function makeSkillRouteTable(): Record<string, SkillHandler> {
     "/v3/skill/extract": handleExtract,
     "/v3/skill/conversation/add": handleConversationAdd,
     "/v3/skill/conversation/force-archive": handleForceArchive,
+    "/v3/skill/local-inventory/replace": handleLocalInventoryReplace,
+    "/v3/skill/local-inventory/list": handleLocalInventoryList,
   };
 }
