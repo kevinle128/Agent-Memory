@@ -94,11 +94,11 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
   const TEAM_PAGE = 100;
 
   /** Every team team/list would return, including pages after the first. */
-  async function everyTeam(userId: string): Promise<Array<{ team_id: string; name: string }>> {
+  async function everyTeam(instanceId: string, userId: string): Promise<Array<{ team_id: string; name: string }>> {
     const all: Array<{ team_id: string; name: string }> = [];
     let offset = 0;
     for (;;) {
-      const page = await meta.teams.listForUser(deps.instanceId, userId, { limit: TEAM_PAGE, offset });
+      const page = await meta.teams.listForUser(instanceId, userId, { limit: TEAM_PAGE, offset });
       all.push(...page.items);
       offset += page.items.length;
       if (page.items.length === 0 || page.items.length < TEAM_PAGE || offset >= page.total) break;
@@ -107,11 +107,11 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
   }
 
   /** Teams the caller may approve into. A system admin is not limited to the admin role. */
-  async function teamsForCaller(userId: string, isSystemAdmin: boolean): Promise<Caller['adminTeams']> {
+  async function teamsForCaller(instanceId: string, userId: string, isSystemAdmin: boolean): Promise<Caller['adminTeams']> {
     if (isSystemAdmin) return null;
     const adminTeams = [];
-    for (const team of await everyTeam(userId)) {
-      const membership = await meta.members.get(deps.instanceId, team.team_id, userId);
+    for (const team of await everyTeam(instanceId, userId)) {
+      const membership = await meta.members.get(instanceId, team.team_id, userId);
       if (membership?.status === 'active' && membership.role === 'admin') adminTeams.push(team);
     }
     return adminTeams;
@@ -159,7 +159,8 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
       const parsed = schema.safeParse(raw ?? {});
       try {
         const sameInstance = user.instanceId === deps.instanceId;
-        const adminTeams = await teamsForCaller(user.userId, user.isSystemAdmin);
+        // Checked on the caller's own instance: a user ID means nothing on another one.
+        const adminTeams = await teamsForCaller(user.instanceId, user.userId, user.isSystemAdmin);
         // Before the body check, so a member learns they are refused rather than how to shape the body.
         if (!user.isSystemAdmin && adminTeams?.length === 0) return envelope(c, 403, 'NOT_TEAM_ADMIN', null);
         if (!parsed.success) return envelope(c, 400, 'INVALID_PARAM', null);
@@ -167,7 +168,8 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
           userId: user.userId,
           sameInstance,
           isSystemAdmin: user.isSystemAdmin,
-          adminTeams: user.isSystemAdmin ? null : adminTeams,
+          // Teams of another instance cannot be approved into here.
+          adminTeams: user.isSystemAdmin ? null : sameInstance ? adminTeams : [],
         });
         return envelope(c, 200, 'ok', data);
       } catch (err) {
@@ -197,7 +199,7 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
     if (!admin.sameInstance) return { teams: [] };
     if (admin.isSystemAdmin) {
       // Any role: a system admin approves into every team they belong to, not only ones they administer.
-      return { teams: await everyTeam(admin.userId) };
+      return { teams: await everyTeam(deps.instanceId, admin.userId) };
     }
     return { teams: admin.adminTeams ?? [] };
   });

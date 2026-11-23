@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Checkbox, Form, Input, Modal, Radio, Select, Tag } from 'tea-component';
 import { useTranslation } from 'react-i18next';
 import { usersApi } from '@/lib/api/users';
-import { membersApi, teamsApi } from '@/lib/api/teams';
+import { teamsApi } from '@/lib/api/teams';
+import type { PublicUser } from '@/lib/api/types';
 import { tea } from '@/lib/tea-bridge';
 import { isGlobalAdmin } from '@/services/permissions';
 import { useAuthStore } from '@/stores/auth';
@@ -125,18 +126,17 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
     if (!username) return;
     setSearchBusy(true);
     try {
-      const found = await usersApi.list({ username });
-      // A team admin may only be shown people who already belong to a team they administer.
+      // A team admin may only be shown people who already belong to a team they administer, and Core
+      // refuses user/list without team_id for them, so the search runs once per administered team.
       // The approve route still refuses anyone else.
-      let visible = found;
-      if (!canCreateTeam) {
-        const allowed = new Set<string>();
-        for (const team of teams ?? []) {
-          for (const member of await membersApi.list(team.team_id)) {
-            if (member.status === 'active') allowed.add(member.user_id);
-          }
-        }
-        visible = found.filter((user) => allowed.has(user.user_id));
+      let visible: PublicUser[];
+      if (canCreateTeam) {
+        visible = await usersApi.list({ username });
+      } else {
+        const pages = await Promise.all((teams ?? []).map((team) => usersApi.list({ team_id: team.team_id, username })));
+        const byId = new Map<string, PublicUser>();
+        for (const user of pages.flat()) byId.set(user.user_id, user);
+        visible = [...byId.values()];
       }
       if (visible.length === 0) {
         tea.notify.warning(t('approve.search.none'));
@@ -148,7 +148,8 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
         username: user.username,
         display_name: user.display_name ?? null,
         email: user.email ?? null,
-        auth_provider: user.auth_provider,
+        // user/list may leave auth_provider out.
+        auth_provider: user.auth_provider ?? '',
         user_type: user.user_type ?? 'normal',
         // Found by the administrator's search, not by matching the person's email.
         match: [],

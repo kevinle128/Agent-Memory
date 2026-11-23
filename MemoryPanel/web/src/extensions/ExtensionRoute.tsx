@@ -1,6 +1,7 @@
-import { Suspense, type ReactNode } from 'react';
+import { Suspense, useRef, type ReactNode } from 'react';
 import { Navigate, type RouteObject } from 'react-router-dom';
 import { useAuthStore } from '@/stores/auth';
+import { useBackendStore } from '@/stores/backend';
 import { isGlobalAdmin } from '@/services/permissions';
 import { useCurrentRole } from '@/services/useCurrentRole';
 import { WEB_EXTENSIONS, useEnabledExtensions } from './registry';
@@ -19,13 +20,24 @@ export function ExtensionRoute({
   const { auth } = useAuthStore();
   // Same rule as the menu: a system admin, or an admin of the team that is open.
   const role = useCurrentRole();
+  const teamsLoaded = useBackendStore((s) => s.teamsLoaded);
+  const allowedOnce = useRef(false);
   if (enabled === null) return null;
   if (!enabled.includes(extensionId)) return <Navigate to="/" replace />;
   if (visibleTo === 'system_admin' && !(auth && isGlobalAdmin(auth.user, auth.isAdmin))) {
     return <Navigate to="/" replace />;
   }
-  if (visibleTo === 'team_admin' && !(auth && (isGlobalAdmin(auth.user, auth.isAdmin) || role === 'admin'))) {
-    return <Navigate to="/" replace />;
+  if (visibleTo === 'team_admin') {
+    const allowed = !!auth && (isGlobalAdmin(auth.user, auth.isAdmin) || role === 'admin');
+    if (allowed) {
+      allowedOnce.current = true;
+    } else if (auth && !teamsLoaded) {
+      // The team role is not known until the teams load (first load, or a reload after a write such as an
+      // approval). Keep a page that was already allowed on screen, and wait otherwise.
+      return allowedOnce.current ? <>{children}</> : null;
+    } else {
+      return <Navigate to="/" replace />;
+    }
   }
   return <>{children}</>;
 }
