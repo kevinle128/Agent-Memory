@@ -15,7 +15,7 @@ export interface CreateUserResult {
 
 export const usersApi = {
   /** 分页列出用户；可传入 { username } 精确匹配或 { user_ids } 过滤 */
-  list: (params?: { username?: string; user_ids?: string[] }) => metaListAll<PublicUser>('user/list', { ...params }),
+  list: (params?: { team_id?: string; username?: string; user_ids?: string[] }) => metaListAll<PublicUser>('user/list', { ...params }),
 
   /** 用户详情 */
   get: (userId: string) => metaPost<PublicUser>('user/get', { user_id: userId }),

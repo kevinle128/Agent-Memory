@@ -22,7 +22,7 @@ export interface WebExtensionPage {
   labelKey: string;
   descKey?: string;
   icon: ReactNode;
-  visibleTo: 'system_admin' | 'all';
+  visibleTo: 'system_admin' | 'team_admin' | 'all';
   /** Shown after the menu label; owns its data hooks. Lazy so the menu module stays alias-free. */
   Badge?: LazyExoticComponent<ComponentType>;
   Component: LazyExoticComponent<ComponentType>;

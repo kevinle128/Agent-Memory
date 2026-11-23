@@ -5,7 +5,7 @@ export const viVN: Record<string, string> = {
   'page.title': 'User chờ duyệt',
   'page.lead': 'Những người đã đăng nhập bằng mail VTC nhưng chưa thuộc team nào. Thêm từng người vào team của phòng ban, hoặc từ chối.',
   'page.adminNote':
-    'Chỉ admin hệ thống thấy trang này, và chỉ khi nhà vận hành bật extension VTC. Danh sách áp dụng cho cả instance, không chỉ team đang chọn ở thanh trên.',
+    'Admin hệ thống và admin team thấy trang này, và chỉ khi nhà vận hành bật extension VTC. Danh sách áp dụng cho cả instance, không chỉ team đang chọn ở thanh trên.',
   'page.footnote': 'Giờ theo Asia/Saigon (UTC+7). Nguồn = nơi người đó đăng nhập bằng mail VTC lần đầu.',
   'page.loadFailed': 'Không tải được danh sách.',
   'tab.pending': 'Chờ duyệt ({{count}})',
@@ -82,6 +82,8 @@ export const viVN: Record<string, string> = {
   'error.PENDING_NOT_REJECTED': 'Yêu cầu này không ở trạng thái bị từ chối.',
   'error.APPROVAL_IN_PROGRESS': 'Một thao tác khác trên yêu cầu này vẫn đang chạy. Hãy thử lại sau giây lát.',
   'error.TEAM_NOT_FOUND': 'Team không tồn tại.',
+  'error.NOT_TEAM_ADMIN': 'Chỉ admin của một team mới mở được người dùng đang chờ.',
+  'error.TEAM_NOT_ALLOWED': 'Bạn chỉ có thể duyệt người vào team mà bạn là admin.',
   'error.USER_NOT_FOUND': 'User không tồn tại.',
   'error.USER_NOT_LINKABLE': 'User này không thể liên kết với người dùng VTC.',
   'error.USER_ALREADY_LINKED': 'User này đã liên kết với tài khoản VTC khác.',

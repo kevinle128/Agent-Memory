@@ -3,8 +3,10 @@ import { Alert, Button, Checkbox, Form, Input, Modal, Radio, Select, Tag } from 
 import { useTranslation } from 'react-i18next';
 import { usersApi } from '@/lib/api/users';
 import { teamsApi } from '@/lib/api/teams';
-import type { Team } from '@/lib/api/types';
+import type { PublicUser } from '@/lib/api/types';
 import { tea } from '@/lib/tea-bridge';
+import { isGlobalAdmin } from '@/services/permissions';
+import { useAuthStore } from '@/stores/auth';
 import { invalidateBackendCache, readActiveTeamId } from '@/services';
 import { PENDING_CHANGED_EVENT, candidatesFromConflict, vtcApi } from '../api';
 import {
@@ -33,7 +35,9 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
   const [notice, setNotice] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const [teams, setTeams] = useState<Team[] | null>(null);
+  const [teams, setTeams] = useState<Array<{ team_id: string; name: string }> | null>(null);
+  const { auth } = useAuthStore();
+  const canCreateTeam = !!auth && isGlobalAdmin(auth.user, auth.isAdmin);
   const [teamId, setTeamId] = useState<string | null>(null);
   const [role, setRole] = useState<TeamRoleChoice>('member');
   const [creatingTeam, setCreatingTeam] = useState(false);
@@ -53,14 +57,14 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
 
   useEffect(() => {
     let alive = true;
-    teamsApi
-      .list()
-      .then((list) => {
+    vtcApi
+      .teams()
+      .then((result) => {
         if (!alive) return;
-        setTeams(list);
+        setTeams(result.teams);
         // Preselect the team shown in the header when the admin belongs to it, so the usual case is one click.
         const active = readActiveTeamId();
-        if (active && list.some((team) => team.team_id === active)) setTeamId(active);
+        if (active && result.teams.some((team) => team.team_id === active)) setTeamId(active);
       })
       .catch((err) => {
         if (!alive) return;
@@ -94,9 +98,9 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
   const teamOptions = useMemo(
     () => [
       ...(teams ?? []).map((team) => ({ value: team.team_id, text: team.name })),
-      { value: CREATE_TEAM, text: t('approve.team.create') },
+      ...(canCreateTeam ? [{ value: CREATE_TEAM, text: t('approve.team.create') }] : []),
     ],
-    [teams, t],
+    [teams, t, canCreateTeam],
   );
 
   async function createTeam() {
@@ -122,18 +126,30 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
     if (!username) return;
     setSearchBusy(true);
     try {
-      const found = await usersApi.list({ username });
-      if (found.length === 0) {
+      // A team admin may only be shown people who already belong to a team they administer, and Core
+      // refuses user/list without team_id for them, so the search runs once per administered team.
+      // The approve route still refuses anyone else.
+      let visible: PublicUser[];
+      if (canCreateTeam) {
+        visible = await usersApi.list({ username });
+      } else {
+        const pages = await Promise.all((teams ?? []).map((team) => usersApi.list({ team_id: team.team_id, username })));
+        const byId = new Map<string, PublicUser>();
+        for (const user of pages.flat()) byId.set(user.user_id, user);
+        visible = [...byId.values()];
+      }
+      if (visible.length === 0) {
         tea.notify.warning(t('approve.search.none'));
         return;
       }
       // The server checks again that the account may be linked; this only fills the list.
-      const extra: Candidate[] = found.map((user) => ({
+      const extra: Candidate[] = visible.map((user) => ({
         user_id: user.user_id,
         username: user.username,
         display_name: user.display_name ?? null,
         email: user.email ?? null,
-        auth_provider: user.auth_provider,
+        // user/list may leave auth_provider out.
+        auth_provider: user.auth_provider ?? '',
         user_type: user.user_type ?? 'normal',
         // Found by the administrator's search, not by matching the person's email.
         match: [],
@@ -308,7 +324,7 @@ export default function ApproveDialog({ item, onClose, onDone }: { item: Pending
               {teams !== null && teams.length === 0 && !creatingTeam && (
                 <div className="_memory-field-hint">{t('approve.team.empty')}</div>
               )}
-              {creatingTeam && (
+              {canCreateTeam && creatingTeam && (
                 <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                   <Input
                     autoFocus

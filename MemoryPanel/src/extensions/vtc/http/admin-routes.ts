@@ -30,7 +30,7 @@ type ApprovedMode = 'linked' | 'created' | 'recovered' | 'existing';
 /** A refusal the route reports as is; anything else thrown while approving is a Core failure. */
 class ApiError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 403 | 404 | 409,
     readonly code: string,
     readonly data: unknown = null,
   ) {
@@ -65,7 +65,19 @@ function envelope(c: Context, status: number, message: string, data: unknown) {
   );
 }
 
-/** System-admin routes over the pending list. Every route is POST and answers in the Panel envelope. */
+type Caller = {
+  userId: string;
+  sameInstance: boolean;
+  isSystemAdmin: boolean;
+  /**
+   * Teams where this caller is an active admin. Null for a system admin, who may use any team.
+   * Core's team/list only returns teams the user belongs to, so a system admin's dialog list is that
+   * membership set; approve still accepts any existing team id.
+   */
+  adminTeams: Array<{ team_id: string; name: string }> | null;
+};
+
+/** Routes over the pending list. A system admin, or an active admin of at least one team. Every route is POST. */
 export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
   const { auth, meta, pending, links, audit, logger } = deps;
   // One Panel process serves the instance, so this keeps two clicks on the same person from making two accounts.
@@ -79,22 +91,85 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
     return run;
   }
 
-  /** Parses the body, checks the caller is a system admin and runs the handler with the admin's user ID. */
+  const TEAM_PAGE = 100;
+
+  /** Every team team/list would return, including pages after the first. */
+  async function everyTeam(instanceId: string, userId: string): Promise<Array<{ team_id: string; name: string }>> {
+    const all: Array<{ team_id: string; name: string }> = [];
+    let offset = 0;
+    for (;;) {
+      const page = await meta.teams.listForUser(instanceId, userId, { limit: TEAM_PAGE, offset });
+      all.push(...page.items);
+      offset += page.items.length;
+      if (page.items.length === 0 || page.items.length < TEAM_PAGE || offset >= page.total) break;
+    }
+    return all;
+  }
+
+  /** Teams the caller may approve into. A system admin is not limited to the admin role. */
+  async function teamsForCaller(instanceId: string, userId: string, isSystemAdmin: boolean): Promise<Caller['adminTeams']> {
+    if (isSystemAdmin) return null;
+    const adminTeams = [];
+    for (const team of await everyTeam(instanceId, userId)) {
+      const membership = await meta.members.get(instanceId, team.team_id, userId);
+      if (membership?.status === 'active' && membership.role === 'admin') adminTeams.push(team);
+    }
+    return adminTeams;
+  }
+
+  /**
+   * Candidates a team admin may be shown or offered as a link. A system admin sees the full list.
+   * The same rule covers the candidate route and the "candidates exist" refusal on create.
+   */
+  async function candidatesForCaller<T extends { user_id: string }>(found: T[], admin: Caller): Promise<T[]> {
+    if (!admin.adminTeams) return found;
+    const kept: T[] = [];
+    for (const candidate of found) {
+      if (await activeMemberOf(candidate.user_id, admin.adminTeams)) kept.push(candidate);
+    }
+    return kept;
+  }
+
+  /** A team admin may link only an active member of a team they administer, and never a system admin. */
+  async function linkableForCaller(user: { user_id: string; user_type?: string }, admin: Caller): Promise<boolean> {
+    if (!admin.adminTeams) return true;
+    if (user.user_type === 'system_admin') return false;
+    return activeMemberOf(user.user_id, admin.adminTeams);
+  }
+
+  /** Active member of one of the teams this caller administers. */
+  async function activeMemberOf(userId: string, teams: Array<{ team_id: string }>): Promise<boolean> {
+    for (const team of teams) {
+      const membership = await meta.members.get(deps.instanceId, team.team_id, userId);
+      if (membership?.status === 'active') return true;
+    }
+    return false;
+  }
+
+  /** Parses the body, checks the caller may manage pending users, and runs the handler. */
   function route<S extends z.ZodTypeAny>(
     path: string,
     schema: S,
-    handler: (input: z.infer<S>, admin: { userId: string; sameInstance: boolean }) => Promise<unknown>,
+    handler: (input: z.infer<S>, admin: Caller) => Promise<unknown>,
   ): void {
     api.post(path, async (c) => {
-      const admin = await auth.requireSystemAdmin(c);
-      if (admin instanceof Response) return admin;
+      const user = await auth.requireUser(c);
+      if (user instanceof Response) return user;
       const raw = await c.req.json().catch(() => ({}));
       const parsed = schema.safeParse(raw ?? {});
-      if (!parsed.success) return envelope(c, 400, 'INVALID_PARAM', null);
       try {
+        const sameInstance = user.instanceId === deps.instanceId;
+        // Checked on the caller's own instance: a user ID means nothing on another one.
+        const adminTeams = await teamsForCaller(user.instanceId, user.userId, user.isSystemAdmin);
+        // Before the body check, so a member learns they are refused rather than how to shape the body.
+        if (!user.isSystemAdmin && adminTeams?.length === 0) return envelope(c, 403, 'NOT_TEAM_ADMIN', null);
+        if (!parsed.success) return envelope(c, 400, 'INVALID_PARAM', null);
         const data = await handler(parsed.data, {
-          userId: admin.userId,
-          sameInstance: admin.instanceId === deps.instanceId,
+          userId: user.userId,
+          sameInstance,
+          isSystemAdmin: user.isSystemAdmin,
+          // Teams of another instance cannot be approved into here.
+          adminTeams: user.isSystemAdmin ? null : sameInstance ? adminTeams : [],
         });
         return envelope(c, 200, 'ok', data);
       } catch (err) {
@@ -119,6 +194,15 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
     await links.remove(deps.instanceId, record.vtcUserId);
     audit('vtc.link.dropped', { vtc_user_id: record.vtcUserId, reason: 'request_closed' });
   }
+
+  route('/pending/teams', emptyBody, async (_input, admin) => {
+    if (!admin.sameInstance) return { teams: [] };
+    if (admin.isSystemAdmin) {
+      // Any role: a system admin approves into every team they belong to, not only ones they administer.
+      return { teams: await everyTeam(deps.instanceId, admin.userId) };
+    }
+    return { teams: admin.adminTeams ?? [] };
+  });
 
   route('/pending/count', emptyBody, async (_input, admin) => ({
     pending_count: admin.sameInstance ? pending.list(deps.instanceId).filter((r) => r.status === 'pending').length : 0,
@@ -158,7 +242,8 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
     const record = load(input.pending_id, admin.sameInstance);
     // A person with an account is already known; there is nobody to compare with.
     if (record.kind === 'no_team') return { kind: record.kind, candidates: [] };
-    return { kind: record.kind, candidates: await findCandidates(meta, links, deps.instanceId, record) };
+    const found = await findCandidates(meta, links, deps.instanceId, record);
+    return { kind: record.kind, candidates: await candidatesForCaller(found, admin) };
   });
 
   route('/pending/reject', rejectBody, async (input, admin) => {
@@ -185,6 +270,9 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
   route('/pending/approve', approveBody, async (input, admin) => {
     const record = load(input.pending_id, admin.sameInstance);
     if (record.status !== 'pending') throw new ApiError(409, 'PENDING_NOT_PENDING');
+    if (admin.adminTeams && !admin.adminTeams.some((team) => team.team_id === input.team_id)) {
+      throw new ApiError(403, 'TEAM_NOT_ALLOWED');
+    }
     if (!(await meta.teams.get(deps.instanceId, input.team_id))) throw new ApiError(404, 'TEAM_NOT_FOUND');
     if (approving.has(record.id)) throw new ApiError(409, 'APPROVAL_IN_PROGRESS');
     approving.add(record.id);
@@ -194,16 +282,17 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
         const current = pending.get(record.id);
         if (!current) throw new ApiError(404, 'PENDING_NOT_FOUND');
         if (current.status !== 'pending') throw new ApiError(409, 'PENDING_NOT_PENDING');
-        return approve(current, input, admin.userId);
+        return approve(current, input, admin);
       });
     } finally {
       approving.delete(record.id);
     }
   });
 
-  async function approve(record: PendingRecord, input: z.infer<typeof approveBody>, adminUserId: string) {
+  async function approve(record: PendingRecord, input: z.infer<typeof approveBody>, admin: Caller) {
     const { instanceId } = deps;
-    const person = await resolveCoreUser(record, input, adminUserId);
+    const adminUserId = admin.userId;
+    const person = await resolveCoreUser(record, input, admin);
     const { coreUserId } = person;
 
     // Membership: an active member keeps the role they have; changing it silently is not this action's job.
@@ -245,7 +334,7 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
   async function resolveCoreUser(
     record: PendingRecord,
     input: z.infer<typeof approveBody>,
-    adminUserId: string,
+    admin: Caller,
   ): Promise<{ coreUserId: string; username: string; mode: ApprovedMode; commitLink: () => Promise<void> }> {
     const { instanceId } = deps;
     const noLink = async () => {};
@@ -256,7 +345,7 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
         coreUserId,
         mode,
         linkedAt: new Date().toISOString(),
-        linkedBy: adminUserId,
+        linkedBy: admin.userId,
       });
 
     if (record.kind === 'no_team') {
@@ -271,6 +360,8 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
     if (earlier) {
       const user = await meta.users.get(instanceId, earlier.coreUserId);
       if (user) {
+        // A recovered link is still a link target: a team admin cannot finish one outside their teams.
+        if (!(await linkableForCaller(user, admin))) throw new ApiError(409, 'USER_NOT_LINKABLE');
         const sameChoice =
           !input.mode ||
           (input.mode === 'link' ? input.link_user_id === earlier.coreUserId : earlier.mode !== 'linked');
@@ -287,7 +378,11 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
       // The same list the candidates come from, so the server applies the filters the UI shows.
       const detail = (await meta.users.listAllDetailed(instanceId)).find((u) => u.user_id === input.link_user_id);
       if (!detail) throw new ApiError(404, 'USER_NOT_FOUND');
-      if (detail.user_type === 'system_admin' || !isLinkTarget(detail, links, instanceId, record.vtcUserId)) {
+      if (
+        detail.user_type === 'system_admin' ||
+        !isLinkTarget(detail, links, instanceId, record.vtcUserId) ||
+        !(await linkableForCaller(detail, admin))
+      ) {
         throw new ApiError(409, 'USER_NOT_LINKABLE');
       }
       const user = detail;
@@ -307,7 +402,7 @@ export function registerAdminRoutes(api: Hono, deps: AdminRouteDeps): void {
       if (!user) throw new ApiError(404, 'USER_NOT_FOUND');
       return { coreUserId: bound.user_id, username: user.username, mode: 'recovered', commitLink: linkLater(bound.user_id, 'recovered') };
     }
-    const candidates = await findCandidates(meta, links, instanceId, record);
+    const candidates = await candidatesForCaller(await findCandidates(meta, links, instanceId, record), admin);
     if (candidates.length > 0 && input.confirm_create !== true) {
       throw new ApiError(409, 'CANDIDATES_EXIST', { candidates });
     }

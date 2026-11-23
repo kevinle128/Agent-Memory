@@ -26,7 +26,7 @@ export const vtcWebExtension: WebExtension = {
           <path d="M17 14v2.2l1.4 1" />
         </svg>
       ),
-      visibleTo: 'system_admin',
+      visibleTo: 'team_admin',
       Badge: lazy(() => import('./components/PendingCountBadge')),
       Component: lazy(() => import('./pages/PendingUsersPage')),
     },

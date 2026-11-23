@@ -39,6 +39,8 @@ export const vtcApi = {
   reset: async (pendingId: string): Promise<void> => {
     await call('reset', { pending_id: pendingId });
   },
+  /** Teams this caller may approve into. The server applies the same rule as approve. */
+  teams: () => call<{ teams: Array<{ team_id: string; name: string }> }>('teams'),
 };
 
 /** The candidate list of a 409 CANDIDATES_EXIST answer; null for any other failure. */

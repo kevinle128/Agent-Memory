@@ -224,8 +224,12 @@ export function createMetaFacade(deps: PanelDeps): MetaFacade {
         if (!data || !str(data.team_id)) return null;
         return { team_id: str(data.team_id), name: str(data.name), owner_user_id: str(data.owner_user_id) };
       },
-      async listForUser(instanceId, userId) {
-        const data = (await call(instanceId, 'team/list', { user_id: userId, limit: PAGE_SIZE, offset: 0 })) as Row | null;
+      async listForUser(instanceId, userId, page) {
+        const data = (await call(instanceId, 'team/list', {
+          user_id: userId,
+          limit: page?.limit ?? PAGE_SIZE,
+          offset: page?.offset ?? 0,
+        })) as Row | null;
         const list = items(data).map((row) => ({ team_id: str(row.team_id), name: str(row.name) }));
         const total = typeof data?.total === 'number' ? data.total : list.length;
         return { total, items: list };

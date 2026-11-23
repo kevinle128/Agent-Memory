@@ -83,6 +83,17 @@ describe('web page catalog', () => {
     }
   });
 
+  it('shows a team_admin page for a team admin and a system admin, and hides it for a member', () => {
+    const page = { id: 'demo', pages: [{ ...DEMO.pages[0]!, visibleTo: 'team_admin' as const }] };
+    const catalog = buildCatalog(fixturePages, [page], ['demo']);
+    const organization = (name: string) =>
+      menuGroups(catalog, menus[name]!.ctx, groupOrder).find((g) => g.group === 'organization')?.ids;
+    expect(organization('systemAdmin')).toContain('ext.demo.pending');
+    expect(organization('teamAdmin')).toContain('ext.demo.pending');
+    expect(organization('member')).not.toContain('ext.demo.pending');
+    expect(organization('reviewer')).not.toContain('ext.demo.pending');
+  });
+
   it('shows a page for everyone when it is open to all', () => {
     const open = { id: 'demo', pages: [{ ...DEMO.pages[0]!, visibleTo: 'all' as const }] };
     const catalog = buildCatalog(fixturePages, [open], ['demo']);
