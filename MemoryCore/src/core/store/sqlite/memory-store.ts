@@ -127,6 +127,8 @@ export interface L0VectorSearchResult {
   /** Absent for FTS hits: the FTS tables do not carry project columns. */
   project_key?: string;
   project_hash?: string;
+  /** Absent for FTS hits, same as project_key and project_hash. */
+  project_name?: string;
   user_id: string;
   agent_id: string;
   role: string;
