@@ -25,12 +25,21 @@ jobs:
         with:
           node-version: "22"
 
+      # Node 22 ships npm 10. Its arborist throws
+      # "Cannot read properties of null (reading 'edgesOut')" while placing
+      # vite's optional @vitejs/devtools peer, whose devtools-vitest peer
+      # "vitest: *" resolves to vitest 5 beside the direct vitest 4.
+      # npm 11 builds that tree.
+      - name: Use npm 11
+        run: npm install -g npm@11.21.3
+
       - name: Cache node_modules
         uses: actions/cache@v4
         id: cache-deps
         with:
           path: MemoryCore/node_modules
-          key: deps-${{ runner.os }}-${{ hashFiles('MemoryCore/package.json') }}
+          # Include the npm major so Pack does not restore a tree built by npm 10.
+          key: deps-${{ runner.os }}-npm11-${{ hashFiles('MemoryCore/package.json') }}
 
       - name: npm install
         if: steps.cache-deps.outputs.cache-hit != 'true'
@@ -48,11 +57,14 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Use npm 11
+        run: npm install -g npm@11.21.3
+
       - name: Restore node_modules
         uses: actions/cache@v4
         with:
           path: MemoryCore/node_modules
-          key: deps-${{ runner.os }}-${{ hashFiles('MemoryCore/package.json') }}
+          key: deps-${{ runner.os }}-npm11-${{ hashFiles('MemoryCore/package.json') }}
 
       - name: npm pack (dry-run)
         run: npm pack --dry-run
