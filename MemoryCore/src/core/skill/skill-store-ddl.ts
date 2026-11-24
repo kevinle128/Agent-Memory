@@ -154,6 +154,38 @@ ${PROPOSALS_COLUMN_DDL}
 `;
 
 // ═════════════════════════════════════════════════════════════════════
+//  local_skill_inventory — latest folder report for one user and machine
+// ═════════════════════════════════════════════════════════════════════
+
+/**
+ * One row is one skill folder the client reported. The row stores a hash and
+ * a path under a named root. It does not store file bytes, and it is not a
+ * `skills` version.
+ *
+ * An old database gains this table on store init. `CREATE TABLE IF NOT EXISTS`
+ * leaves `skills` and `skill_change_proposals` rows in place.
+ */
+export const LOCAL_SKILL_INVENTORY_DDL = `
+  CREATE TABLE IF NOT EXISTS local_skill_inventory (
+    inventory_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         TEXT NOT NULL,
+    machine_id      TEXT NOT NULL,
+    harness         TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    root_kind       TEXT NOT NULL,
+    relative_path   TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    reported_at_ms  INTEGER NOT NULL,
+    present         INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(user_id, machine_id, harness, root_kind, relative_path)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_local_skill_inventory_user_present
+    ON local_skill_inventory(user_id, machine_id, present);
+`;
+
+// ═════════════════════════════════════════════════════════════════════
 //  skill_fts — FTS5 虚拟表（仅索引 head 行）
 // ═════════════════════════════════════════════════════════════════════
 

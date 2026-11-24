@@ -23,6 +23,7 @@ import {
   SKILLS_SCOPE_INDEX_DDL,
   SKILL_PROPOSALS_DDL,
   PROPOSALS_ADDED_COLUMNS,
+  LOCAL_SKILL_INVENTORY_DDL,
   SKILL_FTS_DDL,
   SKILL_VEC_DDL_TEMPLATE,
   FTS_CONTENT_MAX,
@@ -39,6 +40,13 @@ import { readToolCalls } from "../../skill/skill-proposal-types.js";
 import { buildFtsQuery, tokenizeForFts } from "../tokenize.js";
 import type { ISkillStore, ExpiredVersionMeta, SkillStoreCapabilities, SkillSearchResult } from "../../skill/skill-store.interface.js";
 import { SkillStoreError } from "../../skill/skill-store.interface.js";
+import {
+  relativeSkillPathError,
+  type ListLocalSkillInventoryInput,
+  type LocalSkillInventoryRow,
+  type LocalSkillInventoryStore,
+  type ReplaceLocalSkillInventoryInput,
+} from "../../skill/local-skill-inventory.js";
 import type {
   AppendVersionInput,
   ListSkillsOptions,
@@ -219,7 +227,7 @@ function toSkill(raw: SkillRowRaw): Skill {
 //  Store 实现
 // ═══════════════════════════════════════════════════════════════════════
 
-export class SqliteSkillStore implements ISkillStore {
+export class SqliteSkillStore implements ISkillStore, LocalSkillInventoryStore {
   private readonly db: DatabaseSync;
   private readonly dimensions: number;
   private readonly logger?: StoreLogger;
@@ -244,6 +252,8 @@ export class SqliteSkillStore implements ISkillStore {
     this.db.exec(SKILLS_SCOPE_INDEX_DDL);
     this.db.exec(SKILL_PROPOSALS_DDL);
     this.migrateProposalColumns();
+    // New table only. This statement does not change skills or skill_change_proposals.
+    this.db.exec(LOCAL_SKILL_INVENTORY_DDL);
     // 迁移：删除旧版 (team_id, name) 唯一索引（v2 重构后改为 team_id + owner_agent_id + name）
     this.db.exec("DROP INDEX IF EXISTS uniq_skills_team_name_head");
     this.db.exec(SKILL_FTS_DDL);
@@ -934,6 +944,78 @@ export class SqliteSkillStore implements ISkillStore {
       );
     if ((r.changes ?? 0) === 0) return null;
     return this.getProposal(proposalId);
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  //  Local folder report. These writes do not insert a skills row.
+  // ────────────────────────────────────────────────────────────────────
+
+  /**
+   * Save one full snapshot for this user and machine.
+   * Rows in the snapshot are updated in place and marked present.
+   * Every other row for that user and machine is marked not present.
+   */
+  replaceLocalSkillInventory(input: ReplaceLocalSkillInventoryInput): { machine_id: string; count: number } {
+    for (const item of input.items) {
+      if (relativeSkillPathError(item.relative_path)) throw new Error("LOCAL_SKILL_PATH_REJECTED");
+    }
+    const reportedAt = this.now();
+    const clearAbsent = this.db.prepare(
+      `UPDATE local_skill_inventory
+          SET present=0, reported_at_ms=?
+        WHERE user_id=? AND machine_id=? AND present=1`,
+    );
+    const upsert = this.db.prepare(
+      `INSERT INTO local_skill_inventory (
+         user_id, machine_id, harness, source, name, root_kind, relative_path,
+         content_hash, reported_at_ms, present
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+       ON CONFLICT(user_id, machine_id, harness, root_kind, relative_path)
+       DO UPDATE SET
+         source=excluded.source,
+         name=excluded.name,
+         content_hash=excluded.content_hash,
+         reported_at_ms=excluded.reported_at_ms,
+         present=1`,
+    );
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      clearAbsent.run(reportedAt, input.user_id, input.machine_id);
+      for (const item of input.items) {
+        upsert.run(
+          input.user_id,
+          input.machine_id,
+          item.harness,
+          item.source,
+          item.name,
+          item.root_kind,
+          item.relative_path,
+          item.content_hash,
+          reportedAt,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
+    return { machine_id: input.machine_id, count: input.items.length };
+  }
+
+  /** List this user's rows. Rows with present=0 stay hidden. */
+  listLocalSkillInventory(input: ListLocalSkillInventoryInput): LocalSkillInventoryRow[] {
+    const machineId = input.machine_id ?? "";
+    const rows = this.db.prepare(
+      `SELECT inventory_id, machine_id, harness, source, name, root_kind, relative_path,
+              content_hash, reported_at_ms, present
+         FROM local_skill_inventory
+        WHERE user_id=? AND present=1 AND (? = '' OR machine_id=?)
+        ORDER BY machine_id, harness, root_kind, relative_path`,
+    ).all(input.user_id, machineId, machineId) as Array<LocalSkillInventoryRow>;
+    return rows
+      .filter((row) => relativeSkillPathError(row.relative_path) === null)
+      .map((row) => ({ ...row, inventory_id: Number(row.inventory_id), present: Number(row.present) }));
   }
 
   // ────────────────────────────────────────────────────────────────────

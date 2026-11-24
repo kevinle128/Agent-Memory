@@ -12,7 +12,10 @@
  */
 
 import { z } from "zod";
+import { localSkillNameError, relativeSkillPathError } from "../core/skill/local-skill-inventory.js";
 import { projectHashSchema, resolveProjectFields } from "./v2-schemas.js";
+
+export { relativeSkillPathError };
 
 // ═════════════════════════════════════════════════════════════════════
 //  公共片段
@@ -453,6 +456,46 @@ export type ConversationAddRequest = z.infer<typeof conversationAddRequestSchema
 // ═════════════════════════════════════════════════════════════════════
 //  force-archive (手动强制归档，跳过阈值)
 // ═════════════════════════════════════════════════════════════════════
+
+// ═════════════════════════════════════════════════════════════════════
+//  Local folder report. The body has no file bytes and no user_id.
+//  The server sets user_id from the user key.
+// ═════════════════════════════════════════════════════════════════════
+
+const MACHINE_ID = z.string().regex(
+  /^[A-Za-z0-9_-]{1,128}$/,
+  "machine_id must be 1-128 characters from A-Z, a-z, 0-9, _ and -",
+);
+
+export const localInventoryItemSchema = z.object({
+  harness: z.enum(["claude", "codex", "omp", "agy"]),
+  source: z.enum(["user", "project"]),
+  name: z.string().superRefine((value, ctx) => {
+    const reason = localSkillNameError(value);
+    if (reason) ctx.addIssue({ code: z.ZodIssueCode.custom, message: reason });
+  }),
+  root_kind: z.string().regex(/^[a-z0-9_]{1,64}$/, "root_kind must be a short label, not a path"),
+  relative_path: z.string().superRefine((value, ctx) => {
+    const reason = relativeSkillPathError(value);
+    if (!reason) return;
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: reason });
+  }),
+  content_hash: z.string().regex(/^[0-9a-fA-F]{64}$/, "content_hash must be 64 hex characters"),
+}).strict();
+
+export const localInventoryReplaceSchema = z.object({
+  user_key: z.string().min(1).max(512),
+  machine_id: MACHINE_ID,
+  items: z.array(localInventoryItemSchema).max(2000),
+}).strict();
+
+export const localInventoryListSchema = z.object({
+  user_key: z.string().min(1).max(512),
+  machine_id: MACHINE_ID.optional(),
+}).strict();
+
+export type LocalInventoryReplaceRequest = z.infer<typeof localInventoryReplaceSchema>;
+export type LocalInventoryListRequest = z.infer<typeof localInventoryListSchema>;
 
 export const forceArchiveRequestSchema = z.object({
   space_id: z.string().min(1),
