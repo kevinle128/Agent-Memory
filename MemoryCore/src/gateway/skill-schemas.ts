@@ -12,7 +12,7 @@
  */
 
 import { z } from "zod";
-import { relativeSkillPathError } from "../core/skill/local-skill-inventory.js";
+import { localSkillNameError, relativeSkillPathError } from "../core/skill/local-skill-inventory.js";
 import { projectHashSchema, resolveProjectFields } from "./v2-schemas.js";
 
 export { relativeSkillPathError };
@@ -470,10 +470,10 @@ const MACHINE_ID = z.string().regex(
 export const localInventoryItemSchema = z.object({
   harness: z.enum(["claude", "codex", "omp", "agy"]),
   source: z.enum(["user", "project"]),
-  name: z.string().regex(/^[A-Za-z0-9._-]{1,128}$/, "name must be a single folder name").refine(
-    (name) => name !== "." && name !== "..",
-    "name must be a single folder name",
-  ),
+  name: z.string().superRefine((value, ctx) => {
+    const reason = localSkillNameError(value);
+    if (reason) ctx.addIssue({ code: z.ZodIssueCode.custom, message: reason });
+  }),
   root_kind: z.string().regex(/^[a-z0-9_]{1,64}$/, "root_kind must be a short label, not a path"),
   relative_path: z.string().superRefine((value, ctx) => {
     const reason = relativeSkillPathError(value);

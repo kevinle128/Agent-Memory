@@ -138,10 +138,10 @@ describe("local skill inventory routes", () => {
   it("accepts a real folder name and returns that path unchanged", async () => {
     h = createSkillHarness();
     const keys = { "key-a": "user-a" };
-    const paths = ["demo", "my-skill", "skill v2", "技能"];
+    const paths = ["demo", "my-skill", "skill v2", "技能", "cafe\u0301", "हिंदी"];
     const saved = await handleLocalInventoryReplace(replaceBody({
-      items: paths.map((relative_path, index) => item({
-        name: `n${index}`,
+      items: paths.map((relative_path) => item({
+        name: relative_path,
         relative_path,
       })),
     }), auth, "r", deps(keys));
@@ -150,6 +150,15 @@ describe("local skill inventory routes", () => {
     const got = (listed.data as { items: Array<{ relative_path: string }> }).items.map((row) => row.relative_path);
     expect(got).toHaveLength(paths.length);
     expect(got).toEqual(expect.arrayContaining(paths));
+  });
+
+  it("rejects a name that is not one folder name", async () => {
+    h = createSkillHarness();
+    const keys = { "key-a": "user-a" };
+    for (const name of ["", ".", "..", "a/b", "a\\b", "a%2e", "a\u200Bb"]) {
+      const res = await handleLocalInventoryReplace(replaceBody({}, { name }), auth, "r", deps(keys));
+      expect(res.code, name).toBe(40001);
+    }
   });
 
   it("rejects a home prefix, '..', an absolute path, and '~'", async () => {

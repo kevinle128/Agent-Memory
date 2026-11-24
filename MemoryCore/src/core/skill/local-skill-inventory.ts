@@ -10,12 +10,26 @@ export type LocalSkillHarness = (typeof LOCAL_SKILL_HARNESSES)[number];
 export type LocalSkillSource = (typeof LOCAL_SKILL_SOURCES)[number];
 
 /**
- * Letters, digits, one ASCII space, and `.` `_` `-`.
+ * Letters (with combining marks, as macOS returns NFD names), digits,
+ * one ASCII space, and `.` `_` `-`.
  * A skill folder uses these characters. The allowlist rejects every other
  * character, so a home directory, an encoded `..`, or a hidden control
  * character cannot be stored or returned.
  */
-const RELATIVE_SEGMENT = /^[\p{L}\p{N} ._-]+$/u;
+const RELATIVE_SEGMENT = /^[\p{L}\p{M}\p{N} ._-]+$/u;
+
+/**
+ * Return a reason when `value` is not one folder name that a relative_path
+ * segment could hold. Unlike a path, any first word is allowed.
+ */
+export function localSkillNameError(value: string): string | null {
+  if (value.length < 1 || value.length > 128) return "name must be 1-128 characters";
+  if (value === "." || value === ".." || value.includes("%") || value.includes("\uFF0E")) {
+    return "name must be a single folder name";
+  }
+  if (/[\p{C}]/u.test(value) || !RELATIVE_SEGMENT.test(value)) return "name must be a single folder name";
+  return null;
+}
 
 /**
  * Return a reason when `value` is not a relative path under a named root.
