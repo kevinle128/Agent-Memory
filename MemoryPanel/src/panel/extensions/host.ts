@@ -98,6 +98,8 @@ interface Runtime {
   api: Hono;
   pages: Hono;
   hooks?: ExtensionHooks;
+  /** Applied to the root app before this extension's page routes. Empty when registration failed. */
+  pageInstallers: Array<(app: Hono) => void>;
 }
 
 export function createExtensionHost(input: {
@@ -130,6 +132,7 @@ export function createExtensionHost(input: {
       },
       api: new Hono(),
       pages: new Hono(),
+      pageInstallers: [],
     };
     runtimes.set(id, runtime);
     return runtime;
@@ -246,6 +249,7 @@ export function createExtensionHost(input: {
     const dataDir = join(deps.config.extensions.dataDir, id);
     const api = new Hono();
     const pages = new Hono();
+    const pageInstallers: Array<(app: Hono) => void> = [];
     const stagedProviders: AuthProvider[] = [];
     const advertised = { pages: [] as ExtensionWebPage[], loginMethodIds: [] as string[] };
     const limiters = new Map<string, RateLimiter>();
@@ -264,7 +268,13 @@ export function createExtensionHost(input: {
         secrets ??= createLocalSecrets(dataDir);
         return secrets;
       },
-      http: { api, pages },
+      http: {
+        api,
+        pages,
+        beforePages(install) {
+          pageInstallers.push(install);
+        },
+      },
       audit: (event, fields) => logger.info('audit', { audit: true, ext: id, event, ...cleanFields(fields) }),
       rateLimit: (name, opts) => {
         let limiter = limiters.get(name);
@@ -309,6 +319,8 @@ export function createExtensionHost(input: {
       api,
       pages,
       hooks,
+      // Kept only after register returns, so a throw above leaves the failed runtime with no installer.
+      pageInstallers,
     };
     runtimes.set(id, runtime);
     logger.info('extension active', { ext: id, version: extension.version });
@@ -355,7 +367,9 @@ export function createExtensionHost(input: {
     },
     mountPages(app) {
       for (const runtime of runtimes.values()) {
-        if (runtime.record.status !== 'failed') app.route(`/ext/${runtime.record.id}`, runtime.pages);
+        if (runtime.record.status === 'failed') continue;
+        for (const install of runtime.pageInstallers) install(app);
+        app.route(`/ext/${runtime.record.id}`, runtime.pages);
       }
     },
     async start() {

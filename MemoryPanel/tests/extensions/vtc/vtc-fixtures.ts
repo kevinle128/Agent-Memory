@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { Hono } from 'hono';
 import { encodeSsoUserData } from '../../../src/extensions/vtc/sso/triple-des.js';
 import { vtcExtension } from '../../../src/extensions/vtc/index.js';
 import { createExtensionHost } from '../../../src/panel/extensions/host.js';
@@ -78,7 +79,28 @@ export async function buildVtcApp(options: VtcAppOptions = {}) {
   const host = createExtensionHost({ deps, catalog: [vtcExtension], env: { ...VTC_ENV, ...options.env } });
   if (host) deps.extensions = host;
   const { buildPanelApp } = await import('../../../src/panel/http/app.js');
-  return { ...fixture, host: host!, app: buildPanelApp(deps) };
+  const app = buildPanelApp(deps);
+  // Relative requests stand in for a browser that already used the public host. A test that
+  // wants the plain HTTP port passes an absolute URL with a different host.
+  const publicBaseUrl = options.env?.PANEL_EXT_VTC_PUBLIC_BASE_URL ?? VTC_ENV.PANEL_EXT_VTC_PUBLIC_BASE_URL;
+  presentOnPublicHost(app, publicBaseUrl);
+  return { ...fixture, host: host!, app };
+}
+
+function presentOnPublicHost(app: Hono, publicBaseUrl: string): void {
+  let publicHost: string;
+  try {
+    const url = new URL(publicBaseUrl);
+    if (url.protocol !== 'https:') return;
+    publicHost = url.host;
+  } catch {
+    return;
+  }
+  const request = app.request.bind(app);
+  app.request = ((input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof input === 'string' && input.startsWith('/')) return request(`http://${publicHost}${input}`, init);
+    return request(input, init);
+  }) as typeof app.request;
 }
 
 type VtcApp = Awaited<ReturnType<typeof buildVtcApp>>;

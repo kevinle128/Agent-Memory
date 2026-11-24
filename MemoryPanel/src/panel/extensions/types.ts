@@ -176,7 +176,12 @@ export interface ExtensionContext<C> {
   readonly instances: ExtensionInstancesPort;
   readonly storage: ExtensionStoragePort;
   readonly secrets: ExtensionSecretsPort;
-  readonly http: { api: Hono; pages: Hono };
+  readonly http: {
+    api: Hono;
+    pages: Hono;
+    /** Runs on the root app when pages are mounted, before this extension's page routes. */
+    beforePages(install: (app: Hono) => void): void;
+  };
   audit(event: string, fields?: Record<string, unknown>): void;
   rateLimit(name: string, opts: { perMinute: number }): RateLimiter;
   readonly web: { advertise(input: { pages: ExtensionWebPage[]; loginMethodIds: string[] }): void };
