@@ -133,4 +133,23 @@ describe('public HTTPS redirect', () => {
       }),
     ).toBeNull();
   });
+
+  it('compares the request host with https default-port rules', () => {
+    for (const publicBaseUrl of [PUBLIC, `${PUBLIC}:443`]) {
+      expect(
+        publicHttpsRedirectLocation({
+          method: 'GET',
+          requestUrl: 'http://panel.test.invalid:443/teams',
+          publicBaseUrl,
+        }),
+      ).toBeNull();
+      expect(
+        publicHttpsRedirectLocation({
+          method: 'GET',
+          requestUrl: 'http://panel.test.invalid:80/teams?tab=1',
+          publicBaseUrl,
+        }),
+      ).toBe(`${PUBLIC}/teams?tab=1`);
+    }
+  });
 });

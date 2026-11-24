@@ -21,7 +21,10 @@ export function publicHttpsRedirectLocation(input: {
   let req: URL;
   let pub: URL;
   try {
-    req = new URL(input.requestUrl);
+    // The node server sees plain http:// URLs built from the Host header. Parse them
+    // with https: default-port rules, as the public origin is, so Host "host:443"
+    // matches "https://host" and Host "host:80" does not.
+    req = new URL(input.requestUrl.replace(/^http:/i, 'https:'));
     pub = new URL(input.publicBaseUrl);
   } catch {
     return null;
