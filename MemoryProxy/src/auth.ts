@@ -25,6 +25,12 @@ export interface VerifyUserResult {
   rejected: boolean;
   /** Error detail for logging/response when rejected. */
   rejectReason?: string;
+  /**
+   * True only when MemoryCore could not answer (timeout, network failure, or
+   * HTTP 5xx) and no fresh verification is left to reuse. A wrong, missing,
+   * or revoked key leaves this unset so callers can keep failing closed.
+   */
+  unavailable?: boolean;
 }
 
 // ── Module state ──────────────────────────────────────────────────────────────
@@ -156,9 +162,9 @@ export async function verifyUserKey(userKey: string, serviceId: string): Promise
       if (resp.status >= 500) {
         const stale = staleResult(serviceId, userKey, reason);
         if (stale) return stale;
-      } else {
-        forgetGood(serviceId, userKey);
+        return { userId: "", rejected: true, rejectReason: reason, unavailable: true };
       }
+      forgetGood(serviceId, userKey);
       return { userId: "", rejected: true, rejectReason: reason };
     }
 
@@ -192,6 +198,6 @@ export async function verifyUserKey(userKey: string, serviceId: string): Promise
     log.warn("auth.verify.error", { error: reason, serviceId });
     const stale = staleResult(serviceId, userKey, reason);
     if (stale) return stale;
-    return { userId: "", rejected: true, rejectReason: reason };
+    return { userId: "", rejected: true, rejectReason: reason, unavailable: true };
   }
 }

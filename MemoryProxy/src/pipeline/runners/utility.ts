@@ -21,7 +21,7 @@ import { isLegacyProxyPath, matchWhitelistEndpoint, type WhitelistEndpoint } fro
 import { joinUrl } from "../../guard-adapter.js";
 import { log } from "../../report/log.js";
 import { verifyUserKey } from "../../auth.js";
-import { stageAuth } from "../stages/auth.js";
+import { authRejectionResponse, stageAuth } from "../stages/auth.js";
 import { openPoolRequest, applyPoolAuth, type PoolRequest } from "../../subscription-pool/pool-request.js";
 import {
   immediateTeamError, resolveRequestTeam, sessionStateAgent, teamErrorResponse, teamIdOf,
@@ -116,9 +116,8 @@ export async function runUtilityPipeline(c: Context, config: ProxyConfig): Promi
   const apiKey = auth.apiKey;
   const spaceId = auth.spaceId;
   const userId = auth.userId;
-  if (auth.rejected) {
-    return c.json({ error: `Authentication failed: ${auth.rejectReason ?? "unknown"}` }, 401);
-  }
+  const denied = authRejectionResponse(c, auth, "openai");
+  if (denied) return denied;
   const keyId = auth.keyId;
 
   // systemUser 短路 (utility 无 body, stage 内部 undefined)

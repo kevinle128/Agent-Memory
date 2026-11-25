@@ -38,6 +38,8 @@ export interface AuthStageResult {
   /** 只在 rejected=true 时有意义, 语义与 verifyUserKey 一致 */
   rejected: boolean;
   rejectReason?: string;
+  /** Set only when MemoryCore could not answer and the key was not refused. */
+  unavailable?: boolean;
 }
 
 /**
@@ -81,11 +83,52 @@ export function extractApiKeyFromContext(
   return "";
 }
 
+const MEMORY_UNAVAILABLE_MESSAGE = "Memory service temporarily unavailable. Please retry.";
+const RETRY_AFTER = { "retry-after": "5" };
+
+export type AuthRejectionShape = "openai" | "anthropic" | "hook";
+
+/**
+ * A rejected key stays 401. A MemoryCore outage is 503 with retry-after, and the
+ * body avoids words that a client rewrites into a sign-in prompt.
+ * Returns null when the caller was accepted.
+ */
+export function authRejectionResponse(
+  c: Context,
+  auth: { rejected: boolean; unavailable?: boolean; rejectReason?: string },
+  shape: AuthRejectionShape,
+): Response | null {
+  if (!auth.rejected) return null;
+  if (auth.unavailable) {
+    if (shape === "anthropic") {
+      return c.json(
+        { type: "error", error: { type: "api_error", message: MEMORY_UNAVAILABLE_MESSAGE } },
+        503,
+        RETRY_AFTER,
+      );
+    }
+    if (shape === "hook") {
+      return c.json({ error: "service_unavailable", reason: auth.rejectReason }, 503, RETRY_AFTER);
+    }
+    return c.json({ error: MEMORY_UNAVAILABLE_MESSAGE }, 503, RETRY_AFTER);
+  }
+  if (shape === "anthropic") {
+    return c.json(
+      { type: "error", error: { type: "authentication_error", message: `Authentication failed: ${auth.rejectReason ?? "unknown"}` } },
+      401,
+    );
+  }
+  if (shape === "hook") {
+    return c.json({ error: "unauthorized", reason: auth.rejectReason }, 401);
+  }
+  return c.json({ error: `Authentication failed: ${auth.rejectReason ?? "unknown"}` }, 401);
+}
+
 /**
  * Early auth stage — 在 body 解析之前跑, 拒绝的请求短路。
  *
- * 返回 `rejected: true` 时调用方应立即用 protocol.buildErrorResponse
- * 生成 401, 不要往下走。
+ * `rejected` with `unavailable` is a MemoryCore outage (503). Any other
+ * rejection is a real key refusal (401).
  */
 export async function stageAuth(
   c: Context,
@@ -102,6 +145,7 @@ export async function stageAuth(
       spaceId,
       rejected: true,
       rejectReason: verify.rejectReason,
+      ...(verify.unavailable ? { unavailable: true } : {}),
     };
   }
   const userId = verify.userId;

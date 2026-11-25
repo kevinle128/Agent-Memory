@@ -16,7 +16,7 @@
 import type { Context } from "hono";
 
 import { getMetadataClient } from "../meta/client.js";
-import { stageAuth } from "../pipeline/stages/auth.js";
+import { authRejectionResponse, stageAuth } from "../pipeline/stages/auth.js";
 import type { ProxyConfig } from "../types.js";
 import { buildProjectIdentity } from "../project-scope/project-key.js";
 import { getSessionWorkspaceStore, type SessionWorkspace } from "../project-scope/session-workspace.js";
@@ -94,7 +94,8 @@ export function createHookReportHandler(config: ProxyConfig) {
     if (!AGENT_RE.test(agentSource)) return c.json({ error: "invalid agent" }, 400);
 
     const auth = await stageAuth(c);
-    if (auth.rejected) return c.json({ error: "unauthorized", reason: auth.rejectReason }, 401);
+    const denied = authRejectionResponse(c, auth, "hook");
+    if (denied) return denied;
     const userId = auth.userId || "anonymous";
     const spaceId = auth.spaceId || c.req.param("spaceId") || "";
 

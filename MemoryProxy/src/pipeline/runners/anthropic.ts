@@ -59,7 +59,7 @@ import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-req
 import {
   immediateTeamError, resolveRequestTeam, settleRequestTeam, teamErrorResponse, teamIdOf,
 } from "../../subscription-pool/pool-team.js";
-import { stageAuth } from "../stages/auth.js";
+import { authRejectionResponse, stageAuth } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
 import { stageModelSource, applyModelSource, modelSourceErrorResponse, type ModelSourceResolution } from "../stages/model-source.js";
 import { withClaudeCodeIdentity } from "../../subscription-pool/claude-identity.js";
@@ -468,9 +468,8 @@ export async function runAnthropicPipeline(
   const earlyApiKey = earlyAuth.apiKey;
   const earlySpaceId = earlyAuth.spaceId;
   const earlyVerify = { userId: earlyAuth.userId, rejected: earlyAuth.rejected, rejectReason: earlyAuth.rejectReason };
-  if (earlyAuth.rejected) {
-    return c.json({ type: "error", error: { type: "authentication_error", message: `Authentication failed: ${earlyAuth.rejectReason ?? "unknown"}` } }, 401);
-  }
+  const denied = authRejectionResponse(c, earlyAuth, "anthropic");
+  if (denied) return denied;
 
   // ── Parse body ──────────────────────────────────────────────────────────
   // Body is parsed BEFORE the systemUser short-circuit so the alias-gate and
