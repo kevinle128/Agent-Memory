@@ -18,6 +18,8 @@ services:
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
       ANTIGRAVITY_OAUTH_CLIENT_ID: ${ANTIGRAVITY_OAUTH_CLIENT_ID:-}
       ANTIGRAVITY_OAUTH_CLIENT_SECRET: ${ANTIGRAVITY_OAUTH_CLIENT_SECRET:-}
+      # Reasoning models on VTC need > 4096 output tokens so L1/L3 JSON is not cut off.
+      TDAI_LLM_MAX_TOKENS: ${MEMORY_LLM_MAX_TOKENS:-32768}
   memory-hub:
     image: ghcr.io/kevinle128/agent-memory-hub:${MEMORY_BUILD_REVISION:?set MEMORY_BUILD_REVISION}
     pull_policy: missing
