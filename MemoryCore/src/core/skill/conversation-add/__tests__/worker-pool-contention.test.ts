@@ -28,6 +28,16 @@ class CountingQueue extends LocalSkillAgentTaskQueue {
   }
 }
 
+class DowngradeCountingQueue extends CountingQueue {
+  override getPeekStrategy() {
+    return "rpop_lpush_downgrade" as const;
+  }
+
+  override async peekAgent(blockMs: number): Promise<AgentTuple | null> {
+    return this.dequeueAgent(blockMs);
+  }
+}
+
 function agent(id: string): AgentTuple {
   return { instance_id: "inst", space_id: "sp", user_id: "u", team_id: "t", agent_id: id };
 }
@@ -162,6 +172,67 @@ describe("SkillWorkerPool while an extract lock is busy", () => {
     const pool = startPool(queue, reads, new Map(), {
       failureRequeueSleepMs: 40,
       suppressAgentTtlMs: 40,
+      resolveBuffer: async () => {
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error("resolver down");
+        }
+        return {
+          async readTasks(tuple: AgentTuple) {
+            reads.push(tuple.agent_id);
+            return { team_id: tuple.team_id, agent_id: tuple.agent_id, updated_at_ms: 0, tasks: [] };
+          },
+        } as unknown as SkillBufferStorage;
+      },
+    });
+    const deadline = Date.now() + 2_000;
+    while (!reads.includes("free") && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(reads).toContain("free");
+    await pool.stop();
+  });
+
+  it("requeues popped agents in rpop_lpush_downgrade mode when another worker is busy on lock contention", async () => {
+    const queue = new DowngradeCountingQueue();
+    const lock = await queue.acquireExtractLock(agent("busy"), 60_000);
+    expect(lock).not.toBeNull();
+    queue.counting = true;
+    await queue.enqueueAgent(agent("busy"));
+    const reads: string[] = [];
+    const pool = startPool(queue, reads, new Map(), {
+      concurrency: 4,
+      lockContentionSleepMs: 120,
+      lockContentionSleepJitterMs: 0,
+      suppressAgentTtlMs: 40,
+      selfHealIntervalMs: 60_000,
+    });
+    // Wait until a worker hits lock contention, requeues, and sleeps in-flight while other workers pop and park.
+    const seen = Date.now() + 2_000;
+    while (queue.acquires.length < 1 && Date.now() < seen) {
+      await new Promise((r) => setTimeout(r, 15));
+    }
+    await new Promise((r) => setTimeout(r, 60));
+    await queue.releaseExtractLock(lock!);
+    const deadline = Date.now() + 2_000;
+    while (!reads.includes("busy") && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(reads).toContain("busy");
+    await pool.stop();
+  });
+
+  it("requeues popped agents in rpop_lpush_downgrade mode when a resolver throws", async () => {
+    const queue = new DowngradeCountingQueue();
+    queue.counting = true;
+    await queue.enqueueAgent(agent("free"));
+    const reads: string[] = [];
+    let failures = 1;
+    const pool = startPool(queue, reads, new Map(), {
+      concurrency: 2,
+      failureRequeueSleepMs: 40,
+      suppressAgentTtlMs: 40,
+      selfHealIntervalMs: 60_000,
       resolveBuffer: async () => {
         if (failures > 0) {
           failures -= 1;

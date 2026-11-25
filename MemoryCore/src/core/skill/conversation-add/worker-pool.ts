@@ -355,7 +355,20 @@ export class SkillWorkerPool {
       const key = agentBusyKey(agent);
       const now = this.opts.now?.() ?? Date.now();
       const retryAt = this.retryNotBefore.get(key) ?? 0;
+      const isDowngrade =
+        (typeof this.opts.queue.getPeekStrategy === "function"
+          ? this.opts.queue.getPeekStrategy()
+          : "lmove") === "rpop_lpush_downgrade";
       if (this.inFlightAgents.has(key) || retryAt > now) {
+        if (isDowngrade) {
+          try {
+            await this.opts.queue.requeueAgent(agent);
+          } catch (err) {
+            this.logger.warn(
+              `[skill-worker-pool] ${workerId} requeueAgent(busy) failed: ${(err as Error).message}`,
+            );
+          }
+        }
         const waitMs = this.inFlightAgents.has(key)
           ? this.busyRecheckMs()
           : Math.min(this.busyRecheckMs(), Math.max(1, retryAt - now));
@@ -374,6 +387,15 @@ export class SkillWorkerPool {
           this.logger.error(
             `[skill-worker-pool] ${workerId} consumeAgent error: ${(err as Error).message}`,
           );
+        }
+        if (isDowngrade) {
+          try {
+            await this.opts.queue.requeueAgent(agent);
+          } catch (requeueErr) {
+            this.logger.warn(
+              `[skill-worker-pool] ${workerId} requeueAgent(error) failed: ${(requeueErr as Error).message}`,
+            );
+          }
         }
         this.noteRetry(key, this.opts.failureRequeueSleepMs ?? 1_000);
       } finally {
