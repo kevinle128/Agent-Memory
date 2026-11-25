@@ -225,11 +225,10 @@ describe("SkillWorkerPool while an extract lock is busy", () => {
   it("requeues popped agents in rpop_lpush_downgrade mode when a resolver throws", async () => {
     const queue = new DowngradeCountingQueue();
     queue.counting = true;
-    await queue.enqueueAgent(agent("free"));
     const reads: string[] = [];
     let failures = 1;
     const pool = startPool(queue, reads, new Map(), {
-      concurrency: 2,
+      concurrency: 1,
       failureRequeueSleepMs: 40,
       suppressAgentTtlMs: 40,
       selfHealIntervalMs: 60_000,
@@ -246,6 +245,7 @@ describe("SkillWorkerPool while an extract lock is busy", () => {
         } as unknown as SkillBufferStorage;
       },
     });
+    await queue.enqueueAgent(agent("free"));
     const deadline = Date.now() + 2_000;
     while (!reads.includes("free") && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 20));
