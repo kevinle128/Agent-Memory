@@ -595,6 +595,12 @@ export const enUS = {
 
   // ===== Skills =====
   'skills.title': 'Skill Asset Management',
+  'skills.localInventory.title': 'On your machines',
+  'skills.localInventory.empty': 'No skill folders reported from your machines.',
+  'skills.localInventory.unavailable': 'The machine skill list is unavailable.',
+  'skills.localInventory.source.user': 'User',
+  'skills.localInventory.source.project': 'Project',
+  'skills.localInventory.source.third_party_plugin': 'Plugin',
   'skills.scope.team': 'Team Assets',
   'skills.scope.fixed': 'Agent Assets',
   'skills.scope.personal': 'My Assets',

@@ -11,7 +11,14 @@
  */
 
 /** 读操作（可选 agent_id）；此处仅用于文档标注，透传不区分。 */
-export const SKILL_LIST_ACTIONS = new Set(['list', 'search', 'versions', 'versions/diff', 'proposals/list']);
+export const SKILL_LIST_ACTIONS = new Set([
+  'list',
+  'search',
+  'versions',
+  'versions/diff',
+  'proposals/list',
+  'local-inventory/list',
+]);
 
 export const SKILL_ACTIONS = [
   'create',
@@ -36,6 +43,8 @@ export const SKILL_ACTIONS = [
   'extract',
   'export',
   'conversation/add',
+  'local-inventory/replace',
+  'local-inventory/list',
 ] as const;
 
 export type SkillAction = (typeof SKILL_ACTIONS)[number];

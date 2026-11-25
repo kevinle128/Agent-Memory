@@ -4,7 +4,7 @@
  */
 
 export const LOCAL_SKILL_HARNESSES = ["claude", "codex", "omp", "agy"] as const;
-export const LOCAL_SKILL_SOURCES = ["user", "project"] as const;
+export const LOCAL_SKILL_SOURCES = ["user", "project", "third_party_plugin"] as const;
 
 export type LocalSkillHarness = (typeof LOCAL_SKILL_HARNESSES)[number];
 export type LocalSkillSource = (typeof LOCAL_SKILL_SOURCES)[number];
