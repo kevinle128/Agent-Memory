@@ -64,6 +64,20 @@ export interface SkillFileContent {
   version: number;
 }
 
+/** One folder the signed-in user's machine reported. Paths stay relative to a named root. */
+export interface LocalSkillInventoryRow {
+  inventory_id: number;
+  machine_id: string;
+  harness: string;
+  source: string;
+  name: string;
+  root_kind: string;
+  relative_path: string;
+  content_hash: string;
+  reported_at_ms: number;
+  present: number;
+}
+
 const SKILL_PREFIX = '/api/v1/skill';
 
 /** skill 数据面调用：注入双 Header，POST body，解析信封（code!=0 抛 ApiError）。 */
@@ -271,5 +285,17 @@ export const skillApi = {
       // 血缘：记录 fork 自哪个源 skill，供从副本反查源、避免重复 fork。
       metadata: { forked_from: { skill_id: sourceSkillId, name: detail.name } },
     });
+  },
+
+  /**
+   * Folders reported by the signed-in user's machines.
+   * The panel proxy fills user_key from the session header; the body must not name another user.
+   */
+  listLocalInventory: async (machineId?: string): Promise<LocalSkillInventoryRow[]> => {
+    const res = await skillPost<{ items: LocalSkillInventoryRow[] }>(
+      'local-inventory/list',
+      machineId ? { machine_id: machineId } : {},
+    );
+    return Array.isArray(res?.items) ? res.items : [];
   },
 };

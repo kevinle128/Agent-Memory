@@ -44,6 +44,7 @@ import { UserBadge } from '@/components/asset/UserBadge';
 import SkillDetailPane from './SkillDetailPane';
 import { UserNameProvider } from './UserName';
 import { NewSkillDialog } from './NewSkillDialog';
+import { LocalInventorySection } from './LocalInventorySection';
 import { ProposalsView } from './ProposalsView';
 import { SkillFilterBar } from './SkillFilterBar';
 import { OriginBadge, PendingBadge, ScopeBadge } from './SkillBadges';
@@ -226,6 +227,7 @@ export default function SkillsPanel({
           }}
         />
       ) : (
+      <>
       <AssetSplitLayout
         storageKey="skills:assetSplitWidth"
         sidebar={
@@ -359,6 +361,8 @@ export default function SkillsPanel({
           />
         }
       />
+      <LocalInventorySection refreshToken={`${activeTeamId ?? ''}:${tab}`} />
+      </>
       )}
 
       {/* Modals (only for team/fixed tabs) */}

@@ -52,3 +52,56 @@
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+
+/* Read-only machine report. It sits under the cloud skill list and never replaces it. */
+._memory-local-inventory {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0 4px;
+  border-top: 1px solid var(--tea-color-border-secondary, rgba(0, 0, 0, 0.08));
+}
+
+._memory-local-inventory-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+._memory-local-inventory-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--tea-color-text-secondary);
+}
+
+._memory-local-inventory-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+._memory-local-inventory-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+._memory-local-inventory-name {
+  font-weight: 600;
+}
+
+._memory-local-inventory-root,
+._memory-local-inventory-path,
+._memory-local-inventory-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+._memory-local-inventory-time {
+  color: var(--tea-color-text-secondary);
+}

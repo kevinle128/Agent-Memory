@@ -38,6 +38,11 @@ export function registerSkillProxyRoutes(api: Hono, deps: PanelDeps): void {
     }
 
     const panelMeta = c.get('panelMeta');
+    // The authenticated header is the only user key Core may see. A JSON
+    // user_key cannot name a different user, and the web client may omit it.
+    if (action === 'local-inventory/replace' || action === 'local-inventory/list') {
+      body = { ...body, user_key: panelMeta.userKey };
+    }
     const ctx: MetaCallContext = {
       instanceId: panelMeta.instanceId,
       gatewayEndpoint: panelMeta.gatewayEndpoint,

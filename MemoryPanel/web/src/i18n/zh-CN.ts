@@ -581,6 +581,12 @@ export const zhCN = {
 
   // ===== Skills =====
   'skills.title': 'Skill 资产管理',
+  'skills.localInventory.title': '本机上的技能',
+  'skills.localInventory.empty': '还没有从你的机器上报的技能目录。',
+  'skills.localInventory.unavailable': '暂时无法读取本机技能列表。',
+  'skills.localInventory.source.user': '用户',
+  'skills.localInventory.source.project': '项目',
+  'skills.localInventory.source.third_party_plugin': '插件',
   'skills.scope.team': '团队资产',
   'skills.scope.fixed': 'Agent 资产',
   'skills.scope.personal': '我的资产分配',
