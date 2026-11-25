@@ -12,7 +12,7 @@
  */
 
 import { z } from "zod";
-import { localSkillNameError, relativeSkillPathError } from "../core/skill/local-skill-inventory.js";
+import { LOCAL_SKILL_SOURCES, localSkillNameError, relativeSkillPathError } from "../core/skill/local-skill-inventory.js";
 import { projectHashSchema, resolveProjectFields } from "./v2-schemas.js";
 
 export { relativeSkillPathError };
@@ -469,7 +469,7 @@ const MACHINE_ID = z.string().regex(
 
 export const localInventoryItemSchema = z.object({
   harness: z.enum(["claude", "codex", "omp", "agy"]),
-  source: z.enum(["user", "project"]),
+  source: z.enum(LOCAL_SKILL_SOURCES),
   name: z.string().superRefine((value, ctx) => {
     const reason = localSkillNameError(value);
     if (reason) ctx.addIssue({ code: z.ZodIssueCode.custom, message: reason });

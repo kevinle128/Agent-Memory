@@ -135,6 +135,34 @@ describe("local skill inventory routes", () => {
     expect((h.db.prepare("SELECT COUNT(*) AS c FROM skill_change_proposals").get() as { c: number }).c).toBe(0);
   });
 
+  it("stores a snapshot whose sources are user, project, and third_party_plugin", async () => {
+    h = createSkillHarness();
+    const keys = { "key-a": "user-a" };
+    const saved = await handleLocalInventoryReplace(replaceBody({
+      items: [
+        item({ source: "user", name: "user-demo", relative_path: "demo/SKILL.md" }),
+        item({ source: "project", name: "project-demo", relative_path: "repo/skills/demo/SKILL.md", content_hash: HASH_B }),
+        item({
+          source: "third_party_plugin",
+          name: "plugin-demo",
+          relative_path: "ponytail/skills/demo/SKILL.md",
+          content_hash: "c".repeat(64),
+        }),
+      ],
+    }), auth, "r", deps(keys));
+    expect(saved.code).toBe(0);
+    const listed = await handleLocalInventoryList({ user_key: "key-a", machine_id: "machine-a" }, auth, "r", deps(keys));
+    const items = (listed.data as { items: Array<{ source: string; relative_path: string }> }).items;
+    expect(items.map((row) => row.source).sort()).toEqual(["project", "third_party_plugin", "user"]);
+    expect(items.map((row) => row.relative_path)).toContain("ponytail/skills/demo/SKILL.md");
+
+    const rejected = await handleLocalInventoryReplace(
+      replaceBody({}, { source: "plugin", relative_path: "other/SKILL.md" }),
+      auth, "r", deps(keys),
+    );
+    expect(rejected.code).toBe(40001);
+  });
+
   it("accepts a real folder name and returns that path unchanged", async () => {
     h = createSkillHarness();
     const keys = { "key-a": "user-a" };
