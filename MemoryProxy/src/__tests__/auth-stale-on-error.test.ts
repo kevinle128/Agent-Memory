@@ -95,6 +95,50 @@ describe("verifyUserKey while the auth service is unavailable", () => {
     expect((await verifyUserKey("sk-a", "default")).rejected).toBe(true);
   });
 
+  it("marks timeout, network failure and HTTP 5xx as unavailable when nothing can be reused", async () => {
+    fetchMock.mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"));
+    const timeout = await verifyUserKey("sk-new", "default");
+    expect(timeout.rejected).toBe(true);
+    expect(timeout.unavailable).toBe(true);
+
+    fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
+    expect((await verifyUserKey("sk-new", "default")).unavailable).toBe(true);
+
+    fetchMock.mockResolvedValueOnce(json(503, {}));
+    expect((await verifyUserKey("sk-new", "default")).unavailable).toBe(true);
+
+    fetchMock.mockResolvedValueOnce(json(500, {}));
+    expect((await verifyUserKey("sk-new", "default")).unavailable).toBe(true);
+  });
+
+  it("does not mark a real refusal as unavailable and still forgets a previous verification", async () => {
+    expect((await verifyUserKey("", "default")).unavailable).toBeUndefined();
+    expect((await verifyUserKey("sk-a", "")).unavailable).toBeUndefined();
+
+    fetchMock.mockResolvedValueOnce(json(200, VALID));
+    await verifyUserKey("sk-a", "default");
+
+    fetchMock.mockResolvedValueOnce(json(401, {}));
+    const denied = await verifyUserKey("sk-a", "default");
+    expect(denied.rejected).toBe(true);
+    expect(denied.unavailable).toBeUndefined();
+
+    fetchMock.mockResolvedValueOnce(json(200, VALID));
+    await verifyUserKey("sk-a", "default");
+    fetchMock.mockResolvedValueOnce(json(200, INVALID));
+    expect((await verifyUserKey("sk-a", "default")).unavailable).toBeUndefined();
+
+    fetchMock.mockResolvedValueOnce(json(200, VALID));
+    await verifyUserKey("sk-a", "default");
+    fetchMock.mockResolvedValueOnce(new Response("<html>error</html>", { status: 200 }));
+    expect((await verifyUserKey("sk-a", "default")).unavailable).toBeUndefined();
+
+    fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
+    const afterRefusal = await verifyUserKey("sk-a", "default");
+    expect(afterRefusal.rejected).toBe(true);
+    expect(afterRefusal.unavailable).toBe(true);
+  });
+
   it("does not bring back a key when a slow success started before a refusal", async () => {
     fetchMock.mockResolvedValueOnce(json(200, VALID));
     await verifyUserKey("sk-a", "default");

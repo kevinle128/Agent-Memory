@@ -51,7 +51,7 @@ import { resolveModelId, isModelInPricing } from "../../pricing.js";
 import { inspectAndRecord } from "../../identity.js";
 import { writeFailedReportRaw } from "../../clickhouse.js";
 import { verifyUserKey } from "../../auth.js";
-import { stageAuth } from "../stages/auth.js";
+import { authRejectionResponse, stageAuth } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
 import { stageModelSource, applyModelSource, modelSourceErrorResponse } from "../stages/model-source.js";
 import { stageModelGate, buildUnregisteredModelErrorBody } from "../stages/model-gate.js";
@@ -396,9 +396,8 @@ export async function runOpenaiChatPipeline(
   const earlyApiKey = earlyAuth.apiKey;
   const earlySpaceId = earlyAuth.spaceId;
   const earlyVerify = { userId: earlyAuth.userId, rejected: earlyAuth.rejected, rejectReason: earlyAuth.rejectReason };
-  if (earlyAuth.rejected) {
-    return c.json({ error: `Authentication failed: ${earlyAuth.rejectReason ?? "unknown"}` }, 401);
-  }
+  const denied = authRejectionResponse(c, earlyAuth, "openai");
+  if (denied) return denied;
 
   // ── Parse body ──────────────────────────────────────────────────────────
   // Body is parsed BEFORE the systemUser short-circuit so the alias-gate and

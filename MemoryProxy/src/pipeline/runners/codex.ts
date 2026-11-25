@@ -49,7 +49,7 @@ import {
 } from "../../common/responses-payload.js";
 import { isLegacyProxyPath } from "../../routes/whitelist.js";
 import { verifyUserKey } from "../../auth.js";
-import { stageAuth, extractApiKeyFromContext } from "../stages/auth.js";
+import { authRejectionResponse, stageAuth, extractApiKeyFromContext } from "../stages/auth.js";
 import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-request.js";
 import {
   immediateTeamError, resolveRequestTeam, settleRequestTeam, teamErrorResponse, teamIdOf,
@@ -313,12 +313,8 @@ export async function runCodexPipeline(
   const apiKey = auth.apiKey;
   const spaceId = auth.spaceId;
   const userId = auth.userId;
-  if (auth.rejected) {
-    return c.json(
-      { error: `Authentication failed: ${auth.rejectReason ?? "unknown"}` },
-      401,
-    );
-  }
+  const denied = authRejectionResponse(c, auth, "openai");
+  if (denied) return denied;
   const keyId = auth.keyId;
 
   // ── 2. Read body (via shared stageParseBody) ─────────────────────────

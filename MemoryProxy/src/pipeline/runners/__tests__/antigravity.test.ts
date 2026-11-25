@@ -31,7 +31,12 @@ const SESSION = "5f1d6b7e-9c1a-4e55-8f0b-2f6d3d9a1c11";
 const NOW = Date.now();
 const UPSTREAM = "https://daily-cloudcode-pa.googleapis.com";
 
-const verifyUserKey = vi.fn(async (_key: string, _space: string) => ({ userId: "usr-1", rejected: false as boolean, rejectReason: undefined as string | undefined }));
+const verifyUserKey = vi.fn(async (_key: string, _space: string): Promise<{
+  userId: string;
+  rejected: boolean;
+  rejectReason?: string;
+  unavailable?: boolean;
+}> => ({ userId: "usr-1", rejected: false }));
 vi.mock("../../../auth.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../auth.js")>()),
   verifyUserKey: (key: string, space: string) => verifyUserKey(key, space),
@@ -105,7 +110,7 @@ beforeEach(() => {
   logs = [];
   logged.length = 0;
   verifyUserKey.mockClear();
-  verifyUserKey.mockImplementation(async () => ({ userId: "usr-1", rejected: false, rejectReason: undefined }));
+  verifyUserKey.mockImplementation(async () => ({ userId: "usr-1", rejected: false, rejectReason: undefined, unavailable: undefined }));
   sessionInit.mockReset();
   sessionInit.mockResolvedValue({
     proceed: true, response: null, wentThroughStateMachine: false,
@@ -315,12 +320,32 @@ describe("antigravity stream route", () => {
 
   it("rejects a wrong path key before any upstream call", async () => {
     prime([acct("a")]);
-    verifyUserKey.mockImplementation(async () => ({ userId: "", rejected: true, rejectReason: "invalid user_key" }));
+    verifyUserKey.mockImplementation(async () => ({ userId: "", rejected: true, rejectReason: "invalid user_key", unavailable: undefined }));
     const { upstreamCalls } = installFetch(() => sse());
     const res = await post(streamPath("sk-wrong"), agyBody());
     expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: { status: "UNAUTHENTICATED" } });
     expect(upstreamCalls).toHaveLength(0);
     expect(verifyUserKey).toHaveBeenCalledWith("sk-wrong", SPACE);
+  });
+
+  it("answers 503 UNAVAILABLE when MemoryCore cannot verify, without an agy sign-in phrase", async () => {
+    prime([acct("a")]);
+    verifyUserKey.mockImplementation(async () => ({
+      userId: "",
+      rejected: true,
+      rejectReason: "auth service timeout (5000ms)",
+      unavailable: true,
+    }));
+    const { upstreamCalls } = installFetch(() => sse());
+    const res = await post(streamPath(), agyBody());
+    const body = await res.json() as { error?: { message?: string; status?: string } };
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("5");
+    expect(body.error?.status).toBe("UNAVAILABLE");
+    expect(body.error?.message).toBe("Memory service temporarily unavailable. Please retry.");
+    expect(body.error?.message ?? "").not.toMatch(/auth|sign.in|log.in/i);
+    expect(upstreamCalls).toHaveLength(0);
   });
 
   it("answers an unknown keyed path with 404 and does not reach the chat runner", async () => {

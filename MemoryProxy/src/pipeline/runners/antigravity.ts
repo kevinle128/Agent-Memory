@@ -312,6 +312,14 @@ async function authenticate(c: Context): Promise<Authenticated | Response> {
   if (!route) return googleError(404, "Unknown AntiGravity endpoint.", "NOT_FOUND");
   const verify = await verifyUserKey(route.accessKey, route.spaceId);
   if (verify.rejected) {
+    // Paseo rewrites any message matching /auth|sign.in|log.in/i into an agy
+    // sign-in prompt. A Core outage must stay a retryable 503 and avoid those words.
+    if (verify.unavailable) {
+      const res = googleError(503, "Memory service temporarily unavailable. Please retry.", "UNAVAILABLE");
+      res.headers.set("retry-after", "5");
+      console.warn(`${TAG} verify unavailable space=${route.spaceId}: ${verify.rejectReason ?? "unknown"}`);
+      return res;
+    }
     console.warn(`${TAG} authentication failed space=${route.spaceId}: ${verify.rejectReason ?? "unknown"}`);
     return googleError(401, `Authentication failed: ${verify.rejectReason ?? "unknown"}`, "UNAUTHENTICATED");
   }

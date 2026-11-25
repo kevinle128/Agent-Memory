@@ -41,7 +41,7 @@ import {
   type RecallOutcome,
 } from "../db/hook-recall-log.js";
 import { loadSessionIdsL1, loadSessionIdsL2, resolveMemoryCtxs, type SessionIdFields } from "../memory/memory-bridge.js";
-import { stageAuth } from "../pipeline/stages/auth.js";
+import { authRejectionResponse, stageAuth } from "../pipeline/stages/auth.js";
 import { buildProjectIdentity } from "../project-scope/project-key.js";
 import { getSessionStore } from "../session/store.js";
 import { buildTdaiClientForRequest } from "../tdai/client.js";
@@ -150,7 +150,8 @@ export function createHookRecallHandler(config: ProxyConfig) {
     if (!AGENT_RE.test(agentSource)) return c.json({ error: "invalid agent" }, 400);
 
     const auth = await stageAuth(c);
-    if (auth.rejected) return c.json({ error: "unauthorized", reason: auth.rejectReason }, 401);
+    const denied = authRejectionResponse(c, auth, "hook");
+    if (denied) return denied;
 
     let raw: unknown;
     try {

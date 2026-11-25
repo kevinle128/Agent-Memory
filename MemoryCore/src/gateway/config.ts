@@ -697,6 +697,7 @@ export function loadGatewayConfig(overrides?: GatewayConfigOverrides): GatewayCo
       proxy: {
         useMemorySystemUserKey: llm.proxy?.useMemorySystemUserKey ?? true,
       },
+      stream: llm.stream,
     };
   }
 

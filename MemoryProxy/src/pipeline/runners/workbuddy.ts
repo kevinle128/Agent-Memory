@@ -44,7 +44,7 @@ import {
   mergeResponsesToolCalls,
 } from "../../common/responses-payload.js";
 import { verifyUserKey } from "../../auth.js";
-import { stageAuth, extractApiKeyFromContext } from "../stages/auth.js";
+import { authRejectionResponse, stageAuth, extractApiKeyFromContext } from "../stages/auth.js";
 import { stageParseBody } from "../stages/parse-body.js";
 import { openPoolRequest, applyPoolAuth } from "../../subscription-pool/pool-request.js";
 import {
@@ -1205,9 +1205,8 @@ export async function runWorkbuddyPipeline(
   const apiKey = auth.apiKey;
   const spaceId = auth.spaceId;
   const userId = auth.userId;
-  if (auth.rejected) {
-    return c.json({ error: `Authentication failed: ${auth.rejectReason ?? "unknown"}` }, 401);
-  }
+  const denied = authRejectionResponse(c, auth, "openai");
+  if (denied) return denied;
   const keyId = auth.keyId;
 
   // ── 2. Read body (via shared stageParseBody) ─────────────────────────

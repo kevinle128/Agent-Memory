@@ -101,6 +101,11 @@ export interface SkillConversationExtractWorkerOptions {
   lockContentionSleepMs?: number;
   lockContentionSleepJitterMs?: number;
   /**
+   * When this returns true the contention wait ends early. The pool passes its
+   * closed flag so stop() is not stuck for the whole backoff.
+   */
+  shouldStop?: () => boolean;
+  /**
    * agent 一轮处理最多抽多少条 task 就 requeue 让位（保证公平），默认 1。
    * 设计文档里 Worker 每次处理一条 task 就把 agent 塞回队头。
    */
@@ -304,7 +309,10 @@ export class SkillConversationExtractWorker {
         this.logger.debug?.(`[skill-conv-worker] extract-lock contended agent=${agentKey}, sleep (peek keeps agent in queue)`);
       }
       const jitter = Math.floor(Math.random() * (this.opts.lockContentionSleepJitterMs ?? 500));
-      await sleep((this.opts.lockContentionSleepMs ?? 2000) + jitter);
+      await sleepUnlessStopped(
+        (this.opts.lockContentionSleepMs ?? 2000) + jitter,
+        this.opts.shouldStop ?? (() => this.closed),
+      );
       obsLogger.info("skill.worker.consume_done", {
         worker_id: workerId, agent_key: agentKey, instance_id: instanceId,
         outcome: "lock_contended", dur_ms: Date.now() - t0Consume,
@@ -809,4 +817,15 @@ export function classifyError(err: Error): "transient" | "permanent" {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Contention backoff in short slices so a closed worker or pool can leave. */
+async function sleepUnlessStopped(ms: number, shouldStop: () => boolean): Promise<void> {
+  let left = ms;
+  while (left > 0) {
+    if (shouldStop()) return;
+    const step = Math.min(50, left);
+    await sleep(step);
+    left -= step;
+  }
 }

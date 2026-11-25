@@ -6,6 +6,7 @@ import { extractSpaceIdFromPath } from "./credit-reporter.js";
 import { poolServiceFor } from "./guard-adapter.js";
 import { getInstanceUpstreamConfigs, isPoolRow, type InstanceUpstreamRow } from "./instance-upstream-cache.js";
 import { extractBearerToken } from "./opik.js";
+import { authRejectionResponse } from "./pipeline/stages/auth.js";
 import { isSourceRow } from "./pipeline/stages/model-source.js";
 import { normalizePublicModelName } from "./pricing.js";
 import { listMemberTeamIds } from "./subscription-pool/pool-team.js";
@@ -127,11 +128,10 @@ async function authenticate(c: Context): Promise<ModelsAuth | { response: Respon
   const apiKey = c.req.header("x-api-key")
     ?? extractBearerToken(c.req.header("authorization") ?? c.req.header("Authorization") ?? "")
     ?? "";
-  const { rejected, rejectReason, userId } = await verifyUserKey(apiKey, spaceId);
-
-  if (rejected) {
-    return { response: c.json({ error: `Authentication failed: ${rejectReason ?? "unknown"}` }, 401) };
-  }
+  const verified = await verifyUserKey(apiKey, spaceId);
+  const denied = authRejectionResponse(c, verified, "openai");
+  if (denied) return { response: denied };
+  const { userId } = verified;
   return { spaceId, userId, apiKey };
 }
 
