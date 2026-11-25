@@ -84,12 +84,10 @@ export interface SkillWorkerPoolOptions extends SkillWorkerResolvers {
   projectLookupWindowMs?: number;
 
   /**
-   * 2026-08-03 crash-recovery §4.4: 本 loop 处理某个 agent 失败后 (抢锁失败 /
-   * resolver 抛错 / consumeAgent 抛错), 短时间内 dequeue 到同 agent 直接跳过,
-   * 避免 pool 在 peek 语义下热循环。默认 200ms。
-   *
-   * 抑制表存在本 loop 进程内 (per-workerLoop Map, 不跨 loop 共享 —— 不同 loop 的
-   * 独立抑制状态是天然错峰)。
+   * How long a worker waits before peeking again when the agent it just saw is
+   * already being extracted in this process, or was locked by someone else.
+   * Shared by the pool so idle workers do not each call acquireExtractLock.
+   * Default 1000ms. `stop()` wakes the wait immediately.
    */
   suppressAgentTtlMs?: number;
 
@@ -109,6 +107,11 @@ export class SkillWorkerPool {
   private started = false;
   private loopPromises: Promise<void>[] = [];
   private selfHealTimer: ReturnType<typeof setInterval> | undefined;
+  /** Agents whose consumeAgent call is in progress in this pool. */
+  private readonly inFlightAgents = new Set<string>();
+  /** Do not claim this agent again until this timestamp. */
+  private readonly retryNotBefore = new Map<string, number>();
+  private idleWaiters: Array<() => void> = [];
 
   constructor(opts: SkillWorkerPoolOptions) {
     if (!Number.isInteger(opts.concurrency) || opts.concurrency < 1) {
@@ -206,10 +209,12 @@ export class SkillWorkerPool {
       clearInterval(this.selfHealTimer);
       this.selfHealTimer = undefined;
     }
+    this.notifyIdleWaiters();
     for (const p of this.loopPromises) {
       try { await p; } catch { /* swallow */ }
     }
     this.loopPromises = [];
+    this.inFlightAgents.clear();
   }
 
   /**
@@ -259,72 +264,72 @@ export class SkillWorkerPool {
     return { scanned, repushed, legacyPurged, dur_ms: Date.now() - t0 };
   }
 
+  private busyRecheckMs(): number {
+    const configured = this.opts.suppressAgentTtlMs ?? 1_000;
+    return configured > 0 ? configured : 1_000;
+  }
+
+  private noteRetry(key: string, delayMs: number): void {
+    const now = this.opts.now?.() ?? Date.now();
+    this.retryNotBefore.set(key, now + delayMs);
+    if (this.retryNotBefore.size <= 200) return;
+    for (const [k, until] of this.retryNotBefore) {
+      if (until <= now) this.retryNotBefore.delete(k);
+    }
+  }
+
+  private notifyIdleWaiters(): void {
+    const waiting = this.idleWaiters;
+    this.idleWaiters = [];
+    for (const wake of waiting) wake();
+  }
+
+  /** Wait, but return as soon as stop() runs. */
+  private park(ms: number): Promise<void> {
+    if (this.closed || ms <= 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        const idx = this.idleWaiters.indexOf(finish);
+        if (idx >= 0) this.idleWaiters.splice(idx, 1);
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      this.idleWaiters.push(finish);
+    });
+  }
+
   /**
    * 单条 worker loop。设计上无状态：每次拿到 agent 就 resolver 现取资源,
    * 构造一次性 SkillConversationExtractWorker 委托 consumeAgent。
+   *
+   * peek 不把 agent 移出 List。一个 agent 正在被本 pool 抽, 或 extract-lock
+   * 被别的进程占着时, 其余 worker 只隔 busyRecheckMs 再看队列, 不再各自抢锁
+   * 也不再每 20ms 打 suppressed_skip。队里若出现第二个 agent, 下一轮 peek
+   * 轮转到它就会被领走。
    */
   private async workerLoop(index: number): Promise<void> {
     const workerId = `${this.poolId}#${index}`;
     const blockMs = this.opts.brpopBlockMs ?? 5000;
-    const suppressTtl = this.opts.suppressAgentTtlMs ?? 200;
-
-    // 2026-08-03 crash-recovery §4.4: per-workerLoop 短抑制表, 防 peek 语义下的
-    // hot-loop (抢锁失败 / resolver 抛错时 agent 仍在队头, 本 loop 200ms 内不再抢它)。
-    // 别的 loop 有独立抑制状态, 天然错峰。
-    const suppress = new Map<string, number>();
-    const now = () => this.opts.now?.() ?? Date.now();
-    const isSuppressed = (a: AgentTuple): boolean => {
-      const key = `${a.instance_id}|${a.space_id}|${a.user_id}|${a.team_id}|${a.agent_id}`;
-      const until = suppress.get(key);
-      if (until === undefined) return false;
-      if (until <= now()) { suppress.delete(key); return false; }
-      return true;
-    };
-    const suppressAgent = (a: AgentTuple): void => {
-      const key = `${a.instance_id}|${a.space_id}|${a.user_id}|${a.team_id}|${a.agent_id}`;
-      suppress.set(key, now() + suppressTtl);
-      // 惰性清理: 每 100 条清一次过期
-      if (suppress.size > 100) {
-        const t = now();
-        for (const [k, v] of suppress) if (v <= t) suppress.delete(k);
-      }
-    };
 
     while (!this.closed) {
       let agent: AgentTuple | null = null;
       try {
-        // 2026-08-03 crash-recovery §4.1: 用原子 peekAgent (LMOVE 语义), 保证
-        // agent 在 loop 崩溃时仍留在 List, 下一轮 peek 能重新拿到。见
-        // docs/design/2026-07-21-skill-worker-crash-recovery.md §4。
+        // peekAgent keeps the agent in the List (LMOVE). A crash can pick it up again.
         agent = await this.opts.queue.peekAgent(blockMs);
       } catch (err) {
         if (this.closed) break;
         this.logger.warn(`[skill-worker-pool] ${workerId} peek error: ${(err as Error).message}`);
-        await sleep(200);
+        await this.park(200);
         continue;
       }
-      if (!agent) continue;
+      if (!agent || this.closed) continue;
 
-      // 短抑制: 本 loop 刚失败过这个 agent, 短时间内跳过。别的 loop 抑制状态独立,
-      // 会拿到别的 agent, 天然让位。
-      if (isSuppressed(agent)) {
-        obsLogger.info("skill.worker.suppressed_skip", {
-          worker_id: workerId,
-          instance_id: agent.instance_id,
-          agent_id: agent.agent_id,
-        });
-        // 短睡防止本 loop 空转紧跟着又 peek 到自己刚抑制的 agent
-        await sleep(Math.min(20, suppressTtl));
-        continue;
-      }
-
-      // Legacy 4 段兜底: instance_id === "__legacy__". 升级过渡期偶尔会有,
-      // 见到直接丢弃 + error log, 不尝试消费 (说明版本错乱)。
-      //
-      // 2026-08-03 crash-recovery: peekAgent 用 LMOVE 语义, legacy 4 段 raw 已被
-      // 搬到队头 —— 如果只 continue 会导致 pool 在同一条 legacy raw 上无限 peek 循环 (OOM)。
-      // 必须按 4 段拼回原始 raw 字符串, purgeRawAgent 直接 SREM+LREM 清干净。
-      // 5 段 serialize 命中不到这条 raw, 所以走 purgeRawAgent 而不是 removeAgent。
+      // Legacy 4-segment rows stay at the head under LMOVE, so purge them
+      // instead of skipping. A 5-segment serialize does not match that raw.
       if (agent.instance_id === LEGACY_INSTANCE_ID) {
         const legacyRaw = `${agent.space_id}|${agent.user_id}|${agent.team_id}|${agent.agent_id}`;
         this.logger.error(
@@ -347,18 +352,40 @@ export class SkillWorkerPool {
         continue;
       }
 
+      const key = agentBusyKey(agent);
+      const now = this.opts.now?.() ?? Date.now();
+      const retryAt = this.retryNotBefore.get(key) ?? 0;
+      if (this.inFlightAgents.has(key) || retryAt > now) {
+        const waitMs = this.inFlightAgents.has(key)
+          ? this.busyRecheckMs()
+          : Math.min(this.busyRecheckMs(), Math.max(1, retryAt - now));
+        await this.park(waitMs);
+        continue;
+      }
+
+      // Claim before the first await so only one worker enters consumeAgent.
+      this.inFlightAgents.add(key);
+      let contended = false;
       try {
         const result = await this.consumeAgent(agent, workerId);
-        // consumeAgent 只抛未处理错误, lock contention 是 result.lockContended=true。
-        // 抢锁失败也进抑制, 让别的 loop 拿别的 agent。
-        if (result?.lockContended) suppressAgent(agent);
+        contended = result?.lockContended === true;
       } catch (err) {
-        this.logger.error(
-          `[skill-worker-pool] ${workerId} consumeAgent error: ${(err as Error).message}`,
-        );
-        // consumeAgent 抛出 (通常是 resolver 抛错) → 抑制该 agent 一段时间,
-        // 让本 loop 拿别的 agent。抑制过期后如果问题没解决还会再试。
-        suppressAgent(agent);
+        if (!this.closed) {
+          this.logger.error(
+            `[skill-worker-pool] ${workerId} consumeAgent error: ${(err as Error).message}`,
+          );
+        }
+        this.noteRetry(key, this.opts.failureRequeueSleepMs ?? 1_000);
+      } finally {
+        // consumeAgent already waited out a long contention sleep. A short
+        // gate is only needed when that wait was shorter than the recheck,
+        // otherwise every idle worker would claim the same locked agent.
+        if (contended) {
+          const slept = this.opts.lockContentionSleepMs ?? 2_000;
+          if (slept < this.busyRecheckMs()) this.noteRetry(key, this.busyRecheckMs());
+        }
+        this.inFlightAgents.delete(key);
+        this.notifyIdleWaiters();
       }
     }
   }
@@ -401,6 +428,7 @@ export class SkillWorkerPool {
       lockContentionSleepJitterMs: this.opts.lockContentionSleepJitterMs,
       tasksPerRound: this.opts.tasksPerRound,
       failureRequeueSleepMs: this.opts.failureRequeueSleepMs,
+      shouldStop: () => this.closed,
       permanentMaxRetries: this.opts.permanentMaxRetries,
       transientLogSampleEvery: this.opts.transientLogSampleEvery,
       now: this.opts.now,
@@ -433,6 +461,6 @@ function lazyExtractor(resolve: () => Promise<ISkillExtractor>): ISkillExtractor
   };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+function agentBusyKey(agent: AgentTuple): string {
+  return `${agent.instance_id}|${agent.space_id}|${agent.user_id}|${agent.team_id}|${agent.agent_id}`;
 }
