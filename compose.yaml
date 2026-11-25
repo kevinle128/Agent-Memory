@@ -32,6 +32,8 @@ services:
       # without "stream" (9Router does this for AntiGravity models); generateText
       # then fails with "Invalid JSON response" and every L1 extraction fails.
       TDAI_LLM_STREAM: ${MEMORY_LLM_STREAM:-false}
+      # Reasoning models need more than 4096 output tokens so L1/L3 JSON is not cut off.
+      TDAI_LLM_MAX_TOKENS: ${MEMORY_LLM_MAX_TOKENS:-32768}
       # Team that gets the subscription pool groups without a team at start. Unset: Core uses
       # the one team named default (else default-team).
       TDAI_METADATA_DEFAULT_TEAM_NAME: ${TDAI_METADATA_DEFAULT_TEAM_NAME:-}
@@ -176,6 +178,7 @@ configs:
         url: http://memory-core:8420
         timeoutMs: 5000
         apiKey: "${MEMORY_CORE_GATEWAY_API_KEY:-local}"
+        staleOnErrorMs: 900000
       sessionInit:
         enabled: true
         skipAssetConfirm: true
