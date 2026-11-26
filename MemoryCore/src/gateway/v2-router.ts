@@ -760,10 +760,14 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
 
   // Write path. One `/conversation/add` is one group of messages, so prefer a
   // single batch insert when the store supports it AND no per-message embedding
-  // is required (keyword-only backends, e.g. Mongo). Otherwise fall back to the
-  // per-record upsert loop (sqlite/tcvdb, incl. vector embedding).
+  // is required (keyword-only backends, and sqlite metadata + FTS writes).
+  // Otherwise fall back to the per-record upsert loop so each message can
+  // carry its own embedding.
   if (store.insertL0Batch && !embedding) {
-    await store.insertL0Batch(acceptedRecords);
+    const written = await store.insertL0Batch(acceptedRecords);
+    if (acceptedRecords.length > 0 && written === 0) {
+      throw new Error(`conversation add persisted no records (count=${acceptedRecords.length})`);
+    }
   } else {
     for (const record of acceptedRecords) {
       let emb: Float32Array | undefined;
