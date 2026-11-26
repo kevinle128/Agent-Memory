@@ -72,7 +72,7 @@ export const ANTIGRAVITY_USER_AGENT =
   "cl=1025641825; auth_method=consumer)";
 
 /** Model ids that Cloud Code lists but a coding client cannot use. */
-const NOISE_MODEL_RE = /^(?:chat_|tab_)|-(?:disabled|tiered|sonar)$|image/i;
+const NOISE_MODEL_RE = /^(?:chat_|tab_|gpt-oss-)|-(?:disabled|tiered|sonar|worker-agy)$|image/i;
 
 // ── Path ─────────────────────────────────────────────────────────────────────
 
@@ -121,12 +121,22 @@ export function maskKeyedPath(path: string): string {
 /** Cloud Code model ids use `-low|-medium|-high`; other thinking levels stay in the request body only. */
 const CLOUD_CODE_THINKING_SUFFIXES = new Set(["low", "medium", "high"]);
 
-export function upstreamModelFor(model: string, body: Record<string, unknown>): string {
+export function upstreamModelFor(
+  model: string,
+  body: Record<string, unknown>,
+  catalogIds?: ReadonlySet<string>,
+): string {
   const config = body.generationConfig as { thinkingConfig?: { thinkingLevel?: unknown } } | undefined;
   const raw = config?.thinkingConfig?.thinkingLevel;
   const level = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!level || !CLOUD_CODE_THINKING_SUFFIXES.has(level) || model.endsWith(`-${level}`)) return model;
-  return `${model}-${level}`;
+  if (level && CLOUD_CODE_THINKING_SUFFIXES.has(level)) {
+    return model.endsWith(`-${level}`) ? model : `${model}-${level}`;
+  }
+  // When agy omits thinkingLevel (e.g. model not in local config), restore -medium if the pool catalog only has the suffixed id.
+  if (catalogIds && !catalogIds.has(model) && catalogIds.has(`${model}-medium`)) {
+    return `${model}-medium`;
+  }
+  return model;
 }
 
 export function wrapEnvelope(
@@ -618,12 +628,15 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
       row = resolved;
     }
 
+    const catalogIds = row.source_models?.length ? new Set(row.source_models.map((m) => m.id)) : undefined;
+    const resolvedModel = upstreamModelFor(route.model, body, catalogIds);
+
     // ── Pool account, Cloud Code call ──
     const pool = openPoolRequest({
       config, spaceId, row, provider: "antigravity",
       // Empty headers: agy sends none, and a stray client login must never reach the fallback.
       clientHeaders: new Headers(),
-      body: { model: upstreamModel },
+      body: { model: resolvedModel },
       userKey: route.accessKey,
       bindSession: isStream,
       sessionId: sessionId ?? undefined,
@@ -633,17 +646,82 @@ export async function runAntigravityPipeline(c: Context, config: ProxyConfig): P
       `${upstreamBaseOf(config, row)}/v1internal:${isStream ? "streamGenerateContent?alt=sse" : "generateContent"}`,
       c.req.url,
     );
-    const resp = await pool.send(accountFetch(config, url, c.req.raw.headers, (a) => wrapEnvelope(upstreamModel, a.projectId, body), isStream));
-
-    writeLog(config, {
-      timestamp: startTime, event: "request", modelId: upstreamModel, keyId, sessionKey: keyId,
-      upstreamUrl: url, stream: isStream, traceId,
-    });
-    console.log(`${TAG} space=${spaceId} session=${sessionId ?? "-"} model=${upstreamModel} account=${pool.accountId ?? "-"} status=${resp.status}`);
-
+    const sendPromise = pool.send(accountFetch(config, url, c.req.raw.headers, (a) => wrapEnvelope(resolvedModel, a.projectId, body), isStream));
     const l0: L0Context | null = sessionInfo && sessionId
       ? { config, spaceId, userId, sessionId, userKey: route.accessKey, sessionInfo, chatMemory, userMessage: extractUserMessage(body) }
       : null;
+
+    let resp: Response;
+    if (isStream) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let winner: { kind: "resp"; resp: Response } | { kind: "timeout" };
+      try {
+        winner = await Promise.race([
+          sendPromise.then((r) => ({ kind: "resp" as const, resp: r })),
+          new Promise<{ kind: "timeout" }>((resolve) => {
+            timer = setTimeout(() => resolve({ kind: "timeout" }), 40_000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      if (winner.kind === "timeout") {
+        // Flush 200 SSE + keepalive before agy's 60s ResponseHeaderTimeout expires.
+        const encoder = new TextEncoder();
+        let keepaliveTimer: ReturnType<typeof setInterval> | undefined;
+        const stream = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(encoder.encode(": keepalive\n\n"));
+            keepaliveTimer = setInterval(() => {
+              try { controller.enqueue(encoder.encode(": keepalive\n\n")); } catch { /* stream closed */ }
+            }, 15_000);
+            try {
+              const slowResp = await sendPromise;
+              if (keepaliveTimer) clearInterval(keepaliveTimer);
+              writeLog(config, {
+                timestamp: startTime, event: "request", modelId: resolvedModel, keyId, sessionKey: keyId,
+                upstreamUrl: url, stream: isStream, traceId,
+              });
+              console.log(`${TAG} space=${spaceId} session=${sessionId ?? "-"} model=${resolvedModel} account=${pool.accountId ?? "-"} status=${slowResp.status}`);
+              if (slowResp.status >= 400 || !slowResp.body) {
+                const errText = slowResp.body ? await slowResp.text().catch(() => "") : "";
+                const payload = errText.trim() || JSON.stringify({ error: { code: slowResp.status, message: "Upstream request failed.", status: "UNAVAILABLE" } });
+                controller.enqueue(encoder.encode(`data: ${payload.replace(/\r?\n/g, " ")}\n\n`));
+                controller.close();
+                return;
+              }
+              const reader = slowResp.body.pipeThrough(createSseUnwrapStream((text) => { if (l0) writeL0(l0, text); })).getReader();
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                controller.enqueue(value);
+              }
+              controller.close();
+            } catch (err) {
+              if (keepaliveTimer) clearInterval(keepaliveTimer);
+              if (!c.req.raw.signal.aborted) {
+                const msg = err instanceof Error ? err.message : "Upstream request failed.";
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { code: 502, message: msg, status: "UNAVAILABLE" } })}\n\n`));
+              }
+              try { controller.close(); } catch { /* already closed */ }
+            }
+          },
+          cancel() {
+            if (keepaliveTimer) clearInterval(keepaliveTimer);
+          },
+        });
+        return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } });
+      }
+      resp = winner.resp;
+    } else {
+      resp = await sendPromise;
+    }
+
+    writeLog(config, {
+      timestamp: startTime, event: "request", modelId: resolvedModel, keyId, sessionKey: keyId,
+      upstreamUrl: url, stream: isStream, traceId,
+    });
+    console.log(`${TAG} space=${spaceId} session=${sessionId ?? "-"} model=${resolvedModel} account=${pool.accountId ?? "-"} status=${resp.status}`);
 
     if (resp.status >= 400 || !resp.body) {
       return new Response(resp.body, { status: resp.status, headers: filterResponseHeaders(resp.headers) });

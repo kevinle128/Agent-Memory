@@ -148,6 +148,9 @@ describe("antigravity wire helpers", () => {
     expect(upstreamModelFor("gemini-3.8-flash", body("MINIMAL"))).toBe("gemini-3.8-flash");
     expect(upstreamModelFor("claude-opus-5-5", body("THINKING_LEVEL_UNSPECIFIED"))).toBe("claude-opus-5-5");
     expect(upstreamModelFor("claude-opus-5-5", body("NONE"))).toBe("claude-opus-5-5");
+    const catalog = new Set(["gemini-4-neon-medium", "gemini-3.1-flash-lite"]);
+    expect(upstreamModelFor("gemini-4-neon", {}, catalog)).toBe("gemini-4-neon-medium");
+    expect(upstreamModelFor("gemini-3.1-flash-lite", {}, catalog)).toBe("gemini-3.1-flash-lite");
   });
 
   it("uses the agy user agent string", () => {
@@ -214,6 +217,7 @@ describe("antigravity wire helpers", () => {
       models: {
         "claude-opus-5-5-high": { displayName: "Opus" }, "gemini-3.8-flash-medium": {},
         chat_23310: {}, tab_flash: {}, "x-disabled": {}, "y-tiered": {}, "z-sonar": {}, "gemini-3-pro-image": {},
+        "gpt-oss-120b-medium": {}, "gemini-flash-worker-agy": {},
       },
     });
     expect(models).toEqual([{ id: "claude-opus-5-5-high", displayName: "Opus" }, { id: "gemini-3.8-flash-medium", displayName: "gemini-3.8-flash-medium" }]);
@@ -790,5 +794,48 @@ describe("antigravity teams", () => {
     const res = await app.request(`/antigravity/${SPACE}/${KEY}/v1beta/models`);
     expect(res.status).toBe(400);
     expect(upstreamCalls).toHaveLength(0);
+  });
+});
+
+describe("antigravity slow upstream keepalive and catalog suffix fallback", () => {
+  it("restores -medium from pool source_models when agy omits thinkingLevel", async () => {
+    const rowWithCatalog: InstanceUpstreamRow = {
+      ...poolRow,
+      source_models: [{ id: "gemini-4-neon-medium", enabled: true, available: true }],
+    };
+    prime([acct("a")], [defaultRow, rowWithCatalog]);
+    const { upstreamCalls } = installFetch(() => sse());
+    const res = await post(streamPath(KEY, "gemini-4-neon"), agyBody({ generationConfig: {} }));
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(JSON.parse(upstreamCalls[0]!.body).model).toBe("gemini-4-neon-medium");
+  });
+
+  it("flushes 200 SSE with keepalive after 40s while waiting for a slow upstream", async () => {
+    vi.useFakeTimers();
+    prime([acct("a")]);
+    let resolveUpstream!: (r: Response) => void;
+    installFetch(() => new Promise<Response>((resolve) => { resolveUpstream = resolve; }));
+
+    const pending = post(streamPath(), agyBody());
+    await vi.advanceTimersByTimeAsync(40_000);
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    const first = await reader.read();
+    expect(decoder.decode(first.value)).toBe(": keepalive\n\n");
+
+    resolveUpstream(sse());
+    let rest = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      rest += decoder.decode(value, { stream: true });
+    }
+    const dataLines = rest.split("\n").filter((l) => l.startsWith("data:")).map((l) => JSON.parse(l.slice(5)));
+    expect(dataLines.map((d) => d.candidates[0].content.parts[0].text)).toEqual(["po", "ng"]);
   });
 });
