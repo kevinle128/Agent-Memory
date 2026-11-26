@@ -1434,7 +1434,7 @@ export class VectorStore implements IMemoryStore {
           : " (no embedding — metadata-only write)"),
       );
 
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
         // Captured before the upsert so a brand-new row skips the FTS delete.
         // ON CONFLICT DO UPDATE keeps this rowid.
@@ -1671,7 +1671,7 @@ export class VectorStore implements IMemoryStore {
         const meta = this.stmtGetMeta.get(recordId) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
         if (!meta || !rowMatchesIsolation(meta, filter)) return false;
       }
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
         const existingL1Rowid = this.contentRowid("l1", recordId);
         const result = this.stmtDeleteMeta.run(recordId);
@@ -1706,7 +1706,7 @@ export class VectorStore implements IMemoryStore {
     if (recordIds.length === 0) return true;
 
     try {
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
         for (const id of recordIds) {
           if (filter) {
@@ -1972,7 +1972,7 @@ export class VectorStore implements IMemoryStore {
           : " (no embedding — metadata-only write)"),
       );
 
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
         this.writeL0Unlocked(record, embedding);
         this.db.exec("COMMIT");
@@ -2005,7 +2005,7 @@ export class VectorStore implements IMemoryStore {
       return 0;
     }
     if (records.length === 0) return 0;
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
       for (const record of records) {
         this.writeL0Unlocked(record, undefined, "insert");
@@ -2261,7 +2261,7 @@ export class VectorStore implements IMemoryStore {
         const meta = this.stmtL0GetMeta.get(recordId) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
         if (!meta || !rowMatchesIsolation(meta, filter)) return false;
       }
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
         const existingL0Rowid = this.contentRowid("l0", recordId);
         const result = this.stmtL0DeleteMeta.run(recordId);
@@ -2945,7 +2945,7 @@ export class VectorStore implements IMemoryStore {
       // 永远判不匹配 → 按session 删除恒返回 0）。
       // Select inside the transaction so the rowid snapshot cannot drift
       // from the rows actually deleted.
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
         const rows = this.db.prepare(
           "SELECT rowid, record_id, session_key, session_id, team_id, task_id, user_id, agent_id FROM l0_conversations WHERE session_key = ? OR session_id = ?"
@@ -3006,7 +3006,7 @@ export class VectorStore implements IMemoryStore {
     const params: string[] = userId ? [teamId, agentId, userId] : [teamId, agentId];
 
     try {
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
         const l0Rows = this.db.prepare(
           `SELECT rowid, record_id FROM l0_conversations WHERE ${where}`,

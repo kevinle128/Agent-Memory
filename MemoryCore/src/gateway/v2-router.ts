@@ -20,7 +20,7 @@ import { createProjectScopedStorage } from "../core/storage/project-scoped-stora
 import type http from "node:http";
 import { classifyError } from "./error-handler.js";
 import type { IMemoryStore, L0Record, ProfileSyncRecord } from "../core/store/types.js";
-import type { EmbeddingService } from "../core/store/embedding.js";
+import { hasClientEmbedding, type EmbeddingService } from "../core/store/embedding.js";
 import { createScopedStorageAdapter, scopeProfileStorageView, type StorageAdapter } from "../core/storage/adapter.js";
 import { StoragePaths } from "../core/storage/types.js";
 import type { Logger } from "../core/types.js";
@@ -763,7 +763,7 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
   // is required (keyword-only backends, and sqlite metadata + FTS writes).
   // Otherwise fall back to the per-record upsert loop so each message can
   // carry its own embedding.
-  if (store.insertL0Batch && !embedding) {
+  if (store.insertL0Batch && !hasClientEmbedding(embedding)) {
     const written = await store.insertL0Batch(acceptedRecords);
     if (acceptedRecords.length > 0 && written === 0) {
       throw new Error(`conversation add persisted no records (count=${acceptedRecords.length})`);
@@ -771,7 +771,7 @@ async function handleConversationAdd(body: unknown, auth: V2AuthContext, request
   } else {
     for (const record of acceptedRecords) {
       let emb: Float32Array | undefined;
-      if (embedding) {
+      if (hasClientEmbedding(embedding)) {
         try { emb = await embedding.embed(record.messageText); } catch (e) { console.warn(`[v2-router] L0 embedding failed:`, e); }
       }
       await store.upsertL0(record, emb);

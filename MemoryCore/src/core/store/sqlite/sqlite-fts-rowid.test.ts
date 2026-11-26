@@ -6,6 +6,7 @@ import type http from "node:http";
 import { DatabaseSync } from "node:sqlite";
 
 import { VectorStore } from "./memory-store.js";
+import { NoopEmbeddingService } from "../embedding.js";
 import { buildFtsQuery, tokenizeForFts } from "../tokenize.js";
 import type { L0Record } from "../types.js";
 import type { MemoryRecord } from "../../record/l1-writer.js";
@@ -507,5 +508,119 @@ describe("sqlite FTS5 rowid alignment", () => {
     expect(emptyWrite[0]).toBeGreaterThanOrEqual(500);
     expect(deps.notifyPipeline).not.toHaveBeenCalled();
     batch.mockRestore();
+  });
+
+  it("routes /v2 and /v3 conversation/add through insertL0Batch when using NoopEmbeddingService", async () => {
+    const logger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
+    const noopEmbedding = new NoopEmbeddingService();
+    const embedSpy = vi.spyOn(noopEmbedding, "embed");
+    const batch = vi.spyOn(store, "insertL0Batch");
+    const single = vi.spyOn(store, "upsertL0");
+    const deps: V2RouterDeps = {
+      getStore: () => store,
+      getEmbedding: () => noopEmbedding,
+      getStorage: () => undefined,
+      logger,
+      deployMode: "service",
+    };
+    const body = {
+      team_id: "team-1",
+      user_id: "user-1",
+      agent_id: "agent-1",
+      session_id: "sess-noop",
+      messages: [
+        { role: "user", content: "noop alpha token" },
+        { role: "assistant", content: "noop beta token" },
+      ],
+    };
+    const req = {
+      headers: {
+        authorization: "Bearer test-key",
+        "x-tdai-service-id": "svc-1",
+      },
+      url: "/v3/conversation/add",
+    } as unknown as http.IncomingMessage;
+    const res = {} as http.ServerResponse;
+    const sent: Array<{ status: number; body: { code?: number; data?: { accepted_ids?: string[] } } }> = [];
+
+    const handled = await handleV2Route(
+      req,
+      res,
+      "/v3/conversation/add",
+      "POST",
+      async () => body,
+      (_res, status, payload) => {
+        sent.push({ status, body: payload as { code?: number; data?: { accepted_ids?: string[] } } });
+      },
+      deps,
+    );
+    expect(handled).toBe(true);
+    expect(sent[0]?.status).toBe(200);
+    expect(sent[0]?.body.code).toBe(0);
+    expect(sent[0]?.body.data?.accepted_ids).toHaveLength(2);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(single).not.toHaveBeenCalled();
+    expect(embedSpy).not.toHaveBeenCalled();
+
+    batch.mockClear();
+    await handleV2Route(req, res, "/v2/conversation/add", "POST", async () => body, () => {}, deps);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(single).not.toHaveBeenCalled();
+    expect(embedSpy).not.toHaveBeenCalled();
+
+    // Degraded store returns written=0 from insertL0Batch and must fail with >= 500, not HTTP 200.
+    (store as unknown as { degraded: boolean }).degraded = true;
+    const degradedStatuses: number[] = [];
+    await handleV2Route(
+      req,
+      res,
+      "/v3/conversation/add",
+      "POST",
+      async () => body,
+      (_res, status) => {
+        degradedStatuses.push(status);
+      },
+      deps,
+    );
+    expect(degradedStatuses[0]).toBeGreaterThanOrEqual(500);
+    (store as unknown as { degraded: boolean }).degraded = false;
+  });
+
+  it("uses BEGIN IMMEDIATE for rowid-reading write transactions so WAL concurrency honors busy_timeout", () => {
+    const db = store.getRawDb();
+    const beginSqls: string[] = [];
+    const execSpy = vi.spyOn(db, "exec").mockImplementation((sql: string) => {
+      if (sql.startsWith("BEGIN")) beginSqls.push(sql);
+      return DatabaseSync.prototype.exec.call(db, sql);
+    });
+
+    store.upsertL1(makeL1("imm-l1-1", "immediate l1 one"), undefined);
+    store.upsertL1(makeL1("imm-l1-2", "immediate l1 two"), undefined);
+    store.deleteL1("imm-l1-1");
+    store.deleteL1Batch(["imm-l1-2"]);
+    store.upsertL0(makeL0("imm-l0-1", "immediate l0 one"), undefined);
+    store.insertL0Batch([makeL0("imm-l0-2", "immediate l0 two", { sessionKey: "sess-imm", sessionId: "sess-imm" })]);
+    store.deleteL0("imm-l0-1");
+    store.deleteL0BySession("sess-imm");
+    store.clearMemoryContent({ teamId: "team-1", agentId: "agent-1" });
+    execSpy.mockRestore();
+
+    expect(beginSqls).toHaveLength(9);
+    expect(beginSqls.every((sql) => sql === "BEGIN IMMEDIATE")).toBe(true);
+
+    // Verify real WAL busy_timeout waiting when another connection holds the write lock.
+    db.exec("PRAGMA busy_timeout = 120");
+    const other = new DatabaseSync(path.join(dir, "test.db"));
+    try {
+      other.exec("BEGIN IMMEDIATE");
+      const start = Date.now();
+      const ok = store.upsertL1(makeL1("imm-busy", "blocked by concurrent writer"), undefined);
+      const elapsedMs = Date.now() - start;
+      expect(ok).toBe(false);
+      expect(elapsedMs).toBeGreaterThanOrEqual(90);
+      other.exec("ROLLBACK");
+    } finally {
+      other.close();
+    }
   });
 });
