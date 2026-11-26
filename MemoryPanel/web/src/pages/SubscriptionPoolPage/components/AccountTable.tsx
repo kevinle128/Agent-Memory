@@ -263,6 +263,9 @@ export function AccountTable({
           render: (account: SubscriptionAccount) => (
             <div className="_memory-pool-account">
               <b>{account.display_name}</b>
+              <Text theme="weak" parent="div" className="_memory-pool-small _memory-pool-account-id" title={account.account_id}>
+                {account.account_id}
+              </Text>
               <Text theme="weak" parent="div" className="_memory-pool-small">{account.account_label}</Text>
               {account.project_id && (
                 <Text theme="weak" parent="div" className="_memory-pool-small">{account.project_id}</Text>

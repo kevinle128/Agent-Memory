@@ -114,6 +114,12 @@
   font-size: 12px;
 }
 
+._memory-pool-account-id {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 ._memory-pool-footnote {
   margin-top: 8px;
   font-size: 12px;
