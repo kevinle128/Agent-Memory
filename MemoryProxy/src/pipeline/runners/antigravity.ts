@@ -118,11 +118,14 @@ export function maskKeyedPath(path: string): string {
  * Model id for Cloud Code. agy removes the `-low|-medium|-high` suffix and sends the level as
  * `thinkingLevel`; without the suffix Google answers 404.
  */
+/** Cloud Code model ids use `-low|-medium|-high`; other thinking levels stay in the request body only. */
+const CLOUD_CODE_THINKING_SUFFIXES = new Set(["low", "medium", "high"]);
+
 export function upstreamModelFor(model: string, body: Record<string, unknown>): string {
   const config = body.generationConfig as { thinkingConfig?: { thinkingLevel?: unknown } } | undefined;
   const raw = config?.thinkingConfig?.thinkingLevel;
   const level = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  if (!level || model.endsWith(`-${level}`)) return model;
+  if (!level || !CLOUD_CODE_THINKING_SUFFIXES.has(level) || model.endsWith(`-${level}`)) return model;
   return `${model}-${level}`;
 }
 

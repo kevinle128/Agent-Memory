@@ -138,8 +138,16 @@ describe("antigravity wire helpers", () => {
     const body = (level?: string) => ({ generationConfig: level ? { thinkingConfig: { thinkingLevel: level } } : {} });
     expect(upstreamModelFor("claude-opus-5-5", body("HIGH"))).toBe("claude-opus-5-5-high");
     expect(upstreamModelFor("claude-opus-5-5-high", body("HIGH"))).toBe("claude-opus-5-5-high");
+    expect(upstreamModelFor("claude-opus-5-5", body("MEDIUM"))).toBe("claude-opus-5-5-medium");
+    expect(upstreamModelFor("claude-opus-5-5", body("LOW"))).toBe("claude-opus-5-5-low");
+    expect(upstreamModelFor("gemini-4-neon", body("MEDIUM"))).toBe("gemini-4-neon-medium");
     expect(upstreamModelFor("gemini-3.8-flash", body())).toBe("gemini-3.8-flash");
     expect(upstreamModelFor("gemini-3.8-flash", {})).toBe("gemini-3.8-flash");
+    expect(upstreamModelFor("gemini-3.1-flash-lite", body("MINIMAL"))).toBe("gemini-3.1-flash-lite");
+    expect(upstreamModelFor("gemini-2.5-flash-lite", body("MINIMAL"))).toBe("gemini-2.5-flash-lite");
+    expect(upstreamModelFor("gemini-3.8-flash", body("MINIMAL"))).toBe("gemini-3.8-flash");
+    expect(upstreamModelFor("claude-opus-5-5", body("THINKING_LEVEL_UNSPECIFIED"))).toBe("claude-opus-5-5");
+    expect(upstreamModelFor("claude-opus-5-5", body("NONE"))).toBe("claude-opus-5-5");
   });
 
   it("uses the agy user agent string", () => {
