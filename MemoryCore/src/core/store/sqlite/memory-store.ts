@@ -304,6 +304,8 @@ export class VectorStore implements IMemoryStore {
 
   // Prepared statements — L0 (initialized in init())
   private stmtL0UpsertMeta!: StatementSync;
+  /** Plain insert for insertL0Batch. A duplicate record_id is a constraint error. */
+  private stmtL0InsertMeta!: StatementSync;
   private stmtL0DeleteVec?: StatementSync;   // optional — only set when vecTablesReady
   private stmtL0InsertVec?: StatementSync;   // optional — only set when vecTablesReady
   private stmtL0DeleteMeta!: StatementSync;
@@ -323,13 +325,23 @@ export class VectorStore implements IMemoryStore {
 
   // Prepared statements — FTS5 L1 (initialized in init())
   private stmtL1FtsInsert!: StatementSync;
+  private stmtL1FtsInsertRowid!: StatementSync;
   private stmtL1FtsDelete!: StatementSync;
+  private stmtL1FtsDeleteRowid!: StatementSync;
+  private stmtL1FtsRecordAtRowid!: StatementSync;
   private stmtL1FtsSearch!: StatementSync;
 
   // Prepared statements — FTS5 L0 (initialized in init())
   private stmtL0FtsInsert!: StatementSync;
+  private stmtL0FtsInsertRowid!: StatementSync;
   private stmtL0FtsDelete!: StatementSync;
+  private stmtL0FtsDeleteRowid!: StatementSync;
+  private stmtL0FtsRecordAtRowid!: StatementSync;
   private stmtL0FtsSearch!: StatementSync;
+
+  /** O(1) primary-key lookup of the metadata rowid that FTS rows are aligned to. */
+  private stmtL0ContentRowid!: StatementSync;
+  private stmtL1ContentRowid!: StatementSync;
 
   /**
    * Create a VectorStore instance.
@@ -354,8 +366,11 @@ export class VectorStore implements IMemoryStore {
     // Set busy timeout so concurrent processes retry instead of failing with SQLITE_BUSY
     this.db.exec("PRAGMA busy_timeout = 5000");
 
-    // Enable WAL mode for better concurrent read performance
+    // Enable WAL mode for better concurrent read performance.
+    // NORMAL after WAL skips the extra fsync on each commit and still survives
+    // an application crash (a power loss can drop the last transaction).
     this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA synchronous = NORMAL");
 
     // Cap page cache at 64 MB
     this.db.exec("PRAGMA cache_size = -65536");
@@ -631,6 +646,7 @@ export class VectorStore implements IMemoryStore {
       this.stmtInsertVec = this.db.prepare("INSERT INTO l1_vec (record_id, embedding, updated_time) VALUES (?, ?, ?)");
     }
     this.stmtDeleteMeta = this.db.prepare("DELETE FROM l1_records WHERE record_id = ?");
+    this.stmtL1ContentRowid = this.db.prepare("SELECT rowid FROM l1_records WHERE record_id = ?");
 
     this.stmtGetMeta = this.db.prepare(`
       SELECT content, type, priority, scene_name, session_key, session_id, team_id, task_id, user_id, agent_id,
@@ -747,12 +763,19 @@ export class VectorStore implements IMemoryStore {
         project_hash=excluded.project_hash,
         project_name=excluded.project_name
     `);
+    this.stmtL0InsertMeta = this.db.prepare(`
+      INSERT INTO l0_conversations (
+        record_id, session_key, session_id, team_id, task_id, role, message_text, recorded_at, timestamp,
+        user_id, agent_id, project_key, project_hash, project_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
 
     if (this.dimensions > 0) {
       this.stmtL0DeleteVec = this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?");
       this.stmtL0InsertVec = this.db.prepare("INSERT INTO l0_vec (record_id, embedding, recorded_at) VALUES (?, ?, ?)");
     }
     this.stmtL0DeleteMeta = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?");
+    this.stmtL0ContentRowid = this.db.prepare("SELECT rowid FROM l0_conversations WHERE record_id = ?");
 
     this.stmtL0GetMeta = this.db.prepare(`
       SELECT session_key, session_id, team_id, task_id, project_key, project_hash, project_name, user_id, agent_id, role, message_text, recorded_at, timestamp
@@ -1087,8 +1110,16 @@ export class VectorStore implements IMemoryStore {
           timestamp_str, timestamp_start, timestamp_end, metadata_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      this.stmtL1FtsInsertRowid = this.db.prepare(`
+        INSERT INTO l1_fts (rowid, content, content_original, record_id, type, priority, scene_name,
+          session_key, session_id, team_id, task_id, user_id, agent_id, version,
+          timestamp_str, timestamp_start, timestamp_end, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
 
       this.stmtL1FtsDelete = this.db.prepare("DELETE FROM l1_fts WHERE record_id = ?");
+      this.stmtL1FtsDeleteRowid = this.db.prepare("DELETE FROM l1_fts WHERE rowid = ?");
+      this.stmtL1FtsRecordAtRowid = this.db.prepare("SELECT record_id FROM l1_fts WHERE rowid = ?");
 
       // The FTS table has no project columns. The LEFT JOIN reads them from
       // l1_records, so a caller can scope hits by project. A hit without a
@@ -1118,8 +1149,15 @@ export class VectorStore implements IMemoryStore {
           session_key, session_id, team_id, task_id, user_id, agent_id, role, recorded_at, timestamp)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      this.stmtL0FtsInsertRowid = this.db.prepare(`
+        INSERT INTO l0_fts (rowid, message_text, message_text_original, record_id,
+          session_key, session_id, team_id, task_id, user_id, agent_id, role, recorded_at, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
 
       this.stmtL0FtsDelete = this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?");
+      this.stmtL0FtsDeleteRowid = this.db.prepare("DELETE FROM l0_fts WHERE rowid = ?");
+      this.stmtL0FtsRecordAtRowid = this.db.prepare("SELECT record_id FROM l0_fts WHERE rowid = ?");
 
       this.stmtL0FtsSearch = this.db.prepare(`
         SELECT record_id, message_text_original AS message_text,
@@ -1297,6 +1335,61 @@ export class VectorStore implements IMemoryStore {
     this.logger?.info(`${TAG} Dropped vector tables (l1_vec, l0_vec)`);
   }
 
+  /** Primary-key lookup. `ON CONFLICT(record_id) DO UPDATE` keeps this rowid. */
+  private contentRowid(layer: "l0" | "l1", recordId: string): number | undefined {
+    const stmt = layer === "l0" ? this.stmtL0ContentRowid : this.stmtL1ContentRowid;
+    const row = stmt.get(recordId) as { rowid: number | bigint } | undefined;
+    if (!row) return undefined;
+    return typeof row.rowid === "bigint" ? Number(row.rowid) : row.rowid;
+  }
+
+  private asRowid(rowid: number | bigint): number {
+    return typeof rowid === "bigint" ? Number(rowid) : rowid;
+  }
+
+  private isFtsRowidConstraint(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    return /constraint failed/i.test(message);
+  }
+
+  /**
+   * Delete the FTS document for `recordId`.
+   *
+   * Fast path: the metadata rowid `R` is an FTS5 integer rowid lookup, used
+   * only when that row's `record_id` is `recordId`. A missing row, or a row
+   * that belongs to a different id (legacy rowids that drifted), falls back
+   * to `DELETE WHERE record_id = ?` and does not remove the unrelated occupant.
+   */
+  private deleteFtsForRecord(layer: "l0" | "l1", rowid: number | bigint | undefined, recordId: string): void {
+    const byRowid = layer === "l0" ? this.stmtL0FtsRecordAtRowid : this.stmtL1FtsRecordAtRowid;
+    const delRowid = layer === "l0" ? this.stmtL0FtsDeleteRowid : this.stmtL1FtsDeleteRowid;
+    const delId = layer === "l0" ? this.stmtL0FtsDelete : this.stmtL1FtsDelete;
+    if (rowid !== undefined) {
+      const normalized = this.asRowid(rowid);
+      const occupant = byRowid.get(normalized) as { record_id: string } | undefined;
+      if (occupant && occupant.record_id === recordId) {
+        delRowid.run(normalized);
+        return;
+      }
+    }
+    delId.run(recordId);
+  }
+
+  /**
+   * Insert an FTS row at the metadata rowid. If another record already owns
+   * that rowid, keep it and index this record under an automatic rowid.
+   */
+  private insertFtsAligned(layer: "l0" | "l1", rowid: number, params: SQLInputValue[]): void {
+    const withRowid = layer === "l0" ? this.stmtL0FtsInsertRowid : this.stmtL1FtsInsertRowid;
+    const auto = layer === "l0" ? this.stmtL0FtsInsert : this.stmtL1FtsInsert;
+    try {
+      withRowid.run(rowid, ...params);
+    } catch (err) {
+      if (!this.isFtsRowidConstraint(err)) throw err;
+      auto.run(...params);
+    }
+  }
+
   /**
    * Write or update a memory record (metadata + vector).
    * Uses a manual transaction for atomicity.
@@ -1341,8 +1434,11 @@ export class VectorStore implements IMemoryStore {
           : " (no embedding — metadata-only write)"),
       );
 
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
+        // Captured before the upsert so a brand-new row skips the FTS delete.
+        // ON CONFLICT DO UPDATE keeps this rowid.
+        const existingL1Rowid = this.contentRowid("l1", recordId);
         // Upsert metadata (INSERT OR UPDATE).
         // user_id / agent_id appended at the end to match the prepared statement
         // column order added by the isolation migration. We tolerate undefined
@@ -1383,13 +1479,20 @@ export class VectorStore implements IMemoryStore {
           );
         }
 
-        // Sync FTS5 (delete + re-insert to handle updates).
+        // Sync FTS5. New rows skip the delete. Updates delete by the metadata
+        // rowid when that FTS row still belongs to this record_id.
         // user_id / agent_id mirrored into FTS so post-recall isolation
         // filtering doesn't require a join.
         if (this.ftsAvailable) {
           try {
-            this.stmtL1FtsDelete.run(recordId);
-            this.stmtL1FtsInsert.run(
+            if (existingL1Rowid !== undefined) {
+              this.deleteFtsForRecord("l1", existingL1Rowid, recordId);
+            }
+            const l1Rowid = this.contentRowid("l1", recordId);
+            if (l1Rowid === undefined) {
+              throw new Error(`l1 rowid missing after upsert id=${recordId}`);
+            }
+            this.insertFtsAligned("l1", l1Rowid, [
               tokenizeForFts(record.content), // content — segmented for indexing
               record.content,                 // content_original — raw for display
               recordId,
@@ -1407,7 +1510,7 @@ export class VectorStore implements IMemoryStore {
               tsStart,
               tsEnd,
               JSON.stringify(record.metadata),
-            );
+            ]);
           } catch (ftsErr) {
             // FTS write failure is non-fatal — log and continue
             this.logger?.warn(
@@ -1568,13 +1671,14 @@ export class VectorStore implements IMemoryStore {
         const meta = this.stmtGetMeta.get(recordId) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
         if (!meta || !rowMatchesIsolation(meta, filter)) return false;
       }
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
+        const existingL1Rowid = this.contentRowid("l1", recordId);
         const result = this.stmtDeleteMeta.run(recordId);
         const deleted = (result as any)?.changes > 0;
         if (this.vecTablesReady) this.stmtDeleteVec!.run(recordId);
-        if (this.ftsAvailable) {
-          try { this.stmtL1FtsDelete.run(recordId); } catch { /* non-fatal */ }
+        if (deleted && this.ftsAvailable) {
+          try { this.deleteFtsForRecord("l1", existingL1Rowid, recordId); } catch { /* non-fatal */ }
         }
         this.db.exec("COMMIT");
         return deleted;
@@ -1602,17 +1706,18 @@ export class VectorStore implements IMemoryStore {
     if (recordIds.length === 0) return true;
 
     try {
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
         for (const id of recordIds) {
           if (filter) {
             const meta = this.stmtGetMeta.get(id) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
             if (!meta || !rowMatchesIsolation(meta, filter)) continue;
           }
-          this.stmtDeleteMeta.run(id);
+          const existingL1Rowid = this.contentRowid("l1", id);
+          const deleted = ((this.stmtDeleteMeta.run(id) as { changes?: number })?.changes ?? 0) > 0;
           if (this.vecTablesReady) this.stmtDeleteVec!.run(id);
-          if (this.ftsAvailable) {
-            try { this.stmtL1FtsDelete.run(id); } catch { /* non-fatal */ }
+          if (deleted && this.ftsAvailable) {
+            try { this.deleteFtsForRecord("l1", existingL1Rowid, id); } catch { /* non-fatal */ }
           }
         }
         this.db.exec("COMMIT");
@@ -1867,65 +1972,9 @@ export class VectorStore implements IMemoryStore {
           : " (no embedding — metadata-only write)"),
       );
 
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
-        // Legacy callers may omit isolation fields; normalize them to the
-        // same default identity used by schema defaults and query filters.
-        this.stmtL0UpsertMeta.run(
-          record.id,
-          record.sessionKey,
-          record.sessionId || DEFAULT_ISOLATION_ID,
-          (record as L0Record & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
-          record.taskId || "",
-          record.role,
-          record.messageText,
-          record.recordedAt,
-          record.timestamp,
-          (record as L0Record & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
-          (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
-          record.projectKey || "",
-          record.projectHash || "",
-          record.projectName || "",
-        );
-
-        if (!skipVec) {
-          // vec0 does not support ON CONFLICT → delete then insert
-          this.stmtL0DeleteVec!.run(record.id);
-          this.stmtL0InsertVec!.run(record.id, Buffer.from(embedding!.buffer), record.recordedAt);
-        } else {
-          this.logger?.debug?.(
-            `${TAG} [L0-upsert] Skipping vec write (${embedding ? "zero vector" : "no embedding"}) id=${record.id}`,
-          );
-        }
-
-        // Sync FTS5 (delete + re-insert to handle updates).
-        // user_id / agent_id mirrored into FTS so post-recall isolation
-        // filtering doesn't require a join.
-        if (this.ftsAvailable) {
-          try {
-            this.stmtL0FtsDelete.run(record.id);
-            this.stmtL0FtsInsert.run(
-              tokenizeForFts(record.messageText), // message_text — segmented for indexing
-              record.messageText,                 // message_text_original — raw for display
-              record.id,
-              record.sessionKey,
-              record.sessionId || DEFAULT_ISOLATION_ID,
-              (record as L0Record & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
-              record.taskId || "",
-              (record as L0Record & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
-              (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
-              record.role,
-              record.recordedAt,
-              record.timestamp,
-            );
-          } catch (ftsErr) {
-            // FTS write failure is non-fatal — log and continue
-            this.logger?.warn(
-              `${TAG} [L0-upsert] FTS write failed (non-fatal) id=${record.id}: ${ftsErr instanceof Error ? ftsErr.message : String(ftsErr)}`,
-            );
-          }
-        }
-
+        this.writeL0Unlocked(record, embedding);
         this.db.exec("COMMIT");
       } catch (err) {
         try {
@@ -1940,6 +1989,105 @@ export class VectorStore implements IMemoryStore {
         `${TAG} [L0-upsert] FAILED (non-fatal) id=${record.id}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return false;
+    }
+  }
+
+  /**
+   * Insert every record in one transaction. Used by `/conversation/add` when
+   * the caller has no per-message embedding. These ids are new, so a duplicate
+   * `record_id` is a constraint error: the transaction rolls back and the
+   * error propagates. Degraded mode and an empty list return 0. FTS failures
+   * stay non-fatal per record, matching `upsertL0`.
+   */
+  insertL0Batch(records: L0Record[]): number {
+    if (this.degraded) {
+      this.logger?.warn(`${TAG} [L0-batch] SKIPPED (degraded mode) count=${records.length}`);
+      return 0;
+    }
+    if (records.length === 0) return 0;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const record of records) {
+        this.writeL0Unlocked(record, undefined, "insert");
+      }
+      this.db.exec("COMMIT");
+      return records.length;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch { /* ignore rollback errors */ }
+      throw err;
+    }
+  }
+
+  /** Metadata + optional vec + FTS for one L0 row. Caller owns the transaction. */
+  private writeL0Unlocked(
+    record: L0Record,
+    embedding: Float32Array | undefined,
+    mode: "upsert" | "insert" = "upsert",
+  ): void {
+    const skipVec = !embedding || embedding.every(v => v === 0) || !this.vecTablesReady;
+    const existingL0Rowid = mode === "insert" ? undefined : this.contentRowid("l0", record.id);
+    // Legacy callers may omit isolation fields; normalize them to the
+    // same default identity used by schema defaults and query filters.
+    const metaStmt = mode === "insert" ? this.stmtL0InsertMeta : this.stmtL0UpsertMeta;
+    metaStmt.run(
+      record.id,
+      record.sessionKey,
+      record.sessionId || DEFAULT_ISOLATION_ID,
+      (record as L0Record & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
+      record.taskId || "",
+      record.role,
+      record.messageText,
+      record.recordedAt,
+      record.timestamp,
+      (record as L0Record & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
+      (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
+      record.projectKey || "",
+      record.projectHash || "",
+      record.projectName || "",
+    );
+
+    if (!skipVec) {
+      // vec0 does not support ON CONFLICT → delete then insert
+      this.stmtL0DeleteVec!.run(record.id);
+      this.stmtL0InsertVec!.run(record.id, Buffer.from(embedding!.buffer), record.recordedAt);
+    } else {
+      this.logger?.debug?.(
+        `${TAG} [L0-upsert] Skipping vec write (${embedding ? "zero vector" : "no embedding"}) id=${record.id}`,
+      );
+    }
+
+    // New rows skip the FTS delete. Updates delete by the metadata rowid
+    // when that FTS row still belongs to this record_id.
+    if (this.ftsAvailable) {
+      try {
+        if (existingL0Rowid !== undefined) {
+          this.deleteFtsForRecord("l0", existingL0Rowid, record.id);
+        }
+        const l0Rowid = this.contentRowid("l0", record.id);
+        if (l0Rowid === undefined) {
+          throw new Error(`l0 rowid missing after upsert id=${record.id}`);
+        }
+        this.insertFtsAligned("l0", l0Rowid, [
+          tokenizeForFts(record.messageText),
+          record.messageText,
+          record.id,
+          record.sessionKey,
+          record.sessionId || DEFAULT_ISOLATION_ID,
+          (record as L0Record & { teamId?: string }).teamId || DEFAULT_ISOLATION_ID,
+          record.taskId || "",
+          (record as L0Record & { userId?: string }).userId || DEFAULT_ISOLATION_ID,
+          (record as L0Record & { agentId?: string }).agentId || DEFAULT_ISOLATION_ID,
+          record.role,
+          record.recordedAt,
+          record.timestamp,
+        ]);
+      } catch (ftsErr) {
+        this.logger?.warn(
+          `${TAG} [L0-upsert] FTS write failed (non-fatal) id=${record.id}: ${ftsErr instanceof Error ? ftsErr.message : String(ftsErr)}`,
+        );
+      }
     }
   }
 
@@ -2113,13 +2261,14 @@ export class VectorStore implements IMemoryStore {
         const meta = this.stmtL0GetMeta.get(recordId) as { user_id?: string; agent_id?: string; session_id?: string; session_key?: string } | undefined;
         if (!meta || !rowMatchesIsolation(meta, filter)) return false;
       }
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
+        const existingL0Rowid = this.contentRowid("l0", recordId);
         const result = this.stmtL0DeleteMeta.run(recordId);
         const deleted = (result as any)?.changes > 0;
         if (this.vecTablesReady) this.stmtL0DeleteVec!.run(recordId);
-        if (this.ftsAvailable) {
-          try { this.stmtL0FtsDelete.run(recordId); } catch { /* non-fatal */ }
+        if (deleted && this.ftsAvailable) {
+          try { this.deleteFtsForRecord("l0", existingL0Rowid, recordId); } catch { /* non-fatal */ }
         }
         this.db.exec("COMMIT");
         return deleted;
@@ -2794,17 +2943,22 @@ export class VectorStore implements IMemoryStore {
       // 必须把 rowMatchesIsolation 会检查的**所有**列都取出来
       // （team_id / task_id 早期漏取，导致带 teamId 的 isolation filter
       // 永远判不匹配 → 按session 删除恒返回 0）。
-      const rows = this.db.prepare(
-        "SELECT record_id, session_key, session_id, team_id, task_id, user_id, agent_id FROM l0_conversations WHERE session_key = ? OR session_id = ?"
-      ).all(sessionIdTrimmed, sessionIdTrimmed) as Array<{
-        record_id: string; session_key: string; session_id: string;
-        team_id: string; task_id: string; user_id: string; agent_id: string;
-      }>;
-
-      if (rows.length === 0) return 0;
-
-      this.db.exec("BEGIN");
+      // Select inside the transaction so the rowid snapshot cannot drift
+      // from the rows actually deleted.
+      this.db.exec("BEGIN IMMEDIATE");
       try {
+        const rows = this.db.prepare(
+          "SELECT rowid, record_id, session_key, session_id, team_id, task_id, user_id, agent_id FROM l0_conversations WHERE session_key = ? OR session_id = ?"
+        ).all(sessionIdTrimmed, sessionIdTrimmed) as Array<{
+          rowid: number; record_id: string; session_key: string; session_id: string;
+          team_id: string; task_id: string; user_id: string; agent_id: string;
+        }>;
+
+        if (rows.length === 0) {
+          this.db.exec("COMMIT");
+          return 0;
+        }
+
         let deletedCount = 0;
         for (const row of rows) {
           if (filter && !rowMatchesIsolation(row, filter)) continue;
@@ -2815,7 +2969,7 @@ export class VectorStore implements IMemoryStore {
             try { this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?").run(row.record_id); } catch { /* vec may not exist */ }
           }
           if (this.ftsAvailable) {
-            try { this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?").run(row.record_id); } catch { /* fts may not exist */ }
+            try { this.deleteFtsForRecord("l0", row.rowid, row.record_id); } catch { /* fts may not exist */ }
           }
         }
         this.db.exec("COMMIT");
@@ -2852,40 +3006,43 @@ export class VectorStore implements IMemoryStore {
     const params: string[] = userId ? [teamId, agentId, userId] : [teamId, agentId];
 
     try {
-      const l0Ids = (this.db.prepare(
-        `SELECT record_id FROM l0_conversations WHERE ${where}`,
-      ).all(...params) as Array<{ record_id: string }>).map((r) => r.record_id);
-      const l1Ids = (this.db.prepare(
-        `SELECT record_id FROM l1_records WHERE ${where}`,
-      ).all(...params) as Array<{ record_id: string }>).map((r) => r.record_id);
-
-      if (l0Ids.length === 0 && l1Ids.length === 0) return empty;
-
-      this.db.exec("BEGIN");
+      this.db.exec("BEGIN IMMEDIATE");
       try {
+        const l0Rows = this.db.prepare(
+          `SELECT rowid, record_id FROM l0_conversations WHERE ${where}`,
+        ).all(...params) as Array<{ rowid: number; record_id: string }>;
+        const l1Rows = this.db.prepare(
+          `SELECT rowid, record_id FROM l1_records WHERE ${where}`,
+        ).all(...params) as Array<{ rowid: number; record_id: string }>;
+
+        if (l0Rows.length === 0 && l1Rows.length === 0) {
+          this.db.exec("COMMIT");
+          return empty;
+        }
+
         let l0Deleted = 0;
-        for (const id of l0Ids) {
-          const res = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?").run(id);
+        for (const row of l0Rows) {
+          const res = this.db.prepare("DELETE FROM l0_conversations WHERE record_id = ?").run(row.record_id);
           if (((res as any)?.changes ?? 0) <= 0) continue;
           l0Deleted++;
           if (this.vecTablesReady) {
-            try { this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?").run(id); } catch { /* vec may not exist */ }
+            try { this.db.prepare("DELETE FROM l0_vec WHERE record_id = ?").run(row.record_id); } catch { /* vec may not exist */ }
           }
           if (this.ftsAvailable) {
-            try { this.db.prepare("DELETE FROM l0_fts WHERE record_id = ?").run(id); } catch { /* fts may not exist */ }
+            try { this.deleteFtsForRecord("l0", row.rowid, row.record_id); } catch { /* fts may not exist */ }
           }
         }
 
         let l1Deleted = 0;
-        for (const id of l1Ids) {
-          const res = this.db.prepare("DELETE FROM l1_records WHERE record_id = ?").run(id);
+        for (const row of l1Rows) {
+          const res = this.db.prepare("DELETE FROM l1_records WHERE record_id = ?").run(row.record_id);
           if (((res as any)?.changes ?? 0) <= 0) continue;
           l1Deleted++;
           if (this.vecTablesReady) {
-            try { this.db.prepare("DELETE FROM l1_vec WHERE record_id = ?").run(id); } catch { /* vec may not exist */ }
+            try { this.db.prepare("DELETE FROM l1_vec WHERE record_id = ?").run(row.record_id); } catch { /* vec may not exist */ }
           }
           if (this.ftsAvailable) {
-            try { this.db.prepare("DELETE FROM l1_fts WHERE record_id = ?").run(id); } catch { /* fts may not exist */ }
+            try { this.deleteFtsForRecord("l1", row.rowid, row.record_id); } catch { /* fts may not exist */ }
           }
         }
 
@@ -3447,12 +3604,13 @@ export class VectorStore implements IMemoryStore {
       // Include user_id / agent_id so the rebuilt FTS rows carry isolation info.
       const l1Rows = this.db
         .prepare(`
-          SELECT record_id, content, type, priority, scene_name,
+          SELECT rowid, record_id, content, type, priority, scene_name,
                  session_key, session_id, team_id, task_id, user_id, agent_id, version,
                  timestamp_str, timestamp_start, timestamp_end, metadata_json
           FROM l1_records
         `)
         .all() as Array<{
+          rowid: number;
           record_id: string;
           content: string;
           type: string;
@@ -3474,7 +3632,7 @@ export class VectorStore implements IMemoryStore {
       let l1Count = 0;
       for (const r of l1Rows) {
         try {
-          this.stmtL1FtsInsert.run(
+          this.insertFtsAligned("l1", this.asRowid(r.rowid), [
             tokenizeForFts(r.content),  // content — segmented
             r.content,                   // content_original — raw
             r.record_id,
@@ -3492,7 +3650,7 @@ export class VectorStore implements IMemoryStore {
             r.timestamp_start,
             r.timestamp_end,
             r.metadata_json,
-          );
+          ]);
           l1Count++;
         } catch (err) {
           this.logger?.warn?.(
@@ -3506,11 +3664,12 @@ export class VectorStore implements IMemoryStore {
 
       const l0Rows = this.db
         .prepare(`
-          SELECT record_id, message_text, session_key, session_id, team_id, task_id, user_id, agent_id,
+          SELECT rowid, record_id, message_text, session_key, session_id, team_id, task_id, user_id, agent_id,
                  role, recorded_at, timestamp
           FROM l0_conversations
         `)
         .all() as Array<{
+          rowid: number;
           record_id: string;
           message_text: string;
           session_key: string;
@@ -3527,7 +3686,7 @@ export class VectorStore implements IMemoryStore {
       let l0Count = 0;
       for (const r of l0Rows) {
         try {
-          this.stmtL0FtsInsert.run(
+          this.insertFtsAligned("l0", this.asRowid(r.rowid), [
             tokenizeForFts(r.message_text),  // message_text — segmented
             r.message_text,                   // message_text_original — raw
             r.record_id,
@@ -3540,7 +3699,7 @@ export class VectorStore implements IMemoryStore {
             r.role,
             r.recorded_at,
             r.timestamp,
-          );
+          ]);
           l0Count++;
         } catch (err) {
           this.logger?.warn?.(
