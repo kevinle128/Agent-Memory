@@ -153,6 +153,7 @@ describe("antigravity wire helpers", () => {
     expect(upstreamModelFor("gemini-3.1-flash-lite", {}, catalog)).toBe("gemini-3.1-flash-lite");
     expect(upstreamModelFor("gemini-pro-orchestrator-neon", body("MEDIUM"), catalog)).toBe("gemini-pro-orchestrator-neon");
     expect(upstreamModelFor("gemini-4-neon", body("MEDIUM"), catalog)).toBe("gemini-4-neon-medium");
+    expect(upstreamModelFor("claude-opus-5-5", body("HIGH"), catalog)).toBe("claude-opus-5-5-high");
   });
 
   it("uses the agy user agent string", () => {
