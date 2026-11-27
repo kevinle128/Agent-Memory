@@ -130,7 +130,11 @@ export function upstreamModelFor(
   const raw = config?.thinkingConfig?.thinkingLevel;
   const level = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   if (level && CLOUD_CODE_THINKING_SUFFIXES.has(level)) {
-    return model.endsWith(`-${level}`) ? model : `${model}-${level}`;
+    const suffixed = model.endsWith(`-${level}`) ? model : `${model}-${level}`;
+    // Do not append -low/-medium/-high to models that exist in the catalog without a suffix (e.g. gemini-pro-orchestrator-neon).
+    if (!catalogIds || catalogIds.has(suffixed)) return suffixed;
+    if (catalogIds.has(model)) return model;
+    return suffixed;
   }
   // When agy omits thinkingLevel (e.g. model not in local config), restore -medium if the pool catalog only has the suffixed id.
   if (catalogIds && !catalogIds.has(model) && catalogIds.has(`${model}-medium`)) {
