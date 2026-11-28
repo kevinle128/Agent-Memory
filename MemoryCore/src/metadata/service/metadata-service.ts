@@ -3797,10 +3797,12 @@ export class MetadataService {
     const accounts: SubscriptionAccountEntity[] = [];
     for (const account of stored) {
       let usable = account;
-      try {
-        usable = (await this.runSubscriptionTokenRefresh(account.account_id, { ifExpiresWithinMs: 60_000 })).account;
-      } catch {
-        // The fetch below reports a refused token.
+      if (account.refresh_fail_count === 0) {
+        try {
+          usable = (await this.runSubscriptionTokenRefresh(account.account_id, { ifExpiresWithinMs: 60_000 })).account;
+        } catch {
+          // The fetch below reports a refused token.
+        }
       }
       accounts.push(usable);
     }
