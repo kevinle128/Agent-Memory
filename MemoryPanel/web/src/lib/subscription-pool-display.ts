@@ -7,7 +7,7 @@
  */
 
 export type PoolProvider = 'claude' | 'codex' | 'antigravity';
-export type PoolAccountStatus = 'active' | 'exhausted' | 'auth_error' | 'disabled';
+export type PoolAccountStatus = 'active' | 'exhausted' | 'auth_error' | 'plan_error' | 'disabled';
 
 /** One quota window as Core returns it. Times are epoch milliseconds. */
 export interface PoolWindow {
@@ -102,6 +102,7 @@ export type AccountState =
   | 'near_limit'
   | 'exhausted'
   | 'auth_error'
+  | 'plan_error'
   | 'disabled';
 
 export type MeterLevel = 'ok' | 'warn' | 'full';
@@ -143,6 +144,7 @@ export function accountState(
 ): AccountState {
   if (!account.enabled || account.status === 'disabled') return 'disabled';
   if (account.status === 'auth_error') return 'auth_error';
+  if (account.status === 'plan_error') return 'plan_error';
   const until = account.exhausted_until;
   if (until !== null ? until > opts.now : account.status === 'exhausted') return 'exhausted';
   if (account.usage.windows.some((w) => isSharedWindow(w) && effectiveWindow(w, opts.now).pct >= 100)) {

@@ -20,7 +20,7 @@ import {
   ANTIGRAVITY_USER_AGENT, createSseUnwrapStream, extractUserMessage, geminiModelList, maskKeyedPath,
   modelsFromUpstream, openaiModelList, parseAntigravityPath, unwrapSseLine, upstreamModelFor, wrapEnvelope,
 } from "../antigravity.js";
-import { isAntigravityCapacityError, parseAntigravityLimitBody } from "../../../subscription-pool/quota-signals.js";
+import { isAntigravityCapacityError, isAntigravityModelNotFoundError, parseAntigravityLimitBody } from "../../../subscription-pool/quota-signals.js";
 import { antigravityHookOutput, hookOutput } from "../../../routes/hook-recall.js";
 import { countGateAnswers, geminiTextSse } from "../../../session/antigravity/hook-gate.js";
 import { GATE_TEXT_MARKER } from "../../../session/hook-gate-core.js";
@@ -252,6 +252,8 @@ describe("antigravity wire helpers", () => {
     expect(isAntigravityCapacityError(503, '{"error":{"status":"UNAVAILABLE","message":"No capacity available for model x on the server"}}')).toBe(true);
     expect(isAntigravityCapacityError(500, "UNAVAILABLE")).toBe(false);
     expect(isAntigravityCapacityError(503, "gateway timeout")).toBe(false);
+    expect(isAntigravityModelNotFoundError(404, '{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}')).toBe(true);
+    expect(isAntigravityModelNotFoundError(400, '{"error":{"status":"NOT_FOUND"}}')).toBe(false);
   });
 
   it("builds the recall output of the antigravity hook next to the Claude one", () => {
@@ -487,6 +489,65 @@ describe("antigravity pool errors", () => {
     const res = await post(streamPath(), agyBody());
     expect(res.status).toBe(503);
     expect(upstreamCalls).toHaveLength(1);
+  });
+
+  it("verifies Ultra on a 404 model not found, switches to a valid account when Core marks plan_error, and rebinds the session", async () => {
+    prime([acct("a"), acct("b")]);
+    const notFound = () => jsonResponse({ error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }, 404);
+    const { upstreamCalls, coreCalls } = installFetch(
+      (call) => (call.headers["authorization"] === "Bearer secret-token-a" ? notFound() : sse()),
+      (call) => {
+        if (call.url.endsWith("/check-usage")) {
+          return jsonResponse({ code: 0, data: { failed: false, account: { ...acct("a", { status: "plan_error" }) } } });
+        }
+        if (call.url.endsWith("/accounts/list")) {
+          return jsonResponse({ code: 0, data: { threshold_pct: 95, accounts: [acct("a", { status: "plan_error" }), acct("b")] } });
+        }
+        return jsonResponse({ code: 0, data: {} });
+      },
+    );
+    const res = await post(streamPath(KEY, "gemini-4-neon"), agyBody());
+    const bodyText = await res.text();
+    expect(bodyText).toContain('"text":"po"');
+    expect(bodyText).toContain('"text":"ng"');
+    expect(res.status).toBe(200);
+    expect(upstreamCalls.map((c) => c.headers["authorization"])).toEqual(["Bearer secret-token-a", "Bearer secret-token-b"]);
+    expect(coreCalls.filter((c) => c.url.endsWith("/check-usage"))).toHaveLength(1);
+
+    upstreamCalls.length = 0;
+    const nextTurn = await post(streamPath(KEY, "gemini-4-neon"), agyBody());
+    await nextTurn.text();
+    expect(upstreamCalls.map((c) => c.headers["authorization"])).toEqual(["Bearer secret-token-b"]);
+  });
+
+  it("keeps the account and returns 404 when Core confirms the account still has Ultra", async () => {
+    prime([acct("a"), acct("b")]);
+    const notFound = () => jsonResponse({ error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }, 404);
+    const { upstreamCalls, coreCalls } = installFetch(
+      () => notFound(),
+      (call) => (call.url.endsWith("/check-usage")
+        ? jsonResponse({ code: 0, data: { failed: false, account: { ...acct("a", { status: "active" }) } } })
+        : jsonResponse({ code: 0, data: {} })),
+    );
+    const res = await post(streamPath(KEY, "gemini-4-neon"), agyBody());
+    expect(res.status).toBe(404);
+    expect(upstreamCalls).toHaveLength(1);
+    expect(coreCalls.filter((c) => c.url.endsWith("/check-usage"))).toHaveLength(1);
+  });
+
+  it("skips Core plan check when an uncatalogued monitor model returns 404", async () => {
+    const rowWithCatalog: InstanceUpstreamRow = {
+      ...poolRow,
+      source_models: [{ id: "gemini-4-neon-medium", display_name: "Gemini 4 Neon", enabled: true, available: true }],
+    };
+    prime([acct("a"), acct("b")], [defaultRow, rowWithCatalog]);
+    const notFound = () => jsonResponse({ error: { code: 404, message: "Requested entity was not found.", status: "NOT_FOUND" } }, 404);
+    const { upstreamCalls, coreCalls } = installFetch(() => notFound());
+    const body = agyBody({ generationConfig: {} });
+    const res = await post(streamPath(KEY, "gemini-3.1-flash-lite"), body);
+    expect(res.status).toBe(404);
+    expect(upstreamCalls).toHaveLength(1);
+    expect(coreCalls.filter((c) => c.url.endsWith("/check-usage"))).toHaveLength(0);
   });
 
   it("answers 409 when the selected account has no project", async () => {

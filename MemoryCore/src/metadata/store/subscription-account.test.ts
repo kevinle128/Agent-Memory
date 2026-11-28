@@ -333,6 +333,52 @@ describe("SqliteMetadataStore subscription pool migration", () => {
     }
   });
 
+  it("rebuilds an antigravity table lacking plan_error while preserving project_id", () => {
+    seedOldDatabase(dbPath, `
+      CREATE TABLE meta_upstream_subscription_account (
+        account_id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
+        provider TEXT NOT NULL CHECK (provider IN ('claude','codex','antigravity')),
+        display_name TEXT NOT NULL,
+        account_label TEXT NOT NULL DEFAULT '',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','exhausted','auth_error','disabled')),
+        access_token TEXT NOT NULL DEFAULT '',
+        refresh_token TEXT NOT NULL DEFAULT '',
+        token_expires_at INTEGER,
+        provider_account_id TEXT NOT NULL,
+        project_id TEXT,
+        usage_json TEXT NOT NULL DEFAULT '{"windows":[]}',
+        reset_credits_json TEXT,
+        usage_updated_at INTEGER,
+        exhausted_until INTEGER,
+        usage_fail_count INTEGER NOT NULL DEFAULT 0,
+        refresh_fail_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        active_sessions INTEGER NOT NULL DEFAULT 0,
+        threshold_pct INTEGER NOT NULL DEFAULT 95 CHECK (threshold_pct BETWEEN 50 AND 100),
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (group_id) REFERENCES meta_instance_upstream_config(group_id) ON DELETE CASCADE,
+        UNIQUE(group_id, provider_account_id),
+        UNIQUE(group_id, display_name)
+      );
+      INSERT INTO meta_upstream_subscription_account
+        (account_id, group_id, provider, display_name, account_label, provider_account_id, project_id, created_at, updated_at)
+      VALUES ('sacc-agy', 'grp-old-unified', 'antigravity', 'AGY 1', 'u@example.com', 'u@example.com', 'proj-keep', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+    `);
+
+    const store = new SqliteMetadataStore(dbPath);
+    store.init();
+    try {
+      const updated = store.updateSubscriptionAccount("sacc-agy", { status: "plan_error", last_error: "Ultra subscription required (Free)" });
+      expect(updated).toMatchObject({ project_id: "proj-keep", status: "plan_error", last_error: "Ultra subscription required (Free)" });
+    } finally {
+      store.close();
+    }
+  });
+
   it("runs the account table migration only once and leaves no rebuild table behind", () => {
     const first = new SqliteMetadataStore(dbPath);
     first.init();

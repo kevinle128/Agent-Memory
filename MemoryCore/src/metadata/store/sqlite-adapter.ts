@@ -216,7 +216,7 @@ function subscriptionAccountTableDdl(table: string): string {
     display_name TEXT NOT NULL,
     account_label TEXT NOT NULL DEFAULT '',
     enabled INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','exhausted','auth_error','disabled')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','exhausted','auth_error','plan_error','disabled')),
     access_token TEXT NOT NULL DEFAULT '',
     refresh_token TEXT NOT NULL DEFAULT '',
     token_expires_at INTEGER,
@@ -741,19 +741,19 @@ export class SqliteMetadataStore implements IMetadataStore {
   }
 
   /**
-   * SQLite cannot change a CHECK constraint in place. A table made before the AntiGravity provider
-   * only allows claude and codex, so it is rebuilt with the new constraint and the project column.
-   * Every existing column is copied by name, because older tables have another column order.
+   * SQLite cannot change a CHECK constraint in place. Tables from earlier builds lack the
+   * AntiGravity provider or the `plan_error` status, so they are rebuilt with the current DDL.
+   * Every existing column is copied by name, preserving `project_id` and older column orders.
    */
   private migrateSubscriptionAccountProviders(): void {
     const tableSql = this.get(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'meta_upstream_subscription_account'",
     )?.sql;
-    if (typeof tableSql !== "string" || tableSql.includes("'antigravity'")) return;
+    if (typeof tableSql !== "string" || (tableSql.includes("'antigravity'") && tableSql.includes("'plan_error'"))) return;
 
     const copiedColumns = this.all<{ name: string }>(
       "SELECT name FROM pragma_table_info('meta_upstream_subscription_account')",
-    ).map((column) => column.name).filter((name) => name !== "project_id").join(", ");
+    ).map((column) => column.name).join(", ");
     // Dropping the old table with foreign keys on would cascade into its dependants.
     this.db.exec("PRAGMA foreign_keys = OFF");
     try {
@@ -3225,16 +3225,20 @@ export class SqliteMetadataStore implements IMetadataStore {
       );
 
       if (existing) {
-        // New tokens fix an auth error. The admin switch decides which state follows.
-        const wasAuthError = String(existing.status) === "auth_error";
-        const nextStatus = wasAuthError
-          ? (Number(existing.enabled) === 1 ? "active" : "disabled")
-          : String(existing.status);
+        // New tokens fix an auth error; a known plan result sets or clears plan_error.
+        const enabled = Number(existing.enabled) === 1;
+        const currentStatus = String(existing.status);
+        const nextStatus = input.plan_error
+          ? (enabled ? "plan_error" : "disabled")
+          : currentStatus === "auth_error" || (input.plan_error === null && currentStatus === "plan_error")
+            ? (enabled ? "active" : "disabled")
+            : currentStatus;
+        const nextError = input.plan_error ?? (currentStatus === "plan_error" && input.plan_error === undefined ? existing.last_error : null);
         this.run(
           `UPDATE meta_upstream_subscription_account
            SET access_token = ?, refresh_token = ?, token_expires_at = ?, account_label = ?,
                project_id = COALESCE(?, project_id),
-               status = ?, refresh_fail_count = 0, last_error = NULL,
+               status = ?, refresh_fail_count = 0, last_error = ?,
                version = version + 1, updated_at = ?
            WHERE account_id = ?`,
           input.access_token,
@@ -3243,6 +3247,7 @@ export class SqliteMetadataStore implements IMetadataStore {
           input.account_label ?? String(existing.account_label ?? ""),
           input.project_id ?? null,
           nextStatus,
+          nextError,
           now,
           String(existing.account_id),
         );
@@ -3258,19 +3263,21 @@ export class SqliteMetadataStore implements IMetadataStore {
         `INSERT INTO meta_upstream_subscription_account
           (account_id, group_id, provider, display_name, account_label, enabled, status,
            access_token, refresh_token, token_expires_at, provider_account_id, project_id,
-           usage_json, threshold_pct, version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+           usage_json, last_error, threshold_pct, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         accountId,
         input.group_id,
         input.provider,
         input.display_name,
         input.account_label ?? "",
+        input.plan_error ? "plan_error" : "active",
         input.access_token,
         input.refresh_token,
         input.token_expires_at,
         input.provider_account_id,
         input.project_id ?? null,
         JSON.stringify({ windows: [] }),
+        input.plan_error ?? null,
         input.threshold_pct ?? DEFAULT_ACCOUNT_THRESHOLD_PCT,
         now,
         now,

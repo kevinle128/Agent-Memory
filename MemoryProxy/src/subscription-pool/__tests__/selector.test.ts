@@ -180,8 +180,9 @@ describe("accountSwitchRejection", () => {
     expect(accountSwitchRejection(acct("a", { status: "disabled" }), NOW, 95)).toEqual({ reason: "account_disabled" });
   });
 
-  it("rejects an account that needs a new login", () => {
+  it("rejects an account that needs a new login or a valid plan", () => {
     expect(accountSwitchRejection(acct("a", { status: "auth_error" }), NOW, 95)).toEqual({ reason: "account_needs_login" });
+    expect(accountSwitchRejection(acct("a", { status: "plan_error" }), NOW, 95)).toEqual({ reason: "account_plan_invalid" });
   });
 
   it("rejects an exhausted account with its reset time", () => {

@@ -15,7 +15,7 @@ export interface PlannedAccountTimer {
  * they follow a failure, and re-planning after every write must not move them.
  */
 export function planAccountTimers(account: SubscriptionAccountEntity, thresholdPct: number, now: number): PlannedAccountTimer[] {
-  if (!account.enabled || account.status === "disabled" || account.status === "auth_error") return [];
+  if (!account.enabled || account.status === "disabled" || account.status === "auth_error" || account.status === "plan_error") return [];
   const timers: PlannedAccountTimer[] = [];
 
   if (account.token_expires_at !== null && account.refresh_fail_count === 0) {

@@ -34,10 +34,11 @@ describe("planAccountTimers", () => {
     expect(planAccountTimers(account({ token_expires_at: null }), 95, NOW)).toEqual([]);
   });
 
-  it("arms nothing for a disabled account or one that needs a new login", () => {
+  it("arms nothing for a disabled, auth_error or plan_error account", () => {
     expect(planAccountTimers(account({ enabled: false, exhausted_until: NOW + MIN }), 95, NOW)).toEqual([]);
     expect(planAccountTimers(account({ status: "disabled" }), 95, NOW)).toEqual([]);
     expect(planAccountTimers(account({ status: "auth_error", exhausted_until: NOW + MIN }), 95, NOW)).toEqual([]);
+    expect(planAccountTimers(account({ status: "plan_error", exhausted_until: NOW + MIN }), 95, NOW)).toEqual([]);
   });
 
   it("checks an exhausted account 30 s after it is due to reset", () => {

@@ -876,7 +876,7 @@ export class InstanceUpstreamWriteConflictError extends Error {
 // text, like `api_key` of an upstream group. They must never be returned by a public API.
 
 export type SubscriptionProvider = "claude" | "codex" | "antigravity";
-export type SubscriptionAccountStatus = "active" | "exhausted" | "auth_error" | "disabled";
+export type SubscriptionAccountStatus = "active" | "exhausted" | "auth_error" | "plan_error" | "disabled";
 
 /**
  * One usage limit of an account (5 hour window, 7 day window, weekly per-model window).
@@ -1027,6 +1027,8 @@ export interface UpsertSubscriptionAccountInput {
   access_token: string;
   refresh_token: string;
   token_expires_at: number | null;
+  /** Non-null when login already proved the account plan cannot serve in this pool; null when proven valid. */
+  plan_error?: string | null;
   /**
    * Threshold of a new account. Ignored when the account exists, so a new login keeps the stored
    * value. Absent gives 95. The caller checks the range.

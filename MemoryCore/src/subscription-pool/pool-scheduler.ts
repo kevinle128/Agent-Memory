@@ -80,7 +80,7 @@ export class SubscriptionPoolScheduler {
   syncAccount(instanceId: string, change: SubscriptionAccountChange): void {
     if (this.stopped) return;
     const { accountId, account } = change;
-    if (!account || !account.enabled || account.status === "disabled" || account.status === "auth_error") {
+    if (!account || !account.enabled || account.status === "disabled" || account.status === "auth_error" || account.status === "plan_error") {
       this.queue.removeAccount(instanceId, accountId);
       return;
     }
@@ -143,6 +143,7 @@ export class SubscriptionPoolScheduler {
     const active = accounts.filter((account) => account.enabled
       && account.status !== "disabled"
       && account.status !== "auth_error"
+      && account.status !== "plan_error"
       && SUPPORTED_SUBSCRIPTION_PROVIDERS.includes(account.provider));
     for (const [index, account] of active.entries()) {
       if (this.stopped) return;

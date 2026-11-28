@@ -2871,6 +2871,7 @@ export class MetadataService {
         refresh_token: exchanged.refreshToken,
         token_expires_at: exchanged.expiresAt,
         project_id: exchanged.projectId ?? null,
+        plan_error: exchanged.planError,
         // A new account starts with the requested threshold, else the start value. A re-login keeps the stored one.
         threshold_pct: input.threshold_pct ?? await this.defaultSubscriptionThreshold(),
       });

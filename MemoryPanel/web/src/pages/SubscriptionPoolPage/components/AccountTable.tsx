@@ -57,6 +57,7 @@ const STATE_TAG: Record<AccountState, { theme: 'default' | 'primary' | 'success'
   near_limit: { theme: 'warning', mark: '▲' },
   exhausted: { theme: 'error', mark: '■' },
   auth_error: { theme: 'error', mark: '✕' },
+  plan_error: { theme: 'error', mark: '!' },
   disabled: { theme: 'default', mark: '○' },
 };
 
@@ -288,7 +289,7 @@ export function AccountTable({
                     time: formatResetAt(account.exhausted_until, now, { locale: i18n.language }),
                   })
                 : t('subscriptionPool.status.exhausted.noteNoTime');
-            } else if (state === 'auth_error') note = account.last_error;
+            } else if (state === 'auth_error' || state === 'plan_error') note = account.last_error;
             return (
               <div>
                 <Tag theme={tag.theme}>{tag.mark} {t(`subscriptionPool.status.${state}`)}</Tag>
@@ -326,7 +327,7 @@ export function AccountTable({
                 window={groupWindows(account.usage.windows).primary}
                 now={now}
                 thresholdPct={account.threshold_pct}
-                showMark={state !== 'disabled' && state !== 'auth_error'}
+                showMark={state !== 'disabled' && state !== 'auth_error' && state !== 'plan_error'}
               />
             );
           },
@@ -342,7 +343,7 @@ export function AccountTable({
                 window={groupWindows(account.usage.windows).secondary}
                 now={now}
                 thresholdPct={account.threshold_pct}
-                showMark={state !== 'disabled' && state !== 'auth_error'}
+                showMark={state !== 'disabled' && state !== 'auth_error' && state !== 'plan_error'}
               />
             );
           },
@@ -381,7 +382,7 @@ export function AccountTable({
                 account={account}
                 groupKey={group.key}
                 now={now}
-                showMark={state !== 'disabled' && state !== 'auth_error'}
+                showMark={state !== 'disabled' && state !== 'auth_error' && state !== 'plan_error'}
               />
             );
           },

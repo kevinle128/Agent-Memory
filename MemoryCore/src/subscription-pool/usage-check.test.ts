@@ -167,6 +167,40 @@ describe("checkAccountUsage", () => {
     expect(result.account).toMatchObject({ status, exhausted_until: null });
   });
 
+  it("marks an account plan_error when its plan is downgraded and restores active once renewed", async () => {
+    const account = await fx.addAccount();
+    await fx.store.updateSubscriptionAccount(account.account_id, { status: "exhausted", exhausted_until: NOW + 30 * MIN, account_label: "acct-1@example.com (Ultra)" });
+
+    const downgraded = await checkAccountUsage(
+      fx.store,
+      account.account_id,
+      fakeAdapter({ fetchUsage: async () => ({ windows: [win(20, NOW + MIN)], resetCredits: null, accountLabel: "acct-1@example.com (Free)", planError: "Ultra subscription required (Free)" }) }),
+      95,
+      NOW,
+    );
+    expect(downgraded.failed).toBe(false);
+    expect(downgraded.account).toMatchObject({
+      status: "plan_error",
+      exhausted_until: null,
+      account_label: "acct-1@example.com (Free)",
+      last_error: "Ultra subscription required (Free)",
+    });
+
+    const renewed = await checkAccountUsage(
+      fx.store,
+      account.account_id,
+      fakeAdapter({ fetchUsage: async () => ({ windows: [win(20, NOW + MIN)], resetCredits: null, accountLabel: "acct-1@example.com (Ultra)", planError: null }) }),
+      95,
+      NOW + MIN,
+    );
+    expect(renewed.account).toMatchObject({
+      status: "active",
+      exhausted_until: null,
+      account_label: "acct-1@example.com (Ultra)",
+      last_error: null,
+    });
+  });
+
   it("counts a failure and keeps the stored usage", async () => {
     const account = await fx.addAccount();
     await fx.store.updateSubscriptionAccount(account.account_id, { usage: { windows: [win(50, NOW + MIN)] } });

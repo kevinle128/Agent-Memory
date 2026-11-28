@@ -9,6 +9,8 @@ export interface ExchangedSubscriptionTokens {
   accountLabel: string;
   /** Cloud project of the account, for providers that bill requests to one. Absent otherwise. */
   projectId?: string | null;
+  /** Non-null when login proved the account plan cannot serve in this pool; null when proven valid. */
+  planError?: string | null;
 }
 
 export interface SubscriptionCodeExchangeInput {
@@ -34,6 +36,10 @@ export class SubscriptionProviderError extends Error {
 export interface SubscriptionUsageReading {
   windows: SubscriptionQuotaWindow[];
   resetCredits: SubscriptionResetCredits | null;
+  /** Refreshed e-mail and plan label when the usage check also read the account tier. */
+  accountLabel?: string;
+  /** Non-null when the account plan cannot serve in this pool; null or absent when eligible. */
+  planError?: string | null;
 }
 
 export interface RedeemResetCreditInput {

@@ -193,6 +193,8 @@ function rejectionError(rejection: AccountSwitchRejection): BridgeError {
       return new BridgeError(409, 40901, rejection.reason, "The account is disabled in the pool.");
     case "account_needs_login":
       return new BridgeError(409, 40901, rejection.reason, "The account needs a new login in the pool admin panel.");
+    case "account_plan_invalid":
+      return new BridgeError(409, 40901, rejection.reason, "The account does not have a valid subscription plan.");
     case "account_exhausted": {
       const at = isoOrNull(rejection.resets_at);
       return new BridgeError(409, 40901, rejection.reason,

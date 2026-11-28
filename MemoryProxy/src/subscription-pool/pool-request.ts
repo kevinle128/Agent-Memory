@@ -31,7 +31,7 @@ import {
 import { callPoolCore, PoolCoreError, type PoolCoreConfig } from "./core-client.js";
 import { buildPoolExhaustedResponse, buildPoolUnavailableResponse } from "./exhausted-response.js";
 import {
-  isAntigravityCapacityError, parseAntigravityLimitBody, parseClaudeQuotaHeaders, parseCodexQuotaHeaders,
+  isAntigravityCapacityError, isAntigravityModelNotFoundError, parseAntigravityLimitBody, parseClaudeQuotaHeaders, parseCodexQuotaHeaders,
 } from "./quota-signals.js";
 import { reportAccount } from "./reporter.js";
 import { recordPoolUpstreamError, sanitizeErrorText } from "./upstream-error.js";
@@ -346,6 +346,21 @@ class PoolRequestImpl implements PoolRequest {
           return new Response(text, { status: resp.status, headers: resp.headers });
         }
 
+        // Cloud Code returns 404 NOT_FOUND when an AntiGravity account lost its Ultra subscription.
+        // Internal agy monitor models also return 404 on healthy accounts, so check Core only for
+        // catalog or Ultra models, and switch only when Core confirms the account is no longer servable.
+        if (this.provider === "antigravity" && resp.status === 404) {
+          const text = await bounded(() => resp.text());
+          if (isAntigravityModelNotFoundError(resp.status, text) && this.mayBeCatalogOrUltraModel()) {
+            deadline ??= Date.now() + POOL_RETRY_BUDGET_MS;
+            if (await this.confirmPlanLost(account, text, resp.headers, deadline)) {
+              excluded.add(account.account_id);
+              continue;
+            }
+          }
+          return new Response(text, { status: resp.status, headers: resp.headers });
+        }
+
         if (resp.status < 400) this.onSuccess(account, resp.headers);
         return resp;
       }
@@ -433,6 +448,40 @@ class PoolRequestImpl implements PoolRequest {
     } catch (error) {
       if (error instanceof PoolRetryDeadline || this.input.signal?.aborted) throw error;
       console.warn(`${TAG} Check now unavailable account_id=${account.account_id} team=${this.input.row.team_id ?? ""}; retaining session account`);
+      return false;
+    }
+  }
+
+  private mayBeCatalogOrUltraModel(): boolean {
+    if (!this.model) return false;
+    if (/(?:^|-)(?:carbon|hydrogen|neon)(?:-|$)/i.test(this.model)) return true;
+    const catalog = this.input.row.source_models;
+    return Array.isArray(catalog) && catalog.some((entry) => entry.available !== false && entry.id === this.model);
+  }
+
+  /** True when Core's check-usage confirms the account is no longer servable (e.g. `plan_error`). */
+  private async confirmPlanLost(account: PoolAccount, bodyText: string, headers: Headers, deadline: number): Promise<boolean> {
+    const key = `${this.input.spaceId}\0${account.account_id}`;
+    try {
+      const result = await withinRetryDeadline(() => sharedPoolUsageCheck(key, () => callPoolCore<{
+        failed: boolean; account: Pick<PoolAccount, "usage" | "status" | "exhausted_until"> & { usage_updated_at?: number | null };
+      }>(coreConfig(this.input.config), this.input.spaceId, "check-usage", { account_id: account.account_id })), deadline, this.input.signal);
+      if (result.failed !== false) return false;
+      const status = result.account?.status;
+      if (!status || status === "active" || status === "exhausted") return false;
+      void recordPoolUpstreamError({
+        storage: this.storage, spaceId: this.input.spaceId, accountId: account.account_id,
+        provider: this.provider, model: this.model, status: 404, body: bodyText, headers, now: this.now(),
+        requestId: this.input.clientHeaders.get("x-request-id") ?? this.input.clientHeaders.get("x-tdai-request-id"),
+        secrets: [account.access_token, this.input.userKey, coreConfig(this.input.config).serviceToken,
+          this.input.clientHeaders.get("authorization") ?? "", this.input.clientHeaders.get("x-api-key") ?? ""],
+      }).catch(() => { /* Diagnostics must never interrupt forwarding. */ });
+      console.warn(`${TAG} account_id=${account.account_id} team=${this.input.row.team_id ?? ""} marked ${status} after 404 on model=${this.model}; switching account`);
+      await withinRetryDeadline(() => this.snapshot(true), deadline, this.input.signal);
+      return true;
+    } catch (error) {
+      if (error instanceof PoolRetryDeadline || this.input.signal?.aborted) throw error;
+      console.warn(`${TAG} plan check unavailable account_id=${account.account_id} team=${this.input.row.team_id ?? ""}`);
       return false;
     }
   }
