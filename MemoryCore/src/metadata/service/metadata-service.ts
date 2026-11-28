@@ -2912,13 +2912,16 @@ export class MetadataService {
     ) {
       const refreshed = await this.runSubscriptionTokenRefresh(accountId, { ifExpiresWithinMs: 60_000 });
       current = refreshed.account;
-      if (refreshed.failed) {
-        const expired = current.token_expires_at !== null && current.token_expires_at <= Date.now();
-        const needsExhaustedRelease = current.status === "exhausted" || current.exhausted_until !== null;
-        if (current.status === "auth_error" || (expired && !needsExhaustedRelease)) {
-          return { account: current, failed: true };
-        }
+      if (refreshed.failed && current.status === "auth_error") {
+        return { account: current, failed: true };
       }
+    }
+    const now = Date.now();
+    const expired = current.token_expires_at !== null && current.token_expires_at <= now;
+    const needsExhaustedRelease = (current.status === "exhausted" || current.exhausted_until !== null)
+      && (current.exhausted_until === null || current.exhausted_until <= now);
+    if (expired && !needsExhaustedRelease) {
+      return { account: current, failed: true };
     }
     const result = await checkAccountUsage(this.store, accountId, adapter, current.threshold_pct);
     const failCount = result.account.usage_fail_count;

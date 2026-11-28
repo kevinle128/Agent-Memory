@@ -398,4 +398,44 @@ describe("checkAccountUsage", () => {
     expect(result.failed).toBe(true);
     expect(result.account).toMatchObject({ status: "auth_error", last_error: RELOGIN_NEEDED });
   });
+
+  it("skips fetchUsage on an expired token when refreshToken is false unless exhaustion is due for release", async () => {
+    const active = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    const futureExhausted = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    const dueExhausted = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    await fx.store.updateSubscriptionAccount(futureExhausted.account_id, {
+      status: "exhausted",
+      exhausted_until: Date.now() + 10 * MIN,
+      last_error: "refresh failed",
+    });
+    await fx.store.updateSubscriptionAccount(dueExhausted.account_id, {
+      status: "exhausted",
+      exhausted_until: Date.now() - MIN,
+    });
+    const adapter = fakeAdapter({
+      fetchUsage: async () => { throw new SubscriptionProviderError("unauthorized", false, 401); },
+    });
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+
+    const activeResult = await fx.svc.runSubscriptionUsageCheck(active.account_id, { refreshModels: false, refreshToken: false });
+    const futureResult = await fx.svc.runSubscriptionUsageCheck(futureExhausted.account_id, { refreshModels: false, refreshToken: false });
+    const dueResult = await fx.svc.runSubscriptionUsageCheck(dueExhausted.account_id, { refreshModels: false, refreshToken: false });
+
+    expect(adapter.refresh).not.toHaveBeenCalled();
+    expect(adapter.fetchUsage).toHaveBeenCalledTimes(1);
+    expect(activeResult.failed).toBe(true);
+    expect(activeResult.account.usage_fail_count).toBe(0);
+    expect(futureResult.failed).toBe(true);
+    expect(futureResult.account).toMatchObject({
+      status: "exhausted",
+      usage_fail_count: 0,
+      last_error: "refresh failed",
+    });
+    expect(dueResult.failed).toBe(true);
+    expect(dueResult.account).toMatchObject({
+      status: "active",
+      exhausted_until: null,
+      usage_fail_count: 1,
+    });
+  });
 });

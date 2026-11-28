@@ -287,11 +287,18 @@ describe("SubscriptionPoolScheduler", () => {
     await setup();
     const account = await fx.addAccount({ token_expires_at: T0 - MIN });
     adapter.refresh.mockRejectedValueOnce(new TypeError("fetch failed")).mockResolvedValue(tokens());
+    adapter.fetchUsage.mockRejectedValue(new SubscriptionProviderError("unauthorized", false, 401));
 
     await register();
 
     expect(adapter.refresh).toHaveBeenCalledTimes(1);
-    expect((await fx.store.getSubscriptionAccount(account.account_id))?.refresh_fail_count).toBe(1);
+    expect(adapter.fetchUsage).not.toHaveBeenCalled();
+    expect(await fx.store.getSubscriptionAccount(account.account_id)).toMatchObject({
+      refresh_fail_count: 1,
+      usage_fail_count: 0,
+      last_error: "refresh failed",
+    });
+    expect(scheduler.pendingTimers().some((timer) => timer.kind === "retry-usage")).toBe(false);
     await at(59_000);
     expect(adapter.refresh).toHaveBeenCalledTimes(1);
     await at(MIN);
