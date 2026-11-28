@@ -2894,8 +2894,17 @@ export class MetadataService {
 
   /** Usage check used by the route and the scheduler. Tells the scheduler the result. */
   async runSubscriptionUsageCheck(accountId: string, options: { refreshModels?: boolean } = {}): Promise<UsageCheckResult> {
-    const current = await this.requireSubscriptionAccount(accountId);
+    let current = await this.requireSubscriptionAccount(accountId);
     const adapter = this.subscriptionAdapter(current.provider);
+    // Refresh an expired or expiring token first so manual Check now can recover accounts
+    // (such as plan_error rows) whose scheduled refreshes were paused.
+    if (current.refresh_token && current.token_expires_at !== null && current.token_expires_at - Date.now() <= 60_000) {
+      const refreshed = await this.runSubscriptionTokenRefresh(accountId, { ifExpiresWithinMs: 60_000 });
+      current = refreshed.account;
+      if (refreshed.failed && current.status === "auth_error") {
+        return { account: current, failed: true };
+      }
+    }
     const result = await checkAccountUsage(this.store, accountId, adapter, current.threshold_pct);
     const failCount = result.account.usage_fail_count;
     await this.notifySubscriptionAccount({

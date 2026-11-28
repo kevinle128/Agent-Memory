@@ -2663,7 +2663,7 @@ export class MongoMetadataStore implements IMetadataStore {
         const enabled = existing.enabled !== false;
         const currentStatus = String(existing.status);
         const nextStatus = input.plan_error
-          ? (enabled ? "plan_error" : "disabled")
+          ? "plan_error"
           : currentStatus === "auth_error" || (input.plan_error === null && currentStatus === "plan_error")
             ? (enabled ? "active" : "disabled")
             : currentStatus;

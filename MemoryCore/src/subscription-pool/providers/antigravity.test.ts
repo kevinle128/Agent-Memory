@@ -340,6 +340,14 @@ describe("parseAntigravityTier and evaluateAntigravityPlan", () => {
       .toEqual({ label: "Pro", isUltra: false });
     expect(parseAntigravityTier({ currentTier: { id: "free-tier" } }))
       .toEqual({ label: "Free", isUltra: false });
+    expect(parseAntigravityTier({
+      paidTier: { id: "USER_TIER_UNSPECIFIED", name: "Unspecified" },
+      g1Tier: { id: "G1_ULTRA_TIER", name: "Google AI Ultra" },
+    })).toEqual({ label: "Ultra", isUltra: true });
+    expect(parseAntigravityTier({
+      paidTier: { id: "USER_TIER_UNSPECIFIED", name: "USER_TIER_UNSPECIFIED" },
+      currentTier: { id: "g1-ultra-tier" },
+    })).toEqual({ label: "Ultra", isUltra: true });
     expect(parseAntigravityTier({})).toEqual({ label: null, isUltra: null });
   });
 
@@ -349,6 +357,8 @@ describe("parseAntigravityTier and evaluateAntigravityPlan", () => {
     expect(evaluateAntigravityPlan({ label: "Ultra", isUltra: true }, { models: { "gemini-4-neon-tiered": {}, "claude-sonnet-4-6": {} } }))
       .toBe("Ultra models unavailable (Ultra)");
     expect(evaluateAntigravityPlan({ label: "Ultra", isUltra: true }, { models: { "gemini-5-alpha-high": {} } })).toBeNull();
+    expect(evaluateAntigravityPlan({ label: "Ultra", isUltra: true }, { models: { "gemini-4-neon-disabled": {}, "gemini-5-alpha-high": {} } }))
+      .toBeNull();
   });
 });
 

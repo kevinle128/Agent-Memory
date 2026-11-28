@@ -3229,7 +3229,7 @@ export class SqliteMetadataStore implements IMetadataStore {
         const enabled = Number(existing.enabled) === 1;
         const currentStatus = String(existing.status);
         const nextStatus = input.plan_error
-          ? (enabled ? "plan_error" : "disabled")
+          ? "plan_error"
           : currentStatus === "auth_error" || (input.plan_error === null && currentStatus === "plan_error")
             ? (enabled ? "active" : "disabled")
             : currentStatus;

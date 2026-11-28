@@ -66,7 +66,10 @@ export async function checkAccountUsage(
     const exhausted = current.status === "exhausted" || current.exhausted_until !== null;
 
     if (reading === null) {
-      const patch: UpdateSubscriptionAccountPatch = { usage_fail_count: current.usage_fail_count + 1, last_error: USAGE_CHECK_FAILED };
+      const patch: UpdateSubscriptionAccountPatch = {
+        usage_fail_count: current.usage_fail_count + 1,
+        last_error: current.status === "plan_error" && current.last_error ? undefined : USAGE_CHECK_FAILED,
+      };
       if (exhausted && (current.exhausted_until === null || current.exhausted_until <= now)) {
         patch.exhausted_until = null;
         if (current.status === "exhausted") patch.status = "active";

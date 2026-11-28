@@ -112,9 +112,13 @@ export interface AntigravityTierInfo {
   isUltra: boolean | null;
 }
 
+const UNSPECIFIED_TIER_RE = /^(?:(?:USER_|G1_)?TIER_UNSPECIFIED|unspecified)$/i;
+
 function normalizeTierLabel(id: string, name: string): { label: string; isUltra: boolean } | null {
-  const combined = `${id} ${name}`.trim();
-  if (!combined || /^(?:USER_TIER_UNSPECIFIED|G1_TIER_UNSPECIFIED|TIER_UNSPECIFIED)$/i.test(combined)) return null;
+  const cleanId = UNSPECIFIED_TIER_RE.test(id) ? "" : id;
+  const cleanName = UNSPECIFIED_TIER_RE.test(name) ? "" : name;
+  const combined = `${cleanId} ${cleanName}`.trim();
+  if (!combined) return null;
   if (/ultra[-_ ]?lite/i.test(combined)) return { label: "Ultra Lite", isUltra: false };
   if (/ultra/i.test(combined)) return { label: "Ultra", isUltra: true };
   if (/(?:^|[-_ ])pro(?:$|[-_ ])/i.test(combined)) return { label: "Pro", isUltra: false };
@@ -122,7 +126,7 @@ function normalizeTierLabel(id: string, name: string): { label: string; isUltra:
   if (/(?:^|[-_ ])free(?:$|[-_ ])/i.test(combined)) return { label: "Free", isUltra: false };
   if (/legacy-tier/i.test(combined)) return { label: "Legacy", isUltra: false };
   if (/standard[-_ ]tier/i.test(combined)) return { label: "Standard", isUltra: false };
-  return { label: name || id, isUltra: false };
+  return { label: cleanName || cleanId, isUltra: false };
 }
 
 /**
@@ -161,7 +165,7 @@ function hasUsableUltraModel(rawModels: unknown): boolean {
 
 function hasTieredUltraModel(rawModels: unknown): boolean {
   return Object.keys(asRecord(asRecord(rawModels).models))
-    .some((id) => ULTRA_MODEL_RE.test(id) && /-(?:tiered|disabled)(?:-|$)/i.test(id));
+    .some((id) => ULTRA_MODEL_RE.test(id) && /-tiered(?:-|$)/i.test(id));
 }
 
 /** Non-null reason when the account is confirmed non-Ultra or lacks Ultra models. */
