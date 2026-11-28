@@ -105,6 +105,83 @@ function projectIdOf(value: unknown): string | null {
   return typeof id === "string" ? id.trim() || null : null;
 }
 
+export interface AntigravityTierInfo {
+  /** Human-readable plan name such as "Ultra", "Pro" or "Free". Null when absent. */
+  label: string | null;
+  /** True for a full Ultra subscription, false for another known tier, null when no tier was reported. */
+  isUltra: boolean | null;
+}
+
+const UNSPECIFIED_TIER_RE = /^(?:(?:USER_|G1_)?TIER_UNSPECIFIED|unspecified)$/i;
+
+function normalizeTierLabel(id: string, name: string): { label: string; isUltra: boolean } | null {
+  const cleanId = UNSPECIFIED_TIER_RE.test(id) ? "" : id;
+  const cleanName = UNSPECIFIED_TIER_RE.test(name) ? "" : name;
+  const combined = `${cleanId} ${cleanName}`.trim();
+  if (!combined) return null;
+  if (/ultra[-_ ]?lite/i.test(combined)) return { label: "Ultra Lite", isUltra: false };
+  if (/ultra/i.test(combined)) return { label: "Ultra", isUltra: true };
+  if (/(?:^|[-_ ])pro(?:$|[-_ ])/i.test(combined)) return { label: "Pro", isUltra: false };
+  if (/(?:^|[-_ ])plus(?:$|[-_ ])/i.test(combined)) return { label: "Plus", isUltra: false };
+  if (/(?:^|[-_ ])free(?:$|[-_ ])/i.test(combined)) return { label: "Free", isUltra: false };
+  if (/legacy-tier/i.test(combined)) return { label: "Legacy", isUltra: false };
+  if (/standard[-_ ]tier/i.test(combined)) return { label: "Standard", isUltra: false };
+  return { label: cleanName || cleanId, isUltra: false };
+}
+
+/**
+ * Subscription tier of a `loadCodeAssist` payload. `paidTier` and `g1Tier` take precedence over
+ * `currentTier`, because Google can send `currentTier: "standard-tier"` alongside a paid Google One tier.
+ */
+export function parseAntigravityTier(raw: unknown): AntigravityTierInfo {
+  const body = asRecord(raw);
+  const paid = asRecord(body.paidTier);
+  const g1 = typeof body.g1Tier === "string" ? { id: body.g1Tier, name: "" } : asRecord(body.g1Tier);
+  const current = asRecord(body.currentTier);
+  for (const tier of [paid, g1, current]) {
+    const id = typeof tier.id === "string" ? tier.id.trim() : "";
+    const name = typeof tier.name === "string" ? tier.name.trim() : "";
+    const parsed = normalizeTierLabel(id, name);
+    if (parsed) return parsed;
+  }
+  return { label: null, isUltra: null };
+}
+
+function antigravityAccountLabel(email: string, planLabel: string | null): string {
+  const cleanEmail = email.trim();
+  return planLabel ? `${cleanEmail} (${planLabel})` : cleanEmail;
+}
+
+// shortcut: checks Gemini 4 Carbon/Hydrogen/Neon ids when tier is missing or stale, update regex if Google renames Ultra-only model families
+const ULTRA_MODEL_RE = /(?:^|-)(?:carbon|hydrogen|neon)(?:-|$)/i;
+
+function hasUsableUltraModel(rawModels: unknown): boolean {
+  for (const [id, info] of Object.entries(asRecord(asRecord(rawModels).models))) {
+    if (!isUsableModel(id, asRecord(info))) continue;
+    if (!/-(?:tiered|disabled)(?:-|$)/i.test(id) && ULTRA_MODEL_RE.test(id)) return true;
+  }
+  return false;
+}
+
+function hasTieredUltraModel(rawModels: unknown): boolean {
+  return Object.keys(asRecord(asRecord(rawModels).models))
+    .some((id) => ULTRA_MODEL_RE.test(id) && /-tiered(?:-|$)/i.test(id));
+}
+
+/** Non-null reason when the account is confirmed non-Ultra or lacks Ultra models. */
+export function evaluateAntigravityPlan(tier: AntigravityTierInfo, rawModels?: unknown): string | null {
+  if (tier.isUltra === false) {
+    return `Ultra subscription required (${tier.label ?? "non-Ultra"})`;
+  }
+  if (rawModels !== undefined) {
+    const anyListed = Object.keys(asRecord(asRecord(rawModels).models)).length > 0;
+    if (anyListed && !hasUsableUltraModel(rawModels) && (tier.isUltra !== true || hasTieredUltraModel(rawModels))) {
+      return tier.label ? `Ultra models unavailable (${tier.label})` : "Ultra subscription required";
+    }
+  }
+  return null;
+}
+
 /**
  * Ids in the list that are not chat models: editor helpers (`chat_*`, `tab_*`), retired or
  * tier-gated entries and image or search backends. The agent must not offer them to a client.
@@ -264,24 +341,30 @@ export function createAntigravityAdapter(
     return email.trim();
   }
 
-  /** Project of the account: `loadCodeAssist` first, then `onboardUser` for a new user. */
-  async function projectOf(accessToken: string): Promise<string> {
-    const headers = cloudCodeHeaders(accessToken);
-    const loadResponse = await fetchImpl(cloudCodeUrl("loadCodeAssist"), {
+  async function loadCodeAssist(accessToken: string): Promise<Record<string, unknown>> {
+    const response = await fetchImpl(cloudCodeUrl("loadCodeAssist"), {
       method: "POST",
-      headers,
+      headers: cloudCodeHeaders(accessToken),
       body: JSON.stringify({ metadata: CLIENT_METADATA }),
+      redirect: "error",
       signal: AbortSignal.timeout(15_000),
     });
-    if (!loadResponse.ok) throw await readProviderError(loadResponse);
-    const loaded = asRecord(await loadResponse.json());
+    if (!response.ok) throw await readProviderError(response);
+    return asRecord(await response.json());
+  }
+
+  /** Project and subscription tier of the account: `loadCodeAssist` first, then `onboardUser` for a new user. */
+  async function accountAssistOf(accessToken: string): Promise<{ projectId: string; tier: AntigravityTierInfo }> {
+    const headers = cloudCodeHeaders(accessToken);
+    const loaded = await loadCodeAssist(accessToken);
+    const tier = parseAntigravityTier(loaded);
     const known = projectIdOf(loaded.cloudaicompanionProject);
-    if (known) return known;
+    if (known) return { projectId: known, tier };
 
     let tierId = DEFAULT_TIER_ID;
     if (Array.isArray(loaded.allowedTiers)) {
-      for (const tier of loaded.allowedTiers) {
-        const row = asRecord(tier);
+      for (const item of loaded.allowedTiers) {
+        const row = asRecord(item);
         if (row.isDefault === true && typeof row.id === "string" && row.id.trim()) {
           tierId = row.id.trim();
           break;
@@ -298,8 +381,10 @@ export function createAntigravityAdapter(
       if (!response.ok) throw await readProviderError(response);
       const onboarded = asRecord(await response.json());
       if (onboarded.done === true) {
-        const project = projectIdOf(asRecord(onboarded.response).cloudaicompanionProject);
-        if (project) return project;
+        const responseBody = asRecord(onboarded.response);
+        const project = projectIdOf(responseBody.cloudaicompanionProject);
+        const onboardTier = parseAntigravityTier(responseBody);
+        if (project) return { projectId: project, tier: onboardTier.label ? onboardTier : tier };
         break;
       }
       if (attempt < onboardAttempts) await sleep(onboardDelayMs);
@@ -348,14 +433,16 @@ export function createAntigravityAdapter(
       const accessToken = String(body.access_token ?? "");
       if (!accessToken) throw new Error("antigravity token response has no access token");
       const email = await emailOf(accessToken);
-      const projectId = await projectOf(accessToken);
+      const { projectId, tier } = await accountAssistOf(accessToken);
+      const planError = tier.isUltra === null ? undefined : evaluateAntigravityPlan(tier);
       return {
         accessToken,
         refreshToken: String(body.refresh_token ?? ""),
         expiresAt: expiresAtOf(body, Date.now()),
         providerAccountId: email,
-        accountLabel: email,
+        accountLabel: antigravityAccountLabel(email, tier.label),
         projectId,
+        planError,
       };
     },
     async refresh(refreshToken: string): Promise<ExchangedSubscriptionTokens> {
@@ -369,16 +456,26 @@ export function createAntigravityAdapter(
         accountLabel: "",
       };
     },
-    async fetchUsage(accessToken: string, _providerAccountId: string, usageOptions: FetchUsageOptions = {}) {
-      // The quota summary has the groups with weekly and 5h limits. When it fails or has no group,
-      // the per-model fractions of `fetchAvailableModels` still give a usable reading. The two calls
-      // are independent, so they run together to keep a Check now inside the retry deadline.
-      const [models, summary] = await Promise.all([
+    async fetchUsage(accessToken: string, providerAccountId: string, usageOptions: FetchUsageOptions = {}) {
+      // The quota summary has the groups with weekly and 5h limits; `loadCodeAssist` reports the
+      // current subscription tier. When the summary fails or has no group, the per-model fractions
+      // of `fetchAvailableModels` still give a usable reading. The three calls run together to keep
+      // a Check now inside the retry deadline.
+      const [models, summary, assist] = await Promise.all([
         availableModels(accessToken, usageOptions.projectId),
         quotaSummary(accessToken, usageOptions.projectId).catch(() => null),
+        loadCodeAssist(accessToken).catch(() => null),
       ]);
       const grouped = summary ? parseAntigravityQuotaSummary(summary, models) : [];
-      return { windows: grouped.length > 0 ? grouped : parseAntigravityUsage(models), resetCredits: null };
+      const tier = assist ? parseAntigravityTier(assist) : { label: null, isUltra: null };
+      const planError = evaluateAntigravityPlan(tier, models);
+      const planLabel = tier.label ?? (planError === null && hasUsableUltraModel(models) ? "Ultra" : null);
+      return {
+        windows: grouped.length > 0 ? grouped : parseAntigravityUsage(models),
+        resetCredits: null,
+        accountLabel: providerAccountId && planLabel ? antigravityAccountLabel(providerAccountId, planLabel) : undefined,
+        planError,
+      };
     },
     async fetchModels(accessToken: string, _providerAccountId: string, modelOptions: FetchModelsOptions = {}) {
       return parseAntigravityModels(await availableModels(accessToken, modelOptions.projectId));

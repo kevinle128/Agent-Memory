@@ -142,8 +142,10 @@ describe('accountState', () => {
     expect(accountState(a, base)).toBe('active');
   });
 
-  it('is auth_error for a rejected login', () => {
+  it('is auth_error for a rejected login and plan_error for a missing plan', () => {
     expect(accountState(account({ status: 'auth_error' }), base)).toBe('auth_error');
+    expect(accountState(account({ status: 'plan_error' }), base)).toBe('plan_error');
+    expect(accountState(account({ status: 'plan_error', enabled: false }), base)).toBe('disabled');
   });
 
   it('is disabled when the admin switch is off or the status is disabled', () => {

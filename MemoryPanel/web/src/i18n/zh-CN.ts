@@ -2016,6 +2016,7 @@ export const zhCN = {
   'subscriptionPool.status.exhausted.note': '预计 {{time}} 自动恢复',
   'subscriptionPool.status.exhausted.noteNoTime': '等待下一次用量检查',
   'subscriptionPool.status.auth_error': '需要重新登录',
+  'subscriptionPool.status.plan_error': '套餐异常',
   'subscriptionPool.status.disabled': '已停用',
   'subscriptionPool.usageFailing': '用量检查失败',
   'subscriptionPool.usageFailing.tip': '用量接口已连续失败 {{count}} 次。账号池仍根据代理观察到的数据工作。',

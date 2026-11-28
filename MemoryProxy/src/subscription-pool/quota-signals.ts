@@ -191,3 +191,20 @@ export function parseAntigravityLimitBody(bodyText: string, headers: Headers, no
 export function isAntigravityCapacityError(status: number, bodyText: string): boolean {
   return status === 503 && /UNAVAILABLE|No capacity available/i.test(bodyText);
 }
+
+/**
+ * True when Cloud Code answers 404 NOT_FOUND ("Requested entity was not found.") on a model call.
+ * A downgraded AntiGravity account answers this way on Ultra models; uncatalogued helper ids can
+ * too, so the caller checks the account plan in Core before moving the session.
+ */
+export function isAntigravityModelNotFoundError(status: number, bodyText: string): boolean {
+  if (status !== 404) return false;
+  try {
+    const error = (JSON.parse(bodyText) as { error?: { status?: unknown; message?: unknown } })?.error;
+    if (error?.status === "NOT_FOUND") return true;
+    if (typeof error?.message === "string" && /not found/i.test(error.message)) return true;
+  } catch {
+    // Plain-text fallback when the upstream body is not JSON.
+  }
+  return /NOT_FOUND|Requested entity was not found/i.test(bodyText);
+}

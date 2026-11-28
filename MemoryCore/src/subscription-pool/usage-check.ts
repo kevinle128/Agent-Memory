@@ -48,10 +48,14 @@ export async function checkAccountUsage(
 
   let reading: SubscriptionQuotaWindow[] | null = null;
   let resetCredits: SubscriptionResetCredits | null = null;
+  let accountLabel: string | undefined;
+  let planError: string | null | undefined;
   try {
     const usage = await adapter.fetchUsage(before.access_token, before.provider_account_id, { projectId: before.project_id });
     reading = withNextCheck(usage.windows, thresholdPct, now);
     resetCredits = usage.resetCredits;
+    accountLabel = usage.accountLabel;
+    planError = usage.planError;
   } catch {
     reading = null;
   }
@@ -62,7 +66,10 @@ export async function checkAccountUsage(
     const exhausted = current.status === "exhausted" || current.exhausted_until !== null;
 
     if (reading === null) {
-      const patch: UpdateSubscriptionAccountPatch = { usage_fail_count: current.usage_fail_count + 1, last_error: USAGE_CHECK_FAILED };
+      const patch: UpdateSubscriptionAccountPatch = {
+        usage_fail_count: current.usage_fail_count + 1,
+        last_error: current.status === "plan_error" && current.last_error ? undefined : USAGE_CHECK_FAILED,
+      };
       if (exhausted && (current.exhausted_until === null || current.exhausted_until <= now)) {
         patch.exhausted_until = null;
         if (current.status === "exhausted") patch.status = "active";
@@ -83,20 +90,29 @@ export async function checkAccountUsage(
         && (window.resets_at === null || window.resets_at > now))
     ));
     const patch: UpdateSubscriptionAccountPatch = {
+      account_label: accountLabel || undefined,
       usage: { windows },
       // A check without a credit reading clears the old one, so the Panel never shows a stale count.
       reset_credits: resetCredits,
       usage_updated_at: now,
       usage_fail_count: 0,
-      last_error: current.last_error === USAGE_CHECK_FAILED ? null : undefined,
+      last_error: current.last_error === USAGE_CHECK_FAILED || current.status === "plan_error" ? null : undefined,
     };
+    if (planError) {
+      if (current.status !== "disabled" && current.status !== "auth_error") {
+        patch.status = "plan_error";
+        patch.exhausted_until = null;
+        patch.last_error = planError;
+      }
+      return { account: await store.updateSubscriptionAccount(accountId, patch), failed: false };
+    }
     const quotaExhaustedUntil = sharedQuotaExhaustedUntil(windows, now);
-    if (quotaExhaustedUntil !== null && (current.status === "active" || current.status === "exhausted")) {
+    if (quotaExhaustedUntil !== null && (current.status === "active" || current.status === "exhausted" || current.status === "plan_error")) {
       patch.status = "exhausted";
       patch.exhausted_until = quotaExhaustedUntil;
-    } else if (exhausted) {
+    } else if (exhausted || current.status === "plan_error") {
       patch.exhausted_until = null;
-      if (current.status === "exhausted") patch.status = "active";
+      if (current.status === "exhausted" || current.status === "plan_error") patch.status = "active";
     }
     return { account: await store.updateSubscriptionAccount(accountId, patch), failed: false };
   });

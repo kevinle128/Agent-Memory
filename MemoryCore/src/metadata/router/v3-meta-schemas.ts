@@ -491,7 +491,7 @@ export const subscriptionPoolSettingsSchema = z.object({ threshold_pct: subscrip
 export const subscriptionPoolAccountUpdateSchema = z.object({
   account_id: z.string().min(1), expected_version: z.number().int().nonnegative().optional(),
   display_name: z.string().min(1).optional(), enabled: z.boolean().optional(),
-  status: z.enum(["active", "exhausted", "auth_error", "disabled"]).optional(),
+  status: z.enum(["active", "exhausted", "auth_error", "plan_error", "disabled"]).optional(),
   threshold_pct: subscriptionThresholdPct.optional(),
 });
 export const subscriptionPoolAccountDeleteSchema = z.object({ account_id: z.string().min(1) });

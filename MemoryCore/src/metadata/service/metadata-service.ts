@@ -2871,6 +2871,7 @@ export class MetadataService {
         refresh_token: exchanged.refreshToken,
         token_expires_at: exchanged.expiresAt,
         project_id: exchanged.projectId ?? null,
+        plan_error: exchanged.planError,
         // A new account starts with the requested threshold, else the start value. A re-login keeps the stored one.
         threshold_pct: input.threshold_pct ?? await this.defaultSubscriptionThreshold(),
       });
@@ -2892,9 +2893,36 @@ export class MetadataService {
   }
 
   /** Usage check used by the route and the scheduler. Tells the scheduler the result. */
-  async runSubscriptionUsageCheck(accountId: string, options: { refreshModels?: boolean } = {}): Promise<UsageCheckResult> {
-    const current = await this.requireSubscriptionAccount(accountId);
+  async runSubscriptionUsageCheck(
+    accountId: string,
+    options: { refreshModels?: boolean; refreshToken?: boolean } = {},
+  ): Promise<UsageCheckResult> {
+    let current = await this.requireSubscriptionAccount(accountId);
+    if (current.status === "auth_error") {
+      return { account: current, failed: true };
+    }
     const adapter = this.subscriptionAdapter(current.provider);
+    // Refresh an expired or expiring token first so manual Check now can recover accounts
+    // (such as plan_error rows) whose scheduled refreshes were paused.
+    if (
+      options.refreshToken !== false
+      && current.refresh_token
+      && current.token_expires_at !== null
+      && current.token_expires_at - Date.now() <= 60_000
+    ) {
+      const refreshed = await this.runSubscriptionTokenRefresh(accountId, { ifExpiresWithinMs: 60_000 });
+      current = refreshed.account;
+      if (refreshed.failed && current.status === "auth_error") {
+        return { account: current, failed: true };
+      }
+    }
+    const now = Date.now();
+    const expired = current.token_expires_at !== null && current.token_expires_at <= now;
+    const needsExhaustedRelease = (current.status === "exhausted" || current.exhausted_until !== null)
+      && (current.exhausted_until === null || current.exhausted_until <= now);
+    if (expired && !needsExhaustedRelease) {
+      return { account: current, failed: true };
+    }
     const result = await checkAccountUsage(this.store, accountId, adapter, current.threshold_pct);
     const failCount = result.account.usage_fail_count;
     await this.notifySubscriptionAccount({
@@ -3769,10 +3797,12 @@ export class MetadataService {
     const accounts: SubscriptionAccountEntity[] = [];
     for (const account of stored) {
       let usable = account;
-      try {
-        usable = (await this.runSubscriptionTokenRefresh(account.account_id, { ifExpiresWithinMs: 60_000 })).account;
-      } catch {
-        // The fetch below reports a refused token.
+      if (account.refresh_fail_count === 0) {
+        try {
+          usable = (await this.runSubscriptionTokenRefresh(account.account_id, { ifExpiresWithinMs: 60_000 })).account;
+        } catch {
+          // The fetch below reports a refused token.
+        }
       }
       accounts.push(usable);
     }

@@ -170,6 +170,29 @@ export function runSubscriptionAccountContract(
       expect(again.account.exhausted_until).toBe(1_800_000_000_000);
     });
 
+    it("stores plan_error on a disabled account when re-logged in with a non-Ultra plan and clears it to disabled once valid", async () => {
+      const first = (await store.upsertSubscriptionAccountByProviderId(accountInput(groupId))).account;
+      await store.updateSubscriptionAccount(first.account_id, { enabled: false, status: "disabled" });
+
+      const invalid = await store.upsertSubscriptionAccountByProviderId(
+        accountInput(groupId, { plan_error: "Ultra subscription required (Free)" }),
+      );
+      expect(invalid.account).toMatchObject({
+        enabled: false,
+        status: "plan_error",
+        last_error: "Ultra subscription required (Free)",
+      });
+
+      const valid = await store.upsertSubscriptionAccountByProviderId(
+        accountInput(groupId, { plan_error: null }),
+      );
+      expect(valid.account).toMatchObject({
+        enabled: false,
+        status: "disabled",
+        last_error: null,
+      });
+    });
+
     it("rejects a new account whose display name is used in the group", async () => {
       await store.upsertSubscriptionAccountByProviderId(accountInput(groupId));
       await expectConflict(

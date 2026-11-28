@@ -166,6 +166,7 @@ export function earliestReset(
 export type AccountSwitchRejection =
   | { reason: "account_disabled" }
   | { reason: "account_needs_login" }
+  | { reason: "account_plan_invalid" }
   | { reason: "account_exhausted"; resets_at: number | null }
   | { reason: "account_above_threshold"; usage_pct: number; threshold_pct: number; resets_at: number | null };
 
@@ -185,6 +186,7 @@ export function accountSwitchRejection(
   const thresholdPct = accountThreshold(account, fallbackThresholdPct);
   if (!account.enabled || account.status === "disabled") return { reason: "account_disabled" };
   if (account.status === "auth_error") return { reason: "account_needs_login" };
+  if (account.status === "plan_error") return { reason: "account_plan_invalid" };
   if (isExhausted(account, now)) {
     return { reason: "account_exhausted", resets_at: account.exhausted_until ?? earliestReset([account], now, thresholdPct, "") };
   }

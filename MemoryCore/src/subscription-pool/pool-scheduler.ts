@@ -9,7 +9,7 @@ import { planAccountTimers, REFRESH_LEAD_MS } from "./timer-plan.js";
 /** The part of `MetadataService` the scheduler uses. Routes and timers share these methods. */
 export interface SubscriptionPoolSchedulerTarget {
   listSubscriptionAccountEntities(): Promise<SubscriptionAccountEntity[]>;
-  runSubscriptionUsageCheck(accountId: string, options?: { refreshModels?: boolean }): Promise<unknown>;
+  runSubscriptionUsageCheck(accountId: string, options?: { refreshModels?: boolean; refreshToken?: boolean }): Promise<unknown>;
   /** Reads the model list of each given pool group once. Called after a pass that checked its accounts. */
   refreshPoolModelsOfGroups?(groupIds: Iterable<string>): Promise<void>;
   runSubscriptionTokenRefresh(accountId: string, options?: RefreshOptions): Promise<unknown>;
@@ -80,7 +80,7 @@ export class SubscriptionPoolScheduler {
   syncAccount(instanceId: string, change: SubscriptionAccountChange): void {
     if (this.stopped) return;
     const { accountId, account } = change;
-    if (!account || !account.enabled || account.status === "disabled" || account.status === "auth_error") {
+    if (!account || !account.enabled || account.status === "disabled" || account.status === "auth_error" || account.status === "plan_error") {
       this.queue.removeAccount(instanceId, accountId);
       return;
     }
@@ -143,6 +143,7 @@ export class SubscriptionPoolScheduler {
     const active = accounts.filter((account) => account.enabled
       && account.status !== "disabled"
       && account.status !== "auth_error"
+      && account.status !== "plan_error"
       && SUPPORTED_SUBSCRIPTION_PROVIDERS.includes(account.provider));
     for (const [index, account] of active.entries()) {
       if (this.stopped) return;
@@ -151,7 +152,7 @@ export class SubscriptionPoolScheduler {
       // A refresh that failed before a restart lost its retry timer, so it runs again now.
       const refreshOptions = armFromSnapshot && account.refresh_fail_count > 0 ? {} : { ifExpiresWithinMs: refreshWithinMs };
       await this.guard(instanceId, account.account_id, "refresh", () => svc.runSubscriptionTokenRefresh(account.account_id, refreshOptions));
-      await this.guard(instanceId, account.account_id, "usage", () => svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false }));
+      await this.guard(instanceId, account.account_id, "usage", () => svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false, refreshToken: false }));
     }
     // One model read per pool for the whole pass, not one per account.
     if (this.stopped || !svc.refreshPoolModelsOfGroups) return;

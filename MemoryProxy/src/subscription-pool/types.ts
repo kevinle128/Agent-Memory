@@ -38,7 +38,7 @@ export function windowAppliesToModel(window: Pick<PoolQuotaWindow, "model_scope"
   return !window.model_scope || window.model_scope === model;
 }
 
-export type PoolAccountStatus = "active" | "exhausted" | "auth_error" | "disabled";
+export type PoolAccountStatus = "active" | "exhausted" | "auth_error" | "plan_error" | "disabled";
 
 export interface PoolAccount {
   account_id: string;

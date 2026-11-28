@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SubscriptionQuotaWindow } from "../metadata/types.js";
+import { SubscriptionProviderError } from "./providers/types.js";
+import { RELOGIN_NEEDED } from "./token-refresher.js";
 import { checkAccountUsage, USAGE_CHECK_FAILED } from "./usage-check.js";
-import { createPoolFixture, fakeAdapter, usageReading, type PoolFixture } from "./test-support.js";
+import { createPoolFixture, fakeAdapter, tokens, usageReading, type PoolFixture } from "./test-support.js";
 
 const MIN = 60 * 1000;
 const NOW = 1_800_000_000_000;
@@ -167,6 +169,40 @@ describe("checkAccountUsage", () => {
     expect(result.account).toMatchObject({ status, exhausted_until: null });
   });
 
+  it("marks an account plan_error when its plan is downgraded and restores active once renewed", async () => {
+    const account = await fx.addAccount();
+    await fx.store.updateSubscriptionAccount(account.account_id, { status: "exhausted", exhausted_until: NOW + 30 * MIN, account_label: "acct-1@example.com (Ultra)" });
+
+    const downgraded = await checkAccountUsage(
+      fx.store,
+      account.account_id,
+      fakeAdapter({ fetchUsage: async () => ({ windows: [win(20, NOW + MIN)], resetCredits: null, accountLabel: "acct-1@example.com (Free)", planError: "Ultra subscription required (Free)" }) }),
+      95,
+      NOW,
+    );
+    expect(downgraded.failed).toBe(false);
+    expect(downgraded.account).toMatchObject({
+      status: "plan_error",
+      exhausted_until: null,
+      account_label: "acct-1@example.com (Free)",
+      last_error: "Ultra subscription required (Free)",
+    });
+
+    const renewed = await checkAccountUsage(
+      fx.store,
+      account.account_id,
+      fakeAdapter({ fetchUsage: async () => ({ windows: [win(20, NOW + MIN)], resetCredits: null, accountLabel: "acct-1@example.com (Ultra)", planError: null }) }),
+      95,
+      NOW + MIN,
+    );
+    expect(renewed.account).toMatchObject({
+      status: "active",
+      exhausted_until: null,
+      account_label: "acct-1@example.com (Ultra)",
+      last_error: null,
+    });
+  });
+
   it("counts a failure and keeps the stored usage", async () => {
     const account = await fx.addAccount();
     await fx.store.updateSubscriptionAccount(account.account_id, { usage: { windows: [win(50, NOW + MIN)] } });
@@ -262,5 +298,144 @@ describe("checkAccountUsage", () => {
     // A window at or above the threshold with no known reset gets a next check; a window below it is stored as read.
     expect(lowResult.account.usage.windows[0]!.resets_at).not.toBeNull();
     expect(highResult.account.usage.windows[0]!.resets_at).toBeNull();
+  });
+
+  it("preserves the stored plan_error reason when a usage check fails", async () => {
+    const account = await fx.addAccount();
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "plan_error",
+      last_error: "Ultra subscription required (Free)",
+    });
+    const adapter = fakeAdapter({ fetchUsage: async () => { throw new Error("401"); } });
+
+    const result = await checkAccountUsage(fx.store, account.account_id, adapter, 95, NOW);
+
+    expect(result.failed).toBe(true);
+    expect(result.account).toMatchObject({
+      status: "plan_error",
+      usage_fail_count: 1,
+      last_error: "Ultra subscription required (Free)",
+    });
+  });
+
+  it("refreshes an expired token before checking usage so a plan_error account can recover", async () => {
+    const account = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "plan_error",
+      last_error: "Ultra subscription required (Free)",
+    });
+    const adapter = fakeAdapter({
+      refresh: async () => tokens({ accessToken: "fresh-access", refreshToken: "fresh-refresh" }),
+      fetchUsage: async (accessToken) => {
+        if (accessToken !== "fresh-access") throw new SubscriptionProviderError("unauthorized", false, 401);
+        return { windows: [win(10, NOW + MIN)], resetCredits: null, planError: null };
+      },
+    });
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+
+    const result = await fx.svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false });
+
+    expect(adapter.refresh).toHaveBeenCalledWith("refresh-1");
+    expect(adapter.fetchUsage).toHaveBeenCalledWith("fresh-access", "acct-1", { projectId: null });
+    expect(result.failed).toBe(false);
+    expect(result.account).toMatchObject({ status: "active", last_error: null });
+  });
+
+  it("stops before fetchUsage when pre-check refresh permanently fails into auth_error", async () => {
+    const account = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "plan_error",
+      last_error: "Ultra subscription required (Free)",
+    });
+    const adapter = fakeAdapter({
+      refresh: async () => { throw new SubscriptionProviderError("invalid_grant", true, 400); },
+    });
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+
+    const result = await fx.svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false });
+
+    expect(adapter.fetchUsage).not.toHaveBeenCalled();
+    expect(result.failed).toBe(true);
+    expect(result.account).toMatchObject({ status: "auth_error", last_error: RELOGIN_NEEDED });
+  });
+
+  it("preserves plan_error and skips fetchUsage when pre-check refresh transiently fails on an expired token", async () => {
+    const account = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "plan_error",
+      last_error: "Ultra subscription required (Free)",
+    });
+    const adapter = fakeAdapter({
+      refresh: async () => { throw new SubscriptionProviderError("service unavailable", false, 503); },
+    });
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+
+    const result = await fx.svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false });
+
+    expect(adapter.refresh).toHaveBeenCalledTimes(1);
+    expect(adapter.fetchUsage).not.toHaveBeenCalled();
+    expect(result.failed).toBe(true);
+    expect(result.account).toMatchObject({
+      status: "plan_error",
+      usage_fail_count: 0,
+      last_error: "Ultra subscription required (Free)",
+    });
+  });
+
+  it("skips pre-check refresh and fetchUsage when the account is already in auth_error", async () => {
+    const account = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "auth_error",
+      last_error: RELOGIN_NEEDED,
+    });
+    const adapter = fakeAdapter();
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+
+    const result = await fx.svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false });
+
+    expect(adapter.refresh).not.toHaveBeenCalled();
+    expect(adapter.fetchUsage).not.toHaveBeenCalled();
+    expect(result.failed).toBe(true);
+    expect(result.account).toMatchObject({ status: "auth_error", last_error: RELOGIN_NEEDED });
+  });
+
+  it("skips fetchUsage on an expired token when refreshToken is false unless exhaustion is due for release", async () => {
+    const active = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    const futureExhausted = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    const dueExhausted = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    await fx.store.updateSubscriptionAccount(futureExhausted.account_id, {
+      status: "exhausted",
+      exhausted_until: Date.now() + 10 * MIN,
+      last_error: "refresh failed",
+    });
+    await fx.store.updateSubscriptionAccount(dueExhausted.account_id, {
+      status: "exhausted",
+      exhausted_until: Date.now() - MIN,
+    });
+    const adapter = fakeAdapter({
+      fetchUsage: async () => { throw new SubscriptionProviderError("unauthorized", false, 401); },
+    });
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+
+    const activeResult = await fx.svc.runSubscriptionUsageCheck(active.account_id, { refreshModels: false, refreshToken: false });
+    const futureResult = await fx.svc.runSubscriptionUsageCheck(futureExhausted.account_id, { refreshModels: false, refreshToken: false });
+    const dueResult = await fx.svc.runSubscriptionUsageCheck(dueExhausted.account_id, { refreshModels: false, refreshToken: false });
+
+    expect(adapter.refresh).not.toHaveBeenCalled();
+    expect(adapter.fetchUsage).toHaveBeenCalledTimes(1);
+    expect(activeResult.failed).toBe(true);
+    expect(activeResult.account.usage_fail_count).toBe(0);
+    expect(futureResult.failed).toBe(true);
+    expect(futureResult.account).toMatchObject({
+      status: "exhausted",
+      usage_fail_count: 0,
+      last_error: "refresh failed",
+    });
+    expect(dueResult.failed).toBe(true);
+    expect(dueResult.account).toMatchObject({
+      status: "active",
+      exhausted_until: null,
+      usage_fail_count: 1,
+    });
   });
 });

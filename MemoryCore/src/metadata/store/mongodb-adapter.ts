@@ -2659,10 +2659,15 @@ export class MongoMetadataStore implements IMetadataStore {
       const now = nowIso();
 
       if (existing) {
-        // New tokens fix an auth error. The admin switch decides which state follows.
-        const nextStatus = existing.status === "auth_error"
-          ? (existing.enabled === false ? "disabled" : "active")
-          : String(existing.status);
+        // New tokens fix an auth error; a known plan result sets or clears plan_error.
+        const enabled = existing.enabled !== false;
+        const currentStatus = String(existing.status);
+        const nextStatus = input.plan_error
+          ? "plan_error"
+          : currentStatus === "auth_error" || (input.plan_error === null && currentStatus === "plan_error")
+            ? (enabled ? "active" : "disabled")
+            : currentStatus;
+        const nextError = input.plan_error ?? (currentStatus === "plan_error" && input.plan_error === undefined ? existing.last_error ?? null : null);
         const result = await col.updateOne(
           { account_id: existing.account_id, version: existing.version } as Document,
           {
@@ -2675,7 +2680,7 @@ export class MongoMetadataStore implements IMetadataStore {
               project_id: input.project_id ?? (existing.project_id == null ? null : String(existing.project_id)),
               status: nextStatus,
               refresh_fail_count: 0,
-              last_error: null,
+              last_error: nextError,
               updated_at: now,
             },
             $inc: { version: 1 },
@@ -2698,7 +2703,7 @@ export class MongoMetadataStore implements IMetadataStore {
         display_name: input.display_name,
         account_label: input.account_label ?? "",
         enabled: true,
-        status: "active",
+        status: input.plan_error ? "plan_error" : "active",
         access_token: input.access_token,
         refresh_token: input.refresh_token,
         token_expires_at: input.token_expires_at,
@@ -2710,7 +2715,7 @@ export class MongoMetadataStore implements IMetadataStore {
         exhausted_until: null,
         usage_fail_count: 0,
         refresh_fail_count: 0,
-        last_error: null,
+        last_error: input.plan_error ?? null,
         active_sessions: 0,
         // Always written, so the start-up copy of the global value never touches a new account.
         threshold_pct: input.threshold_pct ?? DEFAULT_ACCOUNT_THRESHOLD_PCT,

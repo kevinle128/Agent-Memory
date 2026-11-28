@@ -80,7 +80,9 @@ export async function refreshAccountTokens(
       const saved = await store.updateSubscriptionAccount(accountId, {
         status: permanent ? "auth_error" : undefined,
         refresh_fail_count: permanent ? undefined : failCount,
-        last_error: permanent ? RELOGIN_NEEDED : REFRESH_FAILED,
+        last_error: permanent
+          ? RELOGIN_NEEDED
+          : (current.status === "plan_error" && current.last_error && current.last_error !== REFRESH_FAILED ? undefined : REFRESH_FAILED),
       });
       return { account: saved, refreshed: false, failed: true, retryAt: permanent ? null : Date.now() + nextRetryDelayMs(failCount) };
     }

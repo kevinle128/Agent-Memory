@@ -395,6 +395,7 @@ describe("subscription bridge", () => {
     it.each([
       [{ enabled: false }, "account_disabled"],
       [{ status: "auth_error" as const }, "account_needs_login"],
+      [{ status: "plan_error" as const }, "account_plan_invalid"],
     ])("refuses an account that the pool cannot use (%o)", async (partial, reason) => {
       poolAccounts = [ALICE, acct("g", "gina@example.test", partial)];
       await seedSession("codex", "s1");

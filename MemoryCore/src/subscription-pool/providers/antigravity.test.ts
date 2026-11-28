@@ -5,8 +5,10 @@ import {
   ANTIGRAVITY_OAUTH_NOT_CONFIGURED,
   AntigravityOAuthNotConfiguredError,
   createAntigravityAdapter,
+  evaluateAntigravityPlan,
   parseAntigravityModels,
   parseAntigravityQuotaSummary,
+  parseAntigravityTier,
   parseAntigravityUsage,
 } from "./antigravity.js";
 import { SubscriptionProviderError, type SubscriptionFetch } from "./types.js";
@@ -48,7 +50,7 @@ describe("antigravity Cloud Code host", () => {
     const calls: Captured[] = [];
     const adapter = createAntigravityAdapter(scripted([
       TOKEN_REPLY, USERINFO_REPLY, { body: {} }, { body: { done: true, response: { cloudaicompanionProject: "p" } } },
-      { body: MODELS_FIXTURE }, { body: QUOTA_SUMMARY_FIXTURE }, { body: MODELS_FIXTURE },
+      { body: MODELS_FIXTURE }, { body: QUOTA_SUMMARY_FIXTURE }, { body: { paidTier: { id: "g1-ultra-tier" } } }, { body: MODELS_FIXTURE },
     ], calls));
     await adapter.exchangeCode({ code: "c", codeVerifier: "", redirectUri: "", state: "s" });
     await adapter.fetchUsage("a", "x", { projectId: "p" });
@@ -58,6 +60,7 @@ describe("antigravity Cloud Code host", () => {
       "https://daily-cloudcode-pa.googleapis.com/v1internal:onboardUser",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary",
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
       "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     ]);
   });
@@ -126,8 +129,9 @@ describe("antigravity exchangeCode", () => {
       accessToken: "access-1",
       refreshToken: "refresh-1",
       providerAccountId: "pool-1@example.com",
-      accountLabel: "pool-1@example.com",
+      accountLabel: "pool-1@example.com (Free)",
       projectId: "aicode-consumers",
+      planError: "Ultra subscription required (Free)",
     });
     expect(result.expiresAt).toBeGreaterThan(Date.now());
 
@@ -270,14 +274,22 @@ describe("parseAntigravityModels", () => {
 });
 
 describe("antigravity fetchUsage and fetchModels", () => {
-  it("reads the quota groups with the project and returns no reset credits", async () => {
+  it("reads the quota groups, tier label and Ultra eligibility with the project", async () => {
     const calls: Captured[] = [];
-    const adapter = createAntigravityAdapter(scripted([{ body: MODELS_FIXTURE }, { body: QUOTA_SUMMARY_FIXTURE }, { body: MODELS_FIXTURE }], calls));
+    const adapter = createAntigravityAdapter(scripted([
+      { body: MODELS_FIXTURE },
+      { body: QUOTA_SUMMARY_FIXTURE },
+      { body: { cloudaicompanionProject: "proj-1", paidTier: { id: "g1-ultra-tier", name: "Google AI Ultra" } } },
+      { body: MODELS_FIXTURE },
+    ], calls));
     const usage = await adapter.fetchUsage("access-1", "pool-1@example.com", { projectId: "proj-1" });
     expect(usage.resetCredits).toBeNull();
+    expect(usage.accountLabel).toBe("pool-1@example.com (Ultra)");
+    expect(usage.planError).toBeNull();
     expect(usage.windows.map((w) => `${w.model_scope}:${w.name}`)).toEqual(["gemini:weekly", "gemini:5h", "3p:weekly", "3p:5h"]);
     expect(calls[0]!.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels");
     expect(calls[1]!.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary");
+    expect(calls[2]!.url).toBe("https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist");
     expect(JSON.parse(String(calls[1]!.init!.body))).toEqual({ project: "proj-1" });
     expect((calls[0]!.init!.headers as Record<string, string>).authorization).toBe("Bearer access-1");
 
@@ -285,16 +297,68 @@ describe("antigravity fetchUsage and fetchModels", () => {
     expect(models.map((m) => m.id)).toContain("claude-opus-5-5-high");
   });
 
-  it("falls back to the per-model fractions when the quota summary fails", async () => {
-    const adapter = createAntigravityAdapter(scripted([{ body: MODELS_FIXTURE }, { status: 500, body: { error: { message: "boom" } } }]));
+  it("flags an account that downgraded from Ultra in fetchUsage", async () => {
+    const downgradedModels = { models: { "claude-sonnet-4-6": { quotaInfo: { remainingFraction: 0.8 } }, "gemini-4-hydrogen-tiered-high": { quotaInfo: {} } } };
+    const adapter = createAntigravityAdapter(scripted([
+      { body: downgradedModels },
+      { body: QUOTA_SUMMARY_FIXTURE },
+      { body: { currentTier: { id: "free-tier", name: "Free" } } },
+    ]));
+    const usage = await adapter.fetchUsage("access-1", "pool-1@example.com", { projectId: "proj-1" });
+    expect(usage.accountLabel).toBe("pool-1@example.com (Free)");
+    expect(usage.planError).toBe("Ultra subscription required (Free)");
+  });
+
+  it("falls back to the per-model fractions when the quota summary and loadCodeAssist fail", async () => {
+    const adapter = createAntigravityAdapter(scripted([
+      { body: MODELS_FIXTURE },
+      { status: 500, body: { error: { message: "boom" } } },
+      { status: 503, body: { error: { message: "down" } } },
+    ]));
     const usage = await adapter.fetchUsage("access-1", "pool-1@example.com", { projectId: "proj-1" });
     expect(usage.windows).toHaveLength(3);
     expect(usage.windows.every((w) => w.name === "quota")).toBe(true);
+    expect(usage.planError).toBeNull();
+    expect(usage.accountLabel).toBe("pool-1@example.com (Ultra)");
   });
 
   it("throws a provider error with the status when Google refuses", async () => {
     const adapter = createAntigravityAdapter(scripted([{ status: 401, body: { error: { message: "expired" } } }]));
     await expect(adapter.fetchModels("bad", "x")).rejects.toMatchObject({ status: 401, permanent: true });
+  });
+});
+
+describe("parseAntigravityTier and evaluateAntigravityPlan", () => {
+  it("prefers paidTier and g1Tier over currentTier and distinguishes Ultra from lower plans", () => {
+    expect(parseAntigravityTier({ paidTier: { id: "g1-ultra-tier" }, currentTier: { id: "standard-tier" } }))
+      .toEqual({ label: "Ultra", isUltra: true });
+    expect(parseAntigravityTier({ g1Tier: "G1_ULTRA_TIER", currentTier: { id: "standard-tier" } }))
+      .toEqual({ label: "Ultra", isUltra: true });
+    expect(parseAntigravityTier({ paidTier: { id: "g1-ultra-lite-tier" } }))
+      .toEqual({ label: "Ultra Lite", isUltra: false });
+    expect(parseAntigravityTier({ paidTier: { id: "g1-pro-tier", name: "Google AI Pro" } }))
+      .toEqual({ label: "Pro", isUltra: false });
+    expect(parseAntigravityTier({ currentTier: { id: "free-tier" } }))
+      .toEqual({ label: "Free", isUltra: false });
+    expect(parseAntigravityTier({
+      paidTier: { id: "USER_TIER_UNSPECIFIED", name: "Unspecified" },
+      g1Tier: { id: "G1_ULTRA_TIER", name: "Google AI Ultra" },
+    })).toEqual({ label: "Ultra", isUltra: true });
+    expect(parseAntigravityTier({
+      paidTier: { id: "USER_TIER_UNSPECIFIED", name: "USER_TIER_UNSPECIFIED" },
+      currentTier: { id: "g1-ultra-tier" },
+    })).toEqual({ label: "Ultra", isUltra: true });
+    expect(parseAntigravityTier({})).toEqual({ label: null, isUltra: null });
+  });
+
+  it("rejects non-Ultra tiers or missing Ultra models while keeping future model renames safe when tier is Ultra", () => {
+    expect(evaluateAntigravityPlan({ label: "Pro", isUltra: false }, MODELS_FIXTURE)).toBe("Ultra subscription required (Pro)");
+    expect(evaluateAntigravityPlan({ label: null, isUltra: null }, { models: { "claude-sonnet-4-6": {} } })).toBe("Ultra subscription required");
+    expect(evaluateAntigravityPlan({ label: "Ultra", isUltra: true }, { models: { "gemini-4-neon-tiered": {}, "claude-sonnet-4-6": {} } }))
+      .toBe("Ultra models unavailable (Ultra)");
+    expect(evaluateAntigravityPlan({ label: "Ultra", isUltra: true }, { models: { "gemini-5-alpha-high": {} } })).toBeNull();
+    expect(evaluateAntigravityPlan({ label: "Ultra", isUltra: true }, { models: { "gemini-4-neon-disabled": {}, "gemini-5-alpha-high": {} } }))
+      .toBeNull();
   });
 });
 

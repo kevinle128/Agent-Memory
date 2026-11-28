@@ -2061,6 +2061,7 @@ export const enUS = {
   'subscriptionPool.status.exhausted.note': 'Auto release {{time}}',
   'subscriptionPool.status.exhausted.noteNoTime': 'Waiting for the next usage check',
   'subscriptionPool.status.auth_error': 'Re-login needed',
+  'subscriptionPool.status.plan_error': 'Plan issue',
   'subscriptionPool.status.disabled': 'Disabled',
   'subscriptionPool.usageFailing': 'Usage check failing',
   'subscriptionPool.usageFailing.tip': 'The usage API failed {{count}} times in a row. The pool keeps working from proxy observations.',
