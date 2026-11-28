@@ -358,4 +358,44 @@ describe("checkAccountUsage", () => {
     expect(result.failed).toBe(true);
     expect(result.account).toMatchObject({ status: "auth_error", last_error: RELOGIN_NEEDED });
   });
+
+  it("preserves plan_error and skips fetchUsage when pre-check refresh transiently fails on an expired token", async () => {
+    const account = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "plan_error",
+      last_error: "Ultra subscription required (Free)",
+    });
+    const adapter = fakeAdapter({
+      refresh: async () => { throw new SubscriptionProviderError("service unavailable", false, 503); },
+    });
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+
+    const result = await fx.svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false });
+
+    expect(adapter.refresh).toHaveBeenCalledTimes(1);
+    expect(adapter.fetchUsage).not.toHaveBeenCalled();
+    expect(result.failed).toBe(true);
+    expect(result.account).toMatchObject({
+      status: "plan_error",
+      usage_fail_count: 0,
+      last_error: "Ultra subscription required (Free)",
+    });
+  });
+
+  it("skips pre-check refresh and fetchUsage when the account is already in auth_error", async () => {
+    const account = await fx.addAccount({ token_expires_at: Date.now() - MIN });
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "auth_error",
+      last_error: RELOGIN_NEEDED,
+    });
+    const adapter = fakeAdapter();
+    fx.svc.setSubscriptionPoolHooks({ adapterFor: () => adapter });
+
+    const result = await fx.svc.runSubscriptionUsageCheck(account.account_id, { refreshModels: false });
+
+    expect(adapter.refresh).not.toHaveBeenCalled();
+    expect(adapter.fetchUsage).not.toHaveBeenCalled();
+    expect(result.failed).toBe(true);
+    expect(result.account).toMatchObject({ status: "auth_error", last_error: RELOGIN_NEEDED });
+  });
 });

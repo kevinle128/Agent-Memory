@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubscriptionQuotaWindow } from "../metadata/types.js";
 import { SubscriptionPoolScheduler } from "./pool-scheduler.js";
+import { SubscriptionProviderError } from "./providers/types.js";
+import { RELOGIN_NEEDED } from "./token-refresher.js";
 import { createPoolFixture, fakeAdapter, tokens, usageReading, type PoolFixture } from "./test-support.js";
 
 const MIN = 60 * 1000;
@@ -279,5 +281,35 @@ describe("SubscriptionPoolScheduler", () => {
 
     expect(await fx.store.getSubscriptionAccount(account.account_id)).toBeNull();
     expect(scheduler.pendingTimers().some((timer) => timer.accountId === account.account_id)).toBe(false);
+  });
+
+  it("does not double-refresh an expired token in one pass when refresh fails transiently", async () => {
+    await setup();
+    const account = await fx.addAccount({ token_expires_at: T0 - MIN });
+    adapter.refresh.mockRejectedValueOnce(new TypeError("fetch failed")).mockResolvedValue(tokens());
+
+    await register();
+
+    expect(adapter.refresh).toHaveBeenCalledTimes(1);
+    expect((await fx.store.getSubscriptionAccount(account.account_id))?.refresh_fail_count).toBe(1);
+    await at(59_000);
+    expect(adapter.refresh).toHaveBeenCalledTimes(1);
+    await at(MIN);
+    expect(adapter.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not double-refresh or overwrite auth_error in one pass when refresh fails permanently", async () => {
+    await setup();
+    const account = await fx.addAccount({ token_expires_at: T0 - MIN });
+    adapter.refresh.mockRejectedValue(new SubscriptionProviderError("invalid_grant", true, 400));
+
+    await register();
+
+    expect(adapter.refresh).toHaveBeenCalledTimes(1);
+    expect(adapter.fetchUsage).not.toHaveBeenCalled();
+    expect(await fx.store.getSubscriptionAccount(account.account_id)).toMatchObject({
+      status: "auth_error",
+      last_error: RELOGIN_NEEDED,
+    });
   });
 });

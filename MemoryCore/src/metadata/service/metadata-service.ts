@@ -2893,16 +2893,31 @@ export class MetadataService {
   }
 
   /** Usage check used by the route and the scheduler. Tells the scheduler the result. */
-  async runSubscriptionUsageCheck(accountId: string, options: { refreshModels?: boolean } = {}): Promise<UsageCheckResult> {
+  async runSubscriptionUsageCheck(
+    accountId: string,
+    options: { refreshModels?: boolean; refreshToken?: boolean } = {},
+  ): Promise<UsageCheckResult> {
     let current = await this.requireSubscriptionAccount(accountId);
+    if (current.status === "auth_error") {
+      return { account: current, failed: true };
+    }
     const adapter = this.subscriptionAdapter(current.provider);
     // Refresh an expired or expiring token first so manual Check now can recover accounts
     // (such as plan_error rows) whose scheduled refreshes were paused.
-    if (current.refresh_token && current.token_expires_at !== null && current.token_expires_at - Date.now() <= 60_000) {
+    if (
+      options.refreshToken !== false
+      && current.refresh_token
+      && current.token_expires_at !== null
+      && current.token_expires_at - Date.now() <= 60_000
+    ) {
       const refreshed = await this.runSubscriptionTokenRefresh(accountId, { ifExpiresWithinMs: 60_000 });
       current = refreshed.account;
-      if (refreshed.failed && current.status === "auth_error") {
-        return { account: current, failed: true };
+      if (refreshed.failed) {
+        const expired = current.token_expires_at !== null && current.token_expires_at <= Date.now();
+        const needsExhaustedRelease = current.status === "exhausted" || current.exhausted_until !== null;
+        if (current.status === "auth_error" || (expired && !needsExhaustedRelease)) {
+          return { account: current, failed: true };
+        }
       }
     }
     const result = await checkAccountUsage(this.store, accountId, adapter, current.threshold_pct);

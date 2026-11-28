@@ -137,4 +137,22 @@ describe("refreshAccountTokens", () => {
       refresh_token: "refresh-rotated",
     });
   });
+
+  it("preserves the stored plan_error reason on a transient refresh failure", async () => {
+    const account = await fx.addAccount();
+    await fx.store.updateSubscriptionAccount(account.account_id, {
+      status: "plan_error",
+      last_error: "Ultra subscription required (Free)",
+    });
+    const adapter = fakeAdapter({ refresh: async () => { throw new TypeError("fetch failed"); } });
+
+    const result = await refreshAccountTokens(fx.store, account.account_id, adapter);
+
+    expect(result.failed).toBe(true);
+    expect(result.account).toMatchObject({
+      status: "plan_error",
+      refresh_fail_count: 1,
+      last_error: "Ultra subscription required (Free)",
+    });
+  });
 });
